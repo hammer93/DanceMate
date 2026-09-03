@@ -45,13 +45,19 @@ def test_run_forever_exits_cleanly_when_shutdown_is_already_requested(settings, 
     assert calls == ["state", "beat"]
 
 
-def test_registered_jobs_are_self_checks_only_in_v074():
-    assert sorted(jobs.REGISTRY) == ["engine-availability", "storage-probe"]
+def test_registered_jobs():
+    """v0.74's self-checks plus v0.75's collect-and-ingest pair."""
+    assert sorted(jobs.REGISTRY) == [
+        "engine-availability",
+        "engine-ingest",
+        "source-intake",
+        "storage-probe",
+    ]
 
 
 def test_unknown_job_names_the_known_jobs():
     with pytest.raises(KeyError, match="engine-availability"):
-        jobs.get("collect-daum")
+        jobs.get("no-such-job")
 
 
 def test_storage_probe_runs_without_a_database(settings):

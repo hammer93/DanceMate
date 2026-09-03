@@ -174,9 +174,20 @@ def test_scripts_are_strict_bash(script):
     assert text.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
 
 
+def _require_git():
+    """git is absent inside the runtime image; these checks belong to the repo."""
+    import shutil
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not available here")
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not running from a git checkout")
+
+
 @pytest.mark.parametrize("script", OPERATIONS_SCRIPTS + ["docker-entrypoint.sh"])
 def test_scripts_are_executable_in_git(script):
     """git records mode 100755; the Windows working tree cannot be trusted."""
+    _require_git()
     out = subprocess.run(
         ["git", "ls-files", "-s", f"scripts/{script}"],
         cwd=REPO_ROOT,
@@ -198,10 +209,12 @@ def test_scripts_have_lf_endings_for_the_linux_target(script):
 def test_env_example_carries_no_real_secret():
     text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "POSTGRES_PASSWORD=CHANGE_ME" in text
-    assert "DANCEMATE_VERSION=0.74" in text
+    assert "DANCEMATE_VERSION=0.75" in text
 
 
 def test_env_is_git_ignored_but_the_template_is_not():
+    _require_git()
+
     def ignored(path: str) -> bool:
         return subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO_ROOT).returncode == 0
 
@@ -210,7 +223,7 @@ def test_env_is_git_ignored_but_the_template_is_not():
 
 
 def test_version_file_tracks_the_product_runtime_not_the_engine():
-    assert (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.74"
+    assert (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.75"
 
 
 # --- listen address vs published address ------------------------------------
