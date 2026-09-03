@@ -34,6 +34,21 @@ def main() -> int:
         log.error("migration checksum drift: %s", result["checksum_drift"])
         return 4
 
+    # Import the engine's real source list into the Source Master. Idempotent,
+    # and every imported source arrives disabled.
+    try:
+        from . import db, seed_sources
+
+        with db.connect(settings, autocommit=True) as con:
+            seeded = seed_sources.seed(con, settings)
+        log.info(
+            "source master seed: created=%s already_present=%s unsupported=%s",
+            seeded["created"], len(seeded["already_present"]),
+            seeded["unsupported_platform"],
+        )
+    except Exception as exc:  # seeding must never stop the runtime from serving
+        log.warning("source master seed skipped: %s", exc)
+
     import uvicorn
 
     log.info(
