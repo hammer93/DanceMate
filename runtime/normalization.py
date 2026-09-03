@@ -483,10 +483,23 @@ def _prune_orphans(con, current_ids: set[int] | None) -> int:
     """
     if not current_ids:
         return 0
+    keep = list(current_ids)
     with con.cursor() as cur:
+        # A survivor pointing at a pruned canonical is no longer a duplicate of
+        # anything. Put it back in the listing rather than leaving it hidden
+        # behind an event that has ceased to exist; the next scan re-decides.
+        cur.execute(
+            "UPDATE events SET canonical_event_id = NULL, duplicate_decided_by = NULL, "
+            "  listing_state = CASE WHEN review_state IN ('REJECTED', 'DUPLICATE') "
+            "                       THEN 'HIDDEN' ELSE 'LISTED' END, updated_at = now() "
+            "WHERE candidate_id = ANY(%s) AND canonical_event_id IS NOT NULL "
+            "  AND canonical_event_id IN "
+            "      (SELECT event_id FROM events WHERE NOT (candidate_id = ANY(%s)))",
+            (keep, keep),
+        )
         cur.execute(
             "DELETE FROM events WHERE NOT (candidate_id = ANY(%s)) RETURNING event_id",
-            (list(current_ids),),
+            (keep,),
         )
         return len(cur.fetchall())
 
