@@ -1,5 +1,144 @@
 # DanceMate Release Notes
 
+## v0.76 Deep Content Acquisition + Human Verification Console + Source Usage Monitoring
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-03, host reboot included.
+
+Version split:
+
+- Product Runtime: 0.76
+- Information Engine: 0.73 (unmodified - v0.76 adds no engine algorithm)
+
+### Why this version exists
+
+v0.75 collected 17 live items and produced 15 candidates, and almost none were
+usable: Time missing from 10 of 10 sampled, Venue from 9, Fee from 10. The
+cause was not extraction. A search API returns a snippet - the live intake
+averaged 97 characters - and the times, venues and fees are in the post body,
+which was never fetched. So v0.76 fetches the body first and builds the review
+console on top of it, rather than the other way round.
+
+### Deep Content Acquisition
+
+Daum serves the desktop article URL as an iframe shell (1,646 bytes, 168
+characters of CSS). The mobile host serves the same post as real HTML, and
+robots.txt permits it - only `/_*` administrative paths are disallowed. Article
+region extraction yields 434 characters on a live post against 190 from
+og:description (which the site truncates mid-sentence) and 813 for the whole
+page including chrome.
+
+Measured on the board over the existing 17 live items plus 1 snapshot item:
+
+| | |
+|---|---|
+| FETCHED_FULL | 17 |
+| FETCHED_PARTIAL | 1 (thin body) |
+| FETCH_BLOCKED / LOGIN_REQUIRED / FAILED | 0 |
+| Average body | **97 to 492 characters** (max 1,026) |
+| Method | article_region 17, visible_text 1 |
+| Content fetches | 18, all successful, avg 305ms |
+
+No login, CAPTCHA or access-control bypass, and no browser automation. Only
+extracted text is stored, never raw HTML: total stored text is 8.4KB. Personal
+data is removed before storage - 18 spans across 12 items (phone numbers, bank
+accounts) - while fees and times survive, which the tests pin from both sides.
+
+### Engine reprocessing: what improved, and what got worse
+
+The engine is unmodified. Given the body instead of the snippet, its own
+extractor produced, over the 15 live candidates:
+
+| Field | Before | After |
+|---|---|---|
+| Event name | 15/15 | 15/15 |
+| Date | 12/15 | **15/15** |
+| Start time | 1/15 | **7/15** |
+| End time | 1/15 | **7/15** |
+| Venue | 1/15 | 1/15 |
+| Fee | 1/15 | 1/15 |
+
+On the same 10-item sample used in v0.75: Date 7/10 to **10/10**, Start 0/10 to
+**5/10**, End 0/10 to **5/10**, Venue 1/10 unchanged, Fee 0/10 to 1/10.
+
+**A wrong-value regression appeared.** A post reading `시간: PM 07:30~11:30`
+came out as `07:30` - twelve hours early. A missing time makes an operator look
+it up; a wrong time sends a dancer to a locked door, so this is worse than the
+gap it replaced. The engine was not modified to fix it: rebuilding its time
+parser is a v0.77 decision to make with this evidence in hand. What v0.76 does
+is refuse to let the value pass silently - the review console compares each
+extraction against the body it came from and warns the reviewer:
+
+    WARN  Start reads 07:30, but the body marks 7 as afternoon/evening.
+          This is probably 19:30 - check the body before approving.
+    INFO  the body says 장소: 아미고스튜디오 but no venue was extracted
+
+**Venue and Fee did not improve, and the reason was measured rather than
+guessed**: of the candidates missing them, the value is present in the acquired
+body for 5 venues and 2 fees - for example `밀롱가만 13000원`, which the v0.73
+extractor does not recognise. That is an extraction gap, not an acquisition
+gap, and it is the concrete input for v0.77.
+
+**False VERIFIED: 0.** All 15 live candidates remain POSSIBLE. The engine gate
+needs date, start, end and fee together, and no live post yielded all four.
+
+### Human Verification Console
+
+APPROVE / EDIT / REJECT / DUPLICATE / CONFIRM at `/admin/review`, recorded
+alongside the engine status and never instead of it. **APPROVE does not grant
+VERIFIED** - a test asserts the review module contains no reference to the
+engine store at all. An EDIT keeps both the engine value and the correction.
+Nothing is ever deleted, including rejections.
+
+All five actions and their validation were exercised against a synthetic
+candidate id and then removed. No judgement was made on a real dance event,
+which is the operator decision to make.
+
+### Source Usage Monitoring
+
+`/admin/usage`, with two counters that are never added together:
+
+| | |
+|---|---|
+| API requests today | KAKAO 6 (17 items, 0 new, 17 duplicate) |
+| Content fetches today | 18, none of which cost provider quota |
+| Kakao quota | 6 / 5000, **CONFIGURED** (our own budget) |
+| Naver quota | 0 / 25000, **DOCUMENTED** (the published Naver limit) |
+| Cost, every provider | **UNKNOWN** |
+
+No provider is recorded as FREE and no cost renders as zero: an absent invoice
+is not evidence of free. Naver remains AUTH_FAILED from v0.75 and is shown so.
+
+### ROCKPro64 acceptance
+
+Migrations 004-006 applied to the live database after a verified backup
+(pg_restore 108 entries, SQLite integrity ok). Live data intact throughout:
+18 source items, 5 collection runs, 15 candidates.
+
+Restart and host reboot both preserved everything - acquisition results, usage
+counters, review audit and candidates - with all four containers healthy in
+about 20 seconds and no duplicate explosion (18 items, 18 distinct external
+ids). The reboot needed a power cycle again, the RK3399 warm-reset behaviour
+recorded in `deploy/rockpro64/NETWORK.md`.
+
+Idle footprint after acquisition: runtime 50MB, scheduler 43MB, postgres 54MB;
+database 9.2MB, container logs 4KB each, microSD 11%.
+
+Tests: 338 pass on a developer host, 408 against a live PostgreSQL in the
+runtime container.
+
+### Not done in v0.76
+
+- No engine algorithm change, and no new extraction rules.
+- No OCR or poster image processing; poster URLs are recorded, nothing more.
+- No automatic duplicate resolution - a person marks DUPLICATE, and v0.77 can
+  build on that.
+- Naver is still not connected (external credential condition).
+
+Next:
+v0.77 - the extraction failures above are the agenda: PM and 오후 time
+handling, labelled venues, and unlabelled fees.
+
 ## v0.75 Admin Foundation + Basic Master Data + Real Source Intake
 
 Status:

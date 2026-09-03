@@ -9,7 +9,7 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.75 (Admin Foundation + Basic Master Data + Real Source Intake)
+- Product Runtime: v0.76 (Deep Content Acquisition + Human Verification + Usage Monitoring)
   - v0.74 deployed and verified on the ROCKPro64 on 2026-09-03, host reboot included
 - Information Engine: v0.73 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
@@ -66,6 +66,14 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 Candidates, Genres & Regions. Server-rendered; credentials come from
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`, and the console refuses every
 request when no password is set. JSON equivalents live under `/api/admin/`.
+
+Pages: Dashboard, Intake, Review, Sources, Venues, Organizers, Genres &
+Regions, Usage, System.
+
+The pipeline runs as four scheduler jobs: `source-intake` discovers posts
+through a provider's search API, `content-acquisition` fetches the original
+post behind each result, `engine-ingest` hands new items to the Information
+Engine and `engine-reprocess` re-extracts items whose body arrived later.
 
 An operator registers a source, presses **Test**, then **Enable**. The
 scheduler collects only from enabled sources whose interval has elapsed
