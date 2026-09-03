@@ -191,7 +191,7 @@ What it does insist on is not overstating anything:
 |---|---|
 | Engine suite | 559 passed |
 | Runtime suite, host | 385 passed, 127 skipped |
-| Runtime suite, container | 495 passed, 8 skipped |
+| Runtime suite, container | 504 passed, 8 skipped |
 | Migrations on the board | 011 of 011 applied |
 | `/version` | product 0.77, engine 0.74 |
 | Alpha API | 4 upcoming events, all LIVE |
