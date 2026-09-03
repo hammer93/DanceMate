@@ -141,3 +141,79 @@ def test_start_script_waits_for_the_first_scheduler_heartbeat():
     assert "DANCEMATE_START_TIMEOUT" in text
     assert "Scheduler .* FAIL" in text
     assert "did not become fully ready" in text
+
+
+def _bash() -> str:
+    """A bash that can actually run the scripts.
+
+    On Windows the bare name resolves to WSL's bash, which has no interpreter
+    inside the distro on this machine; Git Bash is the one that matters here.
+    """
+    import shutil
+    import subprocess
+
+    candidates = [shutil.which("bash"), r"C:\Program Files\Gitinash.exe"]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "-c", "echo ok"], capture_output=True, text=True, timeout=30
+            )
+        except OSError:
+            continue
+        if probe.returncode == 0 and probe.stdout.strip() == "ok":
+            return candidate
+    pytest.skip("no working bash available to exercise the shell helpers")
+
+
+def _runtime_url(tmp_path: Path, env_lines: list[str]) -> str:
+    """Actually run _common.sh's runtime_url() against a throwaway .env."""
+    import shutil
+    import subprocess
+
+    bash = _bash()
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    shutil.copy(COMMON, tmp_path / "scripts" / "_common.sh")
+    (tmp_path / ".env").write_text(
+        "".join(line + chr(10) for line in env_lines), encoding="utf-8"
+    )
+    result = subprocess.run(
+        [bash, "-c", 'source "$1/scripts/_common.sh"; runtime_url', "_", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    "bind,expected",
+    [
+        ("0.0.0.0", "http://127.0.0.1:8080"),
+        ("::", "http://127.0.0.1:8080"),
+        ("192.168.0.10", "http://192.168.0.10:8080"),
+    ],
+)
+def test_health_probe_follows_the_bind_address(tmp_path, bind, expected):
+    """Binding to one LAN address stops loopback listening; the probe follows."""
+    env = [f"DANCEMATE_BIND_ADDRESS={bind}", "DANCEMATE_PORT=8080"]
+    assert _runtime_url(tmp_path, env) == expected
+
+
+def test_health_probe_can_be_overridden_explicitly(tmp_path):
+    env = [
+        "DANCEMATE_BIND_ADDRESS=192.168.0.10",
+        "DANCEMATE_PORT=9000",
+        "DANCEMATE_HEALTH_HOST=10.0.0.5",
+    ]
+    assert _runtime_url(tmp_path, env) == "http://10.0.0.5:9000"
+
+
+def test_health_probe_defaults_without_any_binding_configured(tmp_path):
+    assert _runtime_url(tmp_path, ["DANCEMATE_PORT=8080"]) == "http://127.0.0.1:8080"
+
+
+def test_env_example_documents_the_health_host():
+    text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "#DANCEMATE_HEALTH_HOST=127.0.0.1" in text

@@ -114,10 +114,24 @@ pg_run() {
   docker exec -i "$container" "$@"
 }
 
+# Where the health probes should talk to the runtime.
+#
+# When DANCEMATE_BIND_ADDRESS narrows the published port to one LAN interface
+# (the ROCKPro64 binds to its wired address), loopback is no longer listening,
+# so probing 127.0.0.1 would report a healthy server as unreachable. Override
+# explicitly with DANCEMATE_HEALTH_HOST if the checks run from elsewhere.
 runtime_url() {
-  local port
+  local host port
   port="$(env_value DANCEMATE_PORT || true)"
-  printf 'http://127.0.0.1:%s' "${port:-8080}"
+  port="${port:-8080}"
+  host="$(env_value DANCEMATE_HEALTH_HOST || true)"
+  if [[ -z "$host" ]]; then
+    host="$(env_value DANCEMATE_BIND_ADDRESS || true)"
+    case "$host" in
+      ""|0.0.0.0|"::"|"[::]"|"*") host="127.0.0.1" ;;
+    esac
+  fi
+  printf 'http://%s:%s' "$host" "$port"
 }
 
 # Print a script's leading comment block as its usage text. Stops at the first
