@@ -134,8 +134,9 @@ def test_the_bracketed_form_resolves_through_the_alias_candidates(pg, unique, se
     """The extractor keeps 엔빠스(EnPaz Tango Studio) whole and offers its parts."""
     from runtime import master_data
 
+    # create_venue registers the venue's own name as an alias, so this venue is
+    # findable by "엔빠스 {unique}" and by nothing else.
     venue = master_data.create_venue(pg, name=f"엔빠스 {unique}", region_id=seoul_id)
-    master_data.add_venue_alias(pg, venue_id=venue["venue_id"], alias=f"엔빠스 {unique}")
 
     stored = normalization.normalize_candidate(
         pg,
