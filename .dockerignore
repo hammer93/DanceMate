@@ -1,0 +1,23 @@
+# Keep the build context small: the image never needs history, host runtime
+# data, or the operator's backups.
+.git
+.gitattributes
+.gitignore
+.github
+data/
+logs/
+backup/
+tests/
+deploy/
+docs/
+*.md
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.idea/
+.vscode/

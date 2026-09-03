@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DanceMate - start server
+# DanceMate - start the staging runtime.
 #
-# v0.74에서 docker compose 기반 runtime / scheduler / postgres 를 기동할 예정이다.
-# 현재 단계에서는 기동할 runtime이 존재하지 않는다.
+# Validates the environment before touching Docker so a half-configured host
+# fails loudly instead of leaving a partially started stack behind.
 
-echo "DanceMate v0.74 runtime is not installed yet."
-exit 0
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+log "DanceMate start-server"
+log "repository: $REPO_ROOT"
+
+require_docker
+if ! validate_env; then
+  die ".env validation failed - fix the warnings above before starting"
+fi
+ensure_directories
+
+[[ -f "$COMPOSE_FILE" ]] || die "docker-compose.yml not found at $COMPOSE_FILE"
+compose config --quiet || die "docker-compose.yml is not valid"
+
+log "starting postgres, runtime and scheduler ..."
+compose up -d
+
+log ""
+compose ps
+log ""
+log "runtime API: $(runtime_url)/health"
+log "check state: scripts/check-server.sh"
