@@ -209,7 +209,7 @@ def test_scripts_have_lf_endings_for_the_linux_target(script):
 def test_env_example_carries_no_real_secret():
     text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "POSTGRES_PASSWORD=CHANGE_ME" in text
-    assert "DANCEMATE_VERSION=0.76" in text
+    assert "DANCEMATE_VERSION=0.77" in text
 
 
 def test_env_is_git_ignored_but_the_template_is_not():
