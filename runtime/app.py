@@ -1,8 +1,9 @@
-"""DanceMate Runtime HTTP API (v0.74).
+"""DanceMate Runtime HTTP API.
 
-LAN-only staging admin surface. Not a public API: there is no authentication
-here on purpose, and the deployment policy requires the host to stay behind the
-LAN firewall with no WAN port forwarding.
+LAN-only staging. Two surfaces on one app: the operator console under /admin,
+and from v0.77 the alpha user surface at / and /api/events. Neither is
+authenticated and neither is public -- the deployment policy requires the host
+to stay behind the LAN firewall with no WAN port forwarding.
 
 Framework choice - FastAPI + uvicorn:
   * ASGI, single process, ~40MB RSS on the 4GB ROCKPro64 target
@@ -19,7 +20,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import admin, admin_pages, health
+from . import admin, admin_pages, events_admin, health, public
 from .config import PRODUCT_VERSION, Settings, load_settings
 
 app = FastAPI(
@@ -47,6 +48,14 @@ app.include_router(admin.router)
 app.include_router(admin.api)
 app.include_router(admin_pages.router)
 app.include_router(admin_pages.api)
+app.include_router(events_admin.router)
+app.include_router(events_admin.api)
+
+# The alpha user surface: / , /events , /events/{id} and /api/events. Mounted
+# last so it can never shadow an operator route.
+public.bind(lambda: settings())
+app.include_router(public.api)
+app.include_router(public.router)
 
 
 @app.get("/health")

@@ -46,12 +46,14 @@ def test_run_forever_exits_cleanly_when_shutdown_is_already_requested(settings, 
 
 
 def test_registered_jobs():
-    """v0.74 self-checks, v0.75 collect-and-ingest, v0.76 acquire-and-reprocess."""
+    """v0.74 self-checks, v0.75 collect-and-ingest, v0.76 acquire-and-reprocess,
+    v0.77 normalise-and-deduplicate."""
     assert sorted(jobs.REGISTRY) == [
         "content-acquisition",
         "engine-availability",
         "engine-ingest",
         "engine-reprocess",
+        "event-normalization",
         "source-intake",
         "storage-probe",
     ]
@@ -59,7 +61,8 @@ def test_registered_jobs():
 
 def test_the_pipeline_jobs_exist_in_order():
     """Discovery, then acquisition, then extraction - each needs the last."""
-    for name in ("source-intake", "content-acquisition", "engine-ingest", "engine-reprocess"):
+    for name in ("source-intake", "content-acquisition", "engine-ingest",
+                 "engine-reprocess", "event-normalization"):
         assert name in jobs.REGISTRY
 
 

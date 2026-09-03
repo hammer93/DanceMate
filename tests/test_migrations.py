@@ -16,8 +16,10 @@ def test_migrations_are_discovered_in_order():
         "004_content_acquisition",
         "005_human_review",
         "006_provider_usage",
+        "007_event_normalization",
+        "008_duplicate_resolution",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():

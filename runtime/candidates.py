@@ -11,6 +11,7 @@ engine has settled on.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -136,3 +137,40 @@ def counts(settings: Settings) -> dict[str, Any]:
         "raw_posts": posts,
         "event_instances": instances,
     }
+
+
+def venue_alias_candidates(settings: Settings,
+                           candidate_ids: list[int]) -> dict[int, list[str]]:
+    """The venue strings the extractor thought worth matching, per candidate.
+
+    Engine v0.74 records these alongside the venue it read: the whole string,
+    the name without its bracketed address, and the name inside the brackets.
+    Reading them back beats re-deriving them here and drifting from the engine.
+    """
+    if not candidate_ids:
+        return {}
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, value FROM evidences "
+            f"WHERE field = 'venue' AND candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+
+    found: dict[int, list[str]] = {}
+    for row in rows:
+        try:
+            value = json.loads(row["value"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict) and value.get("alias_candidates"):
+            found[row["candidate_id"]] = [str(a) for a in value["alias_candidates"]]
+    return found
