@@ -313,7 +313,9 @@ def test_source(settings: Settings, source: dict[str, Any]) -> dict[str, Any]:
         result["detail"] = f"{type(exc).__name__}: {exc}"
         return result
 
-    result["status"] = "PASS"
+    # A snapshot run must never read as a live pass. An operator glancing at
+    # "PASS" would otherwise conclude the credential works.
+    result["status"] = "PASS" if collected.mode == MODE_LIVE else "PASS_SNAPSHOT"
     result["mode"] = collected.mode
     result["items"] = len(collected.items)
     result["detail"] = collected.detail

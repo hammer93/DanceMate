@@ -133,7 +133,8 @@ def test_collected_text_is_not_mangled(engine_settings):
 def test_test_source_reports_snapshot_when_live_is_unavailable(engine_settings, monkeypatch):
     monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
     report = collectors.test_source(engine_settings, _source())
-    assert report["status"] == "PASS"
+    # PASS_SNAPSHOT, not PASS: a snapshot run must never read as a live pass.
+    assert report["status"] == "PASS_SNAPSHOT"
     assert report["mode"] == "snapshot"
     assert report["items"] >= 1
     assert report["missing_credentials"] == ["KAKAO_REST_API_KEY"]

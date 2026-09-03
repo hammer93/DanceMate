@@ -208,6 +208,24 @@ def summary(con) -> dict[str, Any]:
         enabled_sources = cur.fetchone()[0]
         cur.execute("SELECT count(*) FROM source_items")
         total_items = cur.fetchone()[0]
+        # Provenance matters more than the total: an item that came from a
+        # recorded snapshot must never be counted as live intake.
+        cur.execute(
+            "SELECT count(*) FROM source_items i "
+            "JOIN source_collection_runs r ON r.collection_run_id = i.collection_run_id "
+            "WHERE r.mode = 'live'"
+        )
+        live_items = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM source_items i "
+            "JOIN source_collection_runs r ON r.collection_run_id = i.collection_run_id "
+            "WHERE r.mode <> 'live'"
+        )
+        snapshot_items = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM source_collection_runs WHERE mode = 'live'"
+        )
+        live_runs = cur.fetchone()[0]
         cur.execute(
             "SELECT count(*) FROM source_items WHERE ingest_state = %s", (INGEST_PENDING,)
         )
@@ -222,6 +240,9 @@ def summary(con) -> dict[str, Any]:
         "sources": total_sources,
         "enabled_sources": enabled_sources,
         "source_items": total_items,
+        "live_items": live_items,
+        "snapshot_items": snapshot_items,
+        "live_runs": live_runs,
         "pending_ingest": pending,
         "last_collection_at": last_collection.isoformat() if last_collection else None,
         "errors_24h": recent_errors,

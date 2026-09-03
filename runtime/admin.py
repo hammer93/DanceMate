@@ -24,7 +24,7 @@ from typing import Any, Callable
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import candidates, collectors, db, health, intake, master_data, sources
+from . import candidates, collectors, db, health, intake, master_data, quota, sources
 from .admin_auth import require_admin
 from .config import Settings
 
@@ -207,9 +207,13 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         with _connection() as con:
             intake_summary = intake.summary(con)
             runs = intake.recent_runs(con, limit=8)
+            quota_state = {
+                provider: quota.usage(con, provider) for provider in sorted(quota.DAILY_BUDGET)
+            }
     except db.DatabaseUnavailable as exc:
         intake_summary = {"error": str(exc)}
         runs = []
+        quota_state = {}
 
     def tone_of(name: str) -> str:
         status = component_status.get(name, {}).get("status", "FAIL")
@@ -227,8 +231,12 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
     cards = _cards([
         ("Sources", intake_summary.get("sources", "-"),
          f"{intake_summary.get('enabled_sources', 0)} enabled"),
-        ("Collected items", intake_summary.get("source_items", "-"),
-         f"{intake_summary.get('pending_ingest', 0)} pending ingest"),
+        ("Live items", intake_summary.get("live_items", "-"),
+         f"{intake_summary.get('live_runs', 0)} live collection runs"),
+        ("Snapshot items", intake_summary.get("snapshot_items", "-"),
+         "recorded fixtures, NOT live data"),
+        ("Pending ingest", intake_summary.get("pending_ingest", "-"),
+         f"{intake_summary.get('source_items', 0)} items stored in total"),
         ("Event candidates", candidate_counts.get("total", 0),
          f"{candidate_counts.get('review_pending', 0)} not settled"),
         ("Last collection", (intake_summary.get("last_collection_at") or "never")[:19],
@@ -237,7 +245,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
 
     run_rows = [
         [E(r["source_key"]), _badge(r["status"], "ok" if r["status"] == "PASS" else "bad"),
-         E(str(r["mode"])), f'<span class="num">{r["discovered_count"]}</span>',
+         _badge(r["mode"].upper(), "ok" if r["mode"] == "live" else "warn"), f'<span class="num">{r["discovered_count"]}</span>',
          f'<span class="num">{r["new_count"]}</span>',
          f'<span class="num">{r["duplicate_count"]}</span>',
          E(str(r["started_at"])[:19])]
@@ -249,6 +257,20 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         + cards
         + "<h2>Components</h2>"
         + _table(["Component", "Status", "Detail"], status_rows, empty="no status")
+        + "<h2>Provider quota (today, UTC)</h2>"
+        + _table(
+            ["Provider", "Requests", "Budget", "Remaining", "Last request"],
+            [
+                [E(name), f'<span class="num">{state.get("requests", 0)}</span>',
+                 f'<span class="num">{state.get("budget", 0)}</span>',
+                 _badge(state.get("remaining", 0),
+                        "ok" if state.get("remaining", 0) > 0 else "bad"),
+                 E(str(state.get("last_request_at") or "never")[:19])]
+                for name, state in sorted(quota_state.items())
+                if isinstance(state, dict)
+            ],
+            empty="no provider quota recorded yet",
+        )
         + "<h2>Recent collection runs</h2>"
         + _table(
             ["Source", "Status", "Mode", "Found", "New", "Dup", "Started"],
@@ -395,8 +417,13 @@ def admin_source_action(
             return _back("/admin/sources", f"{source['source_key']} {action}d")
         report = collectors.test_source(settings, source)
 
-    tone = "ok" if report.get("status") == "PASS" else "bad"
-    summary = f"{source['source_key']} test: {report.get('status')} - {report.get('detail', '')}"
+    status = report.get("status")
+    tone = {"PASS": "ok", "PASS_SNAPSHOT": "bad"}.get(status, "bad")
+    note = ""
+    if status == "PASS_SNAPSHOT":
+        missing = ", ".join(report.get("missing_credentials") or []) or "credentials"
+        note = f" [SNAPSHOT, NOT LIVE - {missing} missing; the scheduler will skip this source]"
+    summary = f"{source['source_key']} test: {status} - {report.get('detail', '')}{note}"
     return _back("/admin/sources", summary[:300], tone)
 
 

@@ -68,6 +68,31 @@ Not done in v0.75, deliberately:
   development host or on the board, so live collection has never run. The whole
   pipeline was exercised against the engine's recorded API snapshots instead -
   real parsing code, offline data. **REAL SOURCE NOT CONNECTED.**
+
+  The scheduler no longer papers over this. It refuses to collect a source
+  whose credentials are missing rather than falling back to the snapshot
+  fixtures, the admin `[Test]` button reports `PASS_SNAPSHOT` rather than
+  `PASS`, and the dashboard counts live and snapshot items separately. As of
+  this writing the board reads **Live items 0, live collection runs 0**, which
+  is the true state.
+
+Added while preparing for live acceptance:
+
+- **Provenance guard**: the scheduler never substitutes recorded snapshot data
+  for a live collection. Snapshot intake is opt-in per source
+  (`config.snapshot_intake_allowed`), off by default, and every such run is
+  recorded with `mode = 'snapshot'` and a `SNAPSHOT` status.
+- **Error classification** (`runtime/collector_errors.py`): a collector failure
+  is resolved to AUTH_FAILED / RATE_LIMITED / NETWORK / BAD_RESPONSE /
+  CREDENTIALS_MISSING with the HTTP status and whether it is worth retrying, so
+  "my key is wrong" is distinguishable from "I am being throttled". Messages
+  are redacted before storage so no credential can reach `source_errors` or the
+  console.
+- **Provider quota accounting** (`runtime/quota.py`): requests are counted per
+  provider per UTC day against a conservative budget, checked before any call.
+  A source with six queries costs six calls, which a per-source interval check
+  alone does not see. Both Naver platforms share one budget because they share
+  one credential.
 - No Human Verification workflow. The Candidates page is read-only and cannot
   grant VERIFIED; APPROVE / EDIT / REJECT / DUPLICATE / CONFIRM is v0.76.
 - No Facebook collector: its access restrictions make it a poor first source,
