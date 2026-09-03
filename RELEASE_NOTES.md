@@ -1,5 +1,82 @@
 # DanceMate Release Notes
 
+## v0.75 Admin Foundation + Basic Master Data + Real Source Intake
+
+Status:
+In development on `feature/v0.75-admin-source-intake`. Not merged, not tagged.
+
+Version split:
+
+- Product Runtime: 0.75
+- Information Engine: 0.73 (unchanged - v0.75 adds no engine algorithm feature)
+
+Included:
+
+- **Admin console** at `/admin`, server-rendered from the standard library.
+  No template engine, no SPA, no build step: the runtime's dependency list
+  gains one 30KB package (`python-multipart`, needed by FastAPI to read the
+  console's HTML forms). Pages: Dashboard, Sources, Venues, Organizers,
+  Candidates, Genres & Regions.
+- **Admin authentication**: HTTP Basic from `ADMIN_USERNAME` / `ADMIN_PASSWORD`
+  in `.env`. With no password set the console refuses every request rather
+  than falling open. `/health` stays unauthenticated so container healthchecks
+  keep working.
+- **Master data** (`002_master_data.sql`): genres, regions, venues with
+  aliases, organizers. Rows are disabled, never deleted. Venue aliases
+  normalise through NFKC + case/punctuation folding so "La Ventana",
+  "라벤타나" and "벤타나" resolve to one venue.
+- **Source Master** (`003_source_intake.sql`): platform, role, authority,
+  queries, per-source collection interval, enable/disable, last status. A
+  source is collected from only when an operator has enabled it **and** its
+  interval has elapsed; the interval floor is 10 minutes, enforced by a CHECK
+  constraint and by validation.
+- **Raw intake persistence**: `source_collection_runs`, `source_items`,
+  `source_errors`. Deduplication on `(source_id, external_id)` with a content
+  hash, so re-collecting an unchanged post is a duplicate and an edited one is
+  a revision that goes back into the ingest queue.
+- **Collector adapter**: no new collector was written. The engine's existing
+  Kakao Daum Cafe and Naver Blog/Cafe collectors are what runs, live when
+  credentials are present and against the engine's recorded snapshots when
+  they are not. `[Test]` reports which, and writes nothing.
+- **Engine ingest adapter**: `source_items` -> the engine's own
+  `persist_raw_post` / `process_discovered_post` / `persist_events`. Engine
+  source and engine schema unchanged.
+- **Scheduler integration**: two new jobs, `source-intake` and `engine-ingest`,
+  alongside the v0.74 self-checks.
+- **Seed**: the three launch genres, South Korea and Seoul. The engine's own
+  `config/sources.json` is imported into the Source Master - real, evidence-
+  backed sources rather than invented ones - and every imported source arrives
+  **disabled**. No venue or organizer is invented.
+- 41 new tests (282 total against a live PostgreSQL).
+
+Verified end to end on a development host with Docker:
+
+- migrations 001-003 apply once and are idempotent on restart
+- seed produces 3 genres, 2 regions and 6 disabled sources from the engine config
+- admin console: anonymous and wrong credentials rejected (401), locked console
+  rejects (503), all six pages and all seven API routes answer 200 authenticated
+- enabling `SRC-D-001` then running the pipeline: `source-intake` collected 1
+  item, `engine-ingest` produced 1 Event Candidate, visible on /admin/candidates
+- an incomplete source is refused at enable time through both `set_enabled` and
+  the PATCH API
+
+Not done in v0.75, deliberately:
+
+- **No real source is connected.** The engine's live collectors need
+  `KAKAO_REST_API_KEY` (Kakao Developers) or `NAVER_CLIENT_ID` /
+  `NAVER_CLIENT_SECRET` (Naver Developers). Neither is provisioned, on the
+  development host or on the board, so live collection has never run. The whole
+  pipeline was exercised against the engine's recorded API snapshots instead -
+  real parsing code, offline data. **REAL SOURCE NOT CONNECTED.**
+- No Human Verification workflow. The Candidates page is read-only and cannot
+  grant VERIFIED; APPROVE / EDIT / REJECT / DUPLICATE / CONFIRM is v0.76.
+- No Facebook collector: its access restrictions make it a poor first source,
+  and the engine's own source list already marks those entries ACCESS_LIMITED.
+- No Information Engine algorithm change.
+
+Next:
+v0.76 Human Verification Console.
+
 ## v0.74 Persistent Runtime + ROCKPro64 Staging Deployment
 
 Status:

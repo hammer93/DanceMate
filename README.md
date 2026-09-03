@@ -9,8 +9,8 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.74 (Persistent Runtime + ROCKPro64 Staging Deployment)
-  - deployed and verified on the ROCKPro64 on 2026-09-03, host reboot included
+- Product Runtime: v0.75 (Admin Foundation + Basic Master Data + Real Source Intake)
+  - v0.74 deployed and verified on the ROCKPro64 on 2026-09-03, host reboot included
 - Information Engine: v0.73 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
@@ -59,6 +59,20 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
 | `GET /resources`  | CPU load, memory, disk usage                                  |
+
+### Admin console (LAN only, HTTP Basic)
+
+`http://<board>:8080/admin` — Dashboard, Sources, Venues, Organizers,
+Candidates, Genres & Regions. Server-rendered; credentials come from
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`, and the console refuses every
+request when no password is set. JSON equivalents live under `/api/admin/`.
+
+An operator registers a source, presses **Test**, then **Enable**. The
+scheduler collects only from enabled sources whose interval has elapsed
+(minimum 10 minutes), stores the raw items deduplicated by content hash, and
+hands them to the Information Engine. Live collection needs the platform's API
+credentials in `.env`; without them a source can still be tested and collected
+against the engine's recorded snapshots.
 
 ## Repository Structure
 
