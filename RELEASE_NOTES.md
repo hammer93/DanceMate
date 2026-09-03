@@ -1,5 +1,158 @@
 # DanceMate Release Notes
 
+## v0.77.1 Venue Resolution Admin UX Patch
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-03.
+
+Version split:
+
+- Product Runtime: 0.77.1
+- Information Engine: 0.74 (unchanged — this release touches no extraction)
+
+### Why this version exists
+
+v0.77 built the Unresolved Venues queue and left it unusable. It could link a
+string to an existing venue and nothing else, and the Venue Master was empty,
+so the dropdown was empty too. The one screen built for this job could not do
+it: the operator had to leave for `/admin/venues`, create a venue from memory,
+and come back to a queue whose context they had just lost. On the board that
+was all eight waiting strings.
+
+The success condition here is not "venue creation exists". It is that with an
+empty Venue Master, one screen is enough to read the post, create the venue,
+link the string and watch the waiting events resolve.
+
+### The queue is now a decision screen
+
+Each entry is a card carrying what it takes to decide:
+
+- **the post it came from**, linked, with a line of surrounding text. `OCHO`
+  could be a studio or the name of the event, and only the post says which.
+- **Link Existing, New Venue and Not a venue side by side.** None of them
+  buried — with no venues registered, the empty dropdown is replaced by a
+  banner that points at New Venue rather than a silently useless select.
+
+### The form is prefilled, and says when it guessed
+
+`라 벤따나 (서울 마포구 잔다리로 48, 2층)` splits into a name and an address,
+because the bracket holds an address. `엔빠스(EnPaz Tango Studio)` does not: the
+bracket is another name for the same place, so it becomes an alias and the
+address field stays empty rather than being filled with a guess. When the split
+was inferred the form says so.
+
+A region is preselected only when the address names one. Korean addresses and
+an English region master needed an explicit bridge, so there is a lookup table;
+an unregistered region still selects nothing. Defaulting everything to Seoul
+because most of it is Seoul would file a Busan milonga under Seoul, and the
+region filter would then lie to a dancer in either city.
+
+The raw string is always registered as an alias, which is the entire point:
+the next collection resolves it without anyone being asked again.
+
+### Create & Link is one transaction
+
+Creating the venue and then failing to link it would leave a master record
+nobody asked for beside a queue entry that still looks untouched — and the
+operator would reasonably create it again. The three writes run in one
+`con.transaction()`, and the route owns the commit.
+
+### It asks before creating a second row for the same place
+
+Exact matches on normalised name, registered alias and normalised address are
+offered as "you may already have this", each with Link Existing beside it and
+Create Anyway below. A warning, not a refusal: two studios can share a name.
+No fuzzy scoring — a warning nobody can check is one they learn to click past.
+
+### Not a venue asks first
+
+The string stops being asked about; the events and the posts behind it are not
+touched. A reason can be recorded and is kept.
+
+### Every venue decision is audited
+
+Migration 012 records reviewer, raw string, action, venue, how many events
+actually moved, and before/after. Kept out of `human_review_actions`
+deliberately: that table records a verdict about one candidate, and
+"아미고스튜디오 is that studio" is one decision settling three events at once.
+
+### What the board showed
+
+Eight strings waiting, and they are not equal. `OCHO` had eight waiting events
+and every one came from a PoC fixture — no source link, no context, nothing to
+read, because there is no live post. It sat in the queue looking exactly like
+`라 벤따나`, which has two live posts and a readable address.
+
+The queue now counts live events separately, orders by them, and marks a string
+no live post ever produced. Nothing is hidden; the screen just stops spending
+attention as though every row were worth the same.
+
+| String | Events waiting | Live |
+|---|---|---|
+| 아미고스튜디오 | 3 | 3 |
+| Tango Andante | 2 | 2 |
+| 라 벤따나 (서울 마포구 잔다리로 48, 2층) | 2 | 2 |
+| PISTA | 2 | 1 |
+| 엔빠스(EnPaz Tango Studio) | 1 | 1 |
+| 데땅고 | 1 | 1 |
+| OCHO | 8 | **0** |
+| Tango O Nada | 1 | **0** |
+
+None of these were decided. The live queue is김프로's to judge and was left
+exactly as found.
+
+### Three defects only a real database could show
+
+The container run failed where the host run passed, and all three were real:
+
+**`create_and_link` called `con.rollback()` on a connection it was handed.**
+That discards whatever else the caller had in flight. The writes now run in
+`con.transaction()` — a real transaction on an autocommit connection, a
+savepoint inside a larger one — and committing went back to the route.
+
+The same bug had already committed test rows into the staging database: 17
+venues, 19 queue entries and 19 audit rows. Removed after checking that no
+event referenced any of them, and that the eight live queue entries and 15 live
+events were untouched. A full suite run afterwards left the database clean,
+which is the proof the fix works.
+
+**A duplicate matching on both the name and the raw string reported one
+reason**, because the two were folded into a dict key that overwrote itself.
+
+**An address reading 서울 selected no region**: addresses are Korean, the region
+master is seeded in English, and nothing bridged them.
+
+Two tests were also asserting on the duplicate scan's global counters, which
+say nothing on a database that also carries live events and a scheduler that
+scans them. They now assert about the events they created.
+
+### Verification
+
+| | |
+|---|---|
+| Runtime suite, host | 404 passed, 147 skipped |
+| Runtime suite, container | 543 passed, 8 skipped |
+| Migrations on the board | 012 of 012 applied |
+| `/version` | product 0.77.1, engine 0.74 |
+| Health | 6/6 PASS |
+| Synthetic end-to-end | PASS, data removed |
+| Live data after all runs | 15 live events, 8 open queue entries, 0 venues |
+
+Synthetic acceptance walked `TEST VENUE ALPHA` through the real HTTP route:
+queued unresolved → Create & Link → alias registered → event resolved → venue,
+address and region on `/events/{id}` → returned by `?region=Seoul` → audit row
+written. Then removed, with live counts checked before and after.
+
+### Known and deliberate
+
+- Venue resolution is still 0/15. The eight decisions are김프로's, and this
+  release exists to make them possible, not to make them.
+- The existing-venue dropdown is a plain `<select>`. With a handful of venues
+  that is the right amount of machinery; filtering can wait for a list long
+  enough to need it.
+- No JavaScript framework. The inline form and the confirmation are `<details>`
+  blocks that work with scripting off.
+
 ## v0.77 Extraction Quality Fix + Duplicate Resolution + Alpha Event Search
 
 Status:
