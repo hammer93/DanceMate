@@ -280,6 +280,21 @@ def api_unresolved_venues(_: str = Depends(require_admin)) -> JSONResponse:
         return admin._dump({"unresolved": normalization.unresolved_venues(con)})
 
 
+@api.post("/events/reextract")
+def api_reextract(limit: int = 50, _: str = Depends(require_admin)) -> JSONResponse:
+    """Re-run the current engine over every post whose body we already hold.
+
+    For an engine version bump: the stored candidates were extracted by the
+    previous version and nothing about the article says so. Candidates a person
+    has acted on are skipped, so this cannot overwrite a review.
+    """
+    from . import engine_ingest
+
+    return admin._dump(
+        engine_ingest.reprocess_acquired(admin._settings(), limit=limit, force=True)
+    )
+
+
 @api.post("/events/normalize")
 def api_normalize(_: str = Depends(require_admin)) -> JSONResponse:
     """Rebuild the event rows now, rather than waiting for the next tick."""

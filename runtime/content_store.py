@@ -141,8 +141,18 @@ def content_changed(existing: dict[str, Any] | None, outcome) -> bool:
     return (existing.get("content_hash") or "") != (outcome.content_hash or "")
 
 
-def needing_reprocess(con, *, limit: int = 50) -> list[dict[str, Any]]:
-    """Items with fetched text the engine has not seen since it changed."""
+def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict[str, Any]]:
+    """Items with fetched text the engine has not seen since it was fetched.
+
+    ``force`` returns every item with text, whether or not it has already been
+    reprocessed. That is the case when the *extractor* changed rather than the
+    content: engine v0.74 reads a time out of ``PM 07:30~11:30`` that v0.73
+    got wrong, and nothing about the stored article says so. Re-extraction is
+    then an explicit operator decision, not something a scheduler infers.
+    """
+    freshness = "" if force else (
+        " AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at)"
+    )
     with con.cursor() as cur:
         cur.execute(
             "SELECT c.*, i.url, i.source_id, s.source_key, s.source_role, i.raw "
@@ -150,9 +160,9 @@ def needing_reprocess(con, *, limit: int = 50) -> list[dict[str, Any]]:
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
             "WHERE c.acquisition_status IN (%s, %s) "
-            "  AND c.extracted_text IS NOT NULL "
-            "  AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at) "
-            "ORDER BY c.fetched_at LIMIT %s",
+            "  AND c.extracted_text IS NOT NULL"
+            + freshness +
+            " ORDER BY c.fetched_at LIMIT %s",
             (acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL, limit),
         )
         return _rows(cur)

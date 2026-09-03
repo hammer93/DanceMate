@@ -175,7 +175,8 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
     }
 
 
-def reprocess_acquired(settings: Settings, *, limit: int = 25) -> dict[str, Any]:
+def reprocess_acquired(settings: Settings, *, limit: int = 25,
+                       force: bool = False) -> dict[str, Any]:
     """Re-extract candidates for items whose original post has now been fetched.
 
     The v0.75 items were already ingested from a search snippet, so the normal
@@ -191,11 +192,16 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25) -> dict[str, Any]
     * The engine's evidence gate is untouched. Supplying a full body lets
       `verify()` see complete core fields; whether that reaches VERIFIED is the
       engine's decision, exactly as it is for any other acquisition path.
+
+    ``force`` re-extracts items already reprocessed. Needed when the extractor
+    itself changes -- an engine version bump leaves every stored candidate
+    holding values the current engine would no longer produce. Both safeguards
+    above still apply, so a forced pass cannot overwrite anyone's review.
     """
     engine_db, RawPostRecord, process_discovered_post = _engine(settings)
 
     with db.connect(settings, autocommit=True) as pg:
-        items = content_store.needing_reprocess(pg, limit=limit)
+        items = content_store.needing_reprocess(pg, limit=limit, force=force)
         if not items:
             return {"pending": 0, "reprocessed": 0, "skipped_reviewed": 0,
                     "candidates_before": 0, "candidates_after": 0, "failed": 0}
