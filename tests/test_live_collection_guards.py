@@ -127,16 +127,16 @@ def test_the_http_status_is_reported_alongside_the_kind():
     "message",
     [
         "Authorization: KakaoAK EXAMPLE-NOT-A-REAL-KEY",
-        "X-Naver-Client-Secret: s3cr3tvalue",
+        "X-Naver-Client-Secret: EXAMPLE-NOT-A-REAL-SECRET",
         "api_key=EXAMPLE-NOT-A-REAL-KEY",
-        "client_secret: hunter2",
+        "client_secret: EXAMPLE-NOT-A-REAL-SECRET2",
     ],
 )
 def test_credentials_never_survive_into_a_stored_message(message):
     """A failure message must not smuggle the key into source_errors or the UI."""
     redacted = collector_errors.redact(message)
     assert "<redacted>" in redacted
-    for secret in ("EXAMPLE-NOT-A-REAL-KEY", "s3cr3tvalue", "hunter2"):
+    for secret in ("EXAMPLE-NOT-A-REAL-KEY", "EXAMPLE-NOT-A-REAL-SECRET", "EXAMPLE-NOT-A-REAL-SECRET2"):
         assert secret not in redacted
 
 
