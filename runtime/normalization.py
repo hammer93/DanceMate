@@ -314,6 +314,17 @@ def unresolved_venues(con, *, state: str = "OPEN", limit: int = 100) -> list[dic
         return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+def unresolved_venue(con, unresolved_venue_id: int) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM unresolved_venues WHERE unresolved_venue_id = %s",
+            (unresolved_venue_id,),
+        )
+        names = [c.name for c in cur.description]
+        row = cur.fetchone()
+    return None if row is None else dict(zip(names, row))
+
+
 def link_unresolved_venue(con, unresolved_venue_id: int, venue_id: int, *,
                           reviewer: str = "admin", add_alias: bool = True) -> dict[str, Any]:
     """A person says this string is that venue.
