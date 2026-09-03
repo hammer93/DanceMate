@@ -1,4 +1,5 @@
 import re
+from . import extraction_rules
 from .models import EventCandidate, Evidence
 
 DATE_PATTERNS = [
@@ -8,7 +9,10 @@ DATE_PATTERNS = [
     re.compile(r"(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<m>\d{1,2})[./](?P<d>\d{1,2})"),
 ]
-# Handles: 19:00-23:00, 09:00 pm to 02:00 am, 8:00PM-12:00AM
+# Kept for callers that still reference it. Time reading itself moved to
+# extraction_rules.parse_time_range, which also handles a meridiem marker
+# placed *before* the clock -- "PM 07:30~11:30", which this pattern read as
+# 07:30 and got twelve hours wrong.
 TIME_RE = re.compile(
     r"(?P<h1>\d{1,2}):(?P<m1>\d{2})\s*(?P<ap1>am|pm)?\s*(?:-|~|to)\s*"
     r"(?P<h2>\d{1,2}):(?P<m2>\d{2})\s*(?P<ap2>am|pm)?",
@@ -49,21 +53,11 @@ def _convert_hour(h: int, ap: str | None):
 
 
 def _norm_time(text: str):
-    m = TIME_RE.search(text)
-    if not m:
+    """Backwards-compatible shim: (start, end, end_day_offset, raw)."""
+    reading = extraction_rules.parse_time_range(text)
+    if reading is None:
         return None, None, 0, None
-    h1, m1 = int(m.group("h1")), int(m.group("m1"))
-    h2, m2 = int(m.group("h2")), int(m.group("m2"))
-    h1, off1 = _convert_hour(h1, m.group("ap1"))
-    h2, off2 = _convert_hour(h2, m.group("ap2"))
-    if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59:
-        return None, None, 0, None
-    start = f"{h1:02d}:{m1:02d}"
-    end = f"{h2:02d}:{m2:02d}"
-    offset = off2
-    if offset == 0 and (h2, m2) <= (h1, m1):
-        offset = 1
-    return start, end, offset, m.group(0)
+    return reading.start, reading.end, reading.end_day_offset, reading.raw
 
 
 def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=None):
@@ -76,21 +70,40 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         ev.date = date
         ev.evidences.append(Evidence("date", date, raw, source_role=source_role, inference=inference))
 
-    s, e, offset, rawt = _norm_time(text)
-    if s:
-        ev.start_time, ev.end_time, ev.end_day_offset = s, e, offset
-        ev.evidences.append(Evidence("time", {"start": s, "end": e, "end_day_offset": offset}, rawt, source_role=source_role))
+    reading = extraction_rules.parse_time_range(text)
+    if reading:
+        ev.start_time = reading.start
+        ev.end_time = reading.end
+        ev.end_day_offset = reading.end_day_offset
+        ev.evidences.append(Evidence(
+            "time", reading.as_dict(), reading.raw, source_role=source_role,
+            inference=reading.meridiem_evidence,
+        ))
 
-    fm = FEE_RE.search(text)
-    if fm:
-        fee = int(fm.group(1).replace(",", ""))
-        ev.fee = fee
-        ev.evidences.append(Evidence("fee", fee, fm.group(0), source_role=source_role))
+    fee = extraction_rules.extract_fee(text, ev.event_type)
+    if fee:
+        ev.fee = fee.amount
+        ev.evidences.append(Evidence(
+            "fee", fee.amount, fee.segment, source_role=source_role, inference=fee.basis,
+        ))
 
     dm = DJ_RE.search(text)
     if dm:
         ev.dj = dm.group(1)
         ev.evidences.append(Evidence("dj", ev.dj, dm.group(0), source_role=source_role))
+
+    # A labelled venue is what the post actually says; the known names below
+    # are a fallback for posts that name the place without labelling it.
+    # Nothing here registers a venue: resolving this string against the Venue
+    # Master is a separate, human-supervised step.
+    place = extraction_rules.extract_venue(text)
+    if place:
+        ev.venue = place.name
+        ev.evidences.append(Evidence(
+            "venue", {"name": place.name, "alias_candidates": place.alias_candidates},
+            place.raw, source_role=source_role, inference=f"LABEL:{place.label}",
+        ))
+        return ev
 
     up = text.upper()
     if "PISTA" in up:

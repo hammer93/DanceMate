@@ -10,6 +10,7 @@ The pipeline runs as four jobs in order:
     content-acquisition  fetch the original post behind each result
     engine-ingest        hand new items to the Information Engine
     engine-reprocess     re-extract items whose body arrived after ingest
+    event-normalization  build the searchable events and resolve duplicates
 
 plus the v0.74 self-checks.
 """
@@ -18,7 +19,14 @@ from __future__ import annotations
 
 from typing import Callable
 
-from runtime import engine_adapter, engine_ingest, resources
+from runtime import (
+    db,
+    duplicates,
+    engine_adapter,
+    engine_ingest,
+    normalization,
+    resources,
+)
 from runtime.config import Settings
 
 from . import acquisition_job, intake_job
@@ -81,6 +89,27 @@ def engine_reprocess(settings: Settings) -> str:
     return detail
 
 
+def event_normalization(settings: Settings) -> str:
+    """Build the searchable event rows, then let the duplicate rules run.
+
+    One job rather than two so the order is guaranteed: duplicates are found by
+    comparing normalised rows, and comparing a half-built table would flag
+    pairs that stop existing on the next tick.
+    """
+    built = normalization.normalize_all(settings)
+    detail = (
+        f"candidates={built['candidates']} normalized={built['normalized']} "
+        f"no_date={built['skipped_no_date']} unresolved_venues={built['unresolved_venues']}"
+    )
+    with db.connect(settings, autocommit=True) as con:
+        found = duplicates.scan(con)
+    detail += (
+        f" | compared={found['compared']} auto_merged={found['auto_merged']} "
+        f"for_review={found['flagged_for_review']}"
+    )
+    return detail
+
+
 REGISTRY: dict[str, Job] = {
     "engine-availability": engine_availability,
     "storage-probe": storage_probe,
@@ -88,6 +117,7 @@ REGISTRY: dict[str, Job] = {
     "content-acquisition": content_acquisition,
     "engine-ingest": engine_ingest_job,
     "engine-reprocess": engine_reprocess,
+    "event-normalization": event_normalization,
 }
 
 

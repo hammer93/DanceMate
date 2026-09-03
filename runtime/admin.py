@@ -129,6 +129,8 @@ NAV = (
     ("/admin", "Dashboard"),
     ("/admin/intake", "Intake"),
     ("/admin/review", "Review"),
+    ("/admin/events", "Events"),
+    ("/admin/duplicates", "Duplicates"),
     ("/admin/sources", "Sources"),
     ("/admin/venues", "Venues"),
     ("/admin/organizers", "Organizers"),
@@ -514,7 +516,11 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
   one venue. The venue name is registered as an alias automatically.</p>
 </form></details>"""
 
-    body = "<h2>Venues</h2>" + add_form + _table(
+    body = ('<h2>Venues</h2>'
+            '<p class="note">Venue strings read from posts that this list does '
+            'not recognise are queued at '
+            '<a href="/admin/venues/unresolved">Unresolved Venues</a>.</p>'
+            ) + add_form + _table(
         ["Name", "Region", "Address", "Aliases", "State"], rows,
         empty="no venue registered yet",
     )

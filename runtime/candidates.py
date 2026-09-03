@@ -11,6 +11,7 @@ engine has settled on.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -136,3 +137,87 @@ def counts(settings: Settings) -> dict[str, Any]:
         "raw_posts": posts,
         "event_instances": instances,
     }
+
+
+def venue_alias_candidates(settings: Settings,
+                           candidate_ids: list[int]) -> dict[int, list[str]]:
+    """The venue strings the extractor thought worth matching, per candidate.
+
+    Engine v0.74 records these alongside the venue it read: the whole string,
+    the name without its bracketed address, and the name inside the brackets.
+    Reading them back beats re-deriving them here and drifting from the engine.
+    """
+    if not candidate_ids:
+        return {}
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, value FROM evidences "
+            f"WHERE field = 'venue' AND candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+
+    found: dict[int, list[str]] = {}
+    for row in rows:
+        try:
+            value = json.loads(row["value"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict) and value.get("alias_candidates"):
+            found[row["candidate_id"]] = [str(a) for a in value["alias_candidates"]]
+    return found
+
+
+def all_candidate_ids(settings: Settings) -> set[int] | None:
+    """Every candidate the engine store currently holds, or None if unreadable.
+
+    None and empty mean different things here, and the caller acts on the
+    difference: an unreadable store must never be read as "the engine has no
+    candidates", which would prune every normalised event.
+    """
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return None
+    try:
+        rows = con.execute("SELECT candidate_id FROM event_candidates").fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return {row["candidate_id"] for row in rows}
+
+
+def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str]:
+    """How the engine knew which half of the day each time belongs to.
+
+    EXPLICIT when the post carried a PM/오후/저녁 marker, ABSENT when it wrote a
+    bare clock and the engine declined to guess. Read back rather than
+    re-derived so the reader is told exactly what the extractor decided.
+    """
+    if not candidate_ids:
+        return {}
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, inference FROM evidences "
+            f"WHERE field = 'time' AND candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+    return {row["candidate_id"]: row["inference"] for row in rows if row["inference"]}

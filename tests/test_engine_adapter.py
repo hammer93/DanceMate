@@ -5,11 +5,11 @@ from __future__ import annotations
 from runtime import engine_adapter
 
 
-def test_engine_v073_is_importable_from_the_repository(settings):
+def test_engine_is_importable_from_the_repository(settings):
     report = engine_adapter.inspect(settings)
     assert report["checks"]["importable"] is True, report["checks"]["import_detail"]
     assert report["checks"]["package_present"] is True
-    assert report["version"] == "0.73"
+    assert report["version"] == "0.74"
 
 
 def test_adapter_targets_the_filename_the_engine_actually_uses():
