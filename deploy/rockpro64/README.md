@@ -184,6 +184,76 @@ No separate systemd unit is needed for DanceMate.
 | restore         | `scripts/restore.sh <name> --yes`                    |
 | logs            | `docker compose logs -f runtime scheduler`           |
 
+## Connecting the first live source
+
+Blocked on credentials as of 2026-09-03. Everything else is in place and
+verified; only the keys are missing.
+
+### 1. Obtain one credential
+
+| Platform | Where | Variable(s) |
+|---|---|---|
+| `DAUM_CAFE` | Kakao Developers -> my application -> REST API key | `KAKAO_REST_API_KEY` |
+| `NAVER_BLOG`, `NAVER_CAFE` | Naver Developers -> application -> Search API | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` |
+
+Start with one. Kakao is the shorter path: one key, and `SRC-D-001` already
+carries six real search queries imported from the engine's own config.
+
+### 2. Put it on the board only
+
+```bash
+ssh root@192.168.1.100
+nano /opt/dancemate/app/DanceMate/.env      # mode 600, git-ignored
+```
+
+Never commit it, never paste it into a terminal that is being logged.
+`.env.example` carries the variable names and nothing else.
+
+### 3. Restart and confirm the runtime sees it
+
+```bash
+cd /opt/dancemate/app/DanceMate
+docker compose --project-directory .   -f deploy/rockpro64/docker-compose.external-postgres.yml up -d
+```
+
+No volume is removed by this; it recreates the two containers only.
+
+### 4. Test before enabling
+
+In the admin console, Sources -> **Test** on `SRC-D-001`. What the result means:
+
+| Result | Meaning |
+|---|---|
+| `PASS` + `mode: live` | the key works and the provider answered - proceed |
+| `PASS_SNAPSHOT` | the key is still missing; this ran against a recorded fixture |
+| `AUTH_FAILED` | the provider rejected the key |
+| `RATE_LIMITED` | the provider is throttling |
+
+### 5. Enable exactly one source
+
+Then watch the scheduler. `source-intake` runs on its cycle; the source is due
+immediately the first time and every 60 minutes after. Success looks like:
+
+```
+live 1/1 due sources, N new, 0 revised
+```
+
+The dashboard's **Live items** counter is the one that matters -
+**Snapshot items** is counted separately and is not live data.
+
+### What will not happen without a key
+
+The scheduler skips a credential-less source rather than collecting fixtures:
+
+```
+live 0/1 due sources, 0 new, 0 revised, skipped ['SRC-D-001']
+sources.last_status = SKIPPED
+sources.last_detail = no live collection: KAKAO_REST_API_KEY not configured.
+                      Refusing to store snapshot data as if it were collected
+```
+
+That is the correct behaviour, not a fault to work around.
+
 ## Verification status
 
 ### Verified on the ROCKPro64, 2026-09-03

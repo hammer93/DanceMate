@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Product runtime version. Deliberately distinct from the Information Engine
 # version: the engine baseline imported into engine/ is v0.73.
-PRODUCT_VERSION = "0.74"
+PRODUCT_VERSION = "0.75"
 DEFAULT_ENGINE_VERSION = "0.73"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

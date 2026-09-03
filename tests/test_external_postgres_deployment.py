@@ -307,3 +307,12 @@ def test_two_markers_get_distinct_engine_case_ids(tmp_path, monkeypatch):
         rows = outcome.outcomes(con, family_signature=f"{marker}=>{marker}")
         assert len(rows) == 1, (marker, rows)
     con.close()
+
+
+def test_the_image_tag_tracks_the_product_version(bundled, external):
+    """A tag frozen at an old version misleads whoever reads `docker images`."""
+    expected = "dancemate/runtime:${DANCEMATE_VERSION:-" + \
+        (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() + "}"
+    for compose in (bundled, external):
+        for service in ("runtime", "scheduler"):
+            assert compose["services"][service]["image"] == expected

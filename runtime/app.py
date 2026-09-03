@@ -19,13 +19,16 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import health
+from . import admin, health
 from .config import PRODUCT_VERSION, Settings, load_settings
 
 app = FastAPI(
     title="DanceMate Runtime",
     version=PRODUCT_VERSION,
-    description="LAN-only staging runtime for the ROCKPro64 deployment target.",
+    description=(
+        "LAN-only staging runtime for the ROCKPro64 deployment target. "
+        "The operator console lives at /admin."
+    ),
 )
 
 _settings: Settings | None = None
@@ -36,6 +39,12 @@ def settings() -> Settings:
     if _settings is None:
         _settings = load_settings()
     return _settings
+
+
+# The admin console shares one Settings instance with the API.
+admin.bind(lambda: settings())
+app.include_router(admin.router)
+app.include_router(admin.api)
 
 
 @app.get("/health")

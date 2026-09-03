@@ -1,5 +1,199 @@
 # DanceMate Release Notes
 
+## v0.75 Admin Foundation + Basic Master Data + Real Source Intake
+
+Status:
+Live source intake VERIFIED on the ROCKPro64 with real Kakao credentials,
+2026-09-03, host reboot included.
+
+### Live Source Acceptance (2026-09-03, ROCKPro64)
+
+**Kakao / Daum Cafe Search API — LIVE VERIFIED**
+
+| | |
+|---|---|
+| Endpoint | `https://dapi.kakao.com/v2/search/cafe` |
+| Auth | `Authorization: KakaoAK <key>`, `KAKAO_REST_API_KEY` from `.env` |
+| Provider response | HTTP 200, `total_count` 23,316 for `밀롱가` |
+| Live collection runs | 2 successful (`mode = live`) |
+| Live items | 17 |
+| Live Event Candidates | 15 |
+| Duplicate handling | second run: 17 discovered, **0 new, 17 duplicate** |
+| Scheduler interval | immediate re-tick reported `no source due` |
+| Korean text | 18/18 titles contain Hangul in PostgreSQL (UTF8), 0 mangled |
+| Provenance | every candidate resolves to a real `cafe.daum.net/latindance/5HTC/...` URL |
+| False VERIFIED | **0** among live-collected posts |
+| Quota accounting | KAKAO 12 requests recorded against the daily budget |
+
+Source configuration had to be corrected first. The engine's shipped
+`config/sources.json` gives `SRC-D-001` `url_contains: ["6uP", "5HTC"]`, and
+`_matches_source` requires **every** token in the same URL. `6uP` is a stale
+cafe id that no longer appears — real posts are at
+`cafe.daum.net/latindance/5HTC/...` — so the filter could never match, and the
+first live call returned 200 with 0 usable records. Corrected through the admin
+API to `["latindance", "5HTC"]`; the engine was not modified.
+
+**Naver Search API — BLOCKED, external credential condition**
+
+`NAVER_CLIENT_ID` and `NAVER_CLIENT_SECRET` are set, and both Blog and Cafe
+search return **HTTP 401**. This is not a code fault, and the API's own error
+messages prove it:
+
+| Request | Response |
+|---|---|
+| `X-Naver-Client-Id` + `X-Naver-Client-Secret` (what the code sends) | `errorCode 024`, `NID AUTH Result Invalid (1000)` |
+| NCP APIGW headers instead | `errorCode 024`, `Not Exist Client ID` |
+| no credential header at all | `errorCode 024`, `Not Exist Client ID` |
+
+The distinct message for the first case shows the endpoint and header scheme
+are correct and the credential itself was evaluated and rejected. The secret is
+40 characters where a legacy Naver Open API secret is typically ~10, which
+suggests the pair came from a different Naver product or an application that
+has not added 검색 to its API list. Carried as a Remaining Risk.
+
+**Data quality, 10 live candidates sampled against their source posts**
+
+| Field | Correct | Wrong | Missing |
+|---|---|---|---|
+| Event name | 10 | 0 | 0 |
+| Date | 7 | 0 | 3 |
+| Start time | 0 | 0 | 10 |
+| End time | 0 | 0 | 10 |
+| Venue | 1 | 0 | 9 |
+| Fee | 0 | 0 | 10 |
+| Event type | 10 | 0 | 0 |
+| Source URL | 10 | 0 | 0 |
+
+All 17 live posts are `METADATA_ONLY` with an average body of 97 characters —
+the search API returns a snippet, not the post. Times, venues and fees live in
+the body, so the low yield is acquisition depth, not extraction failure. Of the
+three missing dates, two posts genuinely carry no date in their title. One
+start time (`5시30분`) was present and not extracted. Every candidate is
+`POSSIBLE`; none was promoted on search discovery alone.
+
+**Restart and host reboot — PASS, with one caveat about the board.**
+
+`docker compose restart`: 18 items, 4 runs, 15 candidates preserved.
+
+The host reboot needed a power cycle. `systemctl reboot` shut down cleanly and
+the kernel started again, but the board froze before networking came up and
+stayed unreachable for ~27 minutes until it was power cycled. That is an RK3399
+warm-reset problem, not a DanceMate one — the filesystem came back `clean` with
+no fsck and no I/O errors, and three earlier reboots on this board recovered in
+about 15 seconds. Recorded in `deploy/rockpro64/NETWORK.md`.
+
+Everything DanceMate owns survived it, with no manual start:
+
+| | |
+|---|---|
+| Containers healthy after boot | 4 of 4, ~26s |
+| `source_items` | 18 (17 live, 1 snapshot) |
+| `source_collection_runs` | 4, provenance intact |
+| Live Event Candidates | 15 |
+| False VERIFIED among them | 0 |
+| Korean text | 18/18 titles still Hangul in PostgreSQL |
+| Provider quota | preserved across the reboot |
+| Duplicate explosion | none: 18 items, 18 distinct external ids |
+| Post-reboot live collection | ran immediately: 17 discovered, 0 new, 17 duplicate |
+| `check-server.sh` | six PASS, exit 0 |
+
+Version split:
+
+- Product Runtime: 0.75
+- Information Engine: 0.73 (unchanged - v0.75 adds no engine algorithm feature)
+
+Included:
+
+- **Admin console** at `/admin`, server-rendered from the standard library.
+  No template engine, no SPA, no build step: the runtime's dependency list
+  gains one 30KB package (`python-multipart`, needed by FastAPI to read the
+  console's HTML forms). Pages: Dashboard, Sources, Venues, Organizers,
+  Candidates, Genres & Regions.
+- **Admin authentication**: HTTP Basic from `ADMIN_USERNAME` / `ADMIN_PASSWORD`
+  in `.env`. With no password set the console refuses every request rather
+  than falling open. `/health` stays unauthenticated so container healthchecks
+  keep working.
+- **Master data** (`002_master_data.sql`): genres, regions, venues with
+  aliases, organizers. Rows are disabled, never deleted. Venue aliases
+  normalise through NFKC + case/punctuation folding so "La Ventana",
+  "라벤타나" and "벤타나" resolve to one venue.
+- **Source Master** (`003_source_intake.sql`): platform, role, authority,
+  queries, per-source collection interval, enable/disable, last status. A
+  source is collected from only when an operator has enabled it **and** its
+  interval has elapsed; the interval floor is 10 minutes, enforced by a CHECK
+  constraint and by validation.
+- **Raw intake persistence**: `source_collection_runs`, `source_items`,
+  `source_errors`. Deduplication on `(source_id, external_id)` with a content
+  hash, so re-collecting an unchanged post is a duplicate and an edited one is
+  a revision that goes back into the ingest queue.
+- **Collector adapter**: no new collector was written. The engine's existing
+  Kakao Daum Cafe and Naver Blog/Cafe collectors are what runs, live when
+  credentials are present and against the engine's recorded snapshots when
+  they are not. `[Test]` reports which, and writes nothing.
+- **Engine ingest adapter**: `source_items` -> the engine's own
+  `persist_raw_post` / `process_discovered_post` / `persist_events`. Engine
+  source and engine schema unchanged.
+- **Scheduler integration**: two new jobs, `source-intake` and `engine-ingest`,
+  alongside the v0.74 self-checks.
+- **Seed**: the three launch genres, South Korea and Seoul. The engine's own
+  `config/sources.json` is imported into the Source Master - real, evidence-
+  backed sources rather than invented ones - and every imported source arrives
+  **disabled**. No venue or organizer is invented.
+- 41 new tests (282 total against a live PostgreSQL).
+
+Verified end to end on a development host with Docker:
+
+- migrations 001-003 apply once and are idempotent on restart
+- seed produces 3 genres, 2 regions and 6 disabled sources from the engine config
+- admin console: anonymous and wrong credentials rejected (401), locked console
+  rejects (503), all six pages and all seven API routes answer 200 authenticated
+- enabling `SRC-D-001` then running the pipeline: `source-intake` collected 1
+  item, `engine-ingest` produced 1 Event Candidate, visible on /admin/candidates
+- an incomplete source is refused at enable time through both `set_enabled` and
+  the PATCH API
+
+Not done in v0.75, deliberately:
+
+- **No real source is connected.** The engine's live collectors need
+  `KAKAO_REST_API_KEY` (Kakao Developers) or `NAVER_CLIENT_ID` /
+  `NAVER_CLIENT_SECRET` (Naver Developers). Neither is provisioned, on the
+  development host or on the board, so live collection has never run. The whole
+  pipeline was exercised against the engine's recorded API snapshots instead -
+  real parsing code, offline data. **REAL SOURCE NOT CONNECTED.**
+
+  The scheduler no longer papers over this. It refuses to collect a source
+  whose credentials are missing rather than falling back to the snapshot
+  fixtures, the admin `[Test]` button reports `PASS_SNAPSHOT` rather than
+  `PASS`, and the dashboard counts live and snapshot items separately. As of
+  this writing the board reads **Live items 0, live collection runs 0**, which
+  is the true state.
+
+Added while preparing for live acceptance:
+
+- **Provenance guard**: the scheduler never substitutes recorded snapshot data
+  for a live collection. Snapshot intake is opt-in per source
+  (`config.snapshot_intake_allowed`), off by default, and every such run is
+  recorded with `mode = 'snapshot'` and a `SNAPSHOT` status.
+- **Error classification** (`runtime/collector_errors.py`): a collector failure
+  is resolved to AUTH_FAILED / RATE_LIMITED / NETWORK / BAD_RESPONSE /
+  CREDENTIALS_MISSING with the HTTP status and whether it is worth retrying, so
+  "my key is wrong" is distinguishable from "I am being throttled". Messages
+  are redacted before storage so no credential can reach `source_errors` or the
+  console.
+- **Provider quota accounting** (`runtime/quota.py`): requests are counted per
+  provider per UTC day against a conservative budget, checked before any call.
+  A source with six queries costs six calls, which a per-source interval check
+  alone does not see. Both Naver platforms share one budget because they share
+  one credential.
+- No Human Verification workflow. The Candidates page is read-only and cannot
+  grant VERIFIED; APPROVE / EDIT / REJECT / DUPLICATE / CONFIRM is v0.76.
+- No Facebook collector: its access restrictions make it a poor first source,
+  and the engine's own source list already marks those entries ACCESS_LIMITED.
+- No Information Engine algorithm change.
+
+Next:
+v0.76 Human Verification Console.
+
 ## v0.74 Persistent Runtime + ROCKPro64 Staging Deployment
 
 Status:
