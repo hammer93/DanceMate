@@ -320,4 +320,86 @@ def test_source(settings: Settings, source: dict[str, Any]) -> dict[str, Any]:
     result["items"] = len(collected.items)
     result["detail"] = collected.detail
     result["sample_titles"] = [i.title for i in collected.items[:3] if i.title]
+
+    # A live call that answered but matched nothing is the confusing case: the
+    # credential works, the provider returned results, and the source's own
+    # url_contains/cafe_name_hint filter rejected all of them. Reporting that
+    # as a plain PASS sends an operator hunting for a credential problem that
+    # does not exist, so say which half failed.
+    if collected.mode == MODE_LIVE and not collected.items:
+        diagnosis = _diagnose_empty_live(settings, source)
+        result.update(diagnosis)
+        if diagnosis.get("provider_results", 0) > 0:
+            result["status"] = "PASS_NO_MATCH"
     return result
+
+
+def _diagnose_empty_live(settings: Settings, source: dict[str, Any]) -> dict[str, Any]:
+    """Why did a working live call yield nothing - no results, or a filter?
+
+    Issues one unfiltered search so the provider's own result count can be
+    compared with what the source's filter accepted. Read-only, one request.
+    """
+    platform = source["platform"]
+    engine_source = _to_engine_source(source)
+    queries = engine_source.get("queries") or []
+    if not queries:
+        return {"diagnosis": "the source has no search query"}
+
+    try:
+        engine_config = _engine_settings(settings)
+        if platform == "DAUM_CAFE":
+            from src.collectors.daum import (  # noqa: PLC0415
+                DaumCafeSearchCollector, _matches_source,
+            )
+
+            daum = engine_config["daum"]
+            collector = DaumCafeSearchCollector(
+                daum["endpoint"], timeout_seconds=daum.get("timeout_seconds", 15)
+            )
+            payload = collector.search(queries[0], sort=daum.get("sort", "recency"),
+                                       page=1, size=daum.get("size", 50))
+            documents = payload.get("documents", [])
+            matched = sum(1 for d in documents if _matches_source(d, engine_source))
+            filters = {
+                "cafe_name_hint": engine_source.get("cafe_name_hint"),
+                "url_contains": engine_source.get("url_contains"),
+            }
+            sample_urls = [d.get("url") for d in documents[:3]]
+        else:
+            from src.collectors.naver import NaverSearchCollector  # noqa: PLC0415
+
+            naver = engine_config["naver"]
+            collector = NaverSearchCollector(
+                timeout_seconds=naver.get("timeout_seconds", 15)
+            )
+            kind = "blog" if platform == "NAVER_BLOG" else "cafe"
+            records = collector.search(
+                queries[0], kind=kind, source_id=engine_source["source_id"],
+                display=naver.get("display", 100), start=1,
+                sort=naver.get("sort", "date"),
+            )
+            documents = records
+            matched = len(records)
+            filters = {}
+            sample_urls = [r.source_url for r in records[:3]]
+    except Exception as exc:
+        return {"diagnosis": f"could not diagnose: {type(exc).__name__}: {exc}"}
+
+    if not documents:
+        return {
+            "provider_results": 0,
+            "diagnosis": f"the provider returned no result for {queries[0]!r}",
+        }
+    return {
+        "provider_results": len(documents),
+        "matched_by_filter": matched,
+        "filters": filters,
+        "provider_sample_urls": sample_urls,
+        "diagnosis": (
+            f"the provider returned {len(documents)} results for {queries[0]!r} but "
+            f"this source's filter matched {matched}. "
+            "Check url_contains / cafe_name_hint - the engine requires EVERY "
+            "url_contains token to appear in the same URL."
+        ),
+    }

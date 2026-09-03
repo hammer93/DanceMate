@@ -237,3 +237,64 @@ def test_the_admin_test_button_spells_out_that_snapshot_is_not_live():
     )
     assert "SNAPSHOT, NOT LIVE" in admin
     assert "the scheduler will skip this source" in admin
+
+
+# --- diagnosing an empty live result ----------------------------------------
+
+def test_an_empty_live_result_is_diagnosed_not_reported_as_a_plain_pass(monkeypatch, settings):
+    """The confusing case: credential fine, provider answered, filter matched 0.
+
+    Reporting that as PASS sends an operator hunting for a credential problem
+    that does not exist. Found on the board: the engine's shipped config carries
+    url_contains ["6uP", "5HTC"], and since the filter requires EVERY token in
+    the same URL - and "6uP" is a stale cafe id that no longer appears - it
+    could never match anything.
+    """
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "test-key")
+
+    empty = collectors.CollectionResult(mode=collectors.MODE_LIVE, items=[], detail="live: 0")
+    monkeypatch.setattr(collectors, "collect", lambda *a, **k: empty)
+    monkeypatch.setattr(
+        collectors, "_diagnose_empty_live",
+        lambda *a, **k: {
+            "provider_results": 30,
+            "matched_by_filter": 0,
+            "diagnosis": "filter matched 0 of 30",
+        },
+    )
+    report = collectors.test_source(settings, _source())
+    assert report["status"] == "PASS_NO_MATCH"
+    assert report["provider_results"] == 30
+    assert report["matched_by_filter"] == 0
+
+
+def test_a_genuinely_empty_provider_result_is_not_a_filter_problem(monkeypatch, settings):
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "test-key")
+    empty = collectors.CollectionResult(mode=collectors.MODE_LIVE, items=[], detail="live: 0")
+    monkeypatch.setattr(collectors, "collect", lambda *a, **k: empty)
+    monkeypatch.setattr(
+        collectors, "_diagnose_empty_live",
+        lambda *a, **k: {"provider_results": 0, "diagnosis": "no result for the query"},
+    )
+    report = collectors.test_source(settings, _source())
+    assert report["status"] == "PASS", "an empty upstream is not a misconfiguration"
+
+
+def test_multi_token_url_filters_need_every_token_in_one_url():
+    """The engine's semantics, pinned so the seed comment cannot drift from it."""
+    import sys
+
+    from runtime.config import REPO_ROOT
+
+    sys.path.insert(0, str(REPO_ROOT / "engine"))
+    from src.collectors.daum import _matches_source  # noqa: PLC0415
+
+    document = {"url": "https://cafe.daum.net/latindance/5HTC/22276",
+                "cafename": "라틴속으로 - 탱고 -"}
+    source_all_present = {"cafe_name_hint": "라틴속으로", "url_contains": ["latindance", "5HTC"]}
+    source_stale_token = {"cafe_name_hint": "라틴속으로", "url_contains": ["6uP", "5HTC"]}
+
+    assert _matches_source(document, source_all_present) is True
+    assert _matches_source(document, source_stale_token) is False, (
+        "a token that cannot appear makes the whole filter unsatisfiable"
+    )
