@@ -174,3 +174,23 @@ def venue_alias_candidates(settings: Settings,
         if isinstance(value, dict) and value.get("alias_candidates"):
             found[row["candidate_id"]] = [str(a) for a in value["alias_candidates"]]
     return found
+
+
+def all_candidate_ids(settings: Settings) -> set[int] | None:
+    """Every candidate the engine store currently holds, or None if unreadable.
+
+    None and empty mean different things here, and the caller acts on the
+    difference: an unreadable store must never be read as "the engine has no
+    candidates", which would prune every normalised event.
+    """
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return None
+    try:
+        rows = con.execute("SELECT candidate_id FROM event_candidates").fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return {row["candidate_id"] for row in rows}

@@ -164,8 +164,11 @@ def record_unresolved_venue(con, venue_text: str,
         cur.execute(
             "INSERT INTO unresolved_venues (venue_text, normalized_text, alias_candidates) "
             "VALUES (%s, %s, %s::jsonb) "
+            # Not incremented on re-normalisation: normalising the same
+            # candidate twice is not the venue turning up twice. How many
+            # events are waiting on this string is counted where it is true,
+            # against the events table.
             "ON CONFLICT (normalized_text) DO UPDATE SET "
-            "  occurrence_count = unresolved_venues.occurrence_count + 1, "
             "  last_seen_at = now(), "
             "  alias_candidates = EXCLUDED.alias_candidates "
             "RETURNING *",
@@ -455,12 +458,37 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
                 unresolved += 1
             normalized += 1
 
+        pruned = _prune_orphans(con, candidate_store.all_candidate_ids(settings))
+
     return {
         "candidates": len(rows),
         "normalized": normalized,
         "skipped_no_date": skipped,
         "unresolved_venues": unresolved,
+        "pruned": pruned,
     }
+
+
+def _prune_orphans(con, current_ids: set[int] | None) -> int:
+    """Drop events whose engine candidate no longer exists.
+
+    Re-extraction issues new candidate ids rather than updating old ones, so
+    after an engine version bump every post has both its old candidate's event
+    and its new one. Left alone, the alpha search lists every event twice --
+    and the duplicate rules cannot merge them, because the whole point of the
+    new extraction is that the values differ.
+
+    An unreadable engine store returns None and prunes nothing: "I cannot see
+    the candidates" must never be acted on as "there are no candidates".
+    """
+    if not current_ids:
+        return 0
+    with con.cursor() as cur:
+        cur.execute(
+            "DELETE FROM events WHERE NOT (candidate_id = ANY(%s)) RETURNING event_id",
+            (list(current_ids),),
+        )
+        return len(cur.fetchall())
 
 
 def metrics(con) -> dict[str, Any]:

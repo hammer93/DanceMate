@@ -145,8 +145,8 @@ def admin_unresolved_venues(request: Request,
         rows.append([
             E(entry["venue_text"]),
             aliases or "-",
-            str(entry["occurrence_count"]),
             str(entry.get("event_count") or 0),
+            E(str(entry["first_seen_at"])[:16]),
             form,
         ])
 
@@ -157,7 +157,7 @@ def admin_unresolved_venues(request: Request,
         "registered automatically: a misread line must not become a venue.</p>"
     )
     body = ("<h2>Unresolved Venues</h2>" + note + admin._table(
-        ["Read from the post", "Also tried", "Seen", "Events", "Decide"], rows,
+        ["Read from the post", "Also tried", "Events waiting", "First seen", "Decide"], rows,
         empty="every venue we have read is recognised",
     ))
     return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body,

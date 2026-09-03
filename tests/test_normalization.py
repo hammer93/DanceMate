@@ -238,3 +238,39 @@ def test_an_untraceable_candidate_is_not_live(pg, unique):
     """Provenance defaults to UNKNOWN, and the alpha surface serves LIVE only."""
     stored = normalization.normalize_candidate(pg, _candidate(unique))
     assert stored["provenance"] == normalization.PROVENANCE_UNKNOWN
+
+
+def test_events_whose_candidate_is_gone_are_pruned(pg, unique):
+    """Re-extraction issues new candidate ids rather than updating old ones.
+
+    Without pruning, an engine version bump leaves every post with both its old
+    event and its new one -- and the duplicate rules cannot merge them, because
+    the whole point of the new extraction is that the values differ.
+    """
+    stale = normalization.normalize_candidate(pg, _candidate(unique))
+    survivor = normalization.normalize_candidate(
+        pg, _candidate(unique, candidate_id=int(unique[-6:]) + 1),
+    )
+    removed = normalization._prune_orphans(pg, {survivor["candidate_id"]})
+    assert removed >= 1
+    assert normalization.get(pg, stale["event_id"]) is None
+    assert normalization.get(pg, survivor["event_id"]) is not None
+
+
+def test_an_unreadable_engine_store_prunes_nothing(pg, unique):
+    """"I cannot see the candidates" must never be acted on as "there are none"."""
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    assert normalization._prune_orphans(pg, None) == 0
+    assert normalization._prune_orphans(pg, set()) == 0
+    assert normalization.get(pg, stored["event_id"]) is not None
+
+
+def test_seeing_a_venue_string_again_does_not_inflate_its_count(pg, unique):
+    """Normalising the same candidate twice is not the venue turning up twice."""
+    venue_text = f"미등록 스튜디오 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
+    normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
+    entry = next(v for v in normalization.unresolved_venues(pg)
+                 if v["venue_text"] == venue_text)
+    assert entry["occurrence_count"] == 1
+    assert entry["event_count"] == 1
