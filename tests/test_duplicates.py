@@ -163,11 +163,15 @@ def test_a_merge_keeps_every_source(pg, unique):
 
 
 def test_an_ambiguous_pair_is_left_for_a_person(pg, unique):
-    normalization.normalize_candidate(pg, _candidate(unique, "1"))
-    normalization.normalize_candidate(pg, _candidate(unique, "2", start_time="22:00"))
-    result = duplicates.scan(pg, on=date(2026, 9, 5))
-    assert result["auto_merged"] == 0
-    assert result["flagged_for_review"] == 1
+    first = normalization.normalize_candidate(pg, _candidate(unique, "1"))
+    second = normalization.normalize_candidate(pg, _candidate(unique, "2", start_time="22:00"))
+    duplicates.scan(pg, on=date(2026, 9, 5))
+
+    # Asserted about these two events rather than the scan's totals: the same
+    # database carries live events and a scheduler that scans them, so a global
+    # counter says nothing about what happened here.
+    for event in (first, second):
+        assert normalization.get(pg, event["event_id"])["canonical_event_id"] is None
 
     pairs = [p for p in duplicates.open_pairs(pg)
              if p["venue_text"] == f"스튜디오 {unique}"]
@@ -227,12 +231,15 @@ def test_every_verdict_is_recorded_with_who_made_it(pg, unique):
 
 
 def test_rerunning_the_scan_is_idempotent(pg, unique):
-    normalization.normalize_candidate(pg, _candidate(unique, "1"))
-    normalization.normalize_candidate(pg, _candidate(unique, "2"))
+    stored = [normalization.normalize_candidate(pg, _candidate(unique, n)) for n in "12"]
     first = duplicates.scan(pg, on=date(2026, 9, 5))
-    second = duplicates.scan(pg, on=date(2026, 9, 5))
-    assert first["auto_merged"] == 1
-    assert second["auto_merged"] == 0
+    assert first["auto_merged"] >= 1
+    merged = [normalization.get(pg, e["event_id"])["canonical_event_id"] for e in stored]
+    assert sum(1 for m in merged if m is not None) == 1
+
+    # A second pass has nothing left to decide -- here or anywhere else on the
+    # day, which is what makes the scheduler safe to run on a timer.
+    assert duplicates.scan(pg, on=date(2026, 9, 5))["auto_merged"] == 0
 
 
 def test_resolve_pair_rejects_an_unknown_decision(pg, unique):
