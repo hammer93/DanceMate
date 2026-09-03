@@ -4,9 +4,14 @@ A job is a callable taking Settings and returning a short detail string. It
 must be safe to run repeatedly and must not write large amounts of data - the
 deployment target boots from a 32GB microSD.
 
-v0.75 adds the two real-work jobs: `source-intake` collects from the sources an
-operator has enabled, and `engine-ingest` hands what it collected to the
-Information Engine. The self-check jobs from v0.74 stay.
+The pipeline runs as four jobs in order:
+
+    source-intake        discover posts through a provider's search API
+    content-acquisition  fetch the original post behind each result
+    engine-ingest        hand new items to the Information Engine
+    engine-reprocess     re-extract items whose body arrived after ingest
+
+plus the v0.74 self-checks.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from typing import Callable
 from runtime import engine_adapter, engine_ingest, resources
 from runtime.config import Settings
 
-from . import intake_job
+from . import acquisition_job, intake_job
 
 Job = Callable[[Settings], str]
 
@@ -58,11 +63,31 @@ def engine_ingest_job(settings: Settings) -> str:
     return detail
 
 
+def content_acquisition(settings: Settings) -> str:
+    """Fetch the original posts behind collected search results."""
+    return acquisition_job.run(settings)
+
+
+def engine_reprocess(settings: Settings) -> str:
+    """Re-extract candidates for items whose body arrived after first ingest."""
+    result = engine_ingest.reprocess_acquired(settings)
+    detail = (
+        f"pending={result['pending']} reprocessed={result['reprocessed']} "
+        f"skipped_reviewed={result['skipped_reviewed']} failed={result['failed']} "
+        f"candidates {result['candidates_before']}->{result['candidates_after']}"
+    )
+    if result.get("failures"):
+        detail += f" first_failures={result['failures']}"
+    return detail
+
+
 REGISTRY: dict[str, Job] = {
     "engine-availability": engine_availability,
     "storage-probe": storage_probe,
     "source-intake": source_intake,
+    "content-acquisition": content_acquisition,
     "engine-ingest": engine_ingest_job,
+    "engine-reprocess": engine_reprocess,
 }
 
 

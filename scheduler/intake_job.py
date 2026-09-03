@@ -36,7 +36,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from runtime import collector_errors, collectors, db, intake, quota, sources
+from runtime import collector_errors, collectors, db, intake, quota, sources, usage
 from runtime.config import Settings
 
 log = logging.getLogger("dancemate.scheduler.intake")
@@ -147,6 +147,12 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
         if mode == collectors.MODE_LIVE:
             # The requests were spent even though they failed.
             quota.record(con, platform, requests=expected, error=classified.kind)
+        usage.record_api_requests(
+            con, platform, requests=expected, errors=expected,
+            rate_limited=expected if classified.kind == collector_errors.RATE_LIMITED else 0,
+            auth_errors=expected if classified.kind == collector_errors.AUTH_FAILED else 0,
+            status=classified.kind,
+        )
         intake.finish_run(con, run_id, status=STATUS_FAIL, error=classified.summary())
         intake.record_error(
             con, source_id=source_id, collection_run_id=run_id,
@@ -169,6 +175,12 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
         quota.record(con, platform, requests=expected)
 
     counts = intake.store_items(con, source_id, result.items, collection_run_id=run_id)
+    if mode == collectors.MODE_LIVE:
+        usage.record_api_requests(
+            con, platform, requests=expected, success=expected,
+            items=len(result.items), new_items=counts["NEW"] + counts["REVISED"],
+            duplicate_items=counts["DUPLICATE"], status=STATUS_PASS,
+        )
     duration = (datetime.now(timezone.utc) - started).total_seconds()
     intake.finish_run(
         con, run_id, status=STATUS_PASS,
