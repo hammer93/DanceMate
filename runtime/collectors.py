@@ -309,8 +309,16 @@ def test_source(settings: Settings, source: dict[str, Any]) -> dict[str, Any]:
         result["detail"] = str(exc)
         return result
     except Exception as exc:  # a failing upstream must not 500 the admin page
-        result["status"] = "FAIL"
-        result["detail"] = f"{type(exc).__name__}: {exc}"
+        # Same classification the scheduler uses, so the [Test] button and the
+        # Sources list never disagree about what went wrong.
+        from . import collector_errors  # noqa: PLC0415 - avoids an import cycle
+
+        classified = collector_errors.classify(exc)
+        result["status"] = classified.kind
+        result["detail"] = classified.summary()
+        result["retryable"] = classified.retryable
+        if classified.status_code:
+            result["http_status"] = classified.status_code
         return result
 
     # A snapshot run must never read as a live pass. An operator glancing at

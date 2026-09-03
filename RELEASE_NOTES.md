@@ -3,7 +3,81 @@
 ## v0.75 Admin Foundation + Basic Master Data + Real Source Intake
 
 Status:
-In development on `feature/v0.75-admin-source-intake`. Not merged, not tagged.
+Live source intake VERIFIED on the ROCKPro64 with real Kakao credentials,
+2026-09-03. Not merged and not tagged: the board stopped responding after the
+post-acceptance host reboot and the release could not be verified on the
+target. See "Live Source Acceptance" below.
+
+### Live Source Acceptance (2026-09-03, ROCKPro64)
+
+**Kakao / Daum Cafe Search API — LIVE VERIFIED**
+
+| | |
+|---|---|
+| Endpoint | `https://dapi.kakao.com/v2/search/cafe` |
+| Auth | `Authorization: KakaoAK <key>`, `KAKAO_REST_API_KEY` from `.env` |
+| Provider response | HTTP 200, `total_count` 23,316 for `밀롱가` |
+| Live collection runs | 2 successful (`mode = live`) |
+| Live items | 17 |
+| Live Event Candidates | 15 |
+| Duplicate handling | second run: 17 discovered, **0 new, 17 duplicate** |
+| Scheduler interval | immediate re-tick reported `no source due` |
+| Korean text | 18/18 titles contain Hangul in PostgreSQL (UTF8), 0 mangled |
+| Provenance | every candidate resolves to a real `cafe.daum.net/latindance/5HTC/...` URL |
+| False VERIFIED | **0** among live-collected posts |
+| Quota accounting | KAKAO 12 requests recorded against the daily budget |
+
+Source configuration had to be corrected first. The engine's shipped
+`config/sources.json` gives `SRC-D-001` `url_contains: ["6uP", "5HTC"]`, and
+`_matches_source` requires **every** token in the same URL. `6uP` is a stale
+cafe id that no longer appears — real posts are at
+`cafe.daum.net/latindance/5HTC/...` — so the filter could never match, and the
+first live call returned 200 with 0 usable records. Corrected through the admin
+API to `["latindance", "5HTC"]`; the engine was not modified.
+
+**Naver Search API — BLOCKED, external credential condition**
+
+`NAVER_CLIENT_ID` and `NAVER_CLIENT_SECRET` are set, and both Blog and Cafe
+search return **HTTP 401**. This is not a code fault, and the API's own error
+messages prove it:
+
+| Request | Response |
+|---|---|
+| `X-Naver-Client-Id` + `X-Naver-Client-Secret` (what the code sends) | `errorCode 024`, `NID AUTH Result Invalid (1000)` |
+| NCP APIGW headers instead | `errorCode 024`, `Not Exist Client ID` |
+| no credential header at all | `errorCode 024`, `Not Exist Client ID` |
+
+The distinct message for the first case shows the endpoint and header scheme
+are correct and the credential itself was evaluated and rejected. The secret is
+40 characters where a legacy Naver Open API secret is typically ~10, which
+suggests the pair came from a different Naver product or an application that
+has not added 검색 to its API list. Carried as a Remaining Risk.
+
+**Data quality, 10 live candidates sampled against their source posts**
+
+| Field | Correct | Wrong | Missing |
+|---|---|---|---|
+| Event name | 10 | 0 | 0 |
+| Date | 7 | 0 | 3 |
+| Start time | 0 | 0 | 10 |
+| End time | 0 | 0 | 10 |
+| Venue | 1 | 0 | 9 |
+| Fee | 0 | 0 | 10 |
+| Event type | 10 | 0 | 0 |
+| Source URL | 10 | 0 | 0 |
+
+All 17 live posts are `METADATA_ONLY` with an average body of 97 characters —
+the search API returns a snippet, not the post. Times, venues and fees live in
+the body, so the low yield is acquisition depth, not extraction failure. Of the
+three missing dates, two posts genuinely carry no date in their title. One
+start time (`5시30분`) was present and not extracted. Every candidate is
+`POSSIBLE`; none was promoted on search discovery alone.
+
+**Host reboot — NOT VERIFIED.** After the reboot the board stopped responding
+on both `end0` (192.168.1.100) and `wlan0` (10.0.0.55). The Ethernet PHY link
+stays up at 1Gbps and an ARP sweep of 192.168.1.0/24 finds no host at all, so
+the board needs physical inspection. `docker compose restart` persistence was
+verified before the reboot: 18 items, 4 runs and 15 candidates all survived.
 
 Version split:
 

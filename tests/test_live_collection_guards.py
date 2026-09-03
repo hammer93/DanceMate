@@ -298,3 +298,34 @@ def test_multi_token_url_filters_need_every_token_in_one_url():
     assert _matches_source(document, source_stale_token) is False, (
         "a token that cannot appear makes the whole filter unsatisfiable"
     )
+
+
+def test_the_test_button_classifies_a_failure_the_same_way_the_scheduler_does(
+    monkeypatch, settings
+):
+    """Observed on the board: [Test] said "NaverCollectorError: Naver HTTP 401"
+    while the Sources list said AUTH_FAILED. One vocabulary, not two."""
+    monkeypatch.setenv("NAVER_CLIENT_ID", "id")
+    monkeypatch.setenv("NAVER_CLIENT_SECRET", "secret")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Naver HTTP 401: Unauthorized")
+
+    monkeypatch.setattr(collectors, "collect", boom)
+    report = collectors.test_source(settings, _source(platform="NAVER_BLOG"))
+    assert report["status"] == collector_errors.AUTH_FAILED
+    assert report["http_status"] == 401
+    assert report["retryable"] is False
+    assert "check the key" in report["detail"]
+
+
+def test_a_rate_limited_test_is_reported_as_retryable(monkeypatch, settings):
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "key")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Daum HTTP 429: Too Many Requests")
+
+    monkeypatch.setattr(collectors, "collect", boom)
+    report = collectors.test_source(settings, _source())
+    assert report["status"] == collector_errors.RATE_LIMITED
+    assert report["retryable"] is True
