@@ -351,7 +351,12 @@ def metrics(con) -> dict[str, Any]:
             "       count(*) FILTER (WHERE canonical_event_id IS NOT NULL "
             "                          AND duplicate_decided_by = 'AUTO') AS auto_merged, "
             "       count(*) FILTER (WHERE duplicate_decided_by = 'HUMAN') AS human_decided, "
-            "       count(*) FILTER (WHERE listing_state = 'LISTED') AS listed "
+            # What a user would actually be shown: live, canonical and listed.
+            # Counting every LISTED row here would have claimed 26 on a board
+            # showing 15.
+            "       count(*) FILTER (WHERE listing_state = 'LISTED' "
+            "                          AND canonical_event_id IS NULL "
+            "                          AND provenance = 'LIVE') AS listed "
             "FROM events"
         )
         summary = _row(cur)

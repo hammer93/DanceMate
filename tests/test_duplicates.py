@@ -243,3 +243,21 @@ def test_resolve_pair_rejects_an_unknown_decision(pg, unique):
                 if p["venue_text"] == f"스튜디오 {unique}")
     with pytest.raises(ValueError):
         duplicates.resolve_pair(pg, pair["pair_id"], decision="MAYBE")
+
+
+def test_the_listed_count_is_what_a_user_would_be_shown(pg, unique):
+    """Not every LISTED row: a fixture-derived event is listed in the table and
+    served to nobody."""
+    from runtime import events_api
+
+    normalization.normalize_candidate(
+        pg, _candidate(unique, "1", provenance=normalization.PROVENANCE_LIVE),
+    )
+    normalization.normalize_candidate(
+        pg, _candidate(unique, "2", venue=f"다른 곳 {unique}", start_time="22:00",
+                       provenance=normalization.PROVENANCE_UNKNOWN),
+    )
+    counted = duplicates.metrics(pg)["listed"]
+    served = events_api.search(pg, date_from="2000-01-01", date_to="2100-01-01",
+                               limit=events_api.MAX_LIMIT)["total"]
+    assert counted == served
