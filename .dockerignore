@@ -1,0 +1,28 @@
+# Keep the build context small: the image never needs history, host runtime
+# data, or the operator's backups.
+.git
+.gitattributes
+.gitignore
+.github
+data/
+logs/
+backup/
+tests/
+docs/
+*.md
+
+# deploy/ is documentation plus one tool that must run INSIDE the container:
+# acceptance_marker.py plants and verifies the persistence markers, so it has
+# to ship in the image even though the rest of deploy/ does not.
+deploy/
+!deploy/rockpro64/acceptance_marker.py
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.idea/
+.vscode/

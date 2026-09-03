@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DanceMate - server health check
+# DanceMate - server health check.
 #
-# v0.74 이후 이 script는 아래 형태의 상태를 출력하는 것을 목표로 한다.
+# Prints the operator report and exits non-zero if any component FAILs:
 #
 #   DanceMate Server
 #   Runtime ........ PASS
@@ -13,16 +13,59 @@ set -euo pipefail
 #   Storage ........ PASS
 #   Backup ......... PASS
 #
-# 각 항목의 판정 기준(예정):
-#   Runtime      - API health endpoint 응답
-#   Database     - PostgreSQL 연결 및 schema version 확인
-#   Scheduler    - periodic worker heartbeat
-#   Information  - Information Engine 처리 상태
-#   Storage      - data 디렉토리 쓰기 가능 여부 및 여유 용량
-#   Backup       - 최근 backup 존재 여부 및 생성 시각
+# Every line comes from the running runtime's /status/summary endpoint, which
+# measures the real component. Nothing here prints PASS without a measurement.
 #
-# 실제로 확인하지 않은 항목을 PASS로 출력하지 않는다.
-# 현재 단계에서는 확인할 runtime이 존재하지 않는다.
+# The endpoint answers HTTP 503 *with a full report body* when a component
+# FAILs; that is a successful check of an unhealthy server, not a transport
+# failure. Only an unreachable runtime produces no report at all.
+#
+# Exit codes: 0 all PASS (or WARN), 1 a component FAILed, 2 runtime unreachable.
 
-echo "DanceMate v0.74 runtime is not installed yet."
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+URL="$(runtime_url)/status/summary"
+ERR_FILE="$(mktemp)"
+trap 'rm -f "$ERR_FILE"' EXIT
+
+body=""
+transport_error=""
+
+if command -v curl >/dev/null 2>&1; then
+  # Body and status code in one call; stderr kept out of the body.
+  if raw="$(curl --silent --show-error --max-time 15 --write-out $'\n%{http_code}' "$URL" 2>"$ERR_FILE")"; then
+    body="${raw%$'\n'*}"
+  else
+    transport_error="$(cat "$ERR_FILE")"
+  fi
+elif command -v wget >/dev/null 2>&1; then
+  # --content-on-error keeps the 503 report instead of discarding it.
+  if body="$(wget --quiet --timeout=15 --content-on-error --output-document=- "$URL" 2>"$ERR_FILE")"; then
+    :
+  else
+    if [[ -z "$body" ]]; then
+      transport_error="$(cat "$ERR_FILE")"
+    fi
+  fi
+else
+  die "neither curl nor wget is available to query $URL"
+fi
+
+if [[ "$body" != "DanceMate Server"* ]]; then
+  printf 'DanceMate Server\n'
+  printf 'Runtime ........ FAIL\n'
+  printf '\nruntime NOT REACHABLE at %s\n' "$URL"
+  [[ -n "$transport_error" ]] && printf 'detail: %s\n' "$transport_error"
+  [[ -n "$body" ]] && printf 'unexpected body: %s\n' "$body"
+  exit 2
+fi
+
+printf '%s\n' "$body"
+
+if printf '%s' "$body" | grep -q 'FAIL'; then
+  exit 1
+fi
+if printf '%s' "$body" | grep -q 'WARN'; then
+  printf '\nsome components are in WARN; see %s/status for detail\n' "$(runtime_url)"
+fi
 exit 0

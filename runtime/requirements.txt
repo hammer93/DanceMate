@@ -1,0 +1,14 @@
+# DanceMate Runtime v0.74 dependencies.
+#
+# Kept deliberately separate from engine/requirements.txt: the Information
+# Engine is standard-library only and must stay that way. Nothing here is
+# imported by engine code.
+#
+# ARM64 note: every package below ships a pure-Python or manylinux aarch64
+# wheel, so the ROCKPro64 image needs no compiler toolchain.
+#   - uvicorn is installed WITHOUT [standard]; uvloop/httptools buy little on a
+#     LAN admin API and add build weight on aarch64.
+
+fastapi==0.115.6
+uvicorn==0.34.0
+psycopg[binary]==3.2.3

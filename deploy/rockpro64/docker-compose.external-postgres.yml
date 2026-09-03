@@ -1,0 +1,92 @@
+# DanceMate v0.74 - ROCKPro64 deployment against an EXISTING PostgreSQL.
+#
+# The ROCKPro64 already runs a `dancemate-postgres` container (compose project
+# "database", data bind-mounted at /opt/dancemate/data/postgres) attached to the
+# external bridge network `dancemate-net`. Starting a second PostgreSQL on a 4GB
+# board would waste ~150MB and split the product's state across two databases,
+# so this compose file brings up the runtime and the scheduler only and joins
+# them to that network.
+#
+# The bundled-PostgreSQL docker-compose.yml at the repository root stays the
+# self-contained development stack; this file is the board's deployment.
+#
+# Always run it with the repository root as the project directory, so .env, the
+# build context and the bind mounts resolve correctly. The operations scripts
+# do that automatically when .env sets:
+#
+#   DANCEMATE_COMPOSE_FILE=deploy/rockpro64/docker-compose.external-postgres.yml
+#
+# Manually:
+#   docker compose --project-directory . \
+#     -f deploy/rockpro64/docker-compose.external-postgres.yml up -d
+#
+# LAN ONLY. No WAN port forwarding.
+
+x-runtime-image: &runtime-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: dancemate/runtime:0.74
+  restart: unless-stopped
+  env_file: [.env]
+  networks: [dancemate-net]
+  environment: &runtime-environment
+    # Container-side paths. These intentionally override the HOST paths that
+    # .env carries for the bind mounts below.
+    # The container has no LAN address of its own: always listen on all of
+    # its interfaces. DANCEMATE_BIND_ADDRESS narrows the HOST side only.
+    DANCEMATE_HOST: 0.0.0.0
+    ENGINE_ROOT: /app/engine
+    ENGINE_DATA_DIR: /app/engine/data
+    DANCEMATE_DATA_DIR: /var/lib/dancemate
+    DANCEMATE_LOG_DIR: /var/log/dancemate
+    DANCEMATE_BACKUP_DIR: /var/backups/dancemate
+    # The existing container's service name on dancemate-net.
+    POSTGRES_HOST: ${POSTGRES_HOST:-dancemate-postgres}
+    POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  runtime:
+    <<: *runtime-image
+    command: ["python", "-m", "runtime"]
+    ports:
+      - "${DANCEMATE_BIND_ADDRESS:-0.0.0.0}:${DANCEMATE_PORT:-8080}:8080"
+    volumes:
+      - ${ENGINE_DATA_DIR:-./data/engine}:/app/engine/data
+      - ${DANCEMATE_DATA_DIR:-./data/runtime}:/var/lib/dancemate
+      - ${DANCEMATE_LOG_DIR:-./logs}:/var/log/dancemate
+      - ${DANCEMATE_BACKUP_DIR:-./backup}:/var/backups/dancemate
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=5).status==200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  scheduler:
+    <<: *runtime-image
+    command: ["python", "-m", "scheduler"]
+    depends_on:
+      # The runtime owns migrations; the scheduler must not race them.
+      runtime:
+        condition: service_healthy
+    volumes:
+      - ${ENGINE_DATA_DIR:-./data/engine}:/app/engine/data
+      - ${DANCEMATE_DATA_DIR:-./data/runtime}:/var/lib/dancemate
+      - ${DANCEMATE_LOG_DIR:-./logs}:/var/log/dancemate
+    # SIGTERM drains the current tick; give it room before Docker escalates.
+    stop_grace_period: 45s
+
+networks:
+  dancemate-net:
+    external: true
+    name: ${DANCEMATE_NETWORK:-dancemate-net}

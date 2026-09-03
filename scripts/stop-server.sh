@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DanceMate - stop server
+# DanceMate - stop the staging runtime.
 #
-# v0.74에서 실행 중인 runtime / scheduler / postgres 를 정상 종료할 예정이다.
-# 현재 단계에서는 종료할 runtime이 존재하지 않는다.
+# SAFETY: this never passes -v to `docker compose down`. Persistent volumes
+# (PostgreSQL, the Information Engine SQLite store, logs and backups) survive a
+# stop by design; removing them is a separate, deliberate operator action.
 
-echo "DanceMate v0.74 runtime is not installed yet."
-exit 0
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+log "DanceMate stop-server"
+require_docker
+require_compose_file
+
+# stop first so the scheduler drains its current tick within stop_grace_period
+compose stop
+compose down
+
+log ""
+log "stopped. Persistent data was NOT removed:"
+log "  postgres        : $(postgres_container 2>/dev/null || echo '(external, see DANCEMATE_POSTGRES_CONTAINER)')"
+log "  engine sqlite   : $(env_value ENGINE_DATA_DIR || echo '(see .env ENGINE_DATA_DIR)')"
+log "  backups         : $(env_value DANCEMATE_BACKUP_DIR || echo '(see .env DANCEMATE_BACKUP_DIR)')"

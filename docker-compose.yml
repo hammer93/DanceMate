@@ -1,27 +1,127 @@
-# DanceMate v0.74 runtime composition
+# DanceMate v0.74 - Persistent Runtime + ROCKPro64 Staging Deployment.
 #
-# 이번 단계(v0.73 Repository Baseline)에서는 실제 runtime이 존재하지 않는다.
-# 동작하지 않는 가짜 service를 정의하지 않기 위해 service 블록은 비워 둔다.
+# Three containers on purpose: postgres, runtime, scheduler. The runtime and
+# the scheduler share ONE image and differ only by command, which keeps memory
+# and microSD footprint small on the 4GB / 32GB ROCKPro64 target.
 #
-# v0.74에서 다음 component가 추가될 예정이다.
+# LAN ONLY. There is no authentication on the runtime API. The host must stay
+# behind the LAN firewall with no WAN port forwarding. Set
+# DANCEMATE_BIND_ADDRESS to the board's LAN address to narrow the binding.
 #
-#   runtime
-#     - DanceMate Runtime / API
-#     - build: ./Dockerfile
-#     - depends_on: postgres
-#     - env_file: .env
-#     - volumes: ./data, ./logs
-#     - restart: unless-stopped   (host reboot 후 자동 복구)
+# Persistence model (hybrid, see deploy/rockpro64/README.md):
+#   PostgreSQL  -> runtime state, scheduler heartbeat, job history
+#   SQLite      -> Information Engine v0.73 keeps its own store, unchanged
 #
-#   scheduler
-#     - Collector / Information Engine periodic worker
-#     - depends_on: runtime, postgres
-#     - restart: unless-stopped
-#
-#   postgres
-#     - PostgreSQL persistent store
-#     - persistent volume 필요 (SD card write 최소화 정책 고려)
-#     - restart: unless-stopped
-#
-# Target platform: linux/arm64 (PINE64 ROCKPro64 / RK3399)
-# Network policy: LAN only. No public Internet exposure.
+# Path convention: variables in .env name HOST paths. The container-side paths
+# are pinned in each service's `environment:` block, which overrides env_file.
+
+x-runtime-image: &runtime-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: dancemate/runtime:0.74
+  restart: unless-stopped
+  env_file: [.env]
+  # microSD write minimization: cap container logs instead of letting the
+  # json-file driver grow without bound.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dancemate}
+      POSTGRES_USER: ${POSTGRES_USER:-dancemate}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      # Runtime state only; a Korean-locale collation buys nothing here.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dancemate} -d ${POSTGRES_DB:-dancemate}"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Not published on the host: only the runtime and scheduler need it.
+    expose:
+      - "5432"
+
+  runtime:
+    <<: *runtime-image
+    command: ["python", "-m", "runtime"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Container-side paths. These intentionally override the HOST paths that
+      # .env carries for the bind mounts below.
+      # The container has no LAN address of its own: always listen on all
+      # of its interfaces. DANCEMATE_BIND_ADDRESS narrows the HOST side.
+      DANCEMATE_HOST: 0.0.0.0
+      ENGINE_ROOT: /app/engine
+      ENGINE_DATA_DIR: /app/engine/data
+      DANCEMATE_DATA_DIR: /var/lib/dancemate
+      DANCEMATE_LOG_DIR: /var/log/dancemate
+      DANCEMATE_BACKUP_DIR: /var/backups/dancemate
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    ports:
+      - "${DANCEMATE_BIND_ADDRESS:-0.0.0.0}:${DANCEMATE_PORT:-8080}:8080"
+    volumes:
+      - ${ENGINE_DATA_DIR:-./data/engine}:/app/engine/data
+      - ${DANCEMATE_DATA_DIR:-./data/runtime}:/var/lib/dancemate
+      - ${DANCEMATE_LOG_DIR:-./logs}:/var/log/dancemate
+      - ${DANCEMATE_BACKUP_DIR:-./backup}:/var/backups/dancemate
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=5).status==200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  scheduler:
+    <<: *runtime-image
+    command: ["python", "-m", "scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # The runtime owns migrations; the scheduler must not race them.
+      runtime:
+        condition: service_healthy
+    environment:
+      # The container has no LAN address of its own: always listen on all
+      # of its interfaces. DANCEMATE_BIND_ADDRESS narrows the HOST side.
+      DANCEMATE_HOST: 0.0.0.0
+      ENGINE_ROOT: /app/engine
+      ENGINE_DATA_DIR: /app/engine/data
+      DANCEMATE_DATA_DIR: /var/lib/dancemate
+      DANCEMATE_LOG_DIR: /var/log/dancemate
+      DANCEMATE_BACKUP_DIR: /var/backups/dancemate
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+    volumes:
+      - ${ENGINE_DATA_DIR:-./data/engine}:/app/engine/data
+      - ${DANCEMATE_DATA_DIR:-./data/runtime}:/var/lib/dancemate
+      - ${DANCEMATE_LOG_DIR:-./logs}:/var/log/dancemate
+    # SIGTERM drains the current tick; give it room before Docker escalates.
+    stop_grace_period: 45s
+
+volumes:
+  postgres-data:
+    name: dancemate-postgres-data
