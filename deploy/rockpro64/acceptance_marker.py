@@ -67,7 +67,7 @@ def _outcome_module():
     )
 
 
-def _seed_generation(con, marker: str, moment: str) -> int:
+def _seed_generation(con, marker: str, moment: str) -> tuple[int, int]:
     """Seed the upstream rows a Recommendation Outcome is derived from.
 
     Mirrors engine/tests/test_origin_threshold_recommendation_fallback_family_
@@ -75,7 +75,12 @@ def _seed_generation(con, marker: str, moment: str) -> int:
     state up without running the whole pipeline.
     """
     family = f"{marker}=>{marker}"
-    case_id = 1
+    # family_recovery_case_id is UNIQUE in the generation-outcomes table, so a
+    # second marker must not reuse the first one's case id.
+    case_id = con.execute(
+        "SELECT COALESCE(MAX(family_recovery_case_id), 0) + 1 AS next "
+        "FROM origin_threshold_recommendation_fallback_family_generation_outcomes"
+    ).fetchone()["next"]
 
     con.execute(
         """INSERT INTO origin_threshold_recommendation_fallback_family_remediation_recommendations(
@@ -120,7 +125,7 @@ def _seed_generation(con, marker: str, moment: str) -> int:
     )
     generation_id = con.execute("SELECT last_insert_rowid() id").fetchone()["id"]
     con.commit()
-    return generation_id
+    return generation_id, case_id
 
 
 def create(marker: str) -> dict:
@@ -154,12 +159,13 @@ def create(marker: str) -> dict:
         con.close()
         return result
 
-    generation_id = _seed_generation(con, marker, moment)
+    generation_id, case_id = _seed_generation(con, marker, moment)
     registered = outcome_module.register_generation(con, generation_id)
     resolved = outcome_module.resolve_generation(con, generation_id, "SUSTAINED_SUCCESS")
     con.commit()
     result["engine"] = {
         "family_signature": family,
+        "family_recovery_case_id": case_id,
         "generation_id": generation_id,
         "registered_class": registered["outcome_class"],
         "outcome_class": resolved["outcome_class"],

@@ -265,3 +265,45 @@ def test_acceptance_marker_ships_in_the_container_image():
     # needs an explicit COPY, and forgetting it is what actually broke.
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY deploy/rockpro64/acceptance_marker.py" in dockerfile
+
+
+def test_two_markers_get_distinct_engine_case_ids(tmp_path, monkeypatch):
+    """Regression: family_recovery_case_id is UNIQUE in the generation table.
+
+    The tool hardcoded case id 1, so planting a second marker after a reboot
+    died with `UNIQUE constraint failed:
+    origin_threshold_recommendation_fallback_family_generation_outcomes.
+    family_recovery_case_id`.
+    """
+    import importlib.util
+    import sys
+
+    engine_root = REPO_ROOT / "engine"
+    monkeypatch.syspath_prepend(str(engine_root))
+    monkeypatch.syspath_prepend(str(REPO_ROOT))
+    from src.database import init_db  # noqa: PLC0415
+
+    spec = importlib.util.spec_from_file_location("acceptance_marker", ACCEPTANCE)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["acceptance_marker"] = module
+    spec.loader.exec_module(module)
+
+    con = init_db(tmp_path / "engine.sqlite3")
+    outcome = module._outcome_module()
+
+    seen = []
+    for marker in ("ROCKPRO-TEST-001", "ROCKPRO-TEST-002"):
+        generation_id, case_id = module._seed_generation(con, marker, "2026-09-03T00:00:00+00:00")
+        module.register_generation = outcome.register_generation
+        outcome.register_generation(con, generation_id)
+        resolved = outcome.resolve_generation(con, generation_id, "SUSTAINED_SUCCESS")
+        seen.append((marker, case_id, generation_id, resolved["outcome_class"]))
+
+    assert seen[0][1] != seen[1][1], f"case ids collided: {seen}"
+    assert seen[0][2] != seen[1][2], f"generation ids collided: {seen}"
+    assert all(row[3] == "RECOMMENDATION_HELPFUL" for row in seen), seen
+
+    for marker, _, _, _ in seen:
+        rows = outcome.outcomes(con, family_signature=f"{marker}=>{marker}")
+        assert len(rows) == 1, (marker, rows)
+    con.close()
