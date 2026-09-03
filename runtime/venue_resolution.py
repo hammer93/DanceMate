@@ -121,21 +121,42 @@ def suggest(raw_venue: str, alias_candidates: list[str] | None = None) -> dict[s
     }
 
 
-def suggested_region_id(con, region_hint: str | None) -> int | None:
-    """The region whose city or name the address starts with, if any.
+# Addresses are written in Korean and the region master is seeded in English,
+# so the two need an explicit bridge. A lookup table rather than a
+# transliteration: 서울 is Seoul because that is what the seed calls it, not
+# because a rule derived it.
+_REGION_BY_ADMIN = {
+    "서울": ("KR-SEOUL", "Seoul"), "부산": ("KR-BUSAN", "Busan"),
+    "대구": ("KR-DAEGU", "Daegu"), "인천": ("KR-INCHEON", "Incheon"),
+    "광주": ("KR-GWANGJU", "Gwangju"), "대전": ("KR-DAEJEON", "Daejeon"),
+    "울산": ("KR-ULSAN", "Ulsan"), "세종": ("KR-SEJONG", "Sejong"),
+    "경기": ("KR-GYEONGGI", "Gyeonggi"), "강원": ("KR-GANGWON", "Gangwon"),
+    "충북": ("KR-CHUNGBUK", "Chungbuk"), "충남": ("KR-CHUNGNAM", "Chungnam"),
+    "전북": ("KR-JEONBUK", "Jeonbuk"), "전남": ("KR-JEONNAM", "Jeonnam"),
+    "경북": ("KR-GYEONGBUK", "Gyeongbuk"), "경남": ("KR-GYEONGNAM", "Gyeongnam"),
+    "제주": ("KR-JEJU", "Jeju"),
+}
 
-    No hint means no selection. Defaulting every venue to Seoul because most of
-    them are would quietly file a Busan milonga under Seoul, and the region
-    filter would then lie to a dancer in either city.
+
+def suggested_region_id(con, region_hint: str | None) -> int | None:
+    """The registered region an address names, if one is registered.
+
+    No hint, or a region nobody has registered, means no selection. Defaulting
+    every venue to Seoul because most of them are would quietly file a Busan
+    milonga under Seoul, and the region filter would then lie to a dancer in
+    either city.
     """
     if not region_hint:
         return None
-    stem = region_hint[:2]
+    mapped = _REGION_BY_ADMIN.get(region_hint[:2])
+    if mapped is None:
+        return None
+    code, english = mapped
     for region in master_data.list_regions(con):
-        for field in ("city", "name", "district"):
-            value = (region.get(field) or "")
-            if value and (value.startswith(stem) or stem in value):
-                return region["region_id"]
+        if region.get("code") == code:
+            return region["region_id"]
+        if (region.get("city") or "").lower() == english.lower():
+            return region["region_id"]
     return None
 
 
@@ -152,18 +173,20 @@ def similar_venues(con, *, name: str, address: str | None = None,
     address. No fuzzy scoring: a warning an operator cannot check is a warning
     they learn to click past.
     """
-    wanted = {
-        master_data.normalize_alias(name): "name",
-        master_data.normalize_alias(raw_venue or ""): "raw string",
-    }
-    wanted.pop("", None)
+    wanted: dict[str, list[str]] = {}
+    for value, label in ((name, "name"), (raw_venue or "", "raw string")):
+        key = master_data.normalize_alias(value)
+        if key:
+            # The name and the raw string are often identical. That is one
+            # match for two reasons, not one reason overwriting the other.
+            wanted.setdefault(key, []).append(label)
     address_key = _normalized_address(address)
 
     found: dict[int, dict[str, Any]] = {}
     for venue in master_data.list_venues(con):
         reasons = []
-        if master_data.normalize_alias(venue["name"]) in wanted:
-            reasons.append(f"same {wanted[master_data.normalize_alias(venue['name'])]}")
+        for label in wanted.get(master_data.normalize_alias(venue["name"]), []):
+            reasons.append(f"same {label}")
         for alias in venue.get("aliases") or []:
             if master_data.normalize_alias(alias) in wanted:
                 reasons.append(f"registered alias {alias!r}")
@@ -272,8 +295,11 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
     a master record nobody asked for beside a queue entry that still looks
     untouched -- and the operator would reasonably create it again.
 
-    The caller must not have opened the connection in autocommit mode: this
-    commits once at the end and rolls back as a whole on any failure.
+    The three writes run inside one ``con.transaction()`` block, which is a real
+    transaction on an autocommit connection and a savepoint inside a larger one.
+    Either way they land together or not at all. Committing is the caller's --
+    a module that rolls back a connection it was handed would discard whatever
+    else the caller had in flight.
 
     Raises DuplicateVenue when the venue may already exist. That is a question
     for the operator, not a refusal -- pass force=True once they have answered it.
@@ -288,12 +314,13 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
     raw_venue = entry["venue_text"]
 
     if not force:
+        # Read-only, and nothing has been written yet: this raises without
+        # touching the transaction.
         matches = similar_venues(con, name=name, address=address, raw_venue=raw_venue)
         if matches:
-            con.rollback()
             raise DuplicateVenue(matches)
 
-    try:
+    with con.transaction():
         venue = master_data.create_venue(
             con, name=name, region_id=region_id,
             address=(address or "").strip() or None,
@@ -314,10 +341,6 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
             after={"venue_id": venue["venue_id"], "name": venue["name"],
                    "address": venue.get("address"), "region_id": region_id},
         )
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
 
     return {
         "venue": venue,
@@ -336,7 +359,7 @@ def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
     if venue is None:
         raise LookupError(f"no venue {venue_id}")
 
-    try:
+    with con.transaction():
         linked = normalization.link_unresolved_venue(
             con, unresolved_venue_id, venue_id, reviewer=reviewer,
         )
@@ -348,10 +371,6 @@ def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
                     "state": entry["state"]},
             after={"venue_id": venue_id, "name": venue["name"]},
         )
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
 
     return {"venue": venue, "events_updated": linked["events_updated"], "action": recorded}
 
@@ -367,7 +386,7 @@ def dismiss(con, *, unresolved_venue_id: int, reviewer: str = "admin",
     entry = normalization.unresolved_venue(con, unresolved_venue_id)
     if entry is None:
         raise LookupError(f"no unresolved venue {unresolved_venue_id}")
-    try:
+    with con.transaction():
         normalization.dismiss_unresolved_venue(con, unresolved_venue_id, reviewer=reviewer)
         recorded = record_action(
             con, action=NOT_A_VENUE, raw_venue=entry["venue_text"], reviewer=reviewer,
@@ -375,8 +394,4 @@ def dismiss(con, *, unresolved_venue_id: int, reviewer: str = "admin",
             before={"venue_text": entry["venue_text"], "state": entry["state"]},
             after={"state": "DISMISSED", "reason": reason},
         )
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
     return {"action": recorded}

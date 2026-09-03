@@ -354,6 +354,7 @@ def admin_create_and_link_venue(
                 address=address, notes=notes, aliases=alias_list,
                 reviewer=reviewer, force=(force == "1"),
             )
+            con.commit()
         except venue_resolution.DuplicateVenue as duplicate:
             entry = normalization.unresolved_venue(con, unresolved_venue_id)
             regions = master_data.list_regions(con, enabled_only=True)
@@ -386,6 +387,7 @@ def admin_link_existing_venue(
                 con, unresolved_venue_id=unresolved_venue_id,
                 venue_id=int(venue_id), reviewer=reviewer,
             )
+            con.commit()
         except Exception as exc:
             return admin._back(target, f"could not link: {exc}", "bad")
     return admin._back(
@@ -408,6 +410,7 @@ def admin_dismiss_venue(
                 con, unresolved_venue_id=unresolved_venue_id, reviewer=reviewer,
                 reason=reason.strip() or None,
             )
+            con.commit()
         except Exception as exc:
             return admin._back(target, f"could not dismiss: {exc}", "bad")
     return admin._back(target, "장소가 아닌 것으로 기록했습니다")
