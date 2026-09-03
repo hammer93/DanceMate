@@ -3,8 +3,9 @@
 ## v0.74 Persistent Runtime + ROCKPro64 Staging Deployment
 
 Status:
-Deployment Candidate. Verified on an amd64 development host with Docker.
-NOT yet deployed to, or verified on, ROCKPro64 hardware.
+DEPLOYED AND VERIFIED on the ROCKPro64 (PINE64 v2.1 / RK3399 / aarch64,
+Armbian 26.8.3 / Debian 13.6, kernel 6.18.44), 2026-09-03.
+Runtime root /opt/dancemate/app/DanceMate, LAN only at 192.168.1.100:8080.
 
 Version split:
 
@@ -73,12 +74,82 @@ Verified on the development host:
   exit 2 when the runtime is unreachable
 - image builds for `linux/arm64` via buildx
 
-NOT verified (requires the real board):
+### ROCKPro64 Acceptance (2026-09-03)
 
-- execution on ROCKPro64 hardware
-- host reboot and automatic recovery
-- microSD write behaviour over time
-- 4GB RAM headroom under sustained load
+Deployment shape: the board already ran a `dancemate-postgres` container on
+the `dancemate-net` network, so v0.74 was deployed with
+`deploy/rockpro64/docker-compose.external-postgres.yml` - runtime + scheduler
+only, against that existing database. The board's existing caddy and postgres
+compose projects were left untouched throughout.
+
+ROCKPro64 Runtime:
+VERIFIED - image built natively on aarch64, runtime and scheduler healthy
+
+Host Reboot:
+PASS - two full `systemctl reboot` cycles; all four containers back within
+~15s of boot with no manual start, `docker.service` enabled + restart:
+unless-stopped
+
+PostgreSQL Persistence:
+PASS - job_runs rows written before the reboot (ids 1-8) still present after,
+with new rows appended; schema_migrations unchanged, `applied=[]` on restart
+
+Information Engine Persistence:
+PASS - engine SQLite kept the same inode, size and mtime across both reboots;
+Recommendation Runtime Outcome ROCKPRO-ACCEPTANCE-001 still
+RECOMMENDATION_HELPFUL afterwards
+
+Runtime Outcome Persistence:
+PASS - v0.73 Recommendation Runtime Outcome and Selection Effectiveness
+records verified present after each reboot
+
+Scheduler Recovery:
+PASS - scheduler restarted automatically and wrote a fresh heartbeat
+(distinguishable from the pre-reboot beat by timestamp); heartbeat 60s,
+job cycle 300s
+
+Post-Reboot Processing:
+PASS - engine fixture re-run `Fixture Gate: PASS (4/4)`, plus new markers
+ROCKPRO-ACCEPTANCE-002 (after reboot 1) and -003 (after reboot 2)
+
+Backup:
+PASS - `pg_restore --list` reads the dump (custom format, 22 TOC entries);
+`PRAGMA integrity_check` on the SQLite copy returns ok with 196 tables and the
+outcome row present; no credential appears in any backup artifact
+
+API:
+PASS - /health, /version, /status, /status/summary reachable from the board
+and from a LAN client; published on 192.168.1.100:8080 only, not on the
+board's WiFi address and not on loopback
+
+Health Check:
+PASS - `check-server.sh` reports all six components PASS, exit 0
+
+Resource usage on the board (idle, all four containers):
+runtime 59MB, scheduler 42MB, postgres 51MB, caddy 49MB of 3.8GB;
+microSD 10% used; container logs capped 10m x 3 at both daemon and service level
+
+Problems found and fixed during deployment (each fixed in the repository, then
+redeployed and re-verified - never patched on the board):
+
+1. DANCEMATE_BIND_ADDRESS was used both as the host publish interface and as
+   uvicorn's in-container listen address. Narrowing it to the board's LAN IP
+   crash-looped the runtime with "could not bind on any address". Split into
+   DANCEMATE_BIND_ADDRESS (host) and DANCEMATE_HOST (container, pinned to
+   0.0.0.0 by both compose files).
+2. check-server.sh probed 127.0.0.1 unconditionally, which no longer listens
+   once the binding is narrowed. The probe host now follows the binding.
+3. The acceptance tool was excluded from the image by .dockerignore and had no
+   COPY in the Dockerfile.
+4. The acceptance tool hardcoded family_recovery_case_id = 1, so a second
+   marker hit a UNIQUE constraint. It now allocates the next free id.
+
+NOT verified even now:
+
+- long-term microSD write behaviour (only a few hours of runtime observed)
+- 4GB RAM headroom under sustained real load (no real source data yet)
+- behaviour on the final wired LAN once the board moves off the temporary
+  direct-attach segment documented in the board's own ROCKPRO64_SETUP.md
 
 Next:
 v0.75 Real Source Intake (Daum Cafe / Naver Cafe / Naver Blog collectors),

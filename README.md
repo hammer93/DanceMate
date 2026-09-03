@@ -10,6 +10,7 @@ DanceMate는
 ## 현재 상태
 
 - Product Runtime: v0.74 (Persistent Runtime + ROCKPro64 Staging Deployment)
+  - deployed and verified on the ROCKPro64 on 2026-09-03, host reboot included
 - Information Engine: v0.73 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
@@ -90,6 +91,10 @@ cd engine && pytest          # Information Engine regression (559)
 ```
 
 ## Staging (ROCKPro64 target)
+
+The board reuses its existing PostgreSQL, so it selects a different compose
+file through `.env` (`DANCEMATE_COMPOSE_FILE`). See
+`deploy/rockpro64/README.md` for the full procedure.
 
 ```bash
 cp .env.example .env

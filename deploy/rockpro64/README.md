@@ -93,21 +93,72 @@ public API. PostgreSQL is not published to the host at all (`expose`, not
 DANCEMATE_BIND_ADDRESS=192.168.0.10
 ```
 
+## Deployment shape on this board
+
+The board already runs its own infrastructure, documented in
+`/opt/dancemate/docs/ROCKPRO64_SETUP.md`: a `dancemate-postgres` container
+(compose project "database", data bind-mounted at `/opt/dancemate/data/postgres`)
+and a `dancemate-caddy` reverse proxy, both on the external `dancemate-net`
+network. v0.74 reuses that PostgreSQL rather than starting a second one on a
+4GB board, so the deployment uses:
+
+    deploy/rockpro64/docker-compose.external-postgres.yml
+
+which brings up runtime + scheduler only. `.env` selects it:
+
+    DANCEMATE_COMPOSE_FILE=deploy/rockpro64/docker-compose.external-postgres.yml
+    DANCEMATE_POSTGRES_CONTAINER=dancemate-postgres
+    POSTGRES_HOST=dancemate-postgres
+
+The repository-root `docker-compose.yml` remains the self-contained stack for
+development hosts. The board's existing compose projects are never touched.
+
+### Runtime root
+
+    /opt/dancemate/app/DanceMate
+
+`/opt/dancemate/app` is the location the board's own setup document reserves
+for the application. Runtime directories, owned by the container user (uid
+10001) so the bind mounts are writable:
+
+    /opt/dancemate/data/engine      -> /app/engine/data
+    /opt/dancemate/data/runtime     -> /var/lib/dancemate
+    /opt/dancemate/logs/runtime     -> /var/log/dancemate
+    /opt/dancemate/backup/runtime   -> /var/backups/dancemate
+
+### Two addresses, not one
+
+    DANCEMATE_BIND_ADDRESS=192.168.1.100   host interface the port is published on
+    DANCEMATE_HOST=0.0.0.0                 address the server listens on in the container
+
+A container has no LAN address of its own. Putting the board's IP in
+DANCEMATE_HOST makes uvicorn fail with "could not bind on any address"; both
+compose files pin it to 0.0.0.0 so this cannot be got wrong. The health scripts
+follow DANCEMATE_BIND_ADDRESS, because loopback stops listening once the
+binding is narrowed.
+
 ## Deployment procedure
 
 ```bash
 # on the ROCKPro64
-git clone https://github.com/hammer93/DanceMate.git
-cd DanceMate
+sudo -u hammer git clone https://github.com/hammer93/DanceMate.git     /opt/dancemate/app/DanceMate
+cd /opt/dancemate/app/DanceMate
 git checkout feature/v0.74-rockpro-runtime
 
-scripts/install-rockpro64.sh --prepare   # host check + directories + .env
-$EDITOR .env                             # set a real POSTGRES_PASSWORD
-                                         #   openssl rand -base64 24
+# runtime directories, writable by the container user
+for d in data/engine data/runtime logs/runtime backup/runtime; do
+  sudo install -d -o 10001 -g 10001 -m 755 "/opt/dancemate/$d"
+done
 
-docker compose build                     # builds natively for arm64
-scripts/start-server.sh
-scripts/check-server.sh
+cp .env.example .env && chmod 600 .env
+$EDITOR .env      # set DANCEMATE_COMPOSE_FILE, DANCEMATE_POSTGRES_CONTAINER,
+                  # DANCEMATE_BIND_ADDRESS and the PostgreSQL credentials
+                  # (reuse /opt/dancemate/docker/database/.env)
+
+scripts/install-rockpro64.sh             # host readiness check
+docker compose --project-directory .   -f deploy/rockpro64/docker-compose.external-postgres.yml build
+scripts/start-server.sh                  # waits for the first heartbeat
+scripts/check-server.sh                  # expect six PASS, exit 0
 ```
 
 ### Auto-start after host reboot
@@ -133,28 +184,38 @@ No separate systemd unit is needed for DanceMate.
 | restore         | `scripts/restore.sh <name> --yes`                    |
 | logs            | `docker compose logs -f runtime scheduler`           |
 
-## Verification status as of v0.74
+## Verification status
 
-Verified on an amd64 development host with Docker:
+### Verified on the ROCKPro64, 2026-09-03
 
-- image build, `docker compose config`, full stack up and healthy
-- `/health`, `/version`, `/status`, `/status/summary`, `/resources`
-- migration runner applies `001_initial_runtime` once and is idempotent on restart
-- scheduler heartbeat and `job_runs` rows written to PostgreSQL
-- engine fixture batch processed (`Fixture Gate: PASS 4/4`), SQLite created
-- state survives `docker compose restart` **and** full container recreation
-- backup produces a valid `postgres.dump` and a readable `engine.sqlite3`
-- restore round trip replaces runtime state and keeps a pre-restore copy
-- `check-server.sh` reports all six components PASS, exit 0
+Board as measured: PINE64 ROCKPro64 v2.1, aarch64, 3.8GiB RAM, microSD
+29.5GB (10% used), Armbian 26.8.3 / Debian 13.6, kernel 6.18.44,
+Docker 29.7.2 + Compose v5.5.0, timezone Asia/Seoul, NTP synchronized.
 
-Statically verified for ARM64:
+- image built natively on aarch64; runtime and scheduler healthy
+- PostgreSQL reached over `dancemate-net`; migration `001_initial_runtime`
+  applied once, `applied=[]` on every subsequent start
+- scheduler heartbeat and `job_runs` written; heartbeat 60s, jobs 300s
+- Information Engine v0.73 imported and its fixture gate re-run on the board:
+  `Fixture Gate: PASS (4/4)`
+- `/health`, `/version`, `/status`, `/status/summary` answered on
+  192.168.1.100:8080 from the board **and** from a LAN client; not answering on
+  the board's WiFi address, and not on loopback
+- backup verified with `pg_restore --list` and `PRAGMA integrity_check`
+- container restart and full container recreation preserved every record
+- **two host reboots**: all four containers back within ~15s of boot with no
+  manual start; PostgreSQL rows, engine SQLite (same inode) and the v0.73
+  Recommendation Runtime Outcome all intact afterwards
+- new processing after each reboot (markers ROCKPRO-ACCEPTANCE-002 and -003)
+- `check-server.sh`: six PASS, exit 0
+- idle footprint: runtime 59MB, scheduler 42MB, postgres 51MB, caddy 49MB
 
-- the image builds for `linux/arm64` via buildx
-- base images are official multi-arch tags; no x86 pins in the build
+### Still not verified
 
-**Not verified yet** (requires the real board):
-
-- execution on ROCKPro64 hardware
-- host reboot and automatic recovery
-- microSD write behaviour over time
-- 4GB RAM headroom under sustained load
+- long-term microSD write behaviour; only a few hours of runtime were observed
+- 4GB RAM headroom under sustained real load - there is no real source data
+  until v0.75
+- behaviour on the final wired LAN. The board's own setup document records
+  192.168.1.0/24 as a temporary direct-attach segment with no gateway, with
+  internet arriving over WiFi; moving to the real router will need the binding
+  and `DANCEMATE_BIND_ADDRESS` revisited
