@@ -1,0 +1,139 @@
+{
+  "version": "0.23",
+  "result": {
+    "backlog": [
+      {
+        "rank": 1,
+        "priority": "P2",
+        "confidence": "LOW",
+        "source_id": "SRC-N-001",
+        "source_name": "전국 밀롱가 정보 블로그",
+        "field": "fee",
+        "hotspot_score": 4,
+        "review_count": 1,
+        "correction_rate": 1.0,
+        "problem_statement": "SRC-N-001의 fee에서 Human Review 수정/기각이 1건 발생",
+        "recommended_epics": [
+          {
+            "component": "EVIDENCE/FEE",
+            "title": "Fee occurrence-level verification 강화",
+            "actions": [
+              "당일 Poster/Organizer 공지에서 fee를 우선 추출",
+              "정기/과거 fee를 EXPECTED로 격리하고 당일 근거 없이는 VERIFIED 금지",
+              "Poster Evidence가 있으면 fee parser 우선 실행"
+            ]
+          },
+          {
+            "component": "COLLECTOR/NAVER_BLOG",
+            "title": "Naver Blog 추출 안정화",
+            "actions": [
+              "본문 획득 실패/로그인 shell 탐지 강화",
+              "metadata-only 결과를 VERIFIED에 사용하지 않음",
+              "poster/media fallback 경로 우선"
+            ]
+          }
+        ],
+        "acceptance_criteria": [
+          "동일 correction fixture에서 기계 결과와 Human 수정값이 일치",
+          "새 regression test 추가 및 전체 pytest PASS",
+          "같은 Source×Field hotspot correction rate가 후속 표본에서 감소",
+          "VERIFIED 승격 시 Evidence Model/P0 규칙 우회 없음"
+        ]
+      },
+      {
+        "rank": 2,
+        "priority": "P2",
+        "confidence": "LOW",
+        "source_id": "SRC-N-002",
+        "source_name": "네이버카페 탱고 정보",
+        "field": "fee",
+        "hotspot_score": 4,
+        "review_count": 1,
+        "correction_rate": 1.0,
+        "problem_statement": "SRC-N-002의 fee에서 Human Review 수정/기각이 1건 발생",
+        "recommended_epics": [
+          {
+            "component": "EVIDENCE/FEE",
+            "title": "Fee occurrence-level verification 강화",
+            "actions": [
+              "당일 Poster/Organizer 공지에서 fee를 우선 추출",
+              "정기/과거 fee를 EXPECTED로 격리하고 당일 근거 없이는 VERIFIED 금지",
+              "Poster Evidence가 있으면 fee parser 우선 실행"
+            ]
+          },
+          {
+            "component": "COLLECTOR/NAVER_CAFE",
+            "title": "Naver Cafe 본문/게시판 수집 규칙 정밀화",
+            "actions": [
+              "게시판별 selector 분리",
+              "중복 홍보글 dedup 강화",
+              "본문 vs 제목/snippet confidence 분리"
+            ]
+          }
+        ],
+        "acceptance_criteria": [
+          "동일 correction fixture에서 기계 결과와 Human 수정값이 일치",
+          "새 regression test 추가 및 전체 pytest PASS",
+          "같은 Source×Field hotspot correction rate가 후속 표본에서 감소",
+          "VERIFIED 승격 시 Evidence Model/P0 규칙 우회 없음"
+        ]
+      }
+    ],
+    "source_hotspots": [
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-001",
+        "source_name": "전국 밀롱가 정보 블로그",
+        "platform": "NAVER_BLOG",
+        "authority_level": "AGGREGATOR",
+        "access_state": "LOGIN_REQUIRED"
+      },
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-002",
+        "source_name": "네이버카페 탱고 정보",
+        "platform": "NAVER_CAFE",
+        "authority_level": "SECONDARY",
+        "access_state": "OPEN"
+      }
+    ],
+    "field_hotspots": [
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "field": "fee"
+      }
+    ],
+    "policy": {
+      "priority_from_hotspot": "P1/P2/P3 그대로 사용",
+      "confidence_by_sample": "LOW<3, MEDIUM<10, HIGH>=10 reviews",
+      "do_not_overfit": "LOW confidence backlog는 구조 개선 후보로만 사용하고 통계적 결론으로 간주하지 않음"
+    }
+  }
+}

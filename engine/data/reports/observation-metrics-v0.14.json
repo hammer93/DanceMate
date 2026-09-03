@@ -1,0 +1,45 @@
+{
+  "version": "0.14",
+  "metrics": {
+    "overall": {
+      "run_count": 5,
+      "discovered_count": 6,
+      "rawpost_new_count": 4,
+      "rawpost_duplicate_count": 2,
+      "acquisition_attempt_count": 5,
+      "acquisition_success_count": 2,
+      "acquisition_failure_count": 3,
+      "recovery_attempt_count": 2,
+      "recovery_success_count": 1,
+      "source_yield_rate": 0.6667,
+      "access_failure_rate": 0.6,
+      "recovery_success_rate": 0.5
+    },
+    "sources": [
+      {
+        "source_id": "SRC-D-001",
+        "discovered_count": 4,
+        "rawpost_new_count": 3,
+        "acquisition_attempt_count": 3,
+        "acquisition_failure_count": 1,
+        "recovery_attempt_count": 0,
+        "recovery_success_count": 0,
+        "source_yield_rate": 0.75,
+        "access_failure_rate": 0.3333,
+        "recovery_success_rate": null
+      },
+      {
+        "source_id": "SRC-F-001",
+        "discovered_count": 2,
+        "rawpost_new_count": 1,
+        "acquisition_attempt_count": 2,
+        "acquisition_failure_count": 2,
+        "recovery_attempt_count": 2,
+        "recovery_success_count": 1,
+        "source_yield_rate": 0.5,
+        "access_failure_rate": 1.0,
+        "recovery_success_rate": 0.5
+      }
+    ]
+  }
+}

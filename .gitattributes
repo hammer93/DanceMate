@@ -1,9 +1,13 @@
-# 기본: Git이 텍스트 여부를 자동 판별
-* text=auto
+# The deployment target is Linux/ARM64 (ROCKPro64). Everything text in this
+# repository checks out with LF, on Windows too, so that shell scripts, the
+# Dockerfile and engine sources are never handed to bash with CRLF endings
+# ("bash: \r: command not found").
+* text=auto eol=lf
 
-# ROCKPro64(Linux)에서 실행되는 파일은 Windows 체크아웃에서도 LF를 유지해야 한다.
-# CRLF가 섞이면 Linux에서 "bash: \r: command not found" 로 실패한다.
+# Belt and braces for the files that break loudest on CRLF.
 *.sh        text eol=lf
+*.py        text eol=lf
+*.sql       text eol=lf
 Dockerfile  text eol=lf
 *.yml       text eol=lf
 *.yaml      text eol=lf

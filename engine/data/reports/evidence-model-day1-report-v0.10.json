@@ -1,0 +1,141 @@
+{
+  "version": "0.10",
+  "events": [
+    {
+      "name": "cabeceo",
+      "expected": "HIGH_CONFIDENCE",
+      "result": {
+        "event_confidence": "HIGH_CONFIDENCE",
+        "fields": {
+          "date": {
+            "value": "2026-08-27",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "2026-08-27"
+          },
+          "venue": {
+            "value": "Andante",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "Andante"
+          },
+          "start_time": {
+            "value": "19:30",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "19:30"
+          },
+          "fee": {
+            "value": "13000",
+            "confidence": "EXPECTED",
+            "expected_value": "13000",
+            "verified_value": null
+          }
+        },
+        "p0_errors": []
+      }
+    },
+    {
+      "name": "Sueño Dulce",
+      "expected": "HIGH_CONFIDENCE",
+      "result": {
+        "event_confidence": "HIGH_CONFIDENCE",
+        "fields": {
+          "date": {
+            "value": "2026-08-27",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "2026-08-27"
+          },
+          "venue": {
+            "value": "La Ventana",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "La Ventana"
+          },
+          "start_time": {
+            "value": "20:00",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "20:00"
+          },
+          "fee": {
+            "value": "11000",
+            "confidence": "EXPECTED",
+            "expected_value": "11000",
+            "verified_value": null
+          }
+        },
+        "p0_errors": []
+      }
+    },
+    {
+      "name": "서울밀롱가",
+      "expected": "HIGH_CONFIDENCE",
+      "result": {
+        "event_confidence": "HIGH_CONFIDENCE",
+        "fields": {
+          "date": {
+            "value": "2026-08-27",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "2026-08-27"
+          },
+          "venue": {
+            "value": "OCHO",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "OCHO"
+          },
+          "start_time": {
+            "value": "20:00",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "20:00"
+          },
+          "fee": {
+            "value": "13000",
+            "confidence": "EXPECTED",
+            "expected_value": "13000",
+            "verified_value": null
+          }
+        },
+        "p0_errors": []
+      }
+    },
+    {
+      "name": "La Noche",
+      "expected": "POSSIBLE",
+      "result": {
+        "event_confidence": "POSSIBLE",
+        "fields": {
+          "date": {
+            "value": "2026-08-27",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "2026-08-27"
+          },
+          "venue": {
+            "value": "O Nada",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "O Nada"
+          },
+          "start_time": {
+            "value": "20:00",
+            "confidence": "VERIFIED",
+            "expected_value": null,
+            "verified_value": "20:00"
+          },
+          "fee": {
+            "value": null,
+            "confidence": "UNKNOWN",
+            "expected_value": null,
+            "verified_value": null
+          }
+        },
+        "p0_errors": []
+      }
+    }
+  ]
+}

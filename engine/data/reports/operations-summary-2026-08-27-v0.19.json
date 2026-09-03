@@ -1,0 +1,141 @@
+{
+  "version": "0.19",
+  "date": "2026-08-27",
+  "summary": {
+    "health": "YELLOW",
+    "event_confidence_distribution": {
+      "HIGH_CONFIDENCE": 1
+    },
+    "field_confidence_distribution": {
+      "VERIFIED": 4
+    },
+    "source_operations": [
+      {
+        "source_id": "SRC-D-001",
+        "name": "외부홍보게시판(파티)",
+        "platform": "DAUM_CAFE",
+        "authority_level": "SECONDARY",
+        "access_state": "UNKNOWN",
+        "discovered": 0,
+        "rawpost_new": 0,
+        "source_yield_rate": null,
+        "acquisition_attempts": 0,
+        "acquisition_failures": 0,
+        "access_failure_rate": null,
+        "recovery_attempts": 0,
+        "recovery_success": 0,
+        "recovery_success_rate": null
+      },
+      {
+        "source_id": "SRC-D-002",
+        "name": "홍보게시판",
+        "platform": "DAUM_CAFE",
+        "authority_level": "SECONDARY",
+        "access_state": "UNKNOWN",
+        "discovered": 0,
+        "rawpost_new": 0,
+        "source_yield_rate": null,
+        "acquisition_attempts": 0,
+        "acquisition_failures": 0,
+        "access_failure_rate": null,
+        "recovery_attempts": 0,
+        "recovery_success": 0,
+        "recovery_success_rate": null
+      },
+      {
+        "source_id": "SRC-F-001",
+        "name": "Tango Club Ocho",
+        "platform": "FACEBOOK",
+        "authority_level": "PRIMARY_VENUE",
+        "access_state": "ACCESS_LIMITED",
+        "discovered": 0,
+        "rawpost_new": 0,
+        "source_yield_rate": null,
+        "acquisition_attempts": 0,
+        "acquisition_failures": 0,
+        "access_failure_rate": null,
+        "recovery_attempts": 0,
+        "recovery_success": 0,
+        "recovery_success_rate": null
+      },
+      {
+        "source_id": "SRC-F-002",
+        "name": "Tango O Nada",
+        "platform": "FACEBOOK",
+        "authority_level": "PRIMARY_ORGANIZER",
+        "access_state": "ACCESS_LIMITED",
+        "discovered": 0,
+        "rawpost_new": 0,
+        "source_yield_rate": null,
+        "acquisition_attempts": 0,
+        "acquisition_failures": 0,
+        "access_failure_rate": null,
+        "recovery_attempts": 0,
+        "recovery_success": 0,
+        "recovery_success_rate": null
+      },
+      {
+        "source_id": "SRC-N-001",
+        "name": "전국 밀롱가 정보 블로그",
+        "platform": "NAVER_BLOG",
+        "authority_level": "AGGREGATOR",
+        "access_state": "LOGIN_REQUIRED",
+        "discovered": 2,
+        "rawpost_new": 2,
+        "source_yield_rate": 1.0,
+        "acquisition_attempts": 2,
+        "acquisition_failures": 1,
+        "access_failure_rate": 0.5,
+        "recovery_attempts": 1,
+        "recovery_success": 0,
+        "recovery_success_rate": 0.0
+      },
+      {
+        "source_id": "SRC-N-002",
+        "name": "네이버카페 탱고 정보",
+        "platform": "NAVER_CAFE",
+        "authority_level": "SECONDARY",
+        "access_state": "OPEN",
+        "discovered": 1,
+        "rawpost_new": 1,
+        "source_yield_rate": 1.0,
+        "acquisition_attempts": 1,
+        "acquisition_failures": 0,
+        "access_failure_rate": 0.0,
+        "recovery_attempts": 1,
+        "recovery_success": 1,
+        "recovery_success_rate": 1.0
+      }
+    ],
+    "recovery_status": {
+      "PENDING": 1,
+      "RESOLVED": 1
+    },
+    "human_review_queue": [
+      {
+        "type": "EVENT_REVIEW",
+        "review_key": "EVENT:1",
+        "event_instance_id": 1,
+        "event_name": "pista",
+        "reason": "EVENT_HIGH_CONFIDENCE",
+        "review_state": "HELD",
+        "priority": "NORMAL"
+      },
+      {
+        "type": "RECOVERY_REVIEW",
+        "review_key": "RECOVERY:1",
+        "recovery_id": 1,
+        "source_id": "SRC-N-001",
+        "event_hint": "9월 탱고 초급 강습 모집",
+        "reason": "BODY_UNAVAILABLE",
+        "state": "PENDING",
+        "review_state": null,
+        "priority": "HIGH"
+      }
+    ],
+    "human_review_count": 2,
+    "human_review_high_priority_count": 1,
+    "p0_errors": [],
+    "p0_count": 0
+  }
+}

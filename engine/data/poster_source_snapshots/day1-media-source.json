@@ -1,0 +1,50 @@
+{
+  "media_cases": [
+    {
+      "url": "https://cdn.example.com/sueno_thursday_schedule_2026-08-27.jpg",
+      "text": "Sueño Dulce Thursday 20:00~24:00",
+      "expected": "EVENT_POSTER"
+    },
+    {
+      "url": "https://cdn.example.com/ocho_logo.png",
+      "text": "",
+      "expected": "LOGO"
+    },
+    {
+      "url": "https://cdn.example.com/onada_logo.png",
+      "text": "",
+      "expected": "LOGO"
+    },
+    {
+      "url": "https://cdn.example.com/andante_space.jpg",
+      "text": "venue interior",
+      "expected": "VENUE_IMAGE"
+    }
+  ],
+  "source_cases": [
+    {
+      "source_role": "PRIMARY_VENUE",
+      "status": "PARTIAL",
+      "http_status": 200,
+      "body_available": false,
+      "expected_authority": "PRIMARY_VENUE",
+      "expected_access": "LOGIN_REQUIRED"
+    },
+    {
+      "source_role": "PRIMARY_VENUE",
+      "status": "FAILED",
+      "http_status": 403,
+      "body_available": false,
+      "expected_authority": "PRIMARY_VENUE",
+      "expected_access": "ACCESS_LIMITED"
+    },
+    {
+      "source_role": "AGGREGATOR",
+      "status": "FULL",
+      "http_status": 200,
+      "body_available": true,
+      "expected_authority": "AGGREGATOR",
+      "expected_access": "OPEN"
+    }
+  ]
+}

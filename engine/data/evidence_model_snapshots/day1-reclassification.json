@@ -1,0 +1,52 @@
+{
+  "events": [
+    {
+      "identity_key": "2026-08-27|andante|cabeceo",
+      "name": "cabeceo",
+      "date": "2026-08-27",
+      "venue": "Andante",
+      "time": "19:30",
+      "fee_expected": "13000",
+      "fee_verified": null,
+      "occurrence_confirmed": true,
+      "primary_or_equivalent": false,
+      "expected_event_confidence": "HIGH_CONFIDENCE"
+    },
+    {
+      "identity_key": "2026-08-27|la ventana|sueno dulce",
+      "name": "Sueño Dulce",
+      "date": "2026-08-27",
+      "venue": "La Ventana",
+      "time": "20:00",
+      "fee_expected": "11000",
+      "fee_verified": null,
+      "occurrence_confirmed": true,
+      "primary_or_equivalent": false,
+      "expected_event_confidence": "HIGH_CONFIDENCE"
+    },
+    {
+      "identity_key": "2026-08-27|ocho|seoul milonga",
+      "name": "서울밀롱가",
+      "date": "2026-08-27",
+      "venue": "OCHO",
+      "time": "20:00",
+      "fee_expected": "13000",
+      "fee_verified": null,
+      "occurrence_confirmed": true,
+      "primary_or_equivalent": false,
+      "expected_event_confidence": "HIGH_CONFIDENCE"
+    },
+    {
+      "identity_key": "2026-08-27|o nada|la noche",
+      "name": "La Noche",
+      "date": "2026-08-27",
+      "venue": "O Nada",
+      "time": "20:00",
+      "fee_expected": null,
+      "fee_verified": null,
+      "occurrence_confirmed": false,
+      "primary_or_equivalent": false,
+      "expected_event_confidence": "POSSIBLE"
+    }
+  ]
+}

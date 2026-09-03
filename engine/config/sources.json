@@ -1,0 +1,83 @@
+[
+  {
+    "source_id": "SRC-D-001",
+    "platform": "DAUM_CAFE",
+    "source_role": "SECONDARY",
+    "name": "외부홍보게시판(파티)",
+    "status": "ACTIVE",
+    "cafe_name_hint": "라틴속으로",
+    "url_contains": [
+      "6uP",
+      "5HTC"
+    ],
+    "queries": [
+      "밀롱가",
+      "탱고 밀롱가",
+      "서울 밀롱가",
+      "부산 밀롱가",
+      "대구 밀롱가",
+      "대전 밀롱가"
+    ],
+    "authority_level": "SECONDARY",
+    "access_state": "UNKNOWN"
+  },
+  {
+    "source_id": "SRC-D-002",
+    "platform": "DAUM_CAFE",
+    "source_role": "SECONDARY",
+    "name": "홍보게시판",
+    "status": "ACTIVE",
+    "cafe_name_hint": "라틴속으로",
+    "url_contains": [
+      "6uP",
+      "M7eC"
+    ],
+    "queries": [
+      "밀롱가",
+      "탱고 밀롱가",
+      "쁘락",
+      "쁘롱"
+    ],
+    "authority_level": "SECONDARY",
+    "access_state": "UNKNOWN"
+  },
+  {
+    "source_id": "SRC-N-001",
+    "platform": "NAVER_BLOG",
+    "source_role": "AGGREGATOR",
+    "name": "전국 밀롱가 정보 블로그",
+    "status": "ACTIVE",
+    "authority_level": "AGGREGATOR",
+    "access_state": "UNKNOWN"
+  },
+  {
+    "source_id": "SRC-F-001",
+    "platform": "FACEBOOK",
+    "source_role": "PRIMARY_VENUE",
+    "name": "Tango Club Ocho",
+    "status": "ACTIVE",
+    "authority_level": "PRIMARY_VENUE",
+    "access_state": "ACCESS_LIMITED"
+  },
+  {
+    "source_id": "SRC-F-002",
+    "platform": "FACEBOOK",
+    "source_role": "PRIMARY",
+    "name": "Tango O Nada",
+    "status": "ACTIVE",
+    "authority_level": "PRIMARY_ORGANIZER",
+    "access_state": "ACCESS_LIMITED"
+  },
+  {
+    "source_id": "SRC-N-002",
+    "platform": "NAVER_CAFE",
+    "source_role": "SECONDARY",
+    "name": "네이버카페 탱고 정보",
+    "url": "https://cafe.naver.com/",
+    "region": "서울",
+    "genre": "TANGO",
+    "status": "ACTIVE",
+    "authority_level": "SECONDARY",
+    "access_state": "UNKNOWN"
+  }
+]

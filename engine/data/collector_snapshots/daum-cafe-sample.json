@@ -1,0 +1,29 @@
+{
+  "meta":{"is_end":true,"pageable_count":3,"total_count":3},
+  "documents":[
+    {
+      "cafename":"라틴속으로",
+      "contents":"<b>더 피스타 밀롱가</b> 입장료 13,000원 DJ Hernan 홍대 PISTA",
+      "datetime":"2026-08-19T08:40:00.000+09:00",
+      "thumbnail":"https://example.invalid/pista-thumb.jpg",
+      "title":"💜8/22(토) <b>더 피스타 밀롱가</b> - DJ 에르난",
+      "url":"https://cafe.daum.net/6uP/5HTC/22223"
+    },
+    {
+      "cafename":"라틴속으로",
+      "contents":"8주 강습 모집",
+      "datetime":"2026-08-21T10:00:00.000+09:00",
+      "thumbnail":"",
+      "title":"Special <b>Milonga</b> Lesson개설 (9월17일 개강)",
+      "url":"https://cafe.daum.net/6uP/M7eC/12561"
+    },
+    {
+      "cafename":"다른카페",
+      "contents":"밀롱가 관련 일반 글",
+      "datetime":"2026-08-20T10:00:00.000+09:00",
+      "thumbnail":"",
+      "title":"밀롱가 이야기",
+      "url":"https://cafe.daum.net/other/board/1"
+    }
+  ]
+}

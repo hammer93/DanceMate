@@ -1,0 +1,823 @@
+{
+  "version": "0.19",
+  "daily_run_id": "de011074-0003-458d-8f04-96e1009fc2e0",
+  "run_date": "2026-08-28",
+  "summary": {
+    "steps": [
+      {
+        "collect": {
+          "results": [
+            {
+              "kind": "blog",
+              "source_id": "SRC-N-001",
+              "discovered": 2,
+              "new": 0,
+              "duplicates": 2
+            },
+            {
+              "kind": "cafe",
+              "source_id": "SRC-N-002",
+              "discovered": 1,
+              "new": 0,
+              "duplicates": 1
+            }
+          ],
+          "lineages": [
+            "48fc725a-74de-4176-ab0e-41519ac55e6b",
+            "f102c984-a31f-4903-8738-c5fa831dd717"
+          ]
+        }
+      },
+      {
+        "acquire": {
+          "acquisitions": [
+            {
+              "post_id": 2,
+              "source_id": "SRC-N-001",
+              "platform": "NAVER_BLOG",
+              "url": "https://snapshot.local/naver/blog/class",
+              "status": "PARTIAL",
+              "body_chars": 11,
+              "images": 0,
+              "poster_candidates": 0,
+              "error_code": "BODY_UNAVAILABLE",
+              "upgraded": false,
+              "lineage_id": "48fc725a-74de-4176-ab0e-41519ac55e6b",
+              "observation_id": 10
+            }
+          ]
+        }
+      },
+      {
+        "recover": {
+          "recoveries": [
+            {
+              "recovery_id": 1,
+              "state": "PENDING",
+              "observation_id": 11,
+              "event_instance_id": null
+            }
+          ]
+        }
+      }
+    ],
+    "evidence_metrics": {
+      "window_label": "daily",
+      "metric_scope": "OVERALL",
+      "source_id": null,
+      "event_count": 1,
+      "field_total": 4,
+      "field_verified": 4,
+      "field_expected": 0,
+      "field_inferred": 0,
+      "field_conflict": 0,
+      "field_unknown": 0,
+      "expected_to_verified_promotions": 0,
+      "expected_to_verified_opportunities": 0,
+      "source_yield_events": 2,
+      "source_yield_posts": 3,
+      "access_attempts": 4,
+      "access_failures": 2,
+      "primary_recovery_attempts": 0,
+      "primary_recovery_success": 0,
+      "generated_at": "2026-08-28T02:52:36.294143+00:00",
+      "field_coverage_rate": 1.0,
+      "known_field_rate": 1.0,
+      "expected_to_verified_promotion_rate": null,
+      "source_yield_rate": 0.6667,
+      "access_failure_rate": 0.5,
+      "primary_recovery_success_rate": null
+    },
+    "observation_metrics": {
+      "run_count": 11,
+      "discovered_count": 6,
+      "rawpost_new_count": 3,
+      "rawpost_duplicate_count": 3,
+      "acquisition_attempt_count": 4,
+      "acquisition_success_count": 2,
+      "acquisition_failure_count": 2,
+      "recovery_attempt_count": 3,
+      "recovery_success_count": 1,
+      "source_yield_rate": 0.5,
+      "access_failure_rate": 0.5,
+      "recovery_success_rate": 0.3333
+    },
+    "operations_summary": {
+      "health": "YELLOW",
+      "event_confidence_distribution": {
+        "HIGH_CONFIDENCE": 1
+      },
+      "field_confidence_distribution": {
+        "VERIFIED": 4
+      },
+      "source_operations": [
+        {
+          "source_id": "SRC-D-001",
+          "name": "외부홍보게시판(파티)",
+          "platform": "DAUM_CAFE",
+          "authority_level": "SECONDARY",
+          "access_state": "UNKNOWN",
+          "discovered": 0,
+          "rawpost_new": 0,
+          "source_yield_rate": null,
+          "acquisition_attempts": 0,
+          "acquisition_failures": 0,
+          "access_failure_rate": null,
+          "recovery_attempts": 0,
+          "recovery_success": 0,
+          "recovery_success_rate": null
+        },
+        {
+          "source_id": "SRC-D-002",
+          "name": "홍보게시판",
+          "platform": "DAUM_CAFE",
+          "authority_level": "SECONDARY",
+          "access_state": "UNKNOWN",
+          "discovered": 0,
+          "rawpost_new": 0,
+          "source_yield_rate": null,
+          "acquisition_attempts": 0,
+          "acquisition_failures": 0,
+          "access_failure_rate": null,
+          "recovery_attempts": 0,
+          "recovery_success": 0,
+          "recovery_success_rate": null
+        },
+        {
+          "source_id": "SRC-F-001",
+          "name": "Tango Club Ocho",
+          "platform": "FACEBOOK",
+          "authority_level": "PRIMARY_VENUE",
+          "access_state": "ACCESS_LIMITED",
+          "discovered": 0,
+          "rawpost_new": 0,
+          "source_yield_rate": null,
+          "acquisition_attempts": 0,
+          "acquisition_failures": 0,
+          "access_failure_rate": null,
+          "recovery_attempts": 0,
+          "recovery_success": 0,
+          "recovery_success_rate": null
+        },
+        {
+          "source_id": "SRC-F-002",
+          "name": "Tango O Nada",
+          "platform": "FACEBOOK",
+          "authority_level": "PRIMARY_ORGANIZER",
+          "access_state": "ACCESS_LIMITED",
+          "discovered": 0,
+          "rawpost_new": 0,
+          "source_yield_rate": null,
+          "acquisition_attempts": 0,
+          "acquisition_failures": 0,
+          "access_failure_rate": null,
+          "recovery_attempts": 0,
+          "recovery_success": 0,
+          "recovery_success_rate": null
+        },
+        {
+          "source_id": "SRC-N-001",
+          "name": "전국 밀롱가 정보 블로그",
+          "platform": "NAVER_BLOG",
+          "authority_level": "AGGREGATOR",
+          "access_state": "LOGIN_REQUIRED",
+          "discovered": 4,
+          "rawpost_new": 2,
+          "source_yield_rate": 0.5,
+          "acquisition_attempts": 3,
+          "acquisition_failures": 2,
+          "access_failure_rate": 0.6667,
+          "recovery_attempts": 2,
+          "recovery_success": 0,
+          "recovery_success_rate": 0.0
+        },
+        {
+          "source_id": "SRC-N-002",
+          "name": "네이버카페 탱고 정보",
+          "platform": "NAVER_CAFE",
+          "authority_level": "SECONDARY",
+          "access_state": "UNKNOWN",
+          "discovered": 2,
+          "rawpost_new": 1,
+          "source_yield_rate": 0.5,
+          "acquisition_attempts": 1,
+          "acquisition_failures": 0,
+          "access_failure_rate": 0.0,
+          "recovery_attempts": 1,
+          "recovery_success": 1,
+          "recovery_success_rate": 1.0
+        }
+      ],
+      "recovery_status": {
+        "PENDING": 1,
+        "RESOLVED": 1
+      },
+      "human_review_queue": [
+        {
+          "type": "EVENT_REVIEW",
+          "review_key": "EVENT:1",
+          "event_instance_id": 1,
+          "event_name": "pista",
+          "reason": "EVENT_HIGH_CONFIDENCE",
+          "review_state": null,
+          "priority": "NORMAL"
+        },
+        {
+          "type": "RECOVERY_REVIEW",
+          "review_key": "RECOVERY:1",
+          "recovery_id": 1,
+          "source_id": "SRC-N-001",
+          "event_hint": "9월 탱고 초급 강습 모집",
+          "reason": "BODY_UNAVAILABLE",
+          "state": "PENDING",
+          "review_state": null,
+          "priority": "HIGH"
+        }
+      ],
+      "human_review_count": 2,
+      "human_review_high_priority_count": 1,
+      "p0_errors": [],
+      "p0_count": 0,
+      "human_in_loop_metrics": {
+        "review_count": 1,
+        "action_distribution": {
+          "APPROVE": 0,
+          "MODIFY": 1,
+          "REJECT": 0,
+          "HOLD": 0
+        },
+        "type_distribution": {
+          "EVENT": 0,
+          "FIELD": 1,
+          "RECOVERY": 0
+        },
+        "manual_correction_rate": 1.0,
+        "machine_human_disagreement_rate": 1.0,
+        "manual_verified_override_rate": 1.0,
+        "approval_rate": 0.0,
+        "rejection_rate": 0.0,
+        "hold_rate": 0.0,
+        "average_review_turnaround_seconds": 0.69,
+        "evidence_backed_resolution_rate": 1.0,
+        "reviewer_reliability_status": "PROXY_ONLY",
+        "reviewer_reliability_note": "True reviewer reliability requires later adjudication or independent ground truth; current metric is evidence-backed resolution rate only.",
+        "reviewers": [
+          {
+            "actor": "operator",
+            "total_reviews": 1,
+            "approved": 0,
+            "modified": 1,
+            "rejected": 0,
+            "held": 0,
+            "evidence_backed_resolution_rate": 1.0
+          }
+        ]
+      },
+      "correction_hotspots": {
+        "field_hotspots": [
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "field": "fee"
+          }
+        ],
+        "source_hotspots": [
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-001",
+            "source_name": "전국 밀롱가 정보 블로그",
+            "platform": "NAVER_BLOG",
+            "authority_level": "AGGREGATOR",
+            "access_state": "LOGIN_REQUIRED"
+          },
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-002",
+            "source_name": "네이버카페 탱고 정보",
+            "platform": "NAVER_CAFE",
+            "authority_level": "SECONDARY",
+            "access_state": "UNKNOWN"
+          }
+        ],
+        "source_field_hotspots": [
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-001",
+            "source_name": "전국 밀롱가 정보 블로그",
+            "platform": "NAVER_BLOG",
+            "field": "fee"
+          },
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-002",
+            "source_name": "네이버카페 탱고 정보",
+            "platform": "NAVER_CAFE",
+            "field": "fee"
+          }
+        ],
+        "top_hotspots": [
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-001",
+            "source_name": "전국 밀롱가 정보 블로그",
+            "platform": "NAVER_BLOG",
+            "field": "fee",
+            "hotspot_score": 4,
+            "priority": "P2"
+          },
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-002",
+            "source_name": "네이버카페 탱고 정보",
+            "platform": "NAVER_CAFE",
+            "field": "fee",
+            "hotspot_score": 4,
+            "priority": "P2"
+          }
+        ],
+        "disagreement_examples": [
+          {
+            "action_id": 1,
+            "event_instance_id": 1,
+            "field": "fee",
+            "sources": [
+              "SRC-N-001",
+              "SRC-N-002"
+            ],
+            "action": "MODIFY",
+            "old": {
+              "field_state_id": 4,
+              "event_instance_id": 1,
+              "field_name": "fee",
+              "value": "13000",
+              "confidence": "VERIFIED",
+              "evidence_ids_json": "[]",
+              "expected_value": null,
+              "verified_value": "13000",
+              "source_scope": "RECOVERY",
+              "updated_at": "2026-08-28T02:52:33.796745+00:00"
+            },
+            "new": {
+              "field_state_id": 4,
+              "event_instance_id": 1,
+              "field_name": "fee",
+              "value": "13000",
+              "confidence": "VERIFIED",
+              "evidence_ids_json": "[]",
+              "expected_value": null,
+              "verified_value": "13000",
+              "source_scope": "HUMAN_REVIEW",
+              "updated_at": "2026-08-28 02:52:34"
+            },
+            "reason": null,
+            "actor": "operator"
+          }
+        ],
+        "interpretation": {
+          "correction_rate": "(MODIFY+REJECT)/all field reviews",
+          "hotspot_score": "3*(MODIFY+REJECT) + 2*HOLD + all reviews",
+          "priority": "P1>=6, P2>=3, else P3"
+        }
+      },
+      "improvement_backlog": {
+        "backlog": [
+          {
+            "rank": 1,
+            "priority": "P2",
+            "confidence": "LOW",
+            "source_id": "SRC-N-001",
+            "source_name": "전국 밀롱가 정보 블로그",
+            "field": "fee",
+            "hotspot_score": 4,
+            "review_count": 1,
+            "correction_rate": 1.0,
+            "problem_statement": "SRC-N-001의 fee에서 Human Review 수정/기각이 1건 발생",
+            "recommended_epics": [
+              {
+                "component": "EVIDENCE/FEE",
+                "title": "Fee occurrence-level verification 강화",
+                "actions": [
+                  "당일 Poster/Organizer 공지에서 fee를 우선 추출",
+                  "정기/과거 fee를 EXPECTED로 격리하고 당일 근거 없이는 VERIFIED 금지",
+                  "Poster Evidence가 있으면 fee parser 우선 실행"
+                ]
+              },
+              {
+                "component": "COLLECTOR/NAVER_BLOG",
+                "title": "Naver Blog 추출 안정화",
+                "actions": [
+                  "본문 획득 실패/로그인 shell 탐지 강화",
+                  "metadata-only 결과를 VERIFIED에 사용하지 않음",
+                  "poster/media fallback 경로 우선"
+                ]
+              }
+            ],
+            "acceptance_criteria": [
+              "동일 correction fixture에서 기계 결과와 Human 수정값이 일치",
+              "새 regression test 추가 및 전체 pytest PASS",
+              "같은 Source×Field hotspot correction rate가 후속 표본에서 감소",
+              "VERIFIED 승격 시 Evidence Model/P0 규칙 우회 없음"
+            ]
+          },
+          {
+            "rank": 2,
+            "priority": "P2",
+            "confidence": "LOW",
+            "source_id": "SRC-N-002",
+            "source_name": "네이버카페 탱고 정보",
+            "field": "fee",
+            "hotspot_score": 4,
+            "review_count": 1,
+            "correction_rate": 1.0,
+            "problem_statement": "SRC-N-002의 fee에서 Human Review 수정/기각이 1건 발생",
+            "recommended_epics": [
+              {
+                "component": "EVIDENCE/FEE",
+                "title": "Fee occurrence-level verification 강화",
+                "actions": [
+                  "당일 Poster/Organizer 공지에서 fee를 우선 추출",
+                  "정기/과거 fee를 EXPECTED로 격리하고 당일 근거 없이는 VERIFIED 금지",
+                  "Poster Evidence가 있으면 fee parser 우선 실행"
+                ]
+              },
+              {
+                "component": "COLLECTOR/NAVER_CAFE",
+                "title": "Naver Cafe 본문/게시판 수집 규칙 정밀화",
+                "actions": [
+                  "게시판별 selector 분리",
+                  "중복 홍보글 dedup 강화",
+                  "본문 vs 제목/snippet confidence 분리"
+                ]
+              }
+            ],
+            "acceptance_criteria": [
+              "동일 correction fixture에서 기계 결과와 Human 수정값이 일치",
+              "새 regression test 추가 및 전체 pytest PASS",
+              "같은 Source×Field hotspot correction rate가 후속 표본에서 감소",
+              "VERIFIED 승격 시 Evidence Model/P0 규칙 우회 없음"
+            ]
+          }
+        ],
+        "source_hotspots": [
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-001",
+            "source_name": "전국 밀롱가 정보 블로그",
+            "platform": "NAVER_BLOG",
+            "authority_level": "AGGREGATOR",
+            "access_state": "LOGIN_REQUIRED"
+          },
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "source_id": "SRC-N-002",
+            "source_name": "네이버카페 탱고 정보",
+            "platform": "NAVER_CAFE",
+            "authority_level": "SECONDARY",
+            "access_state": "UNKNOWN"
+          }
+        ],
+        "field_hotspots": [
+          {
+            "reviews": 1,
+            "modifications": 1,
+            "rejections": 0,
+            "holds": 0,
+            "approvals": 0,
+            "correction_rate": 1.0,
+            "modify_rate": 1.0,
+            "reject_rate": 0.0,
+            "hold_rate": 0.0,
+            "approval_rate": 0.0,
+            "field": "fee"
+          }
+        ],
+        "policy": {
+          "priority_from_hotspot": "P1/P2/P3 그대로 사용",
+          "confidence_by_sample": "LOW<3, MEDIUM<10, HIGH>=10 reviews",
+          "do_not_overfit": "LOW confidence backlog는 구조 개선 후보로만 사용하고 통계적 결론으로 간주하지 않음"
+        }
+      },
+      "backlog_lifecycle": {
+        "items": [
+          {
+            "backlog_id": 1,
+            "backlog_uuid": "d4263092-82fb-4953-a3a1-cd958d631690",
+            "source_id": "SRC-N-001",
+            "field_name": "fee",
+            "title": "Fee occurrence-level verification 강화",
+            "priority": "P2",
+            "sample_confidence": "LOW",
+            "hotspot_score": 4,
+            "goal_profile": "FIELD_QUALITY",
+            "goal_weights_json": "{\"correction_rate\": 3.0, \"field_coverage_rate\": 2.0, \"known_field_rate\": 1.5, \"access_failure_rate\": 0.5, \"source_yield_rate\": 0.5, \"recovery_success_rate\": 0.5}",
+            "status": "OPEN",
+            "created_at": "2026-08-28T02:52:35.044373+00:00",
+            "updated_at": "2026-08-28T02:52:35.044373+00:00",
+            "opened_by": "system",
+            "owner": null,
+            "rejection_reason": null,
+            "metadata_json": "{\"recommendation\": {\"rank\": 1, \"priority\": \"P2\", \"confidence\": \"LOW\", \"source_id\": \"SRC-N-001\", \"source_name\": \"전국 밀롱가 정보 블로그\", \"field\": \"fee\", \"hotspot_score\": 4, \"review_count\": 1, \"correction_rate\": 1.0, \"problem_statement\": \"SRC-N-001의 fee에서 Human Review 수정/기각이 1건 발생\", \"recommended_epics\": [{\"component\": \"EVIDENCE/FEE\", \"title\": \"Fee occurrence-level verification 강화\", \"actions\": [\"당일 Poster/Organizer 공지에서 fee를 우선 추출\", \"정기/과거 fee를 EXPECTED로 격리하고 당일 근거 없이는 VERIFIED 금지\", \"Poster Evidence가 있으면 fee parser 우선 실행\"]}, {\"component\": \"COLLECTOR/NAVER_BLOG\", \"title\": \"Naver Blog 추출 안정화\", \"actions\": [\"본문 획득 실패/로그인 shell 탐지 강화\", \"metadata-only 결과를 VERIFIED에 사용하지 않음\", \"poster/media fallback 경로 우선\"]}], \"acceptance_criteria\": [\"동일 correction fixture에서 기계 결과와 Human 수정값이 일치\", \"새 regression test 추가 및 전체 pytest PASS\", \"같은 Source×Field hotspot correction rate가 후속 표본에서 감소\", \"VERIFIED 승격 시 Evidence Model/P0 규칙 우회 없음\"]}}"
+          },
+          {
+            "backlog_id": 2,
+            "backlog_uuid": "4781c154-8ce8-45d6-8a69-ad157efd0f80",
+            "source_id": "SRC-N-002",
+            "field_name": "fee",
+            "title": "Fee occurrence-level verification 강화",
+            "priority": "P2",
+            "sample_confidence": "LOW",
+            "hotspot_score": 4,
+            "goal_profile": "FIELD_QUALITY",
+            "goal_weights_json": "{\"correction_rate\": 3.0, \"field_coverage_rate\": 2.0, \"known_field_rate\": 1.5, \"access_failure_rate\": 0.5, \"source_yield_rate\": 0.5, \"recovery_success_rate\": 0.5}",
+            "status": "OPEN",
+            "created_at": "2026-08-28T02:52:35.046521+00:00",
+            "updated_at": "2026-08-28T02:52:35.046521+00:00",
+            "opened_by": "system",
+            "owner": null,
+            "rejection_reason": null,
+            "metadata_json": "{\"recommendation\": {\"rank\": 2, \"priority\": \"P2\", \"confidence\": \"LOW\", \"source_id\": \"SRC-N-002\", \"source_name\": \"네이버카페 탱고 정보\", \"field\": \"fee\", \"hotspot_score\": 4, \"review_count\": 1, \"correction_rate\": 1.0, \"problem_statement\": \"SRC-N-002의 fee에서 Human Review 수정/기각이 1건 발생\", \"recommended_epics\": [{\"component\": \"EVIDENCE/FEE\", \"title\": \"Fee occurrence-level verification 강화\", \"actions\": [\"당일 Poster/Organizer 공지에서 fee를 우선 추출\", \"정기/과거 fee를 EXPECTED로 격리하고 당일 근거 없이는 VERIFIED 금지\", \"Poster Evidence가 있으면 fee parser 우선 실행\"]}, {\"component\": \"COLLECTOR/NAVER_CAFE\", \"title\": \"Naver Cafe 본문/게시판 수집 규칙 정밀화\", \"actions\": [\"게시판별 selector 분리\", \"중복 홍보글 dedup 강화\", \"본문 vs 제목/snippet confidence 분리\"]}], \"acceptance_criteria\": [\"동일 correction fixture에서 기계 결과와 Human 수정값이 일치\", \"새 regression test 추가 및 전체 pytest PASS\", \"같은 Source×Field hotspot correction rate가 후속 표본에서 감소\", \"VERIFIED 승격 시 Evidence Model/P0 규칙 우회 없음\"]}}"
+          }
+        ]
+      },
+      "change_traceability": {
+        "changes": [
+          {
+            "change_id": 1,
+            "change_uuid": "29235316-8b9f-4769-b2fb-e492257626c1",
+            "backlog_id": 1,
+            "title": "Fee occurrence evidence rule 강화",
+            "description": null,
+            "component": "EVIDENCE/FEE",
+            "version_label": "v0.33",
+            "actor": "신프로",
+            "applied_at": "2026-08-28T02:52:35.599526+00:00",
+            "metadata_json": "{}",
+            "source_id": "SRC-N-001",
+            "field_name": "fee",
+            "priority": "P2",
+            "backlog_status": "OPEN"
+          }
+        ],
+        "verdicts": [],
+        "shadow_verdicts": [],
+        "shadow_safety": {
+          "policy_version": "v0.31",
+          "goal_profile": null,
+          "status": "OBSERVING",
+          "confusion_matrix": {
+            "IMPROVED": {
+              "IMPROVED": 0,
+              "REGRESSED": 0,
+              "INCONCLUSIVE": 0
+            },
+            "REGRESSED": {
+              "IMPROVED": 0,
+              "REGRESSED": 0,
+              "INCONCLUSIVE": 0
+            },
+            "INCONCLUSIVE": {
+              "IMPROVED": 0,
+              "REGRESSED": 0,
+              "INCONCLUSIVE": 0
+            }
+          },
+          "total": 0,
+          "agreements": 0,
+          "disagreements": 0,
+          "agreement_rate": null,
+          "critical_false_improved": 0,
+          "unsafe_improved": 0,
+          "conservative_false_regressed": 0,
+          "minimum_samples": 20,
+          "minimum_agreement_rate": 0.9,
+          "automatic_promotion": false,
+          "reasons": [
+            "Shadow samples 0 < minimum 20"
+          ]
+        },
+        "rolling_shadow_stability": {
+          "policy_version": "v0.32",
+          "goal_profile": null,
+          "status": "OBSERVING",
+          "cumulative_status": "OBSERVING",
+          "total_samples": 0,
+          "previous_status": null,
+          "downgrade_detected": false,
+          "windows": {
+            "7": {
+              "window_size": 7,
+              "sample_count": 0,
+              "status": "OBSERVING",
+              "confusion_matrix": {
+                "IMPROVED": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                },
+                "REGRESSED": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                },
+                "INCONCLUSIVE": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                }
+              },
+              "total": 0,
+              "agreements": 0,
+              "disagreements": 0,
+              "agreement_rate": null,
+              "critical_false_improved": 0,
+              "unsafe_improved": 0,
+              "conservative_false_regressed": 0
+            },
+            "14": {
+              "window_size": 14,
+              "sample_count": 0,
+              "status": "OBSERVING",
+              "confusion_matrix": {
+                "IMPROVED": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                },
+                "REGRESSED": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                },
+                "INCONCLUSIVE": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                }
+              },
+              "total": 0,
+              "agreements": 0,
+              "disagreements": 0,
+              "agreement_rate": null,
+              "critical_false_improved": 0,
+              "unsafe_improved": 0,
+              "conservative_false_regressed": 0
+            },
+            "30": {
+              "window_size": 30,
+              "sample_count": 0,
+              "status": "OBSERVING",
+              "confusion_matrix": {
+                "IMPROVED": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                },
+                "REGRESSED": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                },
+                "INCONCLUSIVE": {
+                  "IMPROVED": 0,
+                  "REGRESSED": 0,
+                  "INCONCLUSIVE": 0
+                }
+              },
+              "total": 0,
+              "agreements": 0,
+              "disagreements": 0,
+              "agreement_rate": null,
+              "critical_false_improved": 0,
+              "unsafe_improved": 0,
+              "conservative_false_regressed": 0
+            }
+          },
+          "cumulative": {
+            "policy_version": "v0.31",
+            "goal_profile": null,
+            "status": "OBSERVING",
+            "confusion_matrix": {
+              "IMPROVED": {
+                "IMPROVED": 0,
+                "REGRESSED": 0,
+                "INCONCLUSIVE": 0
+              },
+              "REGRESSED": {
+                "IMPROVED": 0,
+                "REGRESSED": 0,
+                "INCONCLUSIVE": 0
+              },
+              "INCONCLUSIVE": {
+                "IMPROVED": 0,
+                "REGRESSED": 0,
+                "INCONCLUSIVE": 0
+              }
+            },
+            "total": 0,
+            "agreements": 0,
+            "disagreements": 0,
+            "agreement_rate": null,
+            "critical_false_improved": 0,
+            "unsafe_improved": 0,
+            "conservative_false_regressed": 0,
+            "minimum_samples": 20,
+            "minimum_agreement_rate": 0.9,
+            "automatic_promotion": false,
+            "reasons": [
+              "Shadow samples 0 < minimum 20"
+            ]
+          },
+          "promotion_candidate": null,
+          "automatic_promotion": false,
+          "reasons": [
+            "Cumulative Safety status is OBSERVING"
+          ]
+        },
+        "promotion_candidates": [],
+        "promotion_reviews": [],
+        "promotion_leases": [],
+        "promotion_lease_events": []
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "version": "0.2",
+  "collector": "DAUM_CAFE_SEARCH",
+  "mode": "snapshot",
+  "generated_at": "2026-08-26T20:08:39.900764+00:00",
+  "sources": [
+    {
+      "source_id": "SRC-D-001",
+      "source": "외부홍보게시판(파티)",
+      "mode": "snapshot",
+      "discovered": 1,
+      "new": 0,
+      "duplicates": 1,
+      "processed": [],
+      "status": "PASS"
+    },
+    {
+      "source_id": "SRC-D-002",
+      "source": "홍보게시판",
+      "mode": "snapshot",
+      "discovered": 1,
+      "new": 0,
+      "duplicates": 1,
+      "processed": [],
+      "status": "PASS"
+    }
+  ]
+}

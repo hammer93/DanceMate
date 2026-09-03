@@ -1,0 +1,73 @@
+{
+  "version": "0.11",
+  "media": [
+    {
+      "url": "https://cdn.example.com/sueno_thursday_schedule_2026-08-27.jpg",
+      "expected": "EVENT_POSTER",
+      "actual": "EVENT_POSTER",
+      "reason": "event_or_schedule_hint"
+    },
+    {
+      "url": "https://cdn.example.com/ocho_logo.png",
+      "expected": "LOGO",
+      "actual": "LOGO",
+      "reason": "explicit_logo_hint"
+    },
+    {
+      "url": "https://cdn.example.com/onada_logo.png",
+      "expected": "LOGO",
+      "actual": "LOGO",
+      "reason": "explicit_logo_hint"
+    },
+    {
+      "url": "https://cdn.example.com/andante_space.jpg",
+      "expected": "VENUE_IMAGE",
+      "actual": "VENUE_IMAGE",
+      "reason": "venue_hint"
+    }
+  ],
+  "sources": [
+    {
+      "input": {
+        "source_role": "PRIMARY_VENUE",
+        "status": "PARTIAL",
+        "http_status": 200,
+        "body_available": false,
+        "expected_authority": "PRIMARY_VENUE",
+        "expected_access": "LOGIN_REQUIRED"
+      },
+      "actual_authority": "PRIMARY_VENUE",
+      "actual_access": "LOGIN_REQUIRED",
+      "can_verify_event": false,
+      "requires_recovery": true
+    },
+    {
+      "input": {
+        "source_role": "PRIMARY_VENUE",
+        "status": "FAILED",
+        "http_status": 403,
+        "body_available": false,
+        "expected_authority": "PRIMARY_VENUE",
+        "expected_access": "ACCESS_LIMITED"
+      },
+      "actual_authority": "PRIMARY_VENUE",
+      "actual_access": "ACCESS_LIMITED",
+      "can_verify_event": false,
+      "requires_recovery": true
+    },
+    {
+      "input": {
+        "source_role": "AGGREGATOR",
+        "status": "FULL",
+        "http_status": 200,
+        "body_available": true,
+        "expected_authority": "AGGREGATOR",
+        "expected_access": "OPEN"
+      },
+      "actual_authority": "AGGREGATOR",
+      "actual_access": "OPEN",
+      "can_verify_event": false,
+      "requires_recovery": false
+    }
+  ]
+}

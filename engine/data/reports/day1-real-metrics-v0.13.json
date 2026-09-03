@@ -1,0 +1,25 @@
+{
+  "version": "0.13",
+  "metrics": {
+    "event_count": 4,
+    "high_confidence": 3,
+    "possible": 1,
+    "core_field_total": 16,
+    "verified_fields": 12,
+    "expected_fields": 3,
+    "unknown_fields": 1,
+    "field_coverage_rate": 0.75,
+    "known_field_rate": 0.9375,
+    "fee_verified_rate": 0.0,
+    "fee_expected_rate": 0.75,
+    "observed_primary_access_problem_rate": 1.0,
+    "source_yield_rate": null,
+    "access_failure_rate": null,
+    "primary_recovery_success_rate": null,
+    "measurement_gaps": [
+      "raw post denominator not retained",
+      "complete acquisition-attempt denominator not retained",
+      "recovery denominator not retained"
+    ]
+  }
+}

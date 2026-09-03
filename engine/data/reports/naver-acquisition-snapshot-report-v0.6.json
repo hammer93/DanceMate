@@ -1,0 +1,48 @@
+{
+  "version": "0.6",
+  "mode": "snapshot",
+  "acquisitions": [
+    {
+      "post_id": 1,
+      "source_id": "SRC-N-001",
+      "platform": "NAVER_BLOG",
+      "url": "https://snapshot.local/naver/blog/pista",
+      "status": "FULL",
+      "body_chars": 62,
+      "images": 1,
+      "poster_candidates": 1,
+      "error_code": null,
+      "upgraded": true,
+      "lineage_id": "a7b0e55b-5971-400e-8dc8-cf5295a8a596",
+      "observation_id": 5
+    },
+    {
+      "post_id": 2,
+      "source_id": "SRC-N-001",
+      "platform": "NAVER_BLOG",
+      "url": "https://snapshot.local/naver/blog/class",
+      "status": "PARTIAL",
+      "body_chars": 11,
+      "images": 0,
+      "poster_candidates": 0,
+      "error_code": "BODY_UNAVAILABLE",
+      "upgraded": false,
+      "lineage_id": "a7b0e55b-5971-400e-8dc8-cf5295a8a596",
+      "observation_id": 6
+    },
+    {
+      "post_id": 3,
+      "source_id": "SRC-N-002",
+      "platform": "NAVER_CAFE",
+      "url": "https://snapshot.local/naver/cafe/pista",
+      "status": "BODY_ONLY",
+      "body_chars": 56,
+      "images": 0,
+      "poster_candidates": 0,
+      "error_code": null,
+      "upgraded": true,
+      "lineage_id": "04e0c668-0ca0-41e4-8c4a-8d262946d08b",
+      "observation_id": 7
+    }
+  ]
+}

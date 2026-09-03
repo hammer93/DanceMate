@@ -1,0 +1,493 @@
+{
+  "version": "0.1",
+  "mode": "fixture_replay",
+  "fixtures": [
+    {
+      "fixture": "PISTA",
+      "classification": "MILONGA",
+      "events": [
+        {
+          "name": "💜8/22(토) THE PISTA MILONGA - DJ Hernan",
+          "event_type": "MILONGA",
+          "date": "2026-08-22",
+          "start_time": "19:00",
+          "end_time": "23:00",
+          "end_day_offset": 0,
+          "fee": 13000,
+          "venue": "PISTA",
+          "dj": "Hernan",
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-22",
+              "raw_text": "2026-08-22",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "19:00",
+                "end": "23:00",
+                "end_day_offset": 0
+              },
+              "raw_text": "19:00-23:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "fee",
+              "value": 13000,
+              "raw_text": "입장료 13,000원",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "dj",
+              "value": "Hernan",
+              "raw_text": "DJ Hernan",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "PISTA",
+              "raw_text": "PISTA",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            }
+          ],
+          "status": "VERIFIED",
+          "core_complete": true
+        }
+      ],
+      "pass": true
+    },
+    {
+      "fixture": "ONADA",
+      "classification": "MILONGA",
+      "events": [
+        {
+          "name": "Tango O Nada (땅고 오나다) 2026.08.07 Friday",
+          "event_type": "MILONGA",
+          "date": "2026-08-07",
+          "start_time": "21:00",
+          "end_time": "02:00",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "Tango O Nada",
+          "dj": "태양",
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-07",
+              "raw_text": "2026.08.07",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY",
+              "inference": null
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "21:00",
+                "end": "02:00",
+                "end_day_offset": 1
+              },
+              "raw_text": "09:00 pm to 02:00 am",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY",
+              "inference": null
+            },
+            {
+              "field": "dj",
+              "value": "태양",
+              "raw_text": "DJ 태양",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "Tango O Nada",
+              "raw_text": "O Nada/오나다",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        }
+      ],
+      "pass": true
+    },
+    {
+      "fixture": "OCHO",
+      "classification": "MILONGA",
+      "events": [
+        {
+          "name": "무초밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-24",
+          "start_time": "20:00",
+          "end_time": "00:00",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-24",
+              "raw_text": "8/24",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "20:00",
+                "end": "00:00",
+                "end_day_offset": 1
+              },
+              "raw_text": "20:00-24:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "까사밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-25",
+          "start_time": "20:00",
+          "end_time": "00:00",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-25",
+              "raw_text": "8/25",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "20:00",
+                "end": "00:00",
+                "end_day_offset": 1
+              },
+              "raw_text": "20:00-24:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "수달려용밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-26",
+          "start_time": "20:00",
+          "end_time": "00:00",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-26",
+              "raw_text": "8/26",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "20:00",
+                "end": "00:00",
+                "end_day_offset": 1
+              },
+              "raw_text": "20:00-24:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "서울밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-27",
+          "start_time": "20:00",
+          "end_time": "00:30",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-27",
+              "raw_text": "8/27",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "20:00",
+                "end": "00:30",
+                "end_day_offset": 1
+              },
+              "raw_text": "20:00-24:30 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "그리셀밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-28",
+          "start_time": "20:00",
+          "end_time": "02:00",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-28",
+              "raw_text": "8/28",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "20:00",
+                "end": "02:00",
+                "end_day_offset": 1
+              },
+              "raw_text": "20:00-02:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "토이프밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-29",
+          "start_time": "20:00",
+          "end_time": "02:00",
+          "end_day_offset": 1,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-29",
+              "raw_text": "8/29",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "20:00",
+                "end": "02:00",
+                "end_day_offset": 1
+              },
+              "raw_text": "20:00-02:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "일루미밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-30",
+          "start_time": "14:00",
+          "end_time": "18:00",
+          "end_day_offset": 0,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-30",
+              "raw_text": "8/30",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "14:00",
+                "end": "18:00",
+                "end_day_offset": 0
+              },
+              "raw_text": "14:00-18:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        },
+        {
+          "name": "허그밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-30",
+          "start_time": "19:00",
+          "end_time": "23:00",
+          "end_day_offset": 0,
+          "fee": null,
+          "venue": "OCHO",
+          "dj": null,
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-30",
+              "raw_text": "8/30",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "19:00",
+                "end": "23:00",
+                "end_day_offset": 0
+              },
+              "raw_text": "19:00-23:00 ",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "OCHO",
+              "raw_text": "OCHO",
+              "evidence_type": "TEXT",
+              "source_role": "PRIMARY_VENUE",
+              "inference": null
+            }
+          ],
+          "status": "POSSIBLE",
+          "core_complete": false
+        }
+      ],
+      "pass": true
+    },
+    {
+      "fixture": "LESSON",
+      "classification": "CLASS",
+      "events": [],
+      "pass": true
+    }
+  ],
+  "summary": {
+    "total": 4,
+    "passed": 4,
+    "failed": 0,
+    "gate": "PASS"
+  }
+}

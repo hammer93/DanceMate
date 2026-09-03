@@ -1,0 +1,95 @@
+{
+  "version": "0.7",
+  "event": {
+    "event_instance_id": 1,
+    "identity_key": "2026-08-29|pista|pista",
+    "normalized_name": "pista",
+    "event_date": "2026-08-29",
+    "normalized_venue": "pista",
+    "status": "CANCELLED",
+    "source_count": 1,
+    "created_at": "2026-08-26T20:51:18.560276+00:00",
+    "updated_at": "2026-08-26T20:51:18.574840+00:00"
+  },
+  "update": {
+    "revision_id": 2,
+    "role": "UPDATE",
+    "field_changes": {
+      "status": {
+        "from": "VERIFIED",
+        "to": "UPDATED"
+      },
+      "start_time": {
+        "to": "21:00"
+      }
+    },
+    "status_after": "UPDATED"
+  },
+  "cancellation": {
+    "revision_id": 3,
+    "role": "CANCELLATION",
+    "field_changes": {
+      "status": {
+        "from": "UPDATED",
+        "to": "CANCELLED"
+      }
+    },
+    "status_after": "CANCELLED"
+  },
+  "refresh_checks": [
+    {
+      "event_instance_id": 1,
+      "status_before": "VERIFIED",
+      "status_after": "UPDATED",
+      "change_detected": true,
+      "cancellation_detected": false,
+      "critical_miss": false
+    },
+    {
+      "event_instance_id": 1,
+      "status_before": "UPDATED",
+      "status_after": "CANCELLED",
+      "change_detected": true,
+      "cancellation_detected": true,
+      "critical_miss": false
+    }
+  ],
+  "revisions": [
+    {
+      "revision_id": 1,
+      "event_instance_id": 1,
+      "candidate_id": 11,
+      "source_id": "SRC-D-001",
+      "revision_role": "ORIGINAL",
+      "effective_at": null,
+      "observed_at": "2026-08-26T20:51:18.567414+00:00",
+      "field_changes_json": "{\"status\": {\"to\": \"VERIFIED\"}}",
+      "raw_summary": "8월 29일 더 피스타 밀롱가 20:00~24:00 입장료 13,000원 홍대 PISTA",
+      "is_current": 0
+    },
+    {
+      "revision_id": 2,
+      "event_instance_id": 1,
+      "candidate_id": 11,
+      "source_id": "SRC-D-001",
+      "revision_role": "UPDATE",
+      "effective_at": null,
+      "observed_at": "2026-08-26T20:51:18.571902+00:00",
+      "field_changes_json": "{\"status\": {\"from\": \"VERIFIED\", \"to\": \"UPDATED\"}, \"start_time\": {\"to\": \"21:00\"}}",
+      "raw_summary": "오늘만 시작 시간 변경합니다. 21시 시작입니다. 장소는 홍대 PISTA 그대로입니다.",
+      "is_current": 0
+    },
+    {
+      "revision_id": 3,
+      "event_instance_id": 1,
+      "candidate_id": 11,
+      "source_id": "SRC-D-001",
+      "revision_role": "CANCELLATION",
+      "effective_at": null,
+      "observed_at": "2026-08-26T20:51:18.576157+00:00",
+      "field_changes_json": "{\"status\": {\"from\": \"UPDATED\", \"to\": \"CANCELLED\"}}",
+      "raw_summary": "금일 개인 사정으로 더 피스타 밀롱가 취소합니다.",
+      "is_current": 1
+    }
+  ]
+}

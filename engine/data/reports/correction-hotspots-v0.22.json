@@ -1,0 +1,171 @@
+{
+  "version": "0.22",
+  "analysis": {
+    "field_hotspots": [
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "field": "fee"
+      }
+    ],
+    "source_hotspots": [
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-001",
+        "source_name": "전국 밀롱가 정보 블로그",
+        "platform": "NAVER_BLOG",
+        "authority_level": "AGGREGATOR",
+        "access_state": "LOGIN_REQUIRED"
+      },
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-002",
+        "source_name": "네이버카페 탱고 정보",
+        "platform": "NAVER_CAFE",
+        "authority_level": "SECONDARY",
+        "access_state": "OPEN"
+      }
+    ],
+    "source_field_hotspots": [
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-001",
+        "source_name": "전국 밀롱가 정보 블로그",
+        "platform": "NAVER_BLOG",
+        "field": "fee"
+      },
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-002",
+        "source_name": "네이버카페 탱고 정보",
+        "platform": "NAVER_CAFE",
+        "field": "fee"
+      }
+    ],
+    "top_hotspots": [
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-001",
+        "source_name": "전국 밀롱가 정보 블로그",
+        "platform": "NAVER_BLOG",
+        "field": "fee",
+        "hotspot_score": 4,
+        "priority": "P2"
+      },
+      {
+        "reviews": 1,
+        "modifications": 1,
+        "rejections": 0,
+        "holds": 0,
+        "approvals": 0,
+        "correction_rate": 1.0,
+        "modify_rate": 1.0,
+        "reject_rate": 0.0,
+        "hold_rate": 0.0,
+        "approval_rate": 0.0,
+        "source_id": "SRC-N-002",
+        "source_name": "네이버카페 탱고 정보",
+        "platform": "NAVER_CAFE",
+        "field": "fee",
+        "hotspot_score": 4,
+        "priority": "P2"
+      }
+    ],
+    "disagreement_examples": [
+      {
+        "action_id": 2,
+        "event_instance_id": 1,
+        "field": "fee",
+        "sources": [
+          "SRC-N-001",
+          "SRC-N-002"
+        ],
+        "action": "MODIFY",
+        "old": {
+          "field_state_id": 4,
+          "event_instance_id": 1,
+          "field_name": "fee",
+          "value": "13000",
+          "confidence": "VERIFIED",
+          "evidence_ids_json": "[]",
+          "expected_value": null,
+          "verified_value": "13000",
+          "source_scope": "RECOVERY",
+          "updated_at": "2026-08-27T08:03:36.656871+00:00"
+        },
+        "new": {
+          "field_state_id": 4,
+          "event_instance_id": 1,
+          "field_name": "fee",
+          "value": "13000",
+          "confidence": "VERIFIED",
+          "evidence_ids_json": "[]",
+          "expected_value": null,
+          "verified_value": "13000",
+          "source_scope": "HUMAN_REVIEW",
+          "updated_at": "2026-08-27 08:03:45"
+        },
+        "reason": null,
+        "actor": "operator"
+      }
+    ],
+    "interpretation": {
+      "correction_rate": "(MODIFY+REJECT)/all field reviews",
+      "hotspot_score": "3*(MODIFY+REJECT) + 2*HOLD + all reviews",
+      "priority": "P1>=6, P2>=3, else P3"
+    }
+  }
+}

@@ -1,0 +1,1430 @@
+{
+  "version": "0.73",
+  "daum": {
+    "endpoint": "https://dapi.kakao.com/v2/search/cafe",
+    "sort": "recency",
+    "page": 1,
+    "size": 50,
+    "timeout_seconds": 15,
+    "api_key_env": "KAKAO_REST_API_KEY"
+  },
+  "acquisition": {
+    "strategy": "direct_http_then_cross_source_recovery",
+    "full_body_min_chars": 40,
+    "poster_candidate_policy": "all_discovered_images_with_asset_or_attach_hint",
+    "failed_acquisition_action": "enqueue_recovery"
+  },
+  "cross_source_recovery": {
+    "identity": "event_date + normalized venue + normalized event name",
+    "auto_merge_policy": "date exact + venue exact + name similarity",
+    "manual_review_on_ambiguity": true,
+    "source_count_is_not_trust_score": true
+  },
+  "naver": {
+    "blog_endpoint": "https://openapi.naver.com/v1/search/blog.json",
+    "cafe_endpoint": "https://openapi.naver.com/v1/search/cafearticle.json",
+    "display": 100,
+    "start": 1,
+    "sort": "date",
+    "timeout_seconds": 15,
+    "credentials": [
+      "NAVER_CLIENT_ID",
+      "NAVER_CLIENT_SECRET"
+    ],
+    "daily_search_api_limit_note": "25,000 calls/day per Naver Search API documentation"
+  },
+  "metrics": {
+    "full_body_rate": "(FULL + BODY_ONLY) / acquisition_attempts",
+    "poster_rate": "acquisition attempts with >=1 poster candidate / acquisition_attempts",
+    "recovery_success_rate": "RESOLVED / recovery_attempts",
+    "human_review_rate": "(pending recovery + conflicts) / discovered",
+    "note": "PoC rates are operational metrics, not end-user trust scores."
+  },
+  "revision_roles": [
+    "ORIGINAL",
+    "UPDATE",
+    "CANCELLATION"
+  ],
+  "freshness": {
+    "CRITICAL": "<=3h",
+    "HIGH": "<=12h",
+    "MEDIUM": "<=24h",
+    "NORMAL": ">24h",
+    "critical_cancellation_miss_target": 0
+  },
+  "gate1_14d": {
+    "period_days": 14,
+    "pass": {
+      "event_recall_min": 0.85,
+      "verified_precision_min": 0.99,
+      "core_field_accuracy_min": 0.98,
+      "human_touch_rate_max": 0.2,
+      "false_verified_max": 0,
+      "hallucinated_core_field_max": 0,
+      "critical_cancellation_miss_max": 0
+    },
+    "conditional_pass": {
+      "event_recall_min": 0.8,
+      "verified_precision_min": 0.99,
+      "core_field_accuracy_min": 0.98,
+      "human_touch_rate_max": 0.25
+    }
+  },
+  "validation_admin": {
+    "ground_truth_live": "data/validation_runtime/ground_truth_live.csv",
+    "dancemate_results_live": "data/validation_runtime/dancemate_results_live.csv",
+    "workflow": [
+      "gt-add",
+      "export-dm",
+      "reconcile",
+      "daily-report",
+      "rolling-report"
+    ]
+  },
+  "evidence_model": {
+    "version": "0.2",
+    "event_confidence": [
+      "DISCOVERED",
+      "POSSIBLE",
+      "HIGH_CONFIDENCE",
+      "VERIFIED",
+      "CANCELLED",
+      "CONFLICT"
+    ],
+    "field_confidence": [
+      "VERIFIED",
+      "EXPECTED",
+      "INFERRED",
+      "CONFLICT",
+      "UNKNOWN"
+    ],
+    "event_verified_requires_fee_verified": false,
+    "recurring_value_isolation": true,
+    "occurrence_bound_core_evidence": true,
+    "p0": [
+      "FALSE_EVENT_VERIFIED",
+      "FALSE_FIELD_VERIFIED",
+      "HALLUCINATED_CORE_FIELD",
+      "CRITICAL_CANCELLATION_MISS",
+      "EXPECTED_AS_VERIFIED"
+    ]
+  },
+  "media_classification": {
+    "classes": [
+      "EVENT_POSTER",
+      "VENUE_IMAGE",
+      "LOGO",
+      "UNKNOWN"
+    ],
+    "poster_candidate_is_not_evidence": true
+  },
+  "source_model": {
+    "authority_levels": [
+      "PRIMARY_ORGANIZER",
+      "PRIMARY_VENUE",
+      "SECONDARY",
+      "AGGREGATOR",
+      "COMMUNITY",
+      "UNKNOWN"
+    ],
+    "access_states": [
+      "OPEN",
+      "ACCESS_LIMITED",
+      "LOGIN_REQUIRED",
+      "BLOCKED",
+      "FAILED",
+      "UNKNOWN"
+    ],
+    "authority_independent_of_access": true
+  },
+  "evidence_metrics_v2": {
+    "field_coverage_rate": "VERIFIED core fields / total core fields",
+    "known_field_rate": "(VERIFIED+EXPECTED+INFERRED) / total core fields",
+    "expected_to_verified_promotion_rate": "promoted expected fields / expected opportunities",
+    "source_yield_rate": "MILONGA candidates / raw posts",
+    "access_failure_rate": "PARTIAL+FAILED acquisition / acquisition attempts",
+    "primary_recovery_success_rate": "RESOLVED / primary recovery attempts"
+  },
+  "observation_logging": {
+    "complete_denominator_logging": true,
+    "run_types": [
+      "DISCOVERY",
+      "ACQUISITION",
+      "RECOVERY"
+    ],
+    "required_metrics": [
+      "source_yield_rate",
+      "access_failure_rate",
+      "recovery_success_rate"
+    ]
+  },
+  "observation_lineage": {
+    "stages": [
+      "DISCOVERY",
+      "ACQUISITION",
+      "RECOVERY",
+      "EVENT"
+    ],
+    "correlation_required": true,
+    "traceable_to_event_instance": true
+  },
+  "live_lineage_propagation": {
+    "enabled": true,
+    "stages": [
+      "DISCOVERY",
+      "ACQUISITION",
+      "RECOVERY"
+    ],
+    "origin_candidate_before_recovery": true,
+    "event_link": true
+  },
+  "lineage_aware_cli": {
+    "enabled": true,
+    "commands": [
+      "collect-daum",
+      "collect-daum-snapshot",
+      "collect-naver",
+      "collect-naver-snapshot",
+      "acquire-daum",
+      "acquire-daum-snapshot",
+      "acquire-naver",
+      "acquire-naver-snapshot",
+      "recover-naver",
+      "recover-naver-snapshot",
+      "recover-cross-source-snapshot"
+    ],
+    "persist_across_cli_invocations": true,
+    "auto_infer_parent_by_post_id": true
+  },
+  "daily_orchestrator": {
+    "enabled": true,
+    "stages": [
+      "COLLECT",
+      "ACQUIRE",
+      "RECOVER",
+      "METRICS",
+      "REPORT"
+    ],
+    "snapshot_mode_enabled": true,
+    "live_mode_enabled": false,
+    "daily_root_correlation": true
+  },
+  "daily_operations_summary": {
+    "enabled": true,
+    "sections": [
+      "event_confidence_distribution",
+      "field_confidence_distribution",
+      "source_operations",
+      "recovery_status",
+      "human_review_queue",
+      "p0_errors"
+    ],
+    "health": [
+      "GREEN",
+      "YELLOW",
+      "RED"
+    ],
+    "red_if_p0": true,
+    "recovery_evidence_model_enforcement": true
+  },
+  "human_review": {
+    "actions": [
+      "APPROVE",
+      "MODIFY",
+      "REJECT",
+      "HOLD"
+    ],
+    "audit_trail": true,
+    "manual_verified_requires_evidence": true,
+    "review_state_filters_queue": true
+  },
+  "human_in_loop_metrics": {
+    "enabled": true,
+    "metrics": [
+      "manual_correction_rate",
+      "machine_human_disagreement_rate",
+      "manual_verified_override_rate",
+      "approval_rate",
+      "rejection_rate",
+      "hold_rate",
+      "average_review_turnaround_seconds",
+      "evidence_backed_resolution_rate"
+    ],
+    "reviewer_reliability_mode": "PROXY_ONLY",
+    "true_reviewer_reliability_requires_adjudication": true
+  },
+  "correction_hotspot": {
+    "enabled": true,
+    "dimensions": [
+      "field",
+      "source",
+      "source_field"
+    ],
+    "hotspot_score": "3*(MODIFY+REJECT) + 2*HOLD + reviews",
+    "priorities": {
+      "P1": ">=6",
+      "P2": ">=3",
+      "P3": "<3"
+    }
+  },
+  "improvement_backlog": {
+    "enabled": true,
+    "source": "correction_hotspots",
+    "sample_confidence": {
+      "LOW": "<3 reviews",
+      "MEDIUM": "3-9 reviews",
+      "HIGH": ">=10 reviews"
+    },
+    "acceptance_requires_regression_test": true,
+    "verified_rules_must_not_be_bypassed": true
+  },
+  "backlog_lifecycle": {
+    "statuses": [
+      "OPEN",
+      "IN_PROGRESS",
+      "VERIFIED",
+      "REJECTED"
+    ],
+    "capture_before_on": "OPEN->IN_PROGRESS",
+    "capture_after_on": [
+      "IN_PROGRESS->VERIFIED",
+      "IN_PROGRESS->REJECTED"
+    ],
+    "effect_metrics": [
+      "correction_rate",
+      "access_failure_rate",
+      "field_coverage_rate",
+      "known_field_rate",
+      "source_yield_rate",
+      "recovery_success_rate"
+    ]
+  },
+  "change_traceability": {
+    "enabled": true,
+    "flow": "Backlog -> Change -> Daily Run -> Metric Effect",
+    "relations": [
+      "BASELINE",
+      "POST_CHANGE",
+      "VALIDATION"
+    ],
+    "auto_link_unlinked_changes_on_daily_run": true,
+    "effect_metrics": [
+      "correction_rate",
+      "access_failure_rate",
+      "field_coverage_rate",
+      "known_field_rate",
+      "source_yield_rate",
+      "recovery_success_rate"
+    ]
+  },
+  "immutable_daily_metric_snapshot": {
+    "enabled": true,
+    "capture_on_daily_run_pass": true,
+    "hash": "SHA-256 canonical JSON",
+    "one_snapshot_per_daily_run": true,
+    "change_effect_uses_snapshot": true
+  },
+  "automatic_change_effect_verdict": {
+    "enabled": true,
+    "auto_baseline": "latest PASS immutable snapshot before change registration",
+    "auto_post_change": "first completed Daily Run without POST_CHANGE link",
+    "verdicts": [
+      "IMPROVED",
+      "REGRESSED",
+      "INCONCLUSIVE"
+    ],
+    "material_epsilon": 0.01,
+    "lower_is_better": [
+      "correction_rate",
+      "access_failure_rate"
+    ],
+    "higher_is_better": [
+      "field_coverage_rate",
+      "known_field_rate",
+      "source_yield_rate",
+      "recovery_success_rate"
+    ],
+    "minimum_comparable_metrics": 2
+  },
+  "goal_aware_weighted_verdict": {
+    "enabled": true,
+    "profiles": [
+      "FIELD_QUALITY",
+      "SOURCE_ACCESS",
+      "RECOVERY",
+      "BALANCED"
+    ],
+    "weighted_score_thresholds": {
+      "IMPROVED": ">=0.25",
+      "REGRESSED": "<=-0.25",
+      "INCONCLUSIVE": "between"
+    },
+    "primary_goal_regression_guard": true
+  },
+  "explicit_goal_profile": {
+    "stored_on_backlog": true,
+    "fields": [
+      "goal_profile",
+      "goal_weights_json"
+    ],
+    "profiles": [
+      "FIELD_QUALITY",
+      "SOURCE_ACCESS",
+      "RECOVERY",
+      "BALANCED"
+    ]
+  },
+  "adaptive_goal_weighting": {
+    "enabled": true,
+    "mode": "FOUNDATION_CONSERVATIVE",
+    "effective_after_observations": 10,
+    "max_adjustment_pct": 25,
+    "observation_source": "completed change verdict improved/regressed metrics",
+    "automatic_weight_use_before_10_samples": false
+  },
+  "adaptive_shadow_verdict": {
+    "enabled": true,
+    "production_verdict": "BASE_WEIGHTS_ONLY",
+    "shadow_verdict": "LATEST_ADAPTIVE_SUGGESTION",
+    "no_current_sample_leakage": true,
+    "idempotent_per_change_baseline_post_pair": true,
+    "agreement_tracking": true,
+    "promotion_policy": {
+      "minimum_shadow_samples": 20,
+      "minimum_agreement_rate": 0.9,
+      "automatic_promotion": false
+    }
+  },
+  "shadow_safety_gate": {
+    "enabled": true,
+    "policy_version": "v0.31",
+    "statuses": [
+      "OBSERVING",
+      "BLOCKED",
+      "ELIGIBLE"
+    ],
+    "minimum_shadow_samples": 20,
+    "minimum_agreement_rate": 0.9,
+    "critical_false_improved": "BASE=REGRESSED AND SHADOW=IMPROVED",
+    "unsafe_improved": "BASE!=IMPROVED AND SHADOW=IMPROVED",
+    "critical_false_improved_allowed": 0,
+    "unsafe_improved_allowed": 0,
+    "automatic_adaptive_promotion": false
+  },
+  "rolling_shadow_stability_gate": {
+    "enabled": true,
+    "policy_version": "v0.32",
+    "windows": [
+      7,
+      14,
+      30
+    ],
+    "minimum_agreement_rate": 0.9,
+    "minimum_promotion_samples": 20,
+    "recent_windows_required": [
+      "7=STABLE",
+      "14=STABLE",
+      "30=STABLE when >=30 samples"
+    ],
+    "downgrade_detection": "ELIGIBLE -> BLOCKED",
+    "promotion_candidate_generation": true,
+    "automatic_adaptive_promotion": false,
+    "human_approval_required": true
+  },
+  "human_approved_adaptive_promotion": {
+    "enabled": true,
+    "policy_version": "v0.33",
+    "decisions": [
+      "APPROVE",
+      "REJECT",
+      "HOLD"
+    ],
+    "approval_requires_rolling_status": "ELIGIBLE",
+    "approval_requires_adaptive_observations": 10,
+    "canary_mode": true,
+    "default_max_canary_changes": 5,
+    "max_canary_changes_limit": 20,
+    "goal_profile_scoped": true,
+    "unsafe_canary_optimism_guard": "BASE!=IMPROVED AND CANARY=IMPROVED -> immediate rollback",
+    "rolling_blocked_guard": "active lease -> automatic rollback",
+    "manual_rollback": true,
+    "automatic_full_promotion": false
+  },
+  "canary_outcome_gate": {
+    "enabled": true,
+    "policy_version": "v0.34",
+    "minimum_safe_completions": 3,
+    "maximum_divergence_rate": 0.4,
+    "false_optimism_allowed": 0,
+    "lease_must_be_exhausted_for_final_promotion": true,
+    "final_decisions": [
+      "PROMOTE",
+      "EXTEND",
+      "ROLLBACK"
+    ],
+    "automatic_final_promotion": false,
+    "human_final_approval_required": true,
+    "full_promotion_emergency_rollback": true
+  },
+  "post_promotion_runtime_guard": {
+    "enabled": true,
+    "policy_version": "v0.35",
+    "recent_windows": [
+      7,
+      14
+    ],
+    "max_recent7_divergence_rate": 0.4,
+    "max_recent14_divergence_rate": 0.3,
+    "max_drift_from_canary": 0.2,
+    "false_optimism_allowed": 0,
+    "stable_full_minimum_samples": 14,
+    "fail_closed_rollback": true,
+    "automatic_stable_full": true,
+    "base_reference_always_on": true
+  },
+  "decision_quality_guard": {
+    "enabled": true,
+    "policy_version": "v0.36",
+    "minimum_samples": 5,
+    "maximum_failed_decision_rate": 0.2,
+    "minimum_core_relevance_rate": 0.6,
+    "critical_errors": [
+      "FALSE_VERIFIED",
+      "CANCELLATION_MISS"
+    ],
+    "critical_error_action": "BLOCKED",
+    "support_only_status": "GOAL_MISMATCH",
+    "post_promotion_fail_closed_integration": true
+  },
+  "decision_outcome_evidence_automation": {
+    "enabled": true,
+    "policy_version": "v0.37",
+    "automatic_sources": [
+      "EVENT_REFRESH_CHECK",
+      "EVENT_REVISION",
+      "HUMAN_REVIEW"
+    ],
+    "visit_feedback_sources": [
+      "VISITED_HELD",
+      "ARRIVED_NO_EVENT",
+      "CANCELLED_BEFORE_VISIT"
+    ],
+    "workflow": [
+      "PENDING",
+      "HOLD",
+      "CONFIRMED",
+      "REJECTED"
+    ],
+    "auto_confirm": false,
+    "human_confirmation_required": true,
+    "confirmed_evidence_creates_decision_quality_observation": true,
+    "critical_candidates": [
+      "FALSE_VERIFIED",
+      "CANCELLATION_MISS"
+    ],
+    "deduplicate_by_evidence_key": true
+  },
+  "evidence_priority_queue": {
+    "enabled": true,
+    "policy_version": "v0.38",
+    "priority_order": [
+      "P0",
+      "P1",
+      "P2"
+    ],
+    "p0_errors": [
+      "FALSE_VERIFIED",
+      "CANCELLATION_MISS"
+    ],
+    "sla_hours": {
+      "P0": 0.5,
+      "P1_default": 4,
+      "P1_event_availability": 2,
+      "P2": 24
+    },
+    "multi_source_corroboration": {
+      "two_sources": "HIGH_CORROBORATED",
+      "three_sources": "VERY_HIGH"
+    },
+    "stale_pending_auto_expire_hours": 72,
+    "automatic_confirm": false,
+    "automatic_reject": false,
+    "automatic_expire_noncritical_low_medium_only": true,
+    "critical_evidence_never_auto_expires": true,
+    "multi_source_corroboration_never_auto_confirms": true
+  },
+  "evidence_cluster_resolution": {
+    "enabled": true,
+    "policy_version": "v0.39",
+    "cluster_key": [
+      "event_instance_id",
+      "proposed_event_truth",
+      "critical_error_type"
+    ],
+    "human_confirmation_resolves_case": true,
+    "multi_source_pending_does_not_resolve": true,
+    "critical_root_cause_attribution_required": true,
+    "repeated_critical_root_cause_backlog_threshold": 2,
+    "critical_backlog_priority": "P1",
+    "automatic_backlog_creation_for_repeated_confirmed_critical_root_causes": true
+  },
+  "cluster_closure_gate": {
+    "enabled": true,
+    "human_close_required": true,
+    "critical_case_requires_root_cause": true,
+    "critical_case_requires_linked_backlog": true,
+    "critical_case_requires_verified_backlog": true,
+    "unresolved_critical_evidence_blocks_closure": true,
+    "automatic_close": false
+  },
+  "source_reliability_feedback": {
+    "enabled": true,
+    "policy_version": "v0.40",
+    "internal_only": true,
+    "base_score": 1.0,
+    "critical_failure_penalty": 0.2,
+    "confirmed_success_recovery": 0.025,
+    "score_floor": 0.2,
+    "trusted_threshold": 0.9,
+    "watch_threshold": 0.7,
+    "bands": [
+      "TRUSTED",
+      "WATCH",
+      "DEGRADED"
+    ],
+    "critical_failures_from_confirmed_root_cause_only": true,
+    "missing_source_attribution_does_not_penalize_any_source": true,
+    "existing_verified_events_never_auto_downgraded": true
+  },
+  "preventive_verification_policy": {
+    "enabled": true,
+    "policy_version": "v0.40",
+    "default_mode": "SHADOW",
+    "watch_requirement": ">=2 independent sources OR human confirmation",
+    "degraded_requirement": ">=2 independent sources AND human confirmation",
+    "trusted_extra_requirement": "none",
+    "existing_verified_action": "KEEP_EXISTING_VERIFIED",
+    "automatic_canary_start": false,
+    "minimum_shadow_decisions_before_canary": 3,
+    "human_approval_required_for_canary": true,
+    "canary_max_decisions_range": [
+      1,
+      20
+    ]
+  },
+  "preventive_policy_outcome_evaluation": {
+    "enabled": true,
+    "policy_version": "v0.41",
+    "ground_truth_requires_human_confirmation": true,
+    "outcome_classes": [
+      "PREVENTED_CRITICAL_FAILURE",
+      "FALSE_CONSERVATIVE_HOLD",
+      "MISSED_CRITICAL_FAILURE",
+      "CORRECT_ALLOW",
+      "NEUTRAL"
+    ],
+    "minimum_canary_outcomes": 3,
+    "maximum_false_conservative_hold_rate": 0.25,
+    "minimum_prevented_critical_failures_for_promotion": 1,
+    "canary_must_be_exhausted_for_final_review": true
+  },
+  "preventive_canary_safety_gate": {
+    "automatic_full_promotion": false,
+    "human_final_review_required": true,
+    "final_decisions": [
+      "PROMOTE",
+      "ROLLBACK",
+      "HOLD"
+    ],
+    "full_mode": "FULL_PREVENTIVE",
+    "existing_verified_events_never_auto_downgraded": true,
+    "full_promotion_rollback_supported": true
+  },
+  "preventive_full_runtime_guard": {
+    "enabled": true,
+    "policy_version": "v0.42",
+    "runtime_ground_truth_requires_human_confirmation": true,
+    "missed_critical_failure_immediate_block": true,
+    "recent5_false_conservative_hold_block_threshold": 0.4,
+    "recent10_false_conservative_hold_block_threshold": 0.3,
+    "stable_sample_count": 10,
+    "stable_recent10_false_hold_threshold": 0.2,
+    "blocked_action": "FAIL_CLOSED_ROLLBACK",
+    "rollback_target": "BASE_WITH_SHADOW",
+    "existing_verified_events_never_modified": true,
+    "automatic_runtime_rollback": true,
+    "automatic_repromotion": false
+  },
+  "preventive_runtime_recovery": {
+    "enabled": true,
+    "policy_version": "v0.43",
+    "automatic_recovery_case_on_fail_closed_rollback": true,
+    "root_cause_human_review_required": true,
+    "remediation_reference_required": true,
+    "minimum_post_rollback_shadow_decisions": 3,
+    "minimum_human_confirmed_recovery_outcomes": 3,
+    "maximum_false_conservative_hold_rate": 0.25,
+    "missed_critical_failure_allowed": 0,
+    "all_recovery_outcomes_must_be_safe": true,
+    "human_requalification_required": true,
+    "new_canary_blocked_until_requalified": true,
+    "automatic_requalification": false,
+    "automatic_repromotion": false
+  },
+  "preventive_recurrence_guard": {
+    "enabled": true,
+    "policy_version": "v0.44",
+    "baseline": {
+      "recurrence_count": 1,
+      "shadow_decisions": 3,
+      "confirmed_outcomes": 3,
+      "max_false_hold_rate": 0.25
+    },
+    "elevated": {
+      "recurrence_count": 2,
+      "shadow_decisions": 5,
+      "confirmed_outcomes": 5,
+      "max_false_hold_rate": 0.2
+    },
+    "restricted": {
+      "recurrence_count_gte": 3,
+      "shadow_decisions": 7,
+      "confirmed_outcomes": 7,
+      "max_false_hold_rate": 0.1
+    },
+    "same_root_cause_repeat_escalates_to_restricted": true,
+    "prior_requalified_remediation_followed_by_new_rollback_is_ineffective": true,
+    "restricted_requires_human_exception": true,
+    "automatic_exception_approval": false,
+    "automatic_repromotion": false,
+    "existing_verified_events_never_modified": true
+  },
+  "preventive_quarantine": {
+    "enabled": true,
+    "policy_version": "v0.45",
+    "trigger_after_requalified_restricted_failure": true,
+    "mandatory_recurrence_count_gte": 4,
+    "production_mode": "QUARANTINE_SHADOW",
+    "production_action": "QUARANTINE_HOLD",
+    "minimum_quarantine_hours": 24,
+    "minimum_shadow_decisions": 7,
+    "minimum_human_confirmed_outcomes": 7,
+    "maximum_false_conservative_hold_rate": 0.1,
+    "minimum_independent_alternative_decisions": 3,
+    "trigger_recovery_must_be_requalified_before_release": true,
+    "human_release_review_required": true,
+    "release_decisions": [
+      "APPROVE",
+      "DENY",
+      "HOLD"
+    ],
+    "max_first_reintegration_canary_decisions": 3,
+    "automatic_release": false,
+    "automatic_repromotion": false,
+    "existing_verified_events_never_modified": true
+  },
+  "alternative_source_routing": {
+    "enabled": true,
+    "policy_version": "v0.47",
+    "exclude_active_quarantined_sources": true,
+    "source_independence_basis": "Source Independence Graph",
+    "unknown_independence_never_counts_as_independent": true,
+    "verified_route_requires": "human_confirmed_single_or_two_graph-proven-independent_sources",
+    "single_nonhuman_alternative_result": "POSSIBLE",
+    "no_safe_route_result": "UNKNOWN",
+    "quarantined_source_never_contributes_to_route": true,
+    "existing_verified_never_modified": true,
+    "coverage_preservation_metric_enabled": true,
+    "automatic_human_override": false
+  },
+  "source_independence_graph": {
+    "enabled": true,
+    "policy_version": "v0.48",
+    "relationship_states": [
+      "INDEPENDENT",
+      "RELATED",
+      "SYNDICATED",
+      "UNKNOWN"
+    ],
+    "platform_difference_alone_proves_independence": false,
+    "explicit_independent_edge_required_for_nonhuman_corroboration": true,
+    "hard_syndication_signals": [
+      "SAME_EXPLICIT_ORIGIN",
+      "DIRECT_ORIGIN_LINK",
+      "EXACT_CONTENT_FINGERPRINT",
+      "SAME_CANONICAL_URL"
+    ],
+    "same_poster_only_relationship": "RELATED",
+    "unknown_independence_never_counts_as_independent": true,
+    "syndication_overrides_explicit_independent_edge": true,
+    "automatic_text_similarity_independence": false,
+    "existing_verified_never_modified": true
+  },
+  "automated_origin_inference": {
+    "enabled": true,
+    "policy_version": "v0.50",
+    "mode": "SHADOW_SAFE",
+    "near_duplicate_text_threshold": 0.86,
+    "poster_plus_text_threshold": 0.65,
+    "publish_time_used_for_likely_origin_only": true,
+    "automatic_syndication_confirmation": false,
+    "auto_suspected_cluster_blocks_double_counting": true,
+    "human_review_required_for_confirmed_syndication_or_independence": true,
+    "existing_verified_never_modified": true
+  },
+  "origin_confidence_calibration": {
+    "enabled": true,
+    "policy_version": "v0.50",
+    "baseline_text_threshold": 0.86,
+    "minimum_decisive_reviews_for_threshold_change": 5,
+    "false_positive_tighten_threshold": 0.25,
+    "precision_relax_threshold": 0.9,
+    "false_positive_relax_ceiling": 0.1,
+    "tighten_step": 0.03,
+    "relax_step": 0.01,
+    "minimum_shadow_threshold": 0.8,
+    "maximum_shadow_threshold": 0.95,
+    "automatic_production_threshold_change": false,
+    "human_review_required": true
+  },
+  "origin_review_prioritization": {
+    "enabled": true,
+    "policy_version": "v0.50",
+    "priority_bands": {
+      "P1_min": 70,
+      "P2_min": 45
+    },
+    "signals": [
+      "near_duplicate_similarity",
+      "member_count",
+      "poster_signal",
+      "link_origin_signal",
+      "verified_event_impact",
+      "alternative_route_impact",
+      "event_date_urgency",
+      "cluster_confidence"
+    ],
+    "automatic_review_decision": false
+  },
+  "origin_threshold_promotion": {
+    "enabled": true,
+    "policy_version": "v0.53",
+    "baseline_threshold": 0.86,
+    "minimum_shadow_decisive_reviews": 7,
+    "candidate_requires_latest_calibration": [
+      "SHADOW_TIGHTEN",
+      "SHADOW_RELAX"
+    ],
+    "human_canary_approval_required": true,
+    "default_canary_max_assignments": 3,
+    "maximum_canary_assignments": 10,
+    "false_positive_canary_outcome": "AUTO_ROLLBACK",
+    "missed_syndication_canary_outcome": "AUTO_ROLLBACK",
+    "critical_missed_syndication_canary_outcome": "AUTO_ROLLBACK",
+    "hold_canary_outcome": "NOT_SAFE_FOR_PROMOTION",
+    "full_promotion_requires_all_canary_assignments_confirmed_safe": true,
+    "full_promotion_requires_human_approval": true,
+    "full_rollback_supported": true,
+    "automatic_full_promotion": false
+  },
+  "origin_threshold_runtime_guard": {
+    "enabled": true,
+    "policy_version": "v0.53",
+    "rolling_windows": [
+      5,
+      10,
+      20
+    ],
+    "critical_promotion_regression": "AUTO_FAIL_CLOSED_ROLLBACK",
+    "rolling_5": {
+      "promotion_regression_count_rollback": 2,
+      "miss_rate_rollback": 0.2,
+      "false_positive_rate_rollback": 0.4,
+      "false_positive_rate_watch": 0.2
+    },
+    "rolling_10": {
+      "miss_rate_rollback": 0.1,
+      "false_positive_rate_rollback": 0.25,
+      "promotion_regression_count_rollback": 2
+    },
+    "rolling_20": {
+      "miss_rate_rollback": 0.1,
+      "false_positive_rate_rollback": 0.2,
+      "promotion_regression_count_rollback": 3
+    },
+    "counterfactual_basis": "Base 0.86 vs active promoted threshold",
+    "automatic_fail_closed_rollback": true,
+    "required_recovery_shadow_outcomes": 5,
+    "human_requalification_required": true,
+    "new_candidate_blocked_until_requalified": true
+  },
+  "origin_threshold_recovery_root_cause": {
+    "enabled": true,
+    "policy_version": "v0.53",
+    "risk_bands": [
+      "BASELINE",
+      "ELEVATED",
+      "RESTRICTED"
+    ],
+    "baseline": {
+      "safe_shadow_outcomes": 5,
+      "distinct_sources": 2,
+      "distinct_platforms": 1
+    },
+    "elevated": {
+      "safe_shadow_outcomes": 8,
+      "distinct_sources": 3,
+      "distinct_platforms": 2
+    },
+    "restricted": {
+      "safe_shadow_outcomes": 12,
+      "distinct_sources": 4,
+      "distinct_platforms": 2
+    },
+    "repeat_root_cause_penalty_safe_outcomes": 2,
+    "max_repeat_penalty": 6,
+    "documented_remediation_required": true,
+    "human_root_cause_confirmation_required": true,
+    "human_requalification_required": true,
+    "failed_candidate_same_calibration_reuse": false
+  },
+  "origin_threshold_recurrence_guard": {
+    "enabled": true,
+    "policy_version": "v0.54",
+    "long_term_recurrence_threshold": 3,
+    "failed_effective_remediation_threshold": 2,
+    "post_requalification_recurrence_threshold": 2,
+    "risk_bands": [
+      "BASELINE",
+      "ELEVATED",
+      "RESTRICTED"
+    ],
+    "human_exception_required_for_long_term_restriction": true,
+    "restriction_exception_is_one_time": true,
+    "same_failed_candidate_same_calibration_reuse": false,
+    "remediation_sustained_effective_default_days": 30,
+    "automatic_full_repromotion_under_restriction": false
+  },
+  "origin_threshold_scope_isolation": {
+    "enabled": true,
+    "policy_version": "v0.62",
+    "automatic_scope_mapping": {
+      "THRESHOLD_BOUNDARY": "GLOBAL_THRESHOLD",
+      "SOURCE_CONCENTRATION": "SOURCE",
+      "SOURCE_INDEPENDENCE_OR_SYNDICATION_MODEL": "SOURCE_IF_IDENTIFIED_ELSE_PLATFORM",
+      "UNRESOLVED": "GLOBAL_THRESHOLD"
+    },
+    "supported_scope_types": [
+      "GLOBAL_THRESHOLD",
+      "SOURCE",
+      "PLATFORM",
+      "RULE",
+      "SOURCE_RULE"
+    ],
+    "scoped_restriction_production_action": "BASE_ONLY_SHADOW_RESTRICTED",
+    "shadow_learning_enabled_for_scoped_restrictions": true,
+    "global_threshold_restriction_requires_human_exception": true,
+    "source_platform_rule_scopes_do_not_globally_block_candidate": true,
+    "safe_alternative_route_allowed": true,
+    "existing_verified_no_retroactive_change": true,
+    "human_scope_override_required_for_manual_scope_change": true
+  },
+  "origin_threshold_scope_reintegration": {
+    "enabled": true,
+    "policy_version": "v0.62",
+    "minimum_elapsed_hours": 24,
+    "baseline": {
+      "shadow_outcomes": 7,
+      "human_safe_outcomes": 5,
+      "distinct_events": 5
+    },
+    "restricted": {
+      "shadow_outcomes": 8,
+      "human_safe_outcomes": 6,
+      "distinct_events": 6
+    },
+    "false_corroboration_allowed": 0,
+    "missed_syndication_allowed": 0,
+    "max_average_alternative_quality_regression": 0.1,
+    "effective_remediation_required": true,
+    "human_canary_approval_required": true,
+    "default_canary_max_assignments": 3,
+    "maximum_canary_assignments": 10,
+    "unsafe_canary_outcome": "FAIL_CLOSED_ROLLBACK",
+    "hold_is_safe_evidence": false,
+    "all_canary_assignments_human_safe_required": true,
+    "human_final_release_required": true,
+    "scope_remains_active_during_canary": true
+  },
+  "origin_threshold_post_reintegration_guard": {
+    "enabled": true,
+    "policy_version": "v0.62",
+    "windows": [
+      5,
+      10,
+      20
+    ],
+    "critical_regression_immediate_reisolation": true,
+    "false_corroboration_immediate_reisolation": true,
+    "missed_syndication_immediate_reisolation": true,
+    "coverage_quality_regression_threshold": -0.1,
+    "rolling5": {
+      "regressions_to_reisolate": 2,
+      "coverage_regressions_to_reisolate": 2
+    },
+    "rolling10": {
+      "regressions_to_reisolate": 2,
+      "coverage_regressions_to_reisolate": 2
+    },
+    "rolling20": {
+      "regressions_to_reisolate": 3,
+      "coverage_regressions_to_reisolate": 3
+    },
+    "automatic_scope_reisolation": true,
+    "recurrence_profile_feedback": true,
+    "next_reintegration_penalty": {
+      "shadow_per_failure": 2,
+      "human_per_failure": 1,
+      "events_per_failure": 1
+    },
+    "next_reintegration_penalty_caps": {
+      "shadow": 6,
+      "human": 3,
+      "events": 3
+    },
+    "fresh_evidence_after_reisolation_required": true,
+    "fresh_effective_remediation_after_reisolation_required": true
+  },
+  "origin_threshold_post_reintegration_root_cause": {
+    "enabled": true,
+    "policy_version": "v0.62",
+    "root_cause_types": [
+      "THRESHOLD_RECURRENCE",
+      "SOURCE_LOCAL_RECURRENCE",
+      "PLATFORM_PATTERN_SHIFT",
+      "INDEPENDENCE_GRAPH_ERROR",
+      "ALTERNATIVE_ROUTE_DEGRADATION",
+      "COLLECTOR_EVIDENCE_QUALITY_DRIFT",
+      "REMEDIATION_INEFFECTIVE_RECURRENCE",
+      "UNRESOLVED"
+    ],
+    "remediation_routes": {
+      "THRESHOLD_RECURRENCE": "THRESHOLD_CHANGE",
+      "SOURCE_LOCAL_RECURRENCE": "SOURCE_RULE_CHANGE",
+      "PLATFORM_PATTERN_SHIFT": "SOURCE_RULE_CHANGE",
+      "INDEPENDENCE_GRAPH_ERROR": "INDEPENDENCE_GRAPH_FIX",
+      "ALTERNATIVE_ROUTE_DEGRADATION": "DATA_QUALITY_FIX",
+      "COLLECTOR_EVIDENCE_QUALITY_DRIFT": "COLLECTOR_FIX",
+      "REMEDIATION_INEFFECTIVE_RECURRENCE": "OTHER",
+      "UNRESOLVED": "OTHER"
+    },
+    "auto_attribute_on_reisolation": true,
+    "fresh_effective_remediation_must_match_route": true,
+    "repeat_same_root_cause_after_effective_remediation": "ARCHITECTURE_ESCALATION",
+    "repeat_same_remediation_type_blocked_after_escalation": true,
+    "human_root_cause_review_supported": true
+  },
+  "origin_threshold_architecture_escalation": {
+    "enabled": true,
+    "policy_version": "v0.64",
+    "trigger": "architecture_review_required=true",
+    "minimum_cross_layer_steps": 2,
+    "recommended_max_steps": 3,
+    "plan_human_approval_required": true,
+    "step_effective_review_required": true,
+    "cross_layer_validation": {
+      "shadow_outcomes": 12,
+      "human_safe_outcomes": 8,
+      "distinct_events": 8,
+      "false_corroboration_allowed": 0,
+      "missed_syndication_allowed": 0,
+      "minimum_average_quality_delta": -0.05
+    },
+    "final_architecture_review_required": true,
+    "single_remediation_cannot_bypass_architecture_gate": true,
+    "approved_plan_required_before_scoped_reintegration_canary": true,
+    "automatic_reintegration": false
+  },
+  "origin_threshold_architecture_memory": {
+    "enabled": true,
+    "policy_version": "v0.65",
+    "runtime_outcome_statuses": [
+      "ACTIVE",
+      "SUSTAINED_SUCCESS",
+      "RECURRENCE_FAILED"
+    ],
+    "sustained_success": {
+      "minimum_observations": 20,
+      "minimum_days": 30,
+      "regression_count": 0
+    },
+    "effectiveness_confidence": {
+      "low_data_attempts_below": 3,
+      "emerging_attempts_below": 5,
+      "established_attempts_at_least": 5
+    },
+    "recommendation": {
+      "minimum_attempts": 3,
+      "requires_zero_recurrence_failures": true,
+      "low_data_uses_deterministic_fallback": true,
+      "automatic_production_change": false
+    },
+    "plan_signature": "sorted unique required remediation types",
+    "record_days_to_reisolation": true,
+    "root_cause_specific_memory": true
+  },
+  "origin_threshold_architecture_ranking": {
+    "enabled": true,
+    "policy_version": "v0.65",
+    "minimum_decisive_attempts": 3,
+    "minimum_comparative_score": 0.45,
+    "minimum_score_margin": 0.08,
+    "confidence_correction": "Wilson lower bound + Bayesian smoothing",
+    "ranking_factors": {
+      "wilson_lower_bound": 0.35,
+      "bayesian_success_rate": 0.15,
+      "median_survival_days": 0.15,
+      "context_similarity": 0.2,
+      "evidence_factor": 0.15,
+      "recurrence_severity_penalty": -0.15,
+      "complexity_penalty": "0.05 per step above 2"
+    },
+    "context_dimensions": [
+      "scope_type",
+      "source_id",
+      "platform",
+      "rule_key",
+      "secondary_root_cause_type",
+      "alternative_route_available"
+    ],
+    "close_score_policy": "CONSERVATIVE_TIE_FALLBACK",
+    "low_data_policy": "DETERMINISTIC_FALLBACK",
+    "blocked_remediation_types_respected": true,
+    "minimum_cross_layer_steps": 2,
+    "automatic_production_change": false
+  },
+  "origin_threshold_recommendation_challenge": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "shadow_min_human_confirmed": 8,
+    "shadow_min_distinct_events": 8,
+    "human_decisions": [
+      "ACCEPT_RECOMMENDATION",
+      "CHOOSE_BASELINE",
+      "HOLD",
+      "REJECT"
+    ],
+    "runtime_link_required": true,
+    "quality_profiles_by_root_cause": true,
+    "automatic_production_change": false
+  },
+  "origin_threshold_recommendation_policy": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "promotion_gate": {
+      "minimum_runtime_decisive": 5,
+      "minimum_helpful_rate": 0.6,
+      "maximum_harmful_rate": 0.1,
+      "minimum_acceptance_rate": 0.6,
+      "required_confidence": "ESTABLISHED"
+    },
+    "policy_modes": [
+      "SHADOW_ONLY",
+      "CANARY",
+      "READY_FOR_PROMOTION",
+      "PROMOTED",
+      "ROLLED_BACK"
+    ],
+    "default_canary_max_assignments": 3,
+    "minimum_canary_helpful": 2,
+    "human_candidate_review_required": true,
+    "human_final_promotion_required": true,
+    "promoted_policy_default": "CONTEXT_AWARE_RECOMMENDATION",
+    "rolled_back_policy_default": "DETERMINISTIC_BASELINE",
+    "harmful_runtime_immediate_rollback": true,
+    "automatic_repromotion": false
+  },
+  "origin_threshold_recommendation_recovery": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "rollback_requirements": {
+      "1": {
+        "decisive": 5,
+        "helpful": 4,
+        "harmful": 0
+      },
+      "2": {
+        "decisive": 8,
+        "helpful": 7,
+        "harmful": 0
+      },
+      "3_plus": {
+        "decisive": 12,
+        "helpful": 11,
+        "harmful": 0,
+        "long_term_shadow_only": true,
+        "architecture_exception_required": true
+      }
+    },
+    "fresh_effective_remediation_required": true,
+    "fresh_human_confirmed_shadow_required": true,
+    "direct_candidate_recanary_bypass_blocked": true,
+    "automatic_repromotion": false
+  },
+  "origin_threshold_recommendation_algorithm_versioning": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "immutable_version_identity": true,
+    "identity_fields": [
+      "root_cause_type",
+      "version_label",
+      "fingerprint"
+    ],
+    "lineage_entities": [
+      "POLICY_CANDIDATE",
+      "CHALLENGE",
+      "CHALLENGE_RUNTIME",
+      "RECOVERY_CASE",
+      "RECOVERY_REMEDIATION"
+    ],
+    "failed_version_recanary_forbidden": true,
+    "successor_version_required_after_rollback": true,
+    "successor_must_have_distinct_fingerprint": true,
+    "successor_requires_effective_recovery_remediation": true,
+    "human_successor_approval_required": true,
+    "recanary_marks_successor_canary": true,
+    "promotion_marks_successor_promoted": true,
+    "automatic_version_reuse": false
+  },
+  "origin_threshold_recommendation_algorithm_version_cohort": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "runtime_phases": [
+      "SHADOW",
+      "CANARY",
+      "PRODUCTION"
+    ],
+    "profile_key": [
+      "algorithm_version_id",
+      "context_signature"
+    ],
+    "confidence": {
+      "low_data_below": 3,
+      "emerging_below": 5,
+      "established_at_least": 5
+    },
+    "promotion_memory": {
+      "version_canary_proven": {
+        "canary_runtime_count": 3,
+        "helpful_count": 2,
+        "harmful_count": 0
+      },
+      "version_production_proven": {
+        "production_runtime_count": 5,
+        "helpful_count": 3,
+        "harmful_count": 0
+      },
+      "harmful_runtime": "VERSION_ROLLBACK_EVIDENCE"
+    },
+    "survival_success_cap_days": 90,
+    "context_isolation": true,
+    "version_isolation": true,
+    "automatic_promotion": false
+  },
+  "origin_threshold_recommendation_version_promotion": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "candidate_gate": {
+      "minimum_canary_runtime": 3,
+      "minimum_canary_helpful": 2,
+      "harmful_must_be_zero": true,
+      "minimum_candidate_score": 0.45
+    },
+    "supersede_gate": {
+      "minimum_comparable_decisive": 3,
+      "minimum_score_margin": 0.1,
+      "matching_context_required": true,
+      "unsafe_incumbent_can_be_superseded": true,
+      "conservative_keep_current_on_insufficient_comparison": true
+    },
+    "score": {
+      "wilson_lower_bound_weight": 0.55,
+      "median_survival_weight": 0.2,
+      "evidence_factor_weight": 0.25,
+      "harmful_penalty_per_event": 0.3,
+      "survival_cap_days": 90,
+      "evidence_full_at_decisive": 5
+    },
+    "human_version_promotion_review_required": true,
+    "final_policy_promotion_requires_version_gate": true,
+    "automatic_supersede": false
+  },
+  "origin_threshold_recommendation_supersede_runtime_guard": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "trigger_verdict": "RECOMMENDATION_HARMFUL",
+    "fallback_requirements": {
+      "status": "SUPERSEDED",
+      "matching_context_required": true,
+      "minimum_decisive": 3,
+      "minimum_production": 3,
+      "minimum_helpful": 2,
+      "harmful_must_be_zero": true,
+      "safety_band": "SAFE",
+      "minimum_median_survival_days": 30,
+      "proven_memory_required": true
+    },
+    "third_or_later_rollback_automatic_fallback": false,
+    "fallback_action": "PROMOTE_LAST_SAFE_SUPERSEDED_VERSION",
+    "fallback_failure_action": "DETERMINISTIC_BASELINE_ROLLBACK",
+    "open_recovery_case_for_failed_new_version": true
+  },
+  "origin_threshold_recommendation_fallback_verification": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "bounded_observations": 5,
+    "stable_requires_helpful": 4,
+    "harmful_immediate_failure": true,
+    "anti_ping_pong_max_automatic_fallbacks_per_pair": 1,
+    "failed_pair_blocks_future_automatic_fallback": true,
+    "third_or_later_failure_uses_existing_long_term_recovery": true,
+    "automatic_repromotion": false
+  },
+  "origin_threshold_recommendation_fallback_family": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "family_key": [
+      "ancestor_root_algorithm_version_id",
+      "fallback_target_algorithm_version_id"
+    ],
+    "max_automatic_fallbacks_per_family_target": 2,
+    "distinct_failing_version_threshold": 2,
+    "failed_verification_opens_circuit": true,
+    "stable_watch_failed_memory": true,
+    "circuit_open_action": "DETERMINISTIC_BASELINE_PLUS_ARCHITECTURE_REVIEW",
+    "human_review_does_not_auto_close_circuit": true,
+    "automatic_reenable": false
+  },
+  "origin_threshold_recommendation_fallback_family_recovery": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "circuit_open_auto_creates_recovery_case": true,
+    "fresh_architecture_review_required": true,
+    "fresh_effective_family_remediation_required": true,
+    "fresh_candidate_version_required": true,
+    "candidate_must_be_created_after_recovery_open": true,
+    "candidate_must_share_family_root": true,
+    "previously_failing_version_reuse_forbidden": true,
+    "fresh_shadow_evidence": {
+      "minimum_decisive": 8,
+      "minimum_helpful": 7,
+      "harmful_must_be_zero": true,
+      "distinct_challenges": 8
+    },
+    "human_rearm_review_required": true,
+    "rearm_state": "ARMED",
+    "limited_family_canary_max_fallbacks": 1,
+    "rearm_policy_mode_after_approval": "SHADOW_ONLY",
+    "stable_canary_closes_circuit": true,
+    "watch_or_failed_canary_reopens_circuit": true,
+    "automatic_circuit_close_without_recovery": false
+  },
+  "origin_threshold_recommendation_fallback_family_memory": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "generation_key": "family_recovery_case_id",
+    "runtime_statuses": [
+      "ACTIVE",
+      "SUSTAINED_SUCCESS",
+      "RECURRENCE_FAILED"
+    ],
+    "sustained_success": {
+      "minimum_observations": 20,
+      "minimum_days": 30,
+      "harmful_must_be_zero": true
+    },
+    "remediation_effectiveness": {
+      "preferred": {
+        "minimum_sustained_successes": 2,
+        "maximum_recurrence_failures": 0
+      },
+      "avoid": {
+        "minimum_recurrence_failures": 2
+      },
+      "confidence": {
+        "low_data": "attempts<2 or decisive<1",
+        "emerging": "attempts 2-3",
+        "established": "attempts>=4"
+      }
+    },
+    "recurrence_records_days_to_family_recurrence": true,
+    "lifetime_memory_preserved": true,
+    "avoid_remediation_cannot_be_reapproved_effective": true,
+    "automatic_production_change": false
+  },
+  "origin_threshold_recommendation_fallback_family_ranking": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "mode": "SHADOW_ONLY",
+    "candidate_scope": "same_root_cause",
+    "exact_family_context_similarity": 1.0,
+    "same_root_cross_family_similarity": 0.65,
+    "score": {
+      "wilson_lower_bound_weight": 0.4,
+      "survival_weight": 0.2,
+      "evidence_weight": 0.2,
+      "context_similarity_weight": 0.2,
+      "recurrence_penalty_per_failure": 0.2,
+      "survival_cap_days": 90,
+      "evidence_full_at_attempts": 5
+    },
+    "preferred_gate": {
+      "minimum_attempts": 2,
+      "minimum_sustained_successes": 2,
+      "maximum_recurrence_failures": 0,
+      "minimum_conservative_score": 0.5,
+      "minimum_margin_over_second": 0.1
+    },
+    "rank_states": [
+      "LOW_DATA",
+      "LEARNING",
+      "PREFERRED",
+      "WATCH",
+      "AVOID"
+    ],
+    "avoid_excluded_from_recommendation": true,
+    "human_architecture_selection_required_for_historical_reuse": true,
+    "new_remediation_manual_path_allowed": true,
+    "automatic_remediation_submission": false,
+    "automatic_production_change": false
+  },
+  "origin_threshold_recommendation_fallback_family_recommendation_outcome": {
+    "enabled": true,
+    "policy_version": "v0.73",
+    "register_on_stabilized_generation": true,
+    "resolve_on": [
+      "SUSTAINED_SUCCESS",
+      "RECURRENCE_FAILED"
+    ],
+    "outcome_classes": [
+      "STABILIZED_PENDING",
+      "RECOMMENDATION_HELPFUL",
+      "RECOMMENDATION_HARMFUL",
+      "HUMAN_OVERRIDE_SUCCESS",
+      "HUMAN_OVERRIDE_FAILURE",
+      "MANUAL_SELECTION_SUCCESS",
+      "MANUAL_SELECTION_FAILURE"
+    ],
+    "selection_regret": {
+      "enabled": true,
+      "definition": "max(0,recommended_score-selected_score) when selected path later fails"
+    },
+    "calibration": {
+      "low_data_resolved_below": 3,
+      "well_calibrated_requires_helpful": 2,
+      "misaligned_harmful_at_least": 2,
+      "misaligned_avg_regret_at_least": 0.1
+    },
+    "automatic_policy_change": false
+  }
+}

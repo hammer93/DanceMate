@@ -1,0 +1,38 @@
+{
+  "runs": [
+    {
+      "run_type": "DISCOVERY",
+      "source_id": "SRC-D-001",
+      "discovered": 4,
+      "raw_new": 3,
+      "raw_dup": 1
+    },
+    {
+      "run_type": "DISCOVERY",
+      "source_id": "SRC-F-001",
+      "discovered": 2,
+      "raw_new": 1,
+      "raw_dup": 1
+    },
+    {
+      "run_type": "ACQUISITION",
+      "source_id": "SRC-D-001",
+      "acq_attempts": 3,
+      "acq_success": 2,
+      "acq_fail": 1
+    },
+    {
+      "run_type": "ACQUISITION",
+      "source_id": "SRC-F-001",
+      "acq_attempts": 2,
+      "acq_success": 0,
+      "acq_fail": 2
+    },
+    {
+      "run_type": "RECOVERY",
+      "source_id": "SRC-F-001",
+      "rec_attempts": 2,
+      "rec_success": 1
+    }
+  ]
+}

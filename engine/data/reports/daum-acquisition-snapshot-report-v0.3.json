@@ -1,0 +1,92 @@
+{
+  "version": "0.3",
+  "mode": "snapshot",
+  "generated_at": "2026-08-26T20:20:43.448625+00:00",
+  "acquisitions": [
+    {
+      "post_id": 5,
+      "url": "https://snapshot.local/daum/pista",
+      "status": "FULL",
+      "http_status": 200,
+      "body_chars": 115,
+      "images": 1,
+      "poster_candidates": 1,
+      "error_code": null,
+      "upgraded": true,
+      "events": [
+        {
+          "name": "8/22 더 피스타 밀롱가",
+          "event_type": "MILONGA",
+          "date": "2026-08-22",
+          "start_time": "19:00",
+          "end_time": "23:00",
+          "end_day_offset": 0,
+          "fee": 13000,
+          "venue": "PISTA",
+          "dj": "에르난",
+          "evidences": [
+            {
+              "field": "date",
+              "value": "2026-08-22",
+              "raw_text": "8/22",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": "YEAR_FROM_CONTEXT"
+            },
+            {
+              "field": "time",
+              "value": {
+                "start": "19:00",
+                "end": "23:00",
+                "end_day_offset": 0
+              },
+              "raw_text": "19:00-23:00\n",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "fee",
+              "value": 13000,
+              "raw_text": "입장료 13,000원",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "dj",
+              "value": "에르난",
+              "raw_text": "DJ 에르난",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            },
+            {
+              "field": "venue",
+              "value": "PISTA",
+              "raw_text": "PISTA",
+              "evidence_type": "TEXT",
+              "source_role": "SECONDARY",
+              "inference": null
+            }
+          ],
+          "status": "VERIFIED",
+          "core_complete": true
+        }
+      ]
+    },
+    {
+      "post_id": 6,
+      "url": "https://snapshot.local/daum/login",
+      "status": "PARTIAL",
+      "http_status": 200,
+      "body_chars": 21,
+      "images": 0,
+      "poster_candidates": 0,
+      "error_code": "BODY_UNAVAILABLE",
+      "upgraded": false,
+      "events": []
+    }
+  ],
+  "recovery_queue_pending": 1
+}

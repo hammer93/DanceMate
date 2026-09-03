@@ -1,0 +1,140 @@
+{
+  "version": "0.18",
+  "daily_run_id": "4322e183-d53e-4c76-8669-d35548cbc168",
+  "run_date": "2026-08-27",
+  "summary": {
+    "steps": [
+      {
+        "collect": {
+          "results": [
+            {
+              "kind": "blog",
+              "source_id": "SRC-N-001",
+              "discovered": 2,
+              "new": 2,
+              "duplicates": 0
+            },
+            {
+              "kind": "cafe",
+              "source_id": "SRC-N-002",
+              "discovered": 1,
+              "new": 1,
+              "duplicates": 0
+            }
+          ],
+          "lineages": [
+            "aeb1e375-1ed5-417c-854c-7d50c6334240",
+            "a5e1c6a2-9426-4d26-91e3-760c3ace557a"
+          ]
+        }
+      },
+      {
+        "acquire": {
+          "acquisitions": [
+            {
+              "post_id": 1,
+              "source_id": "SRC-N-001",
+              "platform": "NAVER_BLOG",
+              "url": "https://snapshot.local/naver/blog/pista",
+              "status": "FULL",
+              "body_chars": 62,
+              "images": 1,
+              "poster_candidates": 1,
+              "error_code": null,
+              "upgraded": true,
+              "lineage_id": "aeb1e375-1ed5-417c-854c-7d50c6334240",
+              "observation_id": 3
+            },
+            {
+              "post_id": 2,
+              "source_id": "SRC-N-001",
+              "platform": "NAVER_BLOG",
+              "url": "https://snapshot.local/naver/blog/class",
+              "status": "PARTIAL",
+              "body_chars": 11,
+              "images": 0,
+              "poster_candidates": 0,
+              "error_code": "BODY_UNAVAILABLE",
+              "upgraded": false,
+              "lineage_id": "aeb1e375-1ed5-417c-854c-7d50c6334240",
+              "observation_id": 4
+            },
+            {
+              "post_id": 3,
+              "source_id": "SRC-N-002",
+              "platform": "NAVER_CAFE",
+              "url": "https://snapshot.local/naver/cafe/pista",
+              "status": "BODY_ONLY",
+              "body_chars": 56,
+              "images": 0,
+              "poster_candidates": 0,
+              "error_code": null,
+              "upgraded": true,
+              "lineage_id": "a5e1c6a2-9426-4d26-91e3-760c3ace557a",
+              "observation_id": 5
+            }
+          ]
+        }
+      },
+      {
+        "recover": {
+          "recoveries": [
+            {
+              "recovery_id": 1,
+              "state": "PENDING",
+              "observation_id": 6,
+              "event_instance_id": null
+            },
+            {
+              "recovery_id": 2,
+              "state": "RESOLVED",
+              "observation_id": 7,
+              "event_instance_id": 1
+            }
+          ]
+        }
+      }
+    ],
+    "evidence_metrics": {
+      "window_label": "daily",
+      "metric_scope": "OVERALL",
+      "source_id": null,
+      "event_count": 1,
+      "field_total": 0,
+      "field_verified": 0,
+      "field_expected": 0,
+      "field_inferred": 0,
+      "field_conflict": 0,
+      "field_unknown": 0,
+      "expected_to_verified_promotions": 0,
+      "expected_to_verified_opportunities": 0,
+      "source_yield_events": 2,
+      "source_yield_posts": 3,
+      "access_attempts": 3,
+      "access_failures": 1,
+      "primary_recovery_attempts": 0,
+      "primary_recovery_success": 0,
+      "generated_at": "2026-08-27T05:47:27.663749+00:00",
+      "field_coverage_rate": null,
+      "known_field_rate": null,
+      "expected_to_verified_promotion_rate": null,
+      "source_yield_rate": 0.6667,
+      "access_failure_rate": 0.3333,
+      "primary_recovery_success_rate": null
+    },
+    "observation_metrics": {
+      "run_count": 7,
+      "discovered_count": 3,
+      "rawpost_new_count": 3,
+      "rawpost_duplicate_count": 0,
+      "acquisition_attempt_count": 3,
+      "acquisition_success_count": 2,
+      "acquisition_failure_count": 1,
+      "recovery_attempt_count": 2,
+      "recovery_success_count": 1,
+      "source_yield_rate": 1.0,
+      "access_failure_rate": 0.3333,
+      "recovery_success_rate": 0.5
+    }
+  }
+}

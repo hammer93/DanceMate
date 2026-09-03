@@ -1,0 +1,51 @@
+{
+  "date": "2026-08-27",
+  "scope": "Seoul tango Day 1",
+  "events": [
+    {
+      "name": "cabeceo",
+      "venue": "Andante",
+      "time": "19:30",
+      "fee_expected": "13000",
+      "fee_verified": null,
+      "confidence": "HIGH_CONFIDENCE"
+    },
+    {
+      "name": "Sueño Dulce",
+      "venue": "La Ventana",
+      "time": "20:00",
+      "fee_expected": "11000",
+      "fee_verified": null,
+      "confidence": "HIGH_CONFIDENCE"
+    },
+    {
+      "name": "서울밀롱가",
+      "venue": "OCHO",
+      "time": "20:00",
+      "fee_expected": "13000",
+      "fee_verified": null,
+      "confidence": "HIGH_CONFIDENCE"
+    },
+    {
+      "name": "La Noche",
+      "venue": "O Nada",
+      "time": "20:00",
+      "fee_expected": null,
+      "fee_verified": null,
+      "confidence": "POSSIBLE"
+    }
+  ],
+  "primary_sources": [
+    {
+      "source_id": "SRC-F-001",
+      "authority": "PRIMARY_VENUE",
+      "access": "ACCESS_LIMITED"
+    },
+    {
+      "source_id": "SRC-F-002",
+      "authority": "PRIMARY_ORGANIZER",
+      "access": "ACCESS_LIMITED"
+    }
+  ],
+  "note": "Only retained Day 1 evidence is used. Missing denominators are null, not estimated."
+}

@@ -1,0 +1,34 @@
+{
+  "documents": [
+    {
+      "source_id": "SRC-N-001",
+      "platform": "NAVER_BLOG",
+      "url": "https://snapshot.local/naver/pista",
+      "title": "8월 22일 더 피스타 밀롱가",
+      "contents": "홍대 PISTA 8월 22일 토요일 19:00~23:00 입장료 13,000원 DJ Hernan",
+      "datetime": "2026-08-21T12:00:00+09:00",
+      "blogname": "밀롱가 정보",
+      "acquisition_quality": "BODY_ONLY"
+    },
+    {
+      "source_id": "SRC-N-002",
+      "platform": "NAVER_CAFE",
+      "url": "https://snapshot.local/naver/ocho",
+      "title": "OCHO 8월 29일 토요 밀롱가",
+      "contents": "2026.08.29 20:00~24:00 오쵸 밀롱가 입장료 15,000원",
+      "datetime": "2026-08-28T10:00:00+09:00",
+      "cafename": "서울탱고",
+      "acquisition_quality": "BODY_ONLY"
+    },
+    {
+      "source_id": "SRC-N-001",
+      "platform": "NAVER_BLOG",
+      "url": "https://snapshot.local/naver/unrelated",
+      "title": "9월 탱고 초급 강습 모집",
+      "contents": "초급 강습 모집 8주 과정",
+      "datetime": "2026-08-27T10:00:00+09:00",
+      "blogname": "탱고 소식",
+      "acquisition_quality": "BODY_ONLY"
+    }
+  ]
+}

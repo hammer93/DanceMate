@@ -1,0 +1,32 @@
+{
+  "version": "0.12",
+  "rows": [
+    {
+      "window_label": "snapshot",
+      "metric_scope": "OVERALL",
+      "source_id": null,
+      "event_count": 2,
+      "field_total": 8,
+      "field_verified": 7,
+      "field_expected": 1,
+      "field_inferred": 0,
+      "field_conflict": 0,
+      "field_unknown": 0,
+      "expected_to_verified_promotions": 1,
+      "expected_to_verified_opportunities": 2,
+      "source_yield_events": 2,
+      "source_yield_posts": 2,
+      "access_attempts": 2,
+      "access_failures": 1,
+      "primary_recovery_attempts": 1,
+      "primary_recovery_success": 1,
+      "generated_at": "2026-08-27T03:45:22.024017+00:00",
+      "field_coverage_rate": 0.875,
+      "known_field_rate": 1.0,
+      "expected_to_verified_promotion_rate": 0.5,
+      "source_yield_rate": 1.0,
+      "access_failure_rate": 0.5,
+      "primary_recovery_success_rate": 1.0
+    }
+  ]
+}

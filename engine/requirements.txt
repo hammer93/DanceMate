@@ -1,0 +1,2 @@
+# v0.1 intentionally uses Python standard library only.
+# Optional for tests: pytest
