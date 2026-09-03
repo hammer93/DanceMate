@@ -9,9 +9,9 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.76 (Deep Content Acquisition + Human Verification + Usage Monitoring)
-  - v0.74 deployed and verified on the ROCKPro64 on 2026-09-03, host reboot included
-- Information Engine: v0.73 (`engine/`, 559 tests)
+- Product Runtime: v0.77 (Extraction Quality Fix + Duplicate Resolution + Alpha Event Search)
+  - deployed and verified on the ROCKPro64 on 2026-09-03
+- Information Engine: v0.74 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
 - Initial Genres:
@@ -19,17 +19,20 @@ DanceMate는
   - Salsa
   - Swing
 
-제품 버전과 Information Engine 버전은 서로 다르다.
-`VERSION`은 제품 런타임 버전이고, engine은 v0.73 baseline 그대로다.
+제품 버전과 Information Engine 버전은 서로 다르다. `VERSION`은 제품 런타임
+버전이다. Engine은 v0.77에서 처음으로 추출 로직이 수정되어 v0.74가 되었다.
+손대지 않은 import 상태는 `engine-v0.73-baseline` 태그에 남아 있다:
+
+    git checkout engine-v0.73-baseline -- engine/src/extractor.py
 
 ## 현재 개발 우선순위
 
-1. Information Engine v0.73 baseline
-2. ROCKPro64 Persistent Runtime
-3. Real Source Data
-4. Human Verification
-5. DanceMate Alpha
-6. Real User Feedback
+1. ~~Information Engine v0.73 baseline~~
+2. ~~ROCKPro64 Persistent Runtime~~
+3. ~~Real Source Data~~
+4. ~~Human Verification~~
+5. ~~DanceMate Alpha~~ (v0.77: search API + `/`, `/events`, `/events/{id}`)
+6. Real User Feedback ← 다음
 
 ## 초기 Alpha 범위
 
@@ -54,26 +57,47 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.74"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
 | `GET /resources`  | CPU load, memory, disk usage                                  |
 
+### Alpha user surface (LAN only, no authentication)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | 오늘 갈 수 있는 곳 |
+| `GET /events?when=today\|tomorrow\|weekend\|this_week\|upcoming` | 목록 |
+| `GET /events/{id}` | 상세 + 출처 원문 링크 |
+| `GET /api/events` | 같은 검색의 JSON. `when` / `date` / `from` / `to` / `genre` / `region` / `status` |
+| `GET /api/events/{id}` | 이벤트 하나와 그것을 언급한 모든 게시글 |
+
+날짜는 Asia/Seoul 기준. LIVE로 수집된 것만 노출한다 — snapshot과 fixture는
+콘솔에만 남고 사용자에게 가지 않는다.
+
 ### Admin console (LAN only, HTTP Basic)
 
-`http://<board>:8080/admin` — Dashboard, Sources, Venues, Organizers,
-Candidates, Genres & Regions. Server-rendered; credentials come from
+`http://<board>:8080/admin` — Dashboard, Intake, Review, Events, Duplicates,
+Sources, Venues, Organizers, Genres & Regions, Usage, System. Server-rendered;
+credentials come from
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`, and the console refuses every
 request when no password is set. JSON equivalents live under `/api/admin/`.
 
-Pages: Dashboard, Intake, Review, Sources, Venues, Organizers, Genres &
-Regions, Usage, System.
+Pages: Dashboard, Intake, Review, Events, Duplicates, Sources, Venues,
+Organizers, Genres & Regions, Usage, System. Unresolved Venues sits under
+Venues at `/admin/venues/unresolved`.
 
-The pipeline runs as four scheduler jobs: `source-intake` discovers posts
+The pipeline runs as five scheduler jobs: `source-intake` discovers posts
 through a provider's search API, `content-acquisition` fetches the original
 post behind each result, `engine-ingest` hands new items to the Information
-Engine and `engine-reprocess` re-extracts items whose body arrived later.
+Engine, `engine-reprocess` re-extracts items whose body arrived later, and
+`event-normalization` builds the searchable event rows and then resolves
+duplicates — one job so that order is guaranteed.
+
+When the *extractor* changes rather than the content, `POST
+/api/admin/events/reextract` re-runs the current engine over every post whose
+body we already hold. Candidates a person has acted on are skipped.
 
 An operator registers a source, presses **Test**, then **Enable**. The
 scheduler collects only from enabled sources whose interval has elapsed
@@ -86,7 +110,7 @@ against the engine's recorded snapshots.
 
 ```
 DanceMate/
-├─ engine/            Information Engine v0.73 baseline (src, tests, config, data)
+├─ engine/            Information Engine v0.74 (src, tests, config, data)
 ├─ runtime/           DanceMate Runtime: API, config, migrations, health, adapters
 ├─ scheduler/         periodic worker and job registry
 ├─ collector/         Dance Event Source intake (v0.75)

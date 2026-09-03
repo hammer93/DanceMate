@@ -1,5 +1,212 @@
 # DanceMate Release Notes
 
+## v0.77 Extraction Quality Fix + Duplicate Resolution + Alpha Event Search
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-03.
+
+Version split:
+
+- Product Runtime: 0.77
+- Information Engine: **0.74** — the first version in which DanceMate modifies
+  engine extraction logic. The imported PoC is tagged `engine-v0.73-baseline`
+  and the change is tagged `engine-v0.74`; both are separate from the product
+  tags so a reader can always get back to the untouched import:
+
+      git checkout engine-v0.73-baseline -- engine/src/extractor.py
+
+### Why this version exists
+
+v0.76 fetched the post bodies and the extractor read more out of them. It also
+started producing a value that is worse than a blank one. A post reading
+`시간: PM 07:30~11:30` came out as `07:30`, twelve hours wrong. A missing time
+makes an operator look it up; a wrong time sends a dancer to a locked door.
+
+v0.76 could only flag it. v0.77 fixes it, and then does the two things that
+were waiting on trustworthy fields: collapsing the same milonga posted four
+times into one answer, and putting that answer in front of a dancer.
+
+### PHASE A — time
+
+The v0.73 pattern looked for a meridiem marker only *after* the clock, so a
+leading one was invisible and the raw hour was kept. Reading rules moved to
+`engine/src/extraction_rules.py`, tested against the exact strings that broke
+them.
+
+A marker before or after the clock, on either end or both. 오전/오후/AM/PM, and
+the Korean time-of-day words limited to the hours where they actually assert
+something — 밤 11시 is 23:00, 밤 12시 is not 12 PM, so 밤 stops counting as
+evidence outside 6–11. A single marker resolves the other end by reading the
+range forward: `PM 7:30~12:00` ends at midnight, not noon; `6:30-10:30pm`
+starts at 18:30. Crossing midnight stays valid rather than being an error.
+
+**Without a marker the clock is left exactly as written.** `5시30~9시30` stays
+05:30 and is recorded as ABSENT evidence for a person to settle. A dance event
+is not evidence that 7:30 means 19:30, and trading one wrong value for another
+is not a fix.
+
+Two posts turned out to price and schedule more than one thing — a 특강 before
+the milonga, a paid 심야 패키지 after it — and their clock ranges were being
+read as the event's own hours. Ranges belonging to another programme are now
+skipped, so one post reads 21:00–01:00 (the milonga) instead of 19:30–20:45
+(the class), and the other reports no time, which is what it actually says.
+
+### PHASE B — venue
+
+Label-based, and the label needs a colon: `위치와 카프레제 파스타` is a sentence
+and `위치 🕗 시간: PM 8시` is a label with no value. Without that rule the false
+positives would be worse than the 1-in-15 we started from. A bracketed address
+stays with the name — `라 벤따나 (서울 마포구 잔다리로 48, 2층)` — and a following
+one does not.
+
+Extraction and resolution are kept apart. `venue_text` is the string the post
+carried; `venue_id` is a Venue Master row a person stands behind. **Reading a
+venue name never creates one.** An unrecognised string is UNRESOLVED and goes
+to a queue at `/admin/venues/unresolved`, where linking it records it as an
+alias and re-resolves every event waiting on it. A misread line must not become
+a permanent master record.
+
+### PHASE C — fee
+
+Judged next to each amount rather than across a segment, because one real post
+carries `입장료 13,000원` and, sentences later, `심야 밀롱가 3,000원 할인`.
+Parking, discounts, packages and class prices are excluded; a milonga's fee is
+the one a fee label or the word 밀롱가 names. `예매: 특강+밀롱가 38000원, 특강만
+30000원, 밀롱가만 13000원` yields 13,000.
+
+An unlabelled number never becomes a fee. The engine grants VERIFIED partly on
+a fee being present, and an invented one passes that gate on evidence nobody
+has.
+
+### Measured on the board, 15 live candidates
+
+Re-extracted from the stored bodies with engine v0.74. No new API calls: the
+posts were already fetched in v0.76.
+
+| | v0.73 | v0.74 |
+|---|---|---|
+| Date | 15/15 | 15/15 |
+| Start / end time | 7/15 | **12/15** |
+| Venue extracted | 1/15 | **10/15** |
+| Fee | 1/15 | **3/15** |
+| **Times wrong** | **7** | **0** |
+| Values lost | — | **none** |
+
+All seven v0.73 times were morning readings of evening milongas. Of the twelve
+v0.74 times, eleven carry EXPLICIT meridiem evidence; the twelfth is the
+unmarked `5시30분` post, recorded as ABSENT and flagged rather than converted.
+
+Venue *resolution* is 0/15 and correctly so: the Venue Master has no venues
+registered yet, so eight distinct strings — OCHO, PISTA, 아미고스튜디오,
+Tango Andante, 라 벤따나, 엔빠스, 데땅고, Tango O Nada — are queued for a
+decision. Extracted and resolved are different numbers and this release reports
+both.
+
+Engine test suite: 559 passed.
+
+### PHASE D — normalization
+
+`events` is the runtime's normalised view: one row per event on one date, which
+is what a dancer looks for. Named `events` rather than `event_instances`
+because the engine owns that table name and the hybrid-persistence rule refuses
+a mirror of it.
+
+`series_key` groups a weekly milonga's nights so a duplicate check can tell
+"posted twice" from "on again next week", and never merges them.
+
+Re-extraction issues new candidate ids rather than updating old ones, so an
+engine version bump leaves every post with both its old candidate's event and
+its new one. On the board that put 29 rows in front of a user for 15 real
+events. Normalisation now prunes events whose candidate the engine no longer
+holds — and prunes nothing when the engine store is unreadable, because "I
+cannot see the candidates" must never be acted on as "there are none".
+
+### PHASE E — duplicates
+
+Auto-merge requires all three of same date, same place and same start time,
+with the place a resolved venue or an identical string and the time present on
+both sides. Everything short of that is an open pair for a person. No
+embeddings, no clustering, no similarity score: a number nobody can check is
+not a reason to merge two events. Different dates are never compared, so a
+weekly series cannot collapse into one row.
+
+The board produced exactly one ambiguous pair, and it is the case the caution
+is for: 일루미밀롱가 at 14:00 and 허그밀롱가 at 19:00, same venue, same night.
+An automatic merge would have deleted one of them from the answer.
+
+Nothing is deleted. A duplicate keeps its row, its candidate and its source URL
+and points at the canonical one, so the detail page still lists every post
+behind an event. A person's verdict is final: the scan skips any event a human
+has ruled on, in either direction.
+
+### PHASE F — alpha search API
+
+`GET /api/events` with `when=today|tomorrow|this_week|weekend|upcoming`, or a
+date range, plus genre, region and status. `GET /api/events/{id}` adds every
+post behind the event.
+
+Dates are Asia/Seoul: at 23:00 KST a UTC-based "today" is already showing
+tomorrow's list. "This week" means what is still ahead of you, not a calendar
+week half of which has happened.
+
+The API serves LIVE only. A replayed snapshot is how we test a parser; showing
+one as a real Saturday night would be a lie told to someone making plans. So
+provenance is stored per event and anything not traceable to a live collection
+is excluded, along with duplicates and anything a person rejected. On the board
+that is 15 of 26 rows.
+
+### PHASE G — alpha user surface
+
+`/`, `/events`, `/events/{id}`. No account, no map, no recommendations — those
+need evidence we do not have, and shipping them now would make it harder to
+find out what people actually use.
+
+What it does insist on is not overstating anything:
+
+- a null fee renders 요금 미확인, never 0원
+- a venue read from a post but not recognised is shown with a 미확인 tag
+- a clock the post did not qualify is shown with a 시간 미확인 tag — the value
+  is what the post says, the tag is what that is worth
+- a database outage is a 503 with a sentence, because an empty list would read
+  as "nothing is on tonight"
+- the footer says it is an alpha and that unconfirmed fields are left blank
+
+### Operations
+
+- New scheduler job `event-normalization`: normalise, then scan for duplicates.
+  One job so the order is guaranteed.
+- `POST /api/admin/events/reextract` re-runs the current engine over every post
+  whose body we already hold. For an engine version bump: the stored candidates
+  were extracted by the previous version and nothing about the article says so.
+  Candidates a person has acted on are skipped, so it cannot overwrite a review.
+- Console gains Events, Unresolved Venues and Duplicates — the last two being
+  where automation stopped and handed over.
+- Migrations 007–011. 009 and 010 exist because the first prune hit two
+  self-references; the verdict is history and history is not deleted because
+  its subject was.
+
+### Verification
+
+| | |
+|---|---|
+| Engine suite | 559 passed |
+| Runtime suite, host | 385 passed, 127 skipped |
+| Runtime suite, container | 495 passed, 8 skipped |
+| Migrations on the board | 011 of 011 applied |
+| `/version` | product 0.77, engine 0.74 |
+| Alpha API | 4 upcoming events, all LIVE |
+| Console | Events, Unresolved Venues, Duplicates all 200 |
+
+### Known and deliberate
+
+- Venue resolution is 0/15 until someone registers venues. The queue is the
+  deliverable, not the resolution.
+- `Entry fee 20,000 KRW` is not read — no observed post writes an amount that
+  way, and inventing a currency rule for an unobserved form is how the PM bug
+  happened.
+- Fee is 3/15. Most posts genuinely do not state one, and the extractor no
+  longer guesses at parking charges or class prices to inflate the number.
+
 ## v0.76 Deep Content Acquisition + Human Verification Console + Source Usage Monitoring
 
 Status:
