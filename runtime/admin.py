@@ -123,6 +123,27 @@ border-radius:6px;background:var(--card);color:var(--fg)}
 a{color:var(--accent)}
 code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px;
 font-size:12px}
+.queue{display:flex;flex-direction:column;gap:12px}
+.queue .item{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px}
+.queue .raw{font-size:16px;font-weight:600;word-break:break-all}
+.queue .facts{color:var(--muted);font-size:12px;margin-top:3px;display:flex;gap:14px;flex-wrap:wrap}
+.queue .sources{margin:10px 0 0;padding:0;list-style:none;font-size:12px}
+.queue .sources li{margin-top:6px}
+.snippet{color:var(--muted);border-left:3px solid var(--line);padding:2px 0 2px 10px;
+margin-top:2px;word-break:break-word}
+.actionbar{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin-top:12px;
+padding-top:12px;border-top:1px solid var(--line)}
+.actionbar form.inline{display:flex;gap:6px;align-items:center}
+.actionbar select{width:auto;min-width:200px}
+.actionbar details{margin:0;padding:0;border:none;background:none}
+.actionbar details summary{display:inline-block;padding:4px 10px;border:1px solid var(--line);
+background:var(--card);border-radius:6px;font-weight:400}
+.actionbar details summary:hover{border-color:var(--accent);color:var(--accent)}
+.actionbar details[open]{display:block;width:100%;border:1px solid var(--line);
+border-radius:8px;padding:10px 14px;background:var(--bg)}
+.callout{background:var(--card);border:1px solid var(--warn);border-left-width:4px;
+border-radius:8px;padding:12px 16px;margin-bottom:14px}
+.callout h3{margin:0 0 6px;font-size:14px}
 """
 
 NAV = (

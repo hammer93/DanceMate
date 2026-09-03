@@ -24,7 +24,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import admin, duplicates, events_api, master_data, normalization
+from . import (
+    admin,
+    db,
+    duplicates,
+    events_api,
+    master_data,
+    normalization,
+    venue_resolution,
+)
 from .admin_auth import require_admin
 
 router = APIRouter()
@@ -116,6 +124,80 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
 
 
 # --- unresolved venues ------------------------------------------------------
+#
+# The one screen where a venue string becomes a venue. Everything needed to
+# decide is here -- what the post said, whether we already know the place, and
+# a form prefilled from the string itself -- because the alternative was a trip
+# to /admin/venues and back, and an operator who has left the queue to create a
+# venue has lost the context they were about to use it for.
+#
+# No JavaScript framework. The New Venue form and the Not-a-venue confirmation
+# are <details> blocks, which work with scripting off and need nothing loaded.
+
+def _source_context(entry: dict[str, Any], sources: list[dict[str, Any]]) -> str:
+    """The posts this string came from, with a line of surrounding text.
+
+    "OCHO" could be a studio or the name of the event. Only the post says
+    which, so the post is one click away and a snippet is already on screen.
+    """
+    if not sources:
+        return ('<p class="note">No post is currently waiting on this string — '
+                "it may already have been resolved or re-extracted.</p>")
+    items = []
+    for source in sources:
+        link = (f'<a href="{E(source["source_url"])}" target="_blank" '
+                f'rel="nofollow noopener">원문 보기</a>'
+                if source.get("source_url") else '<span class="muted">no link</span>')
+        snippet = (f'<div class="snippet">{E(source["snippet"])}</div>'
+                   if source.get("snippet") else
+                   '<div class="snippet">(본문에서 해당 문자열 주변을 찾지 못했습니다)</div>')
+        items.append(
+            f'<li><strong>{E(str(source["event_date"]))}</strong> '
+            f'{E((source["event_name"] or "")[:60])} &middot; {link}{snippet}</li>'
+        )
+    return f'<ul class="sources">{"".join(items)}</ul>'
+
+
+def _new_venue_form(entry: dict[str, Any], suggestion: dict[str, Any],
+                    regions: list[dict[str, Any]], region_id: int | None,
+                    *, open_form: bool = False, force: bool = False) -> str:
+    """The New Venue form, prefilled from the raw string. Nothing is saved yet."""
+    options = "".join(
+        f'<option value="{r["region_id"]}"'
+        + (" selected" if region_id == r["region_id"] else "")
+        + f">{E(r['name'])}</option>"
+        for r in regions
+    )
+    aliases = ", ".join(suggestion["aliases"])
+    inferred = (
+        '<p class="note">이름과 주소는 원문 문자열에서 추정한 값입니다. '
+        "저장 전에 확인·수정하세요.</p>" if suggestion["split_inferred"] else ""
+    )
+    return f"""
+<details class="newvenue"{' open' if open_form else ''}>
+  <summary>New Venue</summary>
+  <form method="post" action="/admin/venues/unresolved/{entry['unresolved_venue_id']}/create">
+    <div class="grid">
+      <div><label>Name</label>
+        <input name="name" value="{E(suggestion['name'])}" required></div>
+      <div><label>Region</label>
+        <select name="region_id"><option value="">-</option>{options}</select></div>
+      <div><label>Address</label>
+        <input name="address" value="{E(suggestion['address'] or '')}"></div>
+      <div><label>Aliases (comma separated)</label>
+        <input name="aliases" value="{E(aliases)}"></div>
+      <div><label>Notes</label><input name="notes"></div>
+    </div>
+    {inferred}
+    <p class="note">원문 문자열 <code>{E(entry['venue_text'])}</code> 은 자동으로
+    alias에 포함됩니다 — 다음 수집부터 이 표현이 바로 인식됩니다.</p>
+    <div class="actions">
+      <input type="hidden" name="force" value="{'1' if force else '0'}">
+      <button class="primary">Create &amp; Link</button>
+    </div>
+  </form>
+</details>"""
+
 
 @router.get("/admin/venues/unresolved", response_class=HTMLResponse)
 def admin_unresolved_venues(request: Request,
@@ -123,6 +205,21 @@ def admin_unresolved_venues(request: Request,
     with _connection() as con:
         pending = normalization.unresolved_venues(con)
         venues = master_data.list_venues(con, enabled_only=True)
+        regions = master_data.list_regions(con, enabled_only=True)
+        contexts = {
+            entry["unresolved_venue_id"]: venue_resolution.context(con, entry["venue_text"])
+            for entry in pending
+        }
+        suggestions = {
+            entry["unresolved_venue_id"]: venue_resolution.suggest(
+                entry["venue_text"], list(entry.get("alias_candidates") or []),
+            )
+            for entry in pending
+        }
+        region_ids = {
+            key: venue_resolution.suggested_region_id(con, suggestion["region_hint"])
+            for key, suggestion in suggestions.items()
+        }
 
     options = "".join(
         f'<option value="{v["venue_id"]}">{E(v["name"])}'
@@ -131,60 +228,200 @@ def admin_unresolved_venues(request: Request,
         for v in venues
     )
 
-    rows = []
+    banner = "" if venues else (
+        '<div class="callout"><h3>등록된 장소가 아직 없습니다</h3>'
+        "<p>여기서 바로 만들 수 있습니다. 아래 항목의 <strong>New Venue</strong>를 "
+        "누르면 원문 문자열로 채워진 양식이 열리고, 저장과 동시에 대기 중인 "
+        "Event가 정리됩니다. Venues 화면으로 옮겨갈 필요가 없습니다.</p></div>"
+    )
+
+    items = []
     for entry in pending:
-        aliases = ", ".join(E(str(a)) for a in (entry.get("alias_candidates") or []))
-        form = (
-            f'<form method="post" action="/admin/venues/unresolved/{entry["unresolved_venue_id"]}" '
-            'class="inline">'
-            f'<select name="venue_id"><option value="">choose a venue</option>{options}</select> '
-            '<button class="primary" name="action" value="link">Link</button> '
-            '<button name="action" value="dismiss">Not a venue</button>'
-            "</form>"
-        )
-        rows.append([
-            E(entry["venue_text"]),
-            aliases or "-",
-            str(entry.get("event_count") or 0),
-            E(str(entry["first_seen_at"])[:16]),
-            form,
-        ])
+        key = entry["unresolved_venue_id"]
+        also = ", ".join(E(str(a)) for a in (entry.get("alias_candidates") or [])
+                         if str(a) != entry["venue_text"])
+        if venues:
+            link_form = (
+                f'<form class="inline" method="post" '
+                f'action="/admin/venues/unresolved/{key}/link">'
+                f'<select name="venue_id" required>'
+                f'<option value="">기존 장소 선택…</option>{options}</select>'
+                '<button class="primary">Link Existing</button></form>'
+            )
+        else:
+            link_form = ('<span class="badge muted">No venues registered yet</span>')
+
+        live = entry.get("live_event_count") or 0
+        # A string only a fixture ever produced has no post to read, and a
+        # decision about it changes nothing a dancer sees. Say so rather than
+        # letting it sit in the queue looking like the others.
+        live_note = (f" (live {live}건)" if live and live != (entry.get("event_count") or 0)
+                     else "" if live else
+                     ' <span class="badge muted">live 게시글 없음</span>')
+
+        dismiss_form = f"""
+<details>
+  <summary>Not a venue</summary>
+  <form method="post" action="/admin/venues/unresolved/{key}/dismiss">
+    <p class="note">이 문자열을 장소가 아닌 것으로 처리합니다. 원문과 근거는
+    삭제되지 않고, 이 문자열만 대기열에서 내려갑니다.</p>
+    <div><label>사유 (선택)</label>
+      <input name="reason" placeholder="행사명 / 건물 층수 / 오추출 등"></div>
+    <div class="actions"><button>확인, 장소가 아닙니다</button></div>
+  </form>
+</details>"""
+
+        items.append(f"""
+<section class="item">
+  <div class="raw">{E(entry['venue_text'])}</div>
+  <div class="facts">
+    <span>대기 중 Event {entry.get('event_count') or 0}건{live_note}</span>
+    <span>처음 발견 {E(str(entry['first_seen_at'])[:16])}</span>
+    {f'<span>Also tried: {also}</span>' if also else ''}
+  </div>
+  {_source_context(entry, contexts[key])}
+  <div class="actionbar">
+    {link_form}
+    {_new_venue_form(entry, suggestions[key], regions, region_ids[key])}
+    {dismiss_form}
+  </div>
+</section>""")
 
     note = (
-        '<p class="note">These are strings the extractor read from a post that '
-        "the Venue Master does not recognise. Linking one records it as an "
-        "alias and re-resolves every event waiting on it. Nothing here is "
-        "registered automatically: a misread line must not become a venue.</p>"
+        '<p class="note">이 문자열들은 추출기가 게시글에서 읽었지만 Venue Master가 '
+        "알지 못하는 것입니다. 연결하면 alias로 기록되어 대기 중 Event가 즉시 "
+        "정리되고, 다음 수집부터 자동으로 인식됩니다. 자동 등록은 하지 않습니다 — "
+        "잘못 읽은 한 줄이 영구 마스터 레코드가 되면 안 됩니다.</p>"
     )
-    body = ("<h2>Unresolved Venues</h2>" + note + admin._table(
-        ["Read from the post", "Also tried", "Events waiting", "First seen", "Decide"], rows,
-        empty="every venue we have read is recognised",
-    ))
+    body = ("<h2>Unresolved Venues</h2>" + banner + note
+            + (f'<div class="queue">{"".join(items)}</div>' if items
+               else '<div class="tablewrap"><table><tbody><tr><td>'
+                    "every venue we have read is recognised</td></tr></tbody></table></div>"))
     return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body,
                                     flash=admin._flash(request)))
 
 
-@router.post("/admin/venues/unresolved/{unresolved_venue_id}")
-def admin_resolve_venue(
+def _duplicate_warning_page(entry: dict[str, Any], matches: list[dict[str, Any]],
+                            form: dict[str, Any], regions: list[dict[str, Any]],
+                            region_id: int | None) -> HTMLResponse:
+    """Ask before creating a second row for a place we may already have.
+
+    Not a refusal: the operator may well know these are different places. It
+    stops here so that is a decision rather than an accident.
+    """
+    key = entry["unresolved_venue_id"]
+    rows = "".join(
+        f'<li><strong>{E(m["name"])}</strong>'
+        + (f' &middot; {E(m["region_name"])}' if m.get("region_name") else "")
+        + (f' &middot; {E(m["address"])}' if m.get("address") else "")
+        + f' &middot; <span class="muted">{E(", ".join(m["match_reasons"]))}</span> '
+        + f'<form class="inline" method="post" '
+        f'action="/admin/venues/unresolved/{key}/link">'
+        f'<input type="hidden" name="venue_id" value="{m["venue_id"]}">'
+        f'<button class="primary">Link Existing</button></form></li>'
+        for m in matches
+    )
+    suggestion = {
+        "name": form["name"], "address": form["address"] or None,
+        "aliases": form["aliases"], "split_inferred": False,
+    }
+    body = (
+        "<h2>Unresolved Venues</h2>"
+        '<div class="callout"><h3>비슷한 장소가 이미 등록되어 있습니다</h3>'
+        f'<p>원문 문자열: <code>{E(entry["venue_text"])}</code></p>'
+        f'<ul class="sources">{rows}</ul>'
+        "<p class=\"note\">같은 장소라면 위에서 연결하세요. 정말 다른 장소라면 "
+        "아래 양식에서 그대로 저장하면 됩니다.</p></div>"
+        + _new_venue_form(entry, suggestion, regions, region_id,
+                          open_form=True, force=True)
+        + '<p class="note"><a href="/admin/venues/unresolved">← 대기열로 돌아가기</a></p>'
+    )
+    return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body),
+                        status_code=409)
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/create")
+def admin_create_and_link_venue(
     unresolved_venue_id: int,
-    action: str = Form(...),
+    name: str = Form(...),
+    region_id: str = Form(""),
+    address: str = Form(""),
+    aliases: str = Form(""),
+    notes: str = Form(""),
+    force: str = Form("0"),
+    reviewer: str = Depends(require_admin),
+) -> Any:
+    target = "/admin/venues/unresolved"
+    alias_list = [a.strip() for a in aliases.split(",") if a.strip()]
+    # Not autocommit: create-venue, alias and link commit together or not at all.
+    with db.connect(admin._settings()) as con:
+        try:
+            result = venue_resolution.create_and_link(
+                con, unresolved_venue_id=unresolved_venue_id, name=name,
+                region_id=int(region_id) if region_id else None,
+                address=address, notes=notes, aliases=alias_list,
+                reviewer=reviewer, force=(force == "1"),
+            )
+            con.commit()
+        except venue_resolution.DuplicateVenue as duplicate:
+            entry = normalization.unresolved_venue(con, unresolved_venue_id)
+            regions = master_data.list_regions(con, enabled_only=True)
+            return _duplicate_warning_page(
+                entry, duplicate.matches,
+                {"name": name, "address": address, "aliases": alias_list},
+                regions, int(region_id) if region_id else None,
+            )
+        except Exception as exc:
+            return admin._back(target, f"could not create venue: {exc}", "bad")
+    return admin._back(
+        target,
+        f"created {result['venue']['name']} and resolved "
+        f"{result['events_updated']} event(s)",
+    )
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/link")
+def admin_link_existing_venue(
+    unresolved_venue_id: int,
     venue_id: str = Form(""),
-    _: str = Depends(require_admin),
+    reviewer: str = Depends(require_admin),
 ) -> RedirectResponse:
     target = "/admin/venues/unresolved"
-    try:
-        with _connection() as con:
-            if action == "dismiss":
-                normalization.dismiss_unresolved_venue(con, unresolved_venue_id)
-                return admin._back(target, "recorded as not a venue")
-            if not venue_id:
-                return admin._back(target, "choose a venue to link to", "bad")
-            result = normalization.link_unresolved_venue(
-                con, unresolved_venue_id, int(venue_id),
+    if not venue_id:
+        return admin._back(target, "연결할 장소를 선택하세요", "bad")
+    with db.connect(admin._settings()) as con:
+        try:
+            result = venue_resolution.link_existing(
+                con, unresolved_venue_id=unresolved_venue_id,
+                venue_id=int(venue_id), reviewer=reviewer,
             )
-    except Exception as exc:
-        return admin._back(target, f"could not resolve: {exc}", "bad")
-    return admin._back(target, f"linked; {result['events_updated']} event(s) updated")
+            con.commit()
+        except Exception as exc:
+            return admin._back(target, f"could not link: {exc}", "bad")
+    return admin._back(
+        target,
+        f"linked to {result['venue']['name']}; "
+        f"{result['events_updated']} event(s) resolved",
+    )
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/dismiss")
+def admin_dismiss_venue(
+    unresolved_venue_id: int,
+    reason: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    target = "/admin/venues/unresolved"
+    with db.connect(admin._settings()) as con:
+        try:
+            venue_resolution.dismiss(
+                con, unresolved_venue_id=unresolved_venue_id, reviewer=reviewer,
+                reason=reason.strip() or None,
+            )
+            con.commit()
+        except Exception as exc:
+            return admin._back(target, f"could not dismiss: {exc}", "bad")
+    return admin._back(target, "장소가 아닌 것으로 기록했습니다")
 
 
 # --- duplicates -------------------------------------------------------------

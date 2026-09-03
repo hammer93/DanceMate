@@ -9,7 +9,7 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.77 (Extraction Quality Fix + Duplicate Resolution + Alpha Event Search)
+- Product Runtime: v0.77.1 (Venue Resolution Admin UX)
   - deployed and verified on the ROCKPro64 on 2026-09-03
 - Information Engine: v0.74 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
@@ -57,7 +57,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77.1"}`    |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -87,6 +87,15 @@ request when no password is set. JSON equivalents live under `/api/admin/`.
 Pages: Dashboard, Intake, Review, Events, Duplicates, Sources, Venues,
 Organizers, Genres & Regions, Usage, System. Unresolved Venues sits under
 Venues at `/admin/venues/unresolved`.
+
+Unresolved Venues is where a venue string becomes a venue. Each queue entry
+shows the post it came from with a line of surrounding text, and offers **Link
+Existing**, **New Venue** and **Not a venue** on the spot — the New Venue form
+opens inline, prefilled from the string, and Create & Link registers the venue,
+aliases the raw string to it and resolves the waiting events in one
+transaction. Nothing is registered automatically: a misread line must not
+become a permanent master record. Every decision is audited with the reviewer,
+the string, the action and how many events actually moved.
 
 The pipeline runs as five scheduler jobs: `source-intake` discovers posts
 through a provider's search API, `content-acquisition` fetches the original

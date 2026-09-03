@@ -305,13 +305,35 @@ def unresolved_venues(con, *, state: str = "OPEN", limit: int = 100) -> list[dic
             "SELECT u.*, "
             "  (SELECT count(*) FROM events e "
             "    WHERE e.venue_status = 'UNRESOLVED' "
-            "      AND lower(e.venue_text) = lower(u.venue_text)) AS event_count "
+            "      AND lower(e.venue_text) = lower(u.venue_text)) AS event_count, "
+            # How many of those came from a live collection. A string that only
+            # ever appeared in a PoC fixture has no post to read, and asking an
+            # operator to rule on it as though it did wastes their attention on
+            # the one screen where attention is the scarce thing.
+            "  (SELECT count(*) FROM events e "
+            "    WHERE e.venue_status = 'UNRESOLVED' "
+            "      AND e.provenance = 'LIVE' "
+            "      AND lower(e.venue_text) = lower(u.venue_text)) AS live_event_count "
             "FROM unresolved_venues u WHERE u.state = %s "
-            "ORDER BY u.occurrence_count DESC, u.last_seen_at DESC LIMIT %s",
+            # Strings with live posts behind them first: those are the ones a
+            # decision actually changes something for.
+            "ORDER BY live_event_count DESC, event_count DESC, u.last_seen_at DESC "
+            "LIMIT %s",
             (state, limit),
         )
         names = [c.name for c in cur.description]
         return [dict(zip(names, row)) for row in cur.fetchall()]
+
+
+def unresolved_venue(con, unresolved_venue_id: int) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM unresolved_venues WHERE unresolved_venue_id = %s",
+            (unresolved_venue_id,),
+        )
+        names = [c.name for c in cur.description]
+        row = cur.fetchone()
+    return None if row is None else dict(zip(names, row))
 
 
 def link_unresolved_venue(con, unresolved_venue_id: int, venue_id: int, *,
