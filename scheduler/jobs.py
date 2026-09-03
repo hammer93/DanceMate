@@ -4,16 +4,19 @@ A job is a callable taking Settings and returning a short detail string. It
 must be safe to run repeatedly and must not write large amounts of data - the
 deployment target boots from a 32GB microSD.
 
-v0.74 registers self-check jobs only. Real Dance Event source collectors are
-v0.75 work and will register here.
+v0.75 adds the two real-work jobs: `source-intake` collects from the sources an
+operator has enabled, and `engine-ingest` hands what it collected to the
+Information Engine. The self-check jobs from v0.74 stay.
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from runtime import engine_adapter, resources
+from runtime import engine_adapter, engine_ingest, resources
 from runtime.config import Settings
+
+from . import intake_job
 
 Job = Callable[[Settings], str]
 
@@ -37,9 +40,29 @@ def storage_probe(settings: Settings) -> str:
     return f"storage={report['status']} " + " ".join(parts)
 
 
+def source_intake(settings: Settings) -> str:
+    """Collect from enabled sources whose interval has elapsed."""
+    return intake_job.run(settings)
+
+
+def engine_ingest_job(settings: Settings) -> str:
+    """Hand collected raw items to the Information Engine."""
+    result = engine_ingest.ingest_pending(settings)
+    detail = (
+        f"pending={result['pending']} ingested={result['ingested']} "
+        f"skipped={result['skipped']} failed={result['failed']} "
+        f"candidates={result['candidates']}"
+    )
+    if result.get("failures"):
+        detail += f" first_failures={result['failures']}"
+    return detail
+
+
 REGISTRY: dict[str, Job] = {
     "engine-availability": engine_availability,
     "storage-probe": storage_probe,
+    "source-intake": source_intake,
+    "engine-ingest": engine_ingest_job,
 }
 
 
