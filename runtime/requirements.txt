@@ -12,3 +12,6 @@
 fastapi==0.115.6
 uvicorn==0.34.0
 psycopg[binary]==3.2.3
+# Required by FastAPI to parse the admin console's HTML form posts. Pure
+# Python, no build step, ~30KB.
+python-multipart==0.0.20
