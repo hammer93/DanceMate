@@ -4,9 +4,7 @@
 
 Status:
 Live source intake VERIFIED on the ROCKPro64 with real Kakao credentials,
-2026-09-03. Not merged and not tagged: the board stopped responding after the
-post-acceptance host reboot and the release could not be verified on the
-target. See "Live Source Acceptance" below.
+2026-09-03, host reboot included.
 
 ### Live Source Acceptance (2026-09-03, ROCKPro64)
 
@@ -73,11 +71,31 @@ three missing dates, two posts genuinely carry no date in their title. One
 start time (`5시30분`) was present and not extracted. Every candidate is
 `POSSIBLE`; none was promoted on search discovery alone.
 
-**Host reboot — NOT VERIFIED.** After the reboot the board stopped responding
-on both `end0` (192.168.1.100) and `wlan0` (10.0.0.55). The Ethernet PHY link
-stays up at 1Gbps and an ARP sweep of 192.168.1.0/24 finds no host at all, so
-the board needs physical inspection. `docker compose restart` persistence was
-verified before the reboot: 18 items, 4 runs and 15 candidates all survived.
+**Restart and host reboot — PASS, with one caveat about the board.**
+
+`docker compose restart`: 18 items, 4 runs, 15 candidates preserved.
+
+The host reboot needed a power cycle. `systemctl reboot` shut down cleanly and
+the kernel started again, but the board froze before networking came up and
+stayed unreachable for ~27 minutes until it was power cycled. That is an RK3399
+warm-reset problem, not a DanceMate one — the filesystem came back `clean` with
+no fsck and no I/O errors, and three earlier reboots on this board recovered in
+about 15 seconds. Recorded in `deploy/rockpro64/NETWORK.md`.
+
+Everything DanceMate owns survived it, with no manual start:
+
+| | |
+|---|---|
+| Containers healthy after boot | 4 of 4, ~26s |
+| `source_items` | 18 (17 live, 1 snapshot) |
+| `source_collection_runs` | 4, provenance intact |
+| Live Event Candidates | 15 |
+| False VERIFIED among them | 0 |
+| Korean text | 18/18 titles still Hangul in PostgreSQL |
+| Provider quota | preserved across the reboot |
+| Duplicate explosion | none: 18 items, 18 distinct external ids |
+| Post-reboot live collection | ran immediately: 17 discovered, 0 new, 17 duplicate |
+| `check-server.sh` | six PASS, exit 0 |
 
 Version split:
 

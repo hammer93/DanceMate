@@ -127,6 +127,36 @@ LISTEN  0.0.0.0:22             sshd
 `127.0.0.1`. PostgreSQL publishes no host port at all — it is reachable only
 inside `dancemate-net`.
 
+## Warm reboot can hang — power cycle is the recovery
+
+Observed 2026-09-03. `systemctl reboot` shut down cleanly and the kernel
+started again (journal records `Booting Linux`, wtmp records the boot), but the
+board then froze before networking came up and stayed unreachable on both
+`end0` and `wlan0` for ~27 minutes until it was power cycled.
+
+It is a board-level warm-reset problem, not a DanceMate one:
+
+- the filesystem was `clean` afterwards, no fsck, no I/O or mmc errors
+- every DanceMate record survived: 18 source items, 5 collection runs,
+  15 live Event Candidates, provider quota, all Korean text
+- on the power-cycled boot all four containers were healthy within ~26s with
+  no manual start, and a live collection ran immediately afterwards
+
+Three earlier `systemctl reboot` cycles on this board (two during the v0.74
+acceptance, one during v0.75) recovered in about 15 seconds, so this is
+intermittent rather than systematic — consistent with the RK3399 warm-reset
+behaviour ROCKPro64 boards are known for.
+
+**Operationally**: if the board does not answer within ~2 minutes of a reboot,
+power cycle it. Nothing needs repairing afterwards. For unattended operation,
+prefer `poweroff` + power-on, or attach a serial console (the board exposes
+`ttyS2`) so a hung boot can be diagnosed rather than guessed at.
+
+The `brcmfmac4359-sdio.pine64,rockpro64-v2.1.bin ... error -2` lines in dmesg
+are **not** a fault: the kernel tries board-specific firmware names first and
+falls back to the generic `brcmfmac4359-sdio.bin`, which is present. WiFi
+works.
+
 ## Known constraints
 
 - `ufw` is enabled, but Docker's own iptables rules can bypass it for published
