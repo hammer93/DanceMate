@@ -217,3 +217,37 @@ def test_health_probe_defaults_without_any_binding_configured(tmp_path):
 def test_env_example_documents_the_health_host():
     text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "#DANCEMATE_HEALTH_HOST=127.0.0.1" in text
+
+
+# --- acceptance tooling -----------------------------------------------------
+
+ACCEPTANCE = REPO_ROOT / "deploy" / "rockpro64" / "acceptance_marker.py"
+
+
+def test_acceptance_marker_tool_is_importable_and_compiles():
+    import py_compile
+
+    py_compile.compile(str(ACCEPTANCE), doraise=True)
+
+
+def test_acceptance_marker_writes_to_both_stores():
+    text = ACCEPTANCE.read_text(encoding="utf-8")
+    # PostgreSQL through the runtime's own API, not raw SQL
+    assert "db.set_runtime_state(" in text
+    assert "db.get_runtime_state(" in text
+    # SQLite through the engine's own service functions
+    assert "register_generation" in text
+    assert "resolve_generation" in text
+
+
+def test_acceptance_marker_does_not_modify_engine_source():
+    """It may seed upstream rows, but must not touch engine files or schema."""
+    text = ACCEPTANCE.read_text(encoding="utf-8")
+    for forbidden in ("DROP TABLE", "ALTER TABLE", "DELETE FROM", "open(", "write_text"):
+        assert forbidden not in text, forbidden
+
+
+def test_acceptance_marker_verify_reports_failure_not_success():
+    text = ACCEPTANCE.read_text(encoding="utf-8")
+    assert 'if args.action == "verify" and not result.get("ok"):' in text
+    assert "return 1" in text
