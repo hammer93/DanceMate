@@ -31,6 +31,9 @@ COPY scheduler/ /app/scheduler/
 COPY migrations/ /app/migrations/
 COPY engine/ /app/engine/
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# Deployment acceptance tool: it plants and verifies the persistence markers
+# from inside the container, so it has to be in the image.
+COPY deploy/rockpro64/acceptance_marker.py /app/deploy/rockpro64/acceptance_marker.py
 COPY VERSION /app/VERSION
 
 # Pristine copy of the engine fixtures. A persistent volume is mounted over

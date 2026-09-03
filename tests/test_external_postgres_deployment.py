@@ -251,3 +251,17 @@ def test_acceptance_marker_verify_reports_failure_not_success():
     text = ACCEPTANCE.read_text(encoding="utf-8")
     assert 'if args.action == "verify" and not result.get("ok"):' in text
     assert "return 1" in text
+
+
+def test_acceptance_marker_ships_in_the_container_image():
+    """It runs via `compose exec runtime`, so .dockerignore must not drop it."""
+    ignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    assert "!deploy/rockpro64/acceptance_marker.py" in ignore
+    lines = [line.strip() for line in ignore.splitlines()]
+    assert lines.index("deploy/") < lines.index("!deploy/rockpro64/acceptance_marker.py"), (
+        "the re-include must come after the exclude or Docker ignores it"
+    )
+    # .dockerignore only permits the file into the context; the image still
+    # needs an explicit COPY, and forgetting it is what actually broke.
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY deploy/rockpro64/acceptance_marker.py" in dockerfile
