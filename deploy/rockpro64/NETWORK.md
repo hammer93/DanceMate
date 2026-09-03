@@ -127,30 +127,60 @@ LISTEN  0.0.0.0:22             sshd
 `127.0.0.1`. PostgreSQL publishes no host port at all — it is reachable only
 inside `dancemate-net`.
 
-## Warm reboot can hang — power cycle is the recovery
+## Warm reboot can fail to come back — power cycle is the recovery
 
-Observed 2026-09-03. `systemctl reboot` shut down cleanly and the kernel
-started again (journal records `Booting Linux`, wtmp records the boot), but the
-board then froze before networking came up and stayed unreachable on both
-`end0` and `wlan0` for ~27 minutes until it was power cycled.
+Observed 2026-09-03. `systemctl reboot` shut down cleanly, and the board then
+**never came back up**. It stayed unreachable on both `end0` and `wlan0` for
+~27 minutes until it was power cycled.
 
-It is a board-level warm-reset problem, not a DanceMate one:
+### Reading the evidence correctly: this board's clock lies after a power loss
 
-- the filesystem was `clean` afterwards, no fsck, no I/O or mmc errors
+The RTC does not retain time. On every boot the kernel reports:
+
+```
+rk808-rtc rk808-rtc.3.auto: setting system clock to 2013-01-18T08:50:19 UTC
+systemd[1]: System time advanced to timestamp on /var/lib/systemd/timesync/clock
+```
+
+systemd falls back to the last known time — the mtime of
+`/var/lib/systemd/timesync/clock`, written just before the previous shutdown —
+so **early boot entries are stamped with roughly the previous shutdown time**
+until `systemd-timesyncd` syncs, which happened here 21 seconds into the boot.
+
+That trap cost a wrong diagnosis first time round. `journalctl` showed
+`Booting Linux ... 15:41:08` and `who -b` showed `15:41`, which looks like the
+board rebooted and then froze. It did not: `/proc/uptime` puts the real kernel
+start at **16:08:35**, the power cycle. Those 15:41 stamps belong to the
+power-cycled boot, before NTP corrected the clock.
+
+**When diagnosing a boot on this board, trust `/proc/uptime` and
+`journalctl --list-boots` counts, not early journal timestamps.**
+
+### What actually happened
+
+`journalctl --list-boots` records exactly **one** boot after the shutdown, and
+it is the power-cycled one. So the board did not reach a running kernel at all
+after `systemctl reboot` — it failed at reset or in early boot, before journald
+could record anything. Without a serial console the exact stage (SoC warm
+reset, U-Boot, kernel handoff) is unknown; this is the RK3399 warm-reset
+behaviour ROCKPro64 boards are known for.
+
+It is not a DanceMate fault, and nothing needed repairing:
+
+- the filesystem came back `clean`, no fsck, no I/O or mmc errors
 - every DanceMate record survived: 18 source items, 5 collection runs,
   15 live Event Candidates, provider quota, all Korean text
 - on the power-cycled boot all four containers were healthy within ~26s with
   no manual start, and a live collection ran immediately afterwards
 
 Three earlier `systemctl reboot` cycles on this board (two during the v0.74
-acceptance, one during v0.75) recovered in about 15 seconds, so this is
-intermittent rather than systematic — consistent with the RK3399 warm-reset
-behaviour ROCKPro64 boards are known for.
+acceptance, one during v0.75) came back in about 15 seconds, so it is
+intermittent rather than systematic.
 
-**Operationally**: if the board does not answer within ~2 minutes of a reboot,
-power cycle it. Nothing needs repairing afterwards. For unattended operation,
-prefer `poweroff` + power-on, or attach a serial console (the board exposes
-`ttyS2`) so a hung boot can be diagnosed rather than guessed at.
+**Operationally**: if the board is silent ~2 minutes after a reboot, power
+cycle it. For unattended operation prefer `poweroff` + power-on over `reboot`,
+and attach a serial console (`ttyS2`) — it is the only way to see a failure
+that happens before Linux starts.
 
 The `brcmfmac4359-sdio.pine64,rockpro64-v2.1.bin ... error -2` lines in dmesg
 are **not** a fault: the kernel tries board-specific firmware names first and

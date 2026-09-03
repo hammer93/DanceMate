@@ -76,11 +76,14 @@ start time (`5시30분`) was present and not extracted. Every candidate is
 `docker compose restart`: 18 items, 4 runs, 15 candidates preserved.
 
 The host reboot needed a power cycle. `systemctl reboot` shut down cleanly and
-the kernel started again, but the board froze before networking came up and
-stayed unreachable for ~27 minutes until it was power cycled. That is an RK3399
-warm-reset problem, not a DanceMate one — the filesystem came back `clean` with
-no fsck and no I/O errors, and three earlier reboots on this board recovered in
-about 15 seconds. Recorded in `deploy/rockpro64/NETWORK.md`.
+the board then never came back up, staying unreachable for ~27 minutes until it
+was power cycled. `journalctl --list-boots` records exactly one boot after the
+shutdown — the power-cycled one — so it never reached a running kernel. That is
+the RK3399 warm-reset behaviour, not a DanceMate fault: the filesystem came back
+`clean` with no fsck and no I/O errors, and three earlier reboots on this board
+recovered in about 15 seconds. Recorded in `deploy/rockpro64/NETWORK.md`, along
+with the detail that this board's RTC does not retain time, so early boot
+journal timestamps are misleading until NTP syncs.
 
 Everything DanceMate owns survived it, with no manual start:
 
