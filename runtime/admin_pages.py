@@ -20,6 +20,7 @@ from . import (
     content_store,
     health,
     review,
+    review_hints,
     usage,
 )
 from .admin_auth import require_admin
@@ -338,6 +339,7 @@ def admin_review_detail(
 
     merged = review.apply_corrections(found, current)
     content = (item or {}).get("content") or {}
+    warnings = review_hints.hints(merged, content.get("extracted_text"))
     raw = (item or {}).get("raw") or {}
     snippet = raw.get("body") if isinstance(raw, dict) else None
 
@@ -435,7 +437,16 @@ def admin_review_detail(
                      "What the provider's search API returned.")
         + text_block("Acquired article text", content.get("extracted_text"),
                      "Fetched from the original post, personal data removed.")
-        + "<h2>Extracted</h2>" + extracted
+        + "<h2>Extracted</h2>"
+        + (
+            "".join(
+                f'<p class="flash {"bad" if w["severity"] == review_hints.SEVERITY_WARN else "ok"}">'
+                f'{E(w["severity"])} — {E(w["message"])}</p>'
+                for w in warnings
+            )
+            if warnings else ""
+        )
+        + extracted
         + "<h2>Human action</h2>"
         + '<div class="actions">'
         + simple_form("approve", "APPROVE", "the extracted content is usable as it stands")

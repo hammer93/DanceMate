@@ -191,3 +191,74 @@ def test_states_are_fetched_in_one_query(pg, candidate_id):
     found = review.states(pg, [candidate_id, candidate_id + 5000])
     assert candidate_id in found
     assert found[candidate_id]["review_state"] == "APPROVED"
+
+
+# --- extraction hints -------------------------------------------------------
+
+def test_a_pm_marked_time_extracted_as_morning_is_flagged():
+    """The real regression: 시간: PM 07:30~11:30 came out as 07:30."""
+    from runtime import review_hints
+
+    body = "부산탱고 La Vida 날짜: 2026년 09월 5일 토요일 시간: PM 07:30~11:30 장소: 아미고스튜디오"
+    candidate = {"start_time": "07:30", "end_time": "11:30", "venue": None, "fee": None}
+    found = review_hints.hints(candidate, body)
+    start = [h for h in found if h["field"] == "start_time"]
+    assert start, "a PM-marked morning time must be flagged"
+    assert start[0]["severity"] == review_hints.SEVERITY_WARN
+    assert "19:30" in start[0]["message"]
+
+
+def test_a_korean_afternoon_marker_is_recognised():
+    from runtime import review_hints
+
+    found = review_hints.hints(
+        {"start_time": "08:00"}, "밀롱가 오후 8시 시작합니다"
+    )
+    assert any(h["field"] == "start_time" for h in found)
+
+
+def test_an_afternoon_time_already_in_24h_is_not_flagged():
+    from runtime import review_hints
+
+    found = review_hints.hints({"start_time": "19:30"}, "시간: PM 07:30~11:30")
+    assert not [h for h in found if h["field"] == "start_time"]
+
+
+def test_a_fee_in_the_body_that_was_not_extracted_is_surfaced():
+    from runtime import review_hints
+
+    found = review_hints.hints(
+        {"fee": None}, "예매: 특강+밀롱가 38000원, 밀롱가만 13000원"
+    )
+    fee = [h for h in found if h["field"] == "fee"]
+    assert fee and fee[0]["severity"] == review_hints.SEVERITY_INFO
+
+
+def test_an_extracted_fee_produces_no_hint():
+    from runtime import review_hints
+
+    found = review_hints.hints({"fee": 13000}, "입장료 13,000원")
+    assert not [h for h in found if h["field"] == "fee"]
+
+
+def test_a_labelled_venue_that_was_not_extracted_is_surfaced():
+    from runtime import review_hints
+
+    found = review_hints.hints({"venue": None}, "시간: PM 7:30 장소: 아미고스튜디오 DJ: 로띠")
+    venue = [h for h in found if h["field"] == "venue"]
+    assert venue and "아미고스튜디오" in venue[0]["message"]
+
+
+def test_hints_never_modify_the_candidate():
+    from runtime import review_hints
+
+    candidate = {"start_time": "07:30", "fee": None, "venue": None}
+    snapshot = dict(candidate)
+    review_hints.hints(candidate, "시간: PM 07:30 장소: 홍대 입장료 13,000원")
+    assert candidate == snapshot, "hints are advisory, never corrective"
+
+
+def test_no_body_means_no_hints():
+    from runtime import review_hints
+
+    assert review_hints.hints({"start_time": "07:30"}, None) == []
