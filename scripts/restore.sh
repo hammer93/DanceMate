@@ -61,6 +61,7 @@ SOURCE="$BACKUP_DIR/$BACKUP_NAME"
 
 require_docker
 require_env_file
+require_compose_file
 PG_DB="$(env_value POSTGRES_DB || echo dancemate)"
 PG_USER="$(env_value POSTGRES_USER || echo dancemate)"
 
@@ -90,13 +91,13 @@ compose stop scheduler
 SAFETY="$BACKUP_DIR/pre-restore-$(date -u +%Y%m%d-%H%M%S)"
 mkdir -p "$SAFETY"
 log "taking a pre-restore safety copy into $SAFETY ..."
-compose exec -T postgres pg_dump -U "$PG_USER" -d "$PG_DB" --format=custom \
+pg_run pg_dump -U "$PG_USER" -d "$PG_DB" --format=custom \
   > "$SAFETY/postgres.dump" || warn "pre-restore pg_dump failed (continuing)"
 compose exec -T runtime sh -c 'cat "${ENGINE_DATA_DIR:-/app/engine/data}/dancemate_ie_poc_v0.73.sqlite3" 2>/dev/null || true' \
   > "$SAFETY/engine.sqlite3" || warn "pre-restore engine copy failed (continuing)"
 
 log "restoring PostgreSQL ..."
-compose exec -T postgres pg_restore -U "$PG_USER" -d "$PG_DB" --clean --if-exists \
+pg_run pg_restore -U "$PG_USER" -d "$PG_DB" --clean --if-exists \
   < "$SOURCE/postgres.dump"
 
 log "restoring the Information Engine store ..."

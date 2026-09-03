@@ -25,6 +25,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 require_docker
 require_env_file
+require_compose_file
 
 BACKUP_DIR="$(env_value DANCEMATE_BACKUP_DIR || true)"
 BACKUP_DIR="${BACKUP_DIR:-$REPO_ROOT/backup}"
@@ -47,7 +48,7 @@ log "DanceMate backup -> $TARGET"
 
 # --- PostgreSQL -------------------------------------------------------------
 log "  pg_dump ($PG_DB) ..."
-if compose exec -T postgres pg_dump -U "$PG_USER" -d "$PG_DB" --format=custom \
+if pg_run pg_dump -U "$PG_USER" -d "$PG_DB" --format=custom \
      > "$TARGET/postgres.dump" 2>"$TARGET/postgres.err"; then
   rm -f "$TARGET/postgres.err"
   PG_STATUS=ok

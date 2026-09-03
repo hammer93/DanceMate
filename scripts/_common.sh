@@ -5,14 +5,41 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
-COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
-readonly COMPOSE_FILE
 ENV_FILE="$REPO_ROOT/.env"
 readonly ENV_FILE
 
 log()  { printf '%s\n' "$*"; }
 warn() { printf 'WARN  %s\n' "$*" >&2; }
 die()  { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+# Read one key from .env without sourcing it (values are never executed).
+env_value() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 1
+  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+# Which compose file describes this deployment.
+#   default                       docker-compose.yml - bundled PostgreSQL
+#   DANCEMATE_COMPOSE_FILE=...    e.g. the ROCKPro64 external-PostgreSQL file
+#
+# The path is relative to the repository root. Compose is always invoked with
+# the repository root as the project directory so that .env, the build context
+# and the bind mounts resolve the same way whichever file is selected.
+compose_file() {
+  local configured
+  configured="$(env_value DANCEMATE_COMPOSE_FILE || true)"
+  configured="${configured:-docker-compose.yml}"
+  [[ "$configured" = /* ]] || configured="$REPO_ROOT/$configured"
+  printf '%s' "$configured"
+}
+
+COMPOSE_FILE="$(compose_file)"
+readonly COMPOSE_FILE
+
+compose() {
+  docker compose --project-directory "$REPO_ROOT" -f "$COMPOSE_FILE" "$@"
+}
 
 require_docker() {
   command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH"
@@ -27,11 +54,9 @@ require_env_file() {
     || die ".env not found at $ENV_FILE - copy .env.example and fill it in"
 }
 
-# Read one key from .env without sourcing it (values are never executed).
-env_value() {
-  local key="$1"
-  [[ -f "$ENV_FILE" ]] || return 1
-  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+require_compose_file() {
+  [[ -f "$COMPOSE_FILE" ]] \
+    || die "compose file not found: $COMPOSE_FILE (check DANCEMATE_COMPOSE_FILE in .env)"
 }
 
 validate_env() {
@@ -62,8 +87,31 @@ ensure_directories() {
   done
 }
 
-compose() {
-  docker compose --project-directory "$REPO_ROOT" -f "$COMPOSE_FILE" "$@"
+# Resolve the PostgreSQL container.
+#
+# With the bundled stack it is this project's own `postgres` service. On the
+# ROCKPro64 the database is an existing container outside this compose project,
+# named by DANCEMATE_POSTGRES_CONTAINER in .env. Backup and restore go through
+# here so they work identically either way.
+postgres_container() {
+  local id name
+  id="$(compose ps -q postgres 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$id" ]]; then
+    printf '%s' "$id"
+    return 0
+  fi
+  name="$(env_value DANCEMATE_POSTGRES_CONTAINER || true)"
+  [[ -n "$name" ]] || return 1
+  docker inspect --format '{{.Id}}' "$name" >/dev/null 2>&1 || return 1
+  printf '%s' "$name"
+}
+
+# Run a command inside the PostgreSQL container with stdin/stdout attached.
+pg_run() {
+  local container
+  container="$(postgres_container)" \
+    || die "no PostgreSQL container found: neither a 'postgres' service in $(basename "$COMPOSE_FILE") nor DANCEMATE_POSTGRES_CONTAINER in .env"
+  docker exec -i "$container" "$@"
 }
 
 runtime_url() {
