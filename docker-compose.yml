@@ -1,0 +1,27 @@
+# DanceMate v0.74 runtime composition
+#
+# 이번 단계(v0.73 Repository Baseline)에서는 실제 runtime이 존재하지 않는다.
+# 동작하지 않는 가짜 service를 정의하지 않기 위해 service 블록은 비워 둔다.
+#
+# v0.74에서 다음 component가 추가될 예정이다.
+#
+#   runtime
+#     - DanceMate Runtime / API
+#     - build: ./Dockerfile
+#     - depends_on: postgres
+#     - env_file: .env
+#     - volumes: ./data, ./logs
+#     - restart: unless-stopped   (host reboot 후 자동 복구)
+#
+#   scheduler
+#     - Collector / Information Engine periodic worker
+#     - depends_on: runtime, postgres
+#     - restart: unless-stopped
+#
+#   postgres
+#     - PostgreSQL persistent store
+#     - persistent volume 필요 (SD card write 최소화 정책 고려)
+#     - restart: unless-stopped
+#
+# Target platform: linux/arm64 (PINE64 ROCKPro64 / RK3399)
+# Network policy: LAN only. No public Internet exposure.

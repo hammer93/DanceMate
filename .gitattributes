@@ -1,0 +1,10 @@
+# 기본: Git이 텍스트 여부를 자동 판별
+* text=auto
+
+# ROCKPro64(Linux)에서 실행되는 파일은 Windows 체크아웃에서도 LF를 유지해야 한다.
+# CRLF가 섞이면 Linux에서 "bash: \r: command not found" 로 실패한다.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+.env.example text eol=lf

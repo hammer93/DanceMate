@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------
+# DanceMate .gitignore
+# ---------------------------------------------------------------
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+*.sqlite3
+*.sqlite
+*.db
+
+# Runtime persistent data (track only the placeholder)
+data/*
+!data/.gitkeep
+
+# Runtime logs (track only the placeholder)
+logs/*
+!logs/.gitkeep
+
+# Backup output (track only the placeholder)
+backup/*
+!backup/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Editors / IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Transient files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Build output
+dist/
+build/
