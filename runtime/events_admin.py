@@ -251,6 +251,14 @@ def admin_unresolved_venues(request: Request,
         else:
             link_form = ('<span class="badge muted">No venues registered yet</span>')
 
+        live = entry.get("live_event_count") or 0
+        # A string only a fixture ever produced has no post to read, and a
+        # decision about it changes nothing a dancer sees. Say so rather than
+        # letting it sit in the queue looking like the others.
+        live_note = (f" (live {live}건)" if live and live != (entry.get("event_count") or 0)
+                     else "" if live else
+                     ' <span class="badge muted">live 게시글 없음</span>')
+
         dismiss_form = f"""
 <details>
   <summary>Not a venue</summary>
@@ -267,7 +275,7 @@ def admin_unresolved_venues(request: Request,
 <section class="item">
   <div class="raw">{E(entry['venue_text'])}</div>
   <div class="facts">
-    <span>대기 중 Event {entry.get('event_count') or 0}건</span>
+    <span>대기 중 Event {entry.get('event_count') or 0}건{live_note}</span>
     <span>처음 발견 {E(str(entry['first_seen_at'])[:16])}</span>
     {f'<span>Also tried: {also}</span>' if also else ''}
   </div>

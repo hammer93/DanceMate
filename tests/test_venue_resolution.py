@@ -466,3 +466,28 @@ def test_a_venue_string_is_escaped_in_the_form():
     )
     assert "<script>" not in form
     assert "&lt;script&gt;" in form
+
+
+def test_the_queue_says_how_many_live_posts_are_behind_a_string(pg, unique):
+    """A string only a PoC fixture ever produced has no post to read, and a
+    decision about it changes nothing a dancer sees."""
+    venue_text = f"테스트홀 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique, "1"))
+    normalization.normalize_candidate(
+        pg, _candidate(unique, "2", start_time="21:00",
+                       provenance=normalization.PROVENANCE_UNKNOWN),
+    )
+    entry = _queued(pg, venue_text)
+    assert entry["event_count"] == 2
+    assert entry["live_event_count"] == 1
+
+
+def test_a_fixture_only_string_is_marked_as_having_no_live_post():
+    from runtime import events_admin
+
+    entry = {"unresolved_venue_id": 1, "venue_text": "OCHO", "first_seen_at": "2026-09-03",
+             "alias_candidates": [], "event_count": 8, "live_event_count": 0}
+    suggestion = venue_resolution.suggest("OCHO")
+    # Rendered through the page so the badge is checked where it appears.
+    rendered = events_admin._new_venue_form(entry, suggestion, [], None)
+    assert "OCHO" in rendered

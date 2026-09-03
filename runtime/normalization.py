@@ -305,9 +305,20 @@ def unresolved_venues(con, *, state: str = "OPEN", limit: int = 100) -> list[dic
             "SELECT u.*, "
             "  (SELECT count(*) FROM events e "
             "    WHERE e.venue_status = 'UNRESOLVED' "
-            "      AND lower(e.venue_text) = lower(u.venue_text)) AS event_count "
+            "      AND lower(e.venue_text) = lower(u.venue_text)) AS event_count, "
+            # How many of those came from a live collection. A string that only
+            # ever appeared in a PoC fixture has no post to read, and asking an
+            # operator to rule on it as though it did wastes their attention on
+            # the one screen where attention is the scarce thing.
+            "  (SELECT count(*) FROM events e "
+            "    WHERE e.venue_status = 'UNRESOLVED' "
+            "      AND e.provenance = 'LIVE' "
+            "      AND lower(e.venue_text) = lower(u.venue_text)) AS live_event_count "
             "FROM unresolved_venues u WHERE u.state = %s "
-            "ORDER BY u.occurrence_count DESC, u.last_seen_at DESC LIMIT %s",
+            # Strings with live posts behind them first: those are the ones a
+            # decision actually changes something for.
+            "ORDER BY live_event_count DESC, event_count DESC, u.last_seen_at DESC "
+            "LIMIT %s",
             (state, limit),
         )
         names = [c.name for c in cur.description]
