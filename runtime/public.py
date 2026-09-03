@@ -175,7 +175,12 @@ def _when_line(event: dict[str, Any]) -> str:
         clock = f"{start}–{end}" + ("<sup>+1</sup>" if event.get("ends_next_day") else "")
     elif start:
         clock = start
-    else:
+    if start and event.get("time_confirmed") is False:
+        # The post wrote a bare clock. 5시30 is very likely half past five in
+        # the evening, but the post does not say so and neither will we -- the
+        # reading stands, flagged, with the original a click away.
+        clock += ' <span class="tag">시간 미확인</span>'
+    if not start:
         # Not "TBD": we simply do not know, and the post is linked so a reader
         # can check for themselves.
         clock = '<span class="unknown">시간 미확인</span>'

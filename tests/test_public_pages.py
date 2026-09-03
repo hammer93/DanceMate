@@ -159,3 +159,20 @@ def test_the_detail_page_links_back_to_the_original_posts(pg, unique):
     assert len(found) == 1
     event = events_api.get_event(pg, found[0]["id"])
     assert all(source["url"].startswith("https://") for source in event["sources"])
+
+
+def test_a_time_the_post_did_not_qualify_is_shown_but_flagged():
+    """'5시30' is very likely half past five in the evening. The post does not
+    say so, the engine refused to guess, and neither does the page."""
+    rendered = public._when_line({"date": "2026-09-12", "start_time": "05:30",
+                                  "end_time": "09:30", "ends_next_day": False,
+                                  "time_confirmed": False})
+    assert "05:30" in rendered
+    assert "시간 미확인" in rendered
+
+
+def test_a_time_the_post_marked_carries_no_caveat():
+    rendered = public._when_line({"date": "2026-09-05", "start_time": "19:30",
+                                  "end_time": "23:30", "ends_next_day": False,
+                                  "time_confirmed": True})
+    assert "미확인" not in rendered

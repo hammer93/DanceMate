@@ -110,6 +110,11 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "start_time": _clock(row.get("start_time")),
         "end_time": _clock(row.get("end_time")),
         "ends_next_day": bool(row.get("end_day_offset")),
+        # False when the post wrote a bare clock and nothing said which half of
+        # the day it meant. The value is what the post says; this says how much
+        # that is worth.
+        "time_confirmed": (None if row.get("start_time") is None
+                           else row.get("time_evidence") != "ABSENT"),
         "venue": {
             "name": row.get("venue_name") or row.get("venue_text"),
             "status": row.get("venue_status"),

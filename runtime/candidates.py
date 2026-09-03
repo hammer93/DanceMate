@@ -194,3 +194,30 @@ def all_candidate_ids(settings: Settings) -> set[int] | None:
     finally:
         con.close()
     return {row["candidate_id"] for row in rows}
+
+
+def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str]:
+    """How the engine knew which half of the day each time belongs to.
+
+    EXPLICIT when the post carried a PM/오후/저녁 marker, ABSENT when it wrote a
+    bare clock and the engine declined to guess. Read back rather than
+    re-derived so the reader is told exactly what the extractor decided.
+    """
+    if not candidate_ids:
+        return {}
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, inference FROM evidences "
+            f"WHERE field = 'time' AND candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+    return {row["candidate_id"]: row["inference"] for row in rows if row["inference"]}

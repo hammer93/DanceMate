@@ -199,6 +199,9 @@ def _region_id(con, venue_id: int | None) -> int | None:
     return row[0] if row else None
 
 
+EVIDENCE_ABSENT = "ABSENT"
+
+
 def normalize_candidate(con, candidate: dict[str, Any], *,
                         review_state: dict[str, Any] | None = None,
                         alias_candidates: list[str] | None = None) -> dict[str, Any] | None:
@@ -255,6 +258,10 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         "series_key": series_key(key, event_date, merged.get("event_name")),
         "listing_state": listing,
         "provenance": candidate.get("provenance") or PROVENANCE_UNKNOWN,
+        # A time a person corrected is confirmed by that person, whatever the
+        # extractor could tell from the post.
+        "time_evidence": ("HUMAN" if "start_time" in origin
+                          else candidate.get("time_evidence")),
     }
 
     columns = list(values)
@@ -435,6 +442,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
 
     ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
     aliases = candidate_store.venue_alias_candidates(settings, ids)
+    time_evidence = candidate_store.time_evidence(settings, ids)
 
     normalized = skipped = 0
     unresolved = 0
@@ -446,6 +454,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
             enriched = dict(row)
             enriched["source_item_id"] = origin["source_item_id"]
             enriched["provenance"] = origin["provenance"]
+            enriched["time_evidence"] = time_evidence.get(candidate_id)
             stored = normalize_candidate(
                 con, enriched,
                 review_state=states.get(candidate_id),

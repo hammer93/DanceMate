@@ -226,3 +226,32 @@ def test_the_response_says_what_it_was_asked(pg, unique):
     assert result["query"]["timezone"] == "Asia/Seoul"
     assert result["query"]["from"] == "2026-09-05"
     assert result["query"]["to"] == "2026-09-05"
+
+
+def test_the_api_says_whether_a_time_was_qualified_by_the_post():
+    unmarked = events_api.present({
+        "event_id": 1, "event_name": "밀롱가", "event_date": date(2026, 9, 12),
+        "start_time": time(5, 30), "end_time": time(9, 30), "end_day_offset": 0,
+        "time_evidence": "ABSENT", "venue_status": "ABSENT", "fee": None,
+        "engine_status": "POSSIBLE", "review_state": "PENDING",
+    })
+    assert unmarked["start_time"] == "05:30"
+    assert unmarked["time_confirmed"] is False
+
+    marked = events_api.present({
+        "event_id": 2, "event_name": "밀롱가", "event_date": date(2026, 9, 5),
+        "start_time": time(19, 30), "end_time": time(23, 30), "end_day_offset": 0,
+        "time_evidence": "EXPLICIT", "venue_status": "ABSENT", "fee": None,
+        "engine_status": "POSSIBLE", "review_state": "PENDING",
+    })
+    assert marked["time_confirmed"] is True
+
+
+def test_no_time_means_no_claim_either_way():
+    presented = events_api.present({
+        "event_id": 1, "event_name": "밀롱가", "event_date": date(2026, 9, 5),
+        "start_time": None, "end_time": None, "end_day_offset": 0,
+        "time_evidence": None, "venue_status": "ABSENT", "fee": None,
+        "engine_status": "POSSIBLE", "review_state": "PENDING",
+    })
+    assert presented["time_confirmed"] is None
