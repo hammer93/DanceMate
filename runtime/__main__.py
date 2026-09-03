@@ -37,15 +37,15 @@ def main() -> int:
     import uvicorn
 
     log.info(
-        "serving DanceMate runtime v%s on %s:%s (env=%s)",
+        "serving DanceMate runtime v%s, listening inside the container on %s:%s (env=%s)",
         settings.version,
-        settings.bind_address,
+        settings.listen_address,
         settings.port,
         settings.env,
     )
     uvicorn.run(
         "runtime.app:app",
-        host=settings.bind_address,
+        host=settings.listen_address,
         port=settings.port,
         log_level="info",
         access_log=False,  # microSD write minimization

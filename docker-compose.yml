@@ -67,6 +67,9 @@ services:
     environment:
       # Container-side paths. These intentionally override the HOST paths that
       # .env carries for the bind mounts below.
+      # The container has no LAN address of its own: always listen on all
+      # of its interfaces. DANCEMATE_BIND_ADDRESS narrows the HOST side.
+      DANCEMATE_HOST: 0.0.0.0
       ENGINE_ROOT: /app/engine
       ENGINE_DATA_DIR: /app/engine/data
       DANCEMATE_DATA_DIR: /var/lib/dancemate
@@ -102,6 +105,9 @@ services:
       runtime:
         condition: service_healthy
     environment:
+      # The container has no LAN address of its own: always listen on all
+      # of its interfaces. DANCEMATE_BIND_ADDRESS narrows the HOST side.
+      DANCEMATE_HOST: 0.0.0.0
       ENGINE_ROOT: /app/engine
       ENGINE_DATA_DIR: /app/engine/data
       DANCEMATE_DATA_DIR: /var/lib/dancemate

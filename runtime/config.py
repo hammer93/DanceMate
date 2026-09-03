@@ -33,13 +33,25 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# DANCEMATE_HOST and DANCEMATE_BIND_ADDRESS are NOT the same thing:
+#
+#   DANCEMATE_HOST          the address the server listens on INSIDE the
+#                           container. Almost always 0.0.0.0 - a container has
+#                           no LAN address of its own, so binding the host's
+#                           LAN IP here fails with "could not bind on any
+#                           address".
+#   DANCEMATE_BIND_ADDRESS  the HOST interface Docker publishes the port on.
+#                           Compose and the health scripts read it; the
+#                           application never does.
+
+
 @dataclass(frozen=True)
 class Settings:
     env: str
     version: str
     engine_version: str
 
-    bind_address: str
+    listen_address: str
     port: int
 
     postgres_host: str
@@ -85,7 +97,7 @@ def load_settings() -> Settings:
         env=_env("DANCEMATE_ENV", "staging"),
         version=_env("DANCEMATE_VERSION", PRODUCT_VERSION),
         engine_version=_env("ENGINE_VERSION", DEFAULT_ENGINE_VERSION),
-        bind_address=_env("DANCEMATE_BIND_ADDRESS", "0.0.0.0"),
+        listen_address=_env("DANCEMATE_HOST", "0.0.0.0"),
         port=_env_int("DANCEMATE_PORT", 8080),
         postgres_host=_env("POSTGRES_HOST", "postgres"),
         postgres_port=_env_int("POSTGRES_PORT", 5432),

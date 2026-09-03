@@ -211,3 +211,48 @@ def test_env_is_git_ignored_but_the_template_is_not():
 
 def test_version_file_tracks_the_product_runtime_not_the_engine():
     assert (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.74"
+
+
+# --- listen address vs published address ------------------------------------
+
+def test_container_listen_address_is_pinned_to_all_interfaces(compose):
+    """A container has no LAN address: binding the host's IP inside it fails.
+
+    Regression: DANCEMATE_BIND_ADDRESS was used both as the host publish
+    interface and as uvicorn's listen address, so narrowing the published port
+    to the board's wired IP made the runtime crash-loop with
+    "could not bind on any address out of [('192.168.1.100', 8080)]".
+    """
+    for service in ("runtime", "scheduler"):
+        assert compose["services"][service]["environment"]["DANCEMATE_HOST"] == "0.0.0.0"
+
+
+def test_runtime_listens_on_dancemate_host_not_the_publish_address():
+    source = (REPO_ROOT / "runtime" / "__main__.py").read_text(encoding="utf-8")
+    assert "settings.listen_address" in source
+    assert "bind_address" not in source
+
+    config = (REPO_ROOT / "runtime" / "config.py").read_text(encoding="utf-8")
+    assert 'listen_address=_env("DANCEMATE_HOST", "0.0.0.0")' in config
+    assert "DANCEMATE_BIND_ADDRESS" not in config.split("@dataclass")[1], (
+        "the application must not read the host publish address"
+    )
+
+
+def test_settings_expose_only_the_listen_address(env, monkeypatch):
+    from runtime.config import Settings, load_settings
+
+    monkeypatch.setenv("DANCEMATE_BIND_ADDRESS", "192.168.0.10")
+    monkeypatch.setenv("DANCEMATE_HOST", "0.0.0.0")
+    settings = load_settings()
+    assert settings.listen_address == "0.0.0.0"
+    assert not hasattr(settings, "bind_address")
+    assert "bind_address" not in Settings.__dataclass_fields__
+
+
+def test_blank_listen_address_falls_back_to_all_interfaces(env, monkeypatch):
+    """An empty value must never leave the server with nothing to bind to."""
+    from runtime.config import load_settings
+
+    monkeypatch.setenv("DANCEMATE_HOST", "")
+    assert load_settings().listen_address == "0.0.0.0"
