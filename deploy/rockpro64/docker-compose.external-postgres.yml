@@ -26,7 +26,7 @@ x-runtime-image: &runtime-image
   build:
     context: .
     dockerfile: Dockerfile
-  image: dancemate/runtime:${DANCEMATE_VERSION:-0.75}
+  image: dancemate/runtime:${DANCEMATE_VERSION:-0.76}
   restart: unless-stopped
   env_file: [.env]
   networks: [dancemate-net]
