@@ -126,9 +126,9 @@ def test_the_http_status_is_reported_alongside_the_kind():
 @pytest.mark.parametrize(
     "message",
     [
-        "Authorization: KakaoAK abcdef0123456789",
+        "Authorization: KakaoAK EXAMPLE-NOT-A-REAL-KEY",
         "X-Naver-Client-Secret: s3cr3tvalue",
-        "api_key=abcdef0123456789",
+        "api_key=EXAMPLE-NOT-A-REAL-KEY",
         "client_secret: hunter2",
     ],
 )
@@ -136,13 +136,13 @@ def test_credentials_never_survive_into_a_stored_message(message):
     """A failure message must not smuggle the key into source_errors or the UI."""
     redacted = collector_errors.redact(message)
     assert "<redacted>" in redacted
-    for secret in ("abcdef0123456789", "s3cr3tvalue", "hunter2"):
+    for secret in ("EXAMPLE-NOT-A-REAL-KEY", "s3cr3tvalue", "hunter2"):
         assert secret not in redacted
 
 
 def test_classification_redacts_too():
-    classified = collector_errors.classify("failed with KakaoAK abcdef0123456789")
-    assert "abcdef0123456789" not in classified.detail
+    classified = collector_errors.classify("failed with KakaoAK EXAMPLE-NOT-A-REAL-KEY")
+    assert "EXAMPLE-NOT-A-REAL-KEY" not in classified.detail
 
 
 # --- quota accounting -------------------------------------------------------
