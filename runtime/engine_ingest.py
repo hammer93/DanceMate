@@ -21,7 +21,7 @@ import logging
 import sys
 from typing import Any
 
-from . import db, intake
+from . import acquisition, content_store, db, intake
 from .config import Settings
 from .engine_adapter import engine_db_path
 
@@ -66,24 +66,48 @@ def _open_engine_store(settings: Settings, engine_db):
     return con
 
 
-def _to_raw_post(RawPostRecord, item: dict[str, Any]):
-    """Rebuild the engine's RawPostRecord from a stored source item."""
+def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | None = None):
+    """Rebuild the engine's RawPostRecord from a stored source item.
+
+    When deep acquisition has fetched the original post, its text becomes the
+    body and the engine sees the whole article instead of a search snippet.
+    That is the entire point of v0.76: the times, venues and fees the extractor
+    was missing are in the body, not the snippet.
+
+    ``acquisition_quality`` is set to the engine's own vocabulary so its
+    downstream logic keeps working: FULL when the article was fetched and has
+    images, BODY_ONLY when it was fetched without, METADATA_ONLY otherwise.
+    """
     raw = item.get("raw") or {}
     if isinstance(raw, str):
         import json  # noqa: PLC0415
 
         raw = json.loads(raw)
+
+    snippet = raw.get("body") or item.get("body") or ""
+    body = snippet
+    quality = raw.get("acquisition_quality") or "METADATA_ONLY"
+
+    if content and content.get("extracted_text"):
+        status = content.get("acquisition_status")
+        if status in (acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL):
+            body = content["extracted_text"]
+            if status == acquisition.FETCHED_FULL:
+                quality = "FULL" if (content.get("image_count") or 0) else "BODY_ONLY"
+            else:
+                quality = "PARTIAL"
+
     return RawPostRecord(
         source_id=raw.get("source_id") or item.get("source_key"),
         platform=raw.get("platform") or item.get("platform"),
         source_url=raw.get("source_url") or item.get("url") or "",
         title=raw.get("title") or item.get("title") or "",
-        body=raw.get("body") or item.get("body") or "",
+        body=body,
         published_at=raw.get("published_at"),
         cafe_name=raw.get("cafe_name"),
         thumbnail_url=raw.get("thumbnail_url"),
         discovery_query=raw.get("discovery_query"),
-        acquisition_quality=raw.get("acquisition_quality") or "METADATA_ONLY",
+        acquisition_quality=quality,
         raw_json=raw.get("raw_json"),
     )
 
@@ -107,7 +131,8 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
         try:
             for item in items:
                 try:
-                    post = _to_raw_post(RawPostRecord, item)
+                    content = content_store.get(pg, item["source_item_id"])
+                    post = _to_raw_post(RawPostRecord, item, content)
                     if not post.source_url or not post.title:
                         intake.mark_ingested(pg, item["source_item_id"], intake.INGEST_SKIPPED)
                         skipped += 1
@@ -146,5 +171,103 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
         "skipped": skipped,
         "failed": failed,
         "candidates": candidates,
+        "failures": failures[:3],
+    }
+
+
+def reprocess_acquired(settings: Settings, *, limit: int = 25) -> dict[str, Any]:
+    """Re-extract candidates for items whose original post has now been fetched.
+
+    The v0.75 items were already ingested from a search snippet, so the normal
+    PENDING queue will never revisit them. This walks the items whose acquired
+    text is newer than their last reprocess, replaces the engine's stored body
+    with the article text, and re-runs the engine's own extraction.
+
+    Two safeguards:
+
+    * A candidate a human has already acted on is **not** reprocessed. Review
+      state is keyed by candidate_id, and re-extraction issues new ids, so
+      reprocessing would silently orphan somebody's decision.
+    * The engine's evidence gate is untouched. Supplying a full body lets
+      `verify()` see complete core fields; whether that reaches VERIFIED is the
+      engine's decision, exactly as it is for any other acquisition path.
+    """
+    engine_db, RawPostRecord, process_discovered_post = _engine(settings)
+
+    with db.connect(settings, autocommit=True) as pg:
+        items = content_store.needing_reprocess(pg, limit=limit)
+        if not items:
+            return {"pending": 0, "reprocessed": 0, "skipped_reviewed": 0,
+                    "candidates_before": 0, "candidates_after": 0, "failed": 0}
+
+        with pg.cursor() as cur:
+            cur.execute("SELECT DISTINCT candidate_id FROM human_review_actions")
+            reviewed = {row[0] for row in cur.fetchall()}
+
+        engine_con = _open_engine_store(settings, engine_db)
+        reprocessed = skipped = failed = 0
+        before_total = after_total = 0
+        failures: list[str] = []
+        try:
+            for item in items:
+                source_item_id = item["source_item_id"]
+                try:
+                    post = _to_raw_post(RawPostRecord, item, item)
+                    post_id, _ = engine_db.persist_raw_post(engine_con, post)
+
+                    existing = engine_con.execute(
+                        "SELECT candidate_id FROM event_candidates WHERE post_id=?",
+                        (post_id,),
+                    ).fetchall()
+                    existing_ids = [row[0] for row in existing]
+                    if any(cid in reviewed for cid in existing_ids):
+                        content_store.mark_reprocessed(pg, source_item_id)
+                        skipped += 1
+                        continue
+
+                    before_total += len(existing_ids)
+
+                    # Give the engine the article text in place of the snippet.
+                    engine_db.update_raw_post_acquisition(
+                        engine_con, post_id,
+                        body=post.body, acquisition_quality=post.acquisition_quality,
+                    )
+
+                    result = process_discovered_post(
+                        engine_con, post, item.get("source_role") or DEFAULT_SOURCE_ROLE
+                    )
+                    events = result.get("events") or []
+                    if events:
+                        # Replace this post's candidates rather than adding a
+                        # second set; evidences cascade off candidate_id.
+                        for candidate_id in existing_ids:
+                            engine_con.execute(
+                                "DELETE FROM evidences WHERE candidate_id=?", (candidate_id,)
+                            )
+                        engine_con.execute(
+                            "DELETE FROM event_candidates WHERE post_id=?", (post_id,)
+                        )
+                        engine_db.persist_events(engine_con, post_id, events)
+                        after_total += len(events)
+                    else:
+                        after_total += len(existing_ids)
+                    engine_con.commit()
+                    content_store.mark_reprocessed(pg, source_item_id)
+                    reprocessed += 1
+                except Exception as exc:
+                    engine_con.rollback()
+                    failed += 1
+                    failures.append(f"{source_item_id}: {type(exc).__name__}: {exc}")
+                    log.exception("reprocess failed for source item %s", source_item_id)
+        finally:
+            engine_con.close()
+
+    return {
+        "pending": len(items),
+        "reprocessed": reprocessed,
+        "skipped_reviewed": skipped,
+        "candidates_before": before_total,
+        "candidates_after": after_total,
+        "failed": failed,
         "failures": failures[:3],
     }

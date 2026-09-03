@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 BASE_ENV = {
     "DANCEMATE_ENV": "test",
-    "DANCEMATE_VERSION": "0.75",
+    "DANCEMATE_VERSION": "0.76",
     "ENGINE_VERSION": "0.73",
     "DANCEMATE_BIND_ADDRESS": "127.0.0.1",
     "DANCEMATE_PORT": "8080",

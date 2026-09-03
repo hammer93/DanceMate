@@ -13,8 +13,11 @@ def test_migrations_are_discovered_in_order():
         "001_initial_runtime",
         "002_master_data",
         "003_source_intake",
+        "004_content_acquisition",
+        "005_human_review",
+        "006_provider_usage",
     ]
-    assert [m.version for m in found] == ["001", "002", "003"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():
@@ -95,3 +98,49 @@ def test_migrations_apply_in_version_order(tmp_path):
     for name in ("003_c.sql", "001_a.sql", "002_b.sql"):
         (tmp_path / name).write_text("SELECT 1;", encoding="utf-8")
     assert [m.version for m in migrate.discover(tmp_path)] == ["001", "002", "003"]
+
+
+def test_acquisition_migration_creates_the_v076_tables():
+    sql = migrate.discover()[3].sql.lower()
+    for table in ("source_item_content", "content_fetch_log"):
+        assert f"create table if not exists {table}" in sql
+    # Existing live items must be back-filled as what they honestly are.
+    assert "metadata_only" in sql
+    assert "insert into source_item_content" in sql
+
+
+def test_acquisition_migration_constrains_the_status_vocabulary():
+    sql = migrate.discover()[3].sql
+    for status in ("METADATA_ONLY", "FETCH_PENDING", "FETCHED_FULL", "FETCHED_PARTIAL",
+                   "FETCH_BLOCKED", "FETCH_FAILED", "LOGIN_REQUIRED", "UNSUPPORTED"):
+        assert status in sql
+
+
+def test_review_migration_creates_the_v076_tables():
+    sql = migrate.discover()[4].sql.lower()
+    for table in ("human_review_actions", "candidate_review_state"):
+        assert f"create table if not exists {table}" in sql
+
+
+def test_review_migration_constrains_the_five_actions():
+    sql = migrate.discover()[4].sql
+    for action in ("APPROVE", "EDIT", "REJECT", "DUPLICATE", "CONFIRM"):
+        assert f"'{action}'" in sql
+    assert "duplicate_of_candidate_id IS NOT NULL" in sql
+    assert "duplicate_of_candidate_id <> candidate_id" in sql
+
+
+def test_usage_migration_creates_the_v076_tables():
+    sql = migrate.discover()[5].sql.lower()
+    for table in ("provider_usage_daily", "provider_pricing_config"):
+        assert f"create table if not exists {table}" in sql
+
+
+def test_usage_migration_never_seeds_a_provider_as_free():
+    """Absence of an invoice is not evidence of FREE."""
+    sql = migrate.discover()[5].sql
+    seed = sql[sql.index("INSERT INTO provider_pricing_config"):]
+    assert "'FREE'" not in seed
+    assert seed.count("'UNKNOWN'") >= 3
+    assert "'CONFIGURED'" in seed
+    assert "'DOCUMENTED'" in seed

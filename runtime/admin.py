@@ -24,7 +24,10 @@ from typing import Any, Callable
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import candidates, collectors, db, health, intake, master_data, quota, sources
+from . import (
+    acquisition, candidates, collectors, content_store, db, health, intake,
+    master_data, quota, review, sources, usage,
+)
 from .admin_auth import require_admin
 from .config import Settings
 
@@ -124,12 +127,18 @@ font-size:12px}
 
 NAV = (
     ("/admin", "Dashboard"),
+    ("/admin/intake", "Intake"),
+    ("/admin/review", "Review"),
     ("/admin/sources", "Sources"),
     ("/admin/venues", "Venues"),
     ("/admin/organizers", "Organizers"),
-    ("/admin/candidates", "Candidates"),
     ("/admin/master", "Genres & Regions"),
+    ("/admin/usage", "Usage"),
+    ("/admin/system", "System"),
 )
+
+# /admin/candidates predates the Review console. It still works, and the nav
+# points at its replacement; the old URL is not broken for anyone who bookmarked it.
 
 
 def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None = None) -> str:
@@ -210,10 +219,21 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
             quota_state = {
                 provider: quota.usage(con, provider) for provider in sorted(quota.DAILY_BUDGET)
             }
+            acquisition_summary = content_store.summary(con)
+            review_metrics = review.metrics(con)
+            usage_today = usage.daily(con)
+            fetches_today = usage.content_fetches(con)
+            efficiency_today = usage.efficiency(con)
     except db.DatabaseUnavailable as exc:
         intake_summary = {"error": str(exc)}
         runs = []
         quota_state = {}
+        acquisition_summary = {"by_status": {}, "fetched": 0, "average_text_length": 0,
+                               "content_fetches_today": 0, "redacted_spans": 0}
+        review_metrics = {"today": dict.fromkeys(review.ACTIONS, 0), "by_state": {}}
+        usage_today = []
+        fetches_today = {"total": 0, "succeeded": 0}
+        efficiency_today = {"new_items_per_request": None, "api_requests": 0, "new_items": 0}
 
     def tone_of(name: str) -> str:
         status = component_status.get(name, {}).get("status", "FAIL")
@@ -237,8 +257,13 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
          "recorded fixtures, NOT live data"),
         ("Pending ingest", intake_summary.get("pending_ingest", "-"),
          f"{intake_summary.get('source_items', 0)} items stored in total"),
+        ("Body fetched", acquisition_summary.get("fetched", 0),
+         f"avg {acquisition_summary.get('average_text_length', 0)} chars"),
         ("Event candidates", candidate_counts.get("total", 0),
          f"{candidate_counts.get('review_pending', 0)} not settled"),
+        ("Review pending", max(0, candidate_counts.get("total", 0)
+                               - review_metrics.get("reviewed_candidates", 0)),
+         "candidates awaiting a person"),
         ("Last collection", (intake_summary.get("last_collection_at") or "never")[:19],
          f"{intake_summary.get('errors_24h', 0)} errors in 24h"),
     ])
@@ -257,6 +282,35 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         + cards
         + "<h2>Components</h2>"
         + _table(["Component", "Status", "Detail"], status_rows, empty="no status")
+        + "<h2>Today</h2>"
+        + _table(
+            ["Provider", "API requests", "Success", "Errors", "Items", "New", "Duplicate"],
+            [
+                [E(r["provider"]), f'<span class="num">{r["request_count"]}</span>',
+                 f'<span class="num">{r["success_count"]}</span>',
+                 f'<span class="num">{r["error_count"]}</span>',
+                 f'<span class="num">{r["item_count"]}</span>',
+                 f'<span class="num">{r["new_item_count"]}</span>',
+                 f'<span class="num">{r["duplicate_item_count"]}</span>']
+                for r in usage_today
+            ],
+            empty="no provider usage recorded today",
+        )
+        + _cards([
+            ("Content fetches", fetches_today.get("total", 0),
+             "original posts, no provider quota"),
+            ("New items / request", efficiency_today.get("new_items_per_request")
+             if efficiency_today.get("new_items_per_request") is not None else "-",
+             "today"),
+            ("Human actions today", sum(review_metrics["today"].values()),
+             " ".join(f"{a}:{n}" for a, n in review_metrics["today"].items() if n)
+             or "none yet"),
+            ("Acquisition", acquisition_summary.get("fetched", 0),
+             ", ".join(f"{k}:{v}" for k, v in
+                       sorted(acquisition_summary.get("by_status", {}).items())) or "-"),
+        ])
+        + '<p class="note">Full detail on <a href="/admin/usage">Usage</a>, '
+          '<a href="/admin/intake">Intake</a> and <a href="/admin/review">Review</a>.</p>'
         + "<h2>Provider quota (today, UTC)</h2>"
         + _table(
             ["Provider", "Requests", "Budget", "Remaining", "Last request"],
