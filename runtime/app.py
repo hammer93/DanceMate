@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import admin, health
+from . import admin, admin_pages, health
 from .config import PRODUCT_VERSION, Settings, load_settings
 
 app = FastAPI(
@@ -45,6 +45,8 @@ def settings() -> Settings:
 admin.bind(lambda: settings())
 app.include_router(admin.router)
 app.include_router(admin.api)
+app.include_router(admin_pages.router)
+app.include_router(admin_pages.api)
 
 
 @app.get("/health")
