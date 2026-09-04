@@ -104,13 +104,18 @@ def client(env, monkeypatch):
     return TestClient(app_module.app, raise_server_exceptions=False)
 
 
-def test_dashboard_shows_tango_coverage_when_tango_sources_exist(client, pg, unique):
+def test_dashboard_shows_tango_coverage_when_tango_sources_exist(
+    client, pg, unique, committed_sources,
+):
     """Created through the app's own admin API, not the `pg` fixture: `pg`'s
     writes live in a connection that is rolled back at teardown and never
     committed, so `client`'s requests (each a fresh, real connection) would
     never see a row inserted only via `pg` - proven directly during v0.82's
     board test run (a diagnostic insert-then-cross-connection-read came back
-    VISIBLE_COUNT=0)."""
+    VISIBLE_COUNT=0). The created row is registered with `committed_sources`
+    for a real, explicit cleanup: this board's PostgreSQL accepts any
+    password, so the write lands in the real shared database no matter what
+    credentials this test's fake `env` fixture set."""
     from runtime import master_data
 
     tango = next(g for g in master_data.list_genres(pg) if g["code"] == "TANGO")
@@ -124,6 +129,7 @@ def test_dashboard_shows_tango_coverage_when_tango_sources_exist(client, pg, uni
         },
     )
     assert response.status_code == 200, response.text
+    committed_sources.append(response.json()["source_id"])
 
     response = client.get("/admin", auth=CREDENTIALS)
     assert response.status_code == 200

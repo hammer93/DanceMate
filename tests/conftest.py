@@ -145,6 +145,40 @@ def seoul_id(pg) -> int:
 
 
 @pytest.fixture
+def committed_sources():
+    """source_ids created through a real, committing connection (e.g. a
+    TestClient POST to the admin API), deleted for real at teardown.
+
+    `pg` is safe to leave uncommitted - rolled back at teardown, so a shared
+    staging database is never polluted. But a route test that needs the
+    running app itself to see created data has to write through a real,
+    committing path (a TestClient request, whose admin API opens its own
+    autocommit connection) - and on a board where PostgreSQL accepts any
+    password (trust auth, confirmed directly against this project's board),
+    that path reaches the actual shared database regardless of which fake
+    credentials a test's `env` fixture set. Without an explicit, immediately-
+    committed cleanup here, every such test permanently leaks a row into
+    production - which is exactly what happened before this fixture existed:
+    six rows from early v0.82 test runs had to be hand-deleted from the real
+    board database once discovered.
+    """
+    ids: list[int] = []
+    yield ids
+    if not ids:
+        return
+    from runtime import db
+    from runtime.config import load_settings
+
+    settings = load_settings()
+    with db.connect(settings, autocommit=True) as con:
+        with con.cursor() as cur:
+            cur.execute(
+                "DELETE FROM source_collection_runs WHERE source_id = ANY(%s)", (ids,)
+            )
+            cur.execute("DELETE FROM sources WHERE source_id = ANY(%s)", (ids,))
+
+
+@pytest.fixture
 def engine_settings(env, monkeypatch):
     """Settings pointing ENGINE_DATA_DIR at the repository's engine fixtures.
 

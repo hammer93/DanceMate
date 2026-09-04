@@ -69,14 +69,18 @@ def client(env, monkeypatch):
     return TestClient(app_module.app, raise_server_exceptions=False)
 
 
-def _make_source_via_client(client, pg, unique, *, genre_code: str, suffix: str):
+def _make_source_via_client(client, committed_sources, pg, unique, *, genre_code: str, suffix: str):
     """Through the app's own admin API, not the `pg` fixture directly.
 
     `pg` opens its own, never-committed connection (rolled back at teardown
     so a shared staging DB is never polluted) - a row inserted there is
     invisible to `client`'s requests, which each open a fresh, real
     connection. Anything a route test needs the running app to actually see
-    (not just "does not crash") has to be written through `client` itself.
+    (not just "does not crash") has to be written through `client` itself -
+    which is why the created id is registered with `committed_sources` for a
+    real, explicit cleanup (see conftest.py: this board's PostgreSQL accepts
+    any password, so the write lands in the real shared database regardless
+    of the test's fake credentials).
     """
     response = client.post(
         "/api/admin/sources", auth=CREDENTIALS,
@@ -88,17 +92,19 @@ def _make_source_via_client(client, pg, unique, *, genre_code: str, suffix: str)
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    created = response.json()
+    committed_sources.append(created["source_id"])
+    return created
 
 
-def test_review_page_accepts_a_genre_filter_without_erroring(client, pg, unique):
-    _make_source_via_client(client, pg, unique, genre_code="TANGO", suffix="tango")
+def test_review_page_accepts_a_genre_filter_without_erroring(client, pg, unique, committed_sources):
+    _make_source_via_client(client, committed_sources, pg, unique, genre_code="TANGO", suffix="tango")
     response = client.get("/admin/review?filter=upcoming&genre=TANGO", auth=CREDENTIALS)
     assert response.status_code == 200
 
 
-def test_review_page_filter_bar_preserves_the_genre_across_tabs(client, pg, unique):
-    _make_source_via_client(client, pg, unique, genre_code="TANGO", suffix="tango")
+def test_review_page_filter_bar_preserves_the_genre_across_tabs(client, pg, unique, committed_sources):
+    _make_source_via_client(client, committed_sources, pg, unique, genre_code="TANGO", suffix="tango")
     response = client.get("/admin/review?filter=upcoming&genre=TANGO", auth=CREDENTIALS)
     assert "genre=TANGO" in response.text
 

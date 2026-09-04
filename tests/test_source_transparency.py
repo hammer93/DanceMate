@@ -195,7 +195,7 @@ def client(env, monkeypatch):
     return TestClient(app_module.app, raise_server_exceptions=False)
 
 
-def _make_source_via_client(client, unique, suffix="1"):
+def _make_source_via_client(client, committed_sources, unique, suffix="1"):
     """Create a source through the app's own admin API, not the `pg` fixture.
 
     `pg` opens its own, never-committed connection (rolled back at teardown
@@ -204,7 +204,10 @@ def _make_source_via_client(client, unique, suffix="1"):
     connection. Proven directly: a diagnostic insert-then-read-from-a-second-
     connection check during v0.82's board test run showed VISIBLE_COUNT=0.
     Anything a test needs `client` itself to see has to be written through
-    `client`, whose admin API commits for real.
+    `client`, whose admin API commits for real - which is why the created
+    id is registered with `committed_sources` for a real, explicit cleanup
+    (see conftest.py: this board's PostgreSQL accepts any password, so the
+    write lands in the real shared database no matter what).
     """
     response = client.post(
         "/api/admin/sources", auth=CREDENTIALS,
@@ -215,11 +218,13 @@ def _make_source_via_client(client, unique, suffix="1"):
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    created = response.json()
+    committed_sources.append(created["source_id"])
+    return created
 
 
-def test_source_detail_page_shows_target_and_recent_items(client, pg, unique):
-    source = _make_source_via_client(client, unique)
+def test_source_detail_page_shows_target_and_recent_items(client, pg, unique, committed_sources):
+    source = _make_source_via_client(client, committed_sources, unique)
     response = client.get(f"/admin/sources/{source['source_id']}", auth=CREDENTIALS)
     assert response.status_code == 200
     assert f"example.test/board-{unique}-1" in response.text
@@ -232,18 +237,20 @@ def test_source_detail_page_404s_for_an_unknown_id(client, pg):
     assert response.status_code == 404
 
 
-def test_sources_list_page_shows_the_target_column(client, pg, unique):
-    _make_source_via_client(client, unique)
+def test_sources_list_page_shows_the_target_column(client, pg, unique, committed_sources):
+    _make_source_via_client(client, committed_sources, unique)
     response = client.get("/admin/sources", auth=CREDENTIALS)
     assert response.status_code == 200
     assert "Target" in response.text
     assert f"example.test/board-{unique}-1" in response.text
 
 
-def test_no_secret_appears_on_the_sources_list_or_detail_page(client, pg, unique, monkeypatch):
+def test_no_secret_appears_on_the_sources_list_or_detail_page(
+    client, pg, unique, committed_sources, monkeypatch,
+):
     monkeypatch.setenv("KAKAO_REST_API_KEY", "super-secret-key-value")
     monkeypatch.setenv("NAVER_CLIENT_SECRET", "another-secret-value")
-    source = _make_source_via_client(client, unique)
+    source = _make_source_via_client(client, committed_sources, unique)
     list_body = client.get("/admin/sources", auth=CREDENTIALS).text
     detail_body = client.get(f"/admin/sources/{source['source_id']}", auth=CREDENTIALS).text
     # Prove these are the real, populated pages - not a false pass off a 404
