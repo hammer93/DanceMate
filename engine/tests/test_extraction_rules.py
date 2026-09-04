@@ -207,6 +207,7 @@ def test_the_post_that_defined_this_release():
     candidate = extract_single(
         "밀롱가 안내",
         "9월 5일 토요일 시간: PM 07:30~11:30 장소: 아미고스튜디오 DJ : 로띠 입장료 13,000원",
+        published="2026-09-01",
     )
     assert candidate.date == "2026-09-05"
     assert (candidate.start_time, candidate.end_time) == ("19:30", "23:30")

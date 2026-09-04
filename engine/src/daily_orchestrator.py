@@ -1,3 +1,4 @@
+from pathlib import Path
 from datetime import date
 import json
 from .database import create_lineage,create_daily_run,finish_daily_run,link_daily_lineage,daily_run_trace
@@ -21,7 +22,14 @@ from .origin_threshold_promotion import runtime_status as origin_threshold_runti
 from .origin_threshold_runtime_guard import runtime_guard_status as origin_threshold_guard_status
 
 
-def run_daily(con,root,*,run_date=None,mode="snapshot"):
+def run_daily(con,root,*,run_date=None,mode="snapshot",report_dir=None):
+    """One day's run.
+
+    ``report_dir`` overrides where the two report files land. It defaults to
+    the repository's own data/reports, which is what the CLI wants and what
+    production does; a test can point it somewhere writable instead of
+    assuming the checkout is.
+    """
     run_date=run_date or date.today().isoformat()
     root_lineage=create_lineage(con,root_run_type="DAILY_RUN",root_source_id="SYSTEM",
       root_query=f"daily:{run_date}",metadata={"mode":mode})
@@ -124,7 +132,8 @@ def run_daily(con,root,*,run_date=None,mode="snapshot"):
                 len(origin_threshold_guard.get("recovery_cases") or [])}})
         ops=build_daily_operations_summary(con)
         summary["operations_summary"]=ops
-        report_dir=root/"data"/"reports"; report_dir.mkdir(exist_ok=True)
+        report_dir=Path(report_dir) if report_dir else root/"data"/"reports"
+        report_dir.mkdir(parents=True,exist_ok=True)
         report=report_dir/f"daily-run-{run_date}-v0.19.json"
         md=report_dir/f"daily-operations-{run_date}-v0.19.md"
         report.write_text(json.dumps({"version":"0.19","daily_run_id":daily_id,
