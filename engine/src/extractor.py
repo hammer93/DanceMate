@@ -387,6 +387,132 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     return ev
 
 
+# --- image text fallback (v0.81.3) -------------------------------------
+#
+# A poster image attached to a post often carries the date/time/fee the body
+# text never mentions. This module does no fetching or OCR itself - the
+# runtime layer already has plain OCR'd, PII-redacted strings by the time
+# they reach here - it only decides how they may fill a gap without ever
+# overwriting what the body already said, reusing extract_single() itself
+# (and therefore v0.81.2's Event Context Safety segmentation) to read each
+# image exactly as if it were a second post body.
+
+IMAGE_OCR = "IMAGE_OCR"
+
+# "time" stands for the start_time/end_time pair, which extract_single()
+# already reads and records as one Evidence row - splitting it into two
+# fallback fields would just produce two evidence rows for the same reading.
+_FALLBACK_FIELDS = ("date", "time", "fee")
+
+
+def _field_value(ev, key: str):
+    if key == "date":
+        return ev.date
+    if key == "time":
+        return ev.start_time
+    return ev.fee
+
+
+def needs_image_fallback(ev) -> bool:
+    """The section-5 gate: only a body missing date, start_time or fee is
+    worth the cost of fetching and OCR-ing an image at all."""
+    return ev.date is None or ev.start_time is None or ev.fee is None
+
+
+def _missing_fallback_fields(ev) -> set[str]:
+    return {key for key in _FALLBACK_FIELDS if _field_value(ev, key) is None}
+
+
+def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
+                                name_hint=None, event_type=None, published=None,
+                                image_texts=None):
+    """extract_single(), then fill date/time/fee gaps from image OCR text.
+
+    ``image_texts`` is a list of ``(image_ref, ocr_text)`` pairs, already
+    fetched, OCR'd and PII-redacted by the runtime, in priority order. Each
+    image is read as its own self-contained context via extract_single()
+    (title unchanged, body=that image's OCR text) - the first image that
+    contributes anything to a still-missing field wins outright, and no
+    other image is consulted afterwards, so a date read off image 1 can
+    never pair with a fee read off image 2 (the same "never combine
+    different contexts" rule v0.81.2 applies within one post's own text).
+
+    A field the body already has is never replaced - if an image disagrees
+    with it, that is recorded as a MULTI_EVENT_CONTEXT-style conflict
+    evidence (IMAGE_EVIDENCE_CONFLICT) instead, and the body's own value
+    stands.
+    """
+    ev = extract_single(title, body, source_role=source_role, name_hint=name_hint,
+                        event_type=event_type, published=published)
+    if not image_texts or not needs_image_fallback(ev):
+        return ev
+
+    missing = _missing_fallback_fields(ev)
+    for image_ref, image_text in image_texts:
+        if not image_text:
+            continue
+        sub = extract_single(title, image_text, source_role=source_role,
+                             event_type=ev.event_type, published=published)
+
+        contributes = {
+            key for key in missing
+            if _field_value(sub, key) is not None
+        }
+        conflicts = [
+            (key, _field_value(ev, key), _field_value(sub, key))
+            for key in _FALLBACK_FIELDS
+            if key not in missing
+            and _field_value(ev, key) is not None
+            and _field_value(sub, key) is not None
+            and _field_value(ev, key) != _field_value(sub, key)
+        ]
+
+        if not contributes and not conflicts:
+            continue
+
+        for key in contributes:
+            if key == "date":
+                ev.date = sub.date
+                raw = next((e.raw_text for e in sub.evidences if e.field == "date"), sub.date)
+                ev.evidences.append(Evidence(
+                    "date", sub.date, raw, evidence_type=IMAGE_OCR,
+                    source_role=source_role, inference=image_ref,
+                ))
+            elif key == "time":
+                ev.start_time = sub.start_time
+                ev.end_time = sub.end_time
+                ev.end_day_offset = sub.end_day_offset
+                time_evidence = next((e for e in sub.evidences if e.field == "time"), None)
+                ev.evidences.append(Evidence(
+                    "time",
+                    time_evidence.value if time_evidence else
+                    {"start": sub.start_time, "end": sub.end_time,
+                     "end_day_offset": sub.end_day_offset},
+                    time_evidence.raw_text if time_evidence else str(sub.start_time),
+                    evidence_type=IMAGE_OCR, source_role=source_role, inference=image_ref,
+                ))
+            elif key == "fee":
+                ev.fee = sub.fee
+                raw = next((e.raw_text for e in sub.evidences if e.field == "fee"), str(sub.fee))
+                ev.evidences.append(Evidence(
+                    "fee", sub.fee, raw, evidence_type=IMAGE_OCR,
+                    source_role=source_role, inference=image_ref,
+                ))
+
+        for key, body_value, image_value in conflicts:
+            ev.evidences.append(Evidence(
+                "context", "IMAGE_EVIDENCE_CONFLICT",
+                f"{key}: body={body_value!r} image={image_value!r}",
+                evidence_type=IMAGE_OCR, source_role=source_role, inference=image_ref,
+            ))
+
+        if contributes:
+            missing -= contributes
+            break  # the first useful image wins; never blend in a second one
+
+    return ev
+
+
 def extract_ocho_weekly(title: str, body: str, published=None):
     """A week's schedule in one post. Every line is yearless, so every line
     needs the post's own date for the same reason a single event does."""

@@ -1,5 +1,5 @@
 from .classifier import classify
-from .extractor import extract_single
+from .extractor import extract_single, extract_with_image_fallback
 from .verifier import verify
 from .database import persist_events
 
@@ -13,13 +13,21 @@ EVENT_CLASSIFICATIONS = {
 }
 
 
-def process_discovered_post(con, post, source_role="SECONDARY"):
+def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None):
+    """``image_texts`` (v0.81.3): already OCR'd, PII-redacted
+    ``(image_ref, text)`` pairs the runtime fetched for this post, used only
+    to fill a date/time/fee the body left missing - see
+    extractor.extract_with_image_fallback().
+    """
     classification = classify(post.title, post.body)
     if classification not in EVENT_CLASSIFICATIONS:
         return {"classification": classification, "events": []}
-    ev = extract_single(post.title, post.body, source_role=source_role,
-                        event_type=classification,
-                        published=getattr(post, "published_at", None))
+    ev = extract_with_image_fallback(
+        post.title, post.body, source_role=source_role,
+        event_type=classification,
+        published=getattr(post, "published_at", None),
+        image_texts=image_texts,
+    )
     verify(ev, source_role=source_role)
     # Search snippets are incomplete by definition. Never allow METADATA_ONLY to
     # independently become VERIFIED even if all three fields happen to appear.
