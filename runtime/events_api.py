@@ -127,7 +127,10 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "event_type": row.get("event_type"),
         "event_type_label": EVENT_TYPE_LABELS.get(
             (row.get("event_type") or "").upper()),
+        # The code is the API's contract and what ?genre= filters on; the
+        # label is what a page shows a reader. Both, rather than a choice.
         "genre": row.get("genre_code"),
+        "genre_label": row.get("genre_name") or row.get("genre_code"),
         "region": row.get("region_name"),
         "region_code": row.get("region_code"),
         "status": row.get("engine_status"),
@@ -144,7 +147,8 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
 
 _SELECT = (
     "SELECT e.*, v.name AS venue_name, v.address AS venue_address, "
-    "       g.code AS genre_code, r.name AS region_name, r.code AS region_code, "
+    "       g.code AS genre_code, g.name AS genre_name, "
+    "       r.name AS region_name, r.code AS region_code, "
     # When the post behind this event was last collected. A dancer deciding
     # tonight is relying on something we read at some point, and when that was
     # is part of the answer.

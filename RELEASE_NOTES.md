@@ -110,6 +110,62 @@ person can settle them.
   against synthetic candidates on a rolled-back connection, never through the
   live route.
 
+### Added after the first cut: the styles are always on screen
+
+The genre chips were built from whatever had events in the window, which
+meant a reader could filter by swing only on a day swing already appeared.
+That is backwards. "Is there any swing on tonight?" is a question the page
+should answer with an empty list, not by removing the question.
+
+Tango, Salsa and Swing are now fixed on the first screen, under the day tabs
+and above the region row, read from the enabled genre master with those three
+as a floor. All three start ticked. Unticking all of them means no events --
+not a silent reset to everything.
+
+Real checkboxes rather than styled links: the state lives in the control, so
+it survives a reader who cannot see the colour, answers to the keyboard, and
+works with the script missing. The submit button is what makes that true; the
+script hides it and submits on change for everyone else.
+
+The selection rides in the URL as `?genres=TANGO,SALSA`, through every day tab
+and every region link, so a refresh keeps it and a link carries it.
+`?genre=TANGO` still means what it always did, and the JSON API still answers
+in codes -- `genre_label` was added beside it so pages can say Tango where they
+used to say TANGO.
+
+The region row moved to the same footing for the same reason: it was built
+from the events on screen, so a day whose only event had no region left the
+first screen with no region filter at all.
+
+### Also in this release: NAVER API HUB authentication
+
+`NAVER_CLIENT_ID` / `NAVER_CLIENT_SECRET` are API HUB credentials and were
+being sent to the legacy Search API host with legacy headers, which
+authenticates nothing there. Every Naver source had been sitting at
+AUTH_FAILED because of it.
+
+The collector now talks only to `naverapihub.apigw.ntruss.com` with
+`X-NCP-APIGW-API-KEY-ID` and `X-NCP-APIGW-API-KEY`. No legacy host or header
+remains anywhere, and the two schemes are never mixed. The variable names are
+unchanged, so no deployed `.env` had to move.
+
+Probed against the gateway rather than guessed from documentation: blog,
+cafearticle and webkr answer 200 with the same payload shape as before; news
+and local answer 401 for these credentials and doc is 404, so none of those
+three is offered. webkr had no runtime platform, hence `NAVER_WEB` and
+migration 016 -- a platform that can be registered, not a source that
+collects.
+
+One blog source went AUTH_FAILED to PASS end to end: 153 source_items, 24
+candidates, 8 events.
+
+**And it surfaced a real problem.** A post published 2024-09-26 became an
+event dated 2026-09-25: the body wrote "9/25" and the current year was
+attached to it. That source serves posts back to 2011. The engine rules were
+not changed to paper over it -- a year inferred years after the post is not
+evidence, and what to do about it is a judgement, not a patch to slip into a
+release. The event sits in the review queue.
+
 ### Verified on the board
 
 - Full runtime suite in the container, repo mounted: **682 passed, 9 skipped**

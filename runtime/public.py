@@ -260,6 +260,34 @@ def _genre_options(con) -> list[dict[str, str]]:
     return options
 
 
+def _region_options(con, counted: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every place a reader may filter by, with today's counts where there are any.
+
+    Built from the region master rather than from the events on screen, for the
+    same reason as the genres: a filter that appears only once something
+    matches cannot be used to ask whether anything does. Cities only -- the
+    country-level row is not somewhere to go.
+    """
+    from . import master_data
+
+    counts = {row["value"]: row.get("events") or 0 for row in counted}
+    options: list[dict[str, Any]] = []
+    try:
+        rows = master_data.list_regions(con, enabled_only=True)
+    except Exception:  # noqa: BLE001 - the filter is not worth a 500
+        rows = []
+    for row in rows:
+        if not row.get("city"):
+            continue
+        name = row.get("name")
+        if name:
+            options.append({"value": name, "label": name, "events": counts.get(name, 0)})
+    if not options:
+        options = list(counted)
+    options.sort(key=lambda o: (-(o["events"] or 0), o["label"]))
+    return options
+
+
 def _selected_genres(options: list[dict[str, str]], asked: list[str] | None,
                      declared: bool) -> list[str]:
     """Which chips are ticked. Everything, until the reader says otherwise."""
@@ -318,7 +346,8 @@ def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
             tuple(params),
         )
         regions = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
-    return {"genres": genres, "regions": regions}
+    return {"genres": genres, "regions": regions,
+            "region_options": _region_options(con, regions)}
 
 
 def _genre_query(selected: list[str], options: list[dict[str, str]]) -> dict[str, str]:
@@ -368,7 +397,7 @@ def _region_chips(action: str, when: str | None, rows: list[dict[str, Any]],
     """Where. Only places that have something, and never the country row."""
     from urllib.parse import urlencode
 
-    if len(rows) < 2:
+    if not rows:
         return ""
     links = []
     for row in [{"value": None, "label": "전체"}] + rows:
@@ -399,7 +428,7 @@ def _filter_bar(action: str, when: str | None, facets: dict[str, list[dict[str, 
     return (
         '<div class="filters">'
         + _genre_filter(action, when, region, options, selected)
-        + _region_chips(action, when, facets["regions"], region,
+        + _region_chips(action, when, facets["region_options"], region,
                         _genre_query(selected, options))
         + "</div>"
         + AUTO_SUBMIT
@@ -572,8 +601,12 @@ def home(
         nearest = "".join(_event_item(e) for e in upcoming["events"])
         # The nearest events are still inside the reader's filter -- the search
         # above carries it -- so this widens the dates, never the conditions.
+        if narrowed:
+            message = "오늘은 " + EMPTY_FILTERED if nearest else EMPTY_FILTERED
+        else:
+            message = EMPTY_TODAY
         listing = (
-            f'<p class="empty">{EMPTY_FILTERED if narrowed else EMPTY_TODAY}</p>'
+            f'<p class="empty">{message}</p>'
             + (f'<h2>다가오는 행사</h2><ul class="events">{nearest}</ul>' if nearest else "")
         )
 
@@ -662,7 +695,8 @@ def event_page(event_id: int) -> HTMLResponse:
         ("요금", _fee_line(event)),
         ("종류", E(event.get("event_type_label") or "")
                  or '<span class="unknown">-</span>'),
-        ("장르", E(event.get("genre") or "") or '<span class="unknown">-</span>'),
+        ("장르", E(event.get("genre_label") or "")
+                 or '<span class="unknown">-</span>'),
         ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
         ("상태", _status_line(event, with_type=False)
                  or '<span class="unknown">-</span>'),
