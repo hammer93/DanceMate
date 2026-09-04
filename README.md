@@ -9,9 +9,9 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.80.2 (Date Inference Safety + Blocked Fetch Retry)
-  - deployed and verified on the ROCKPro64 on 2026-09-04
-- Information Engine: v0.76 (`engine/`) — 연도 추론 규칙 변경
+- Product Runtime: v0.81.0 (Real Source Data Pipeline - Alpha)
+  - deployed and verified on the ROCKPro64 on 2026-09-05
+- Information Engine: v0.76 (`engine/`) — 연도 추론 규칙 변경, v0.81.0에서 미변경
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
 - Initial Genres:

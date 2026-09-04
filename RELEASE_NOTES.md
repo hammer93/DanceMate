@@ -1,5 +1,115 @@
 # DanceMate Release Notes
 
+## v0.81.0 Real Source Data Pipeline - Alpha
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-05.
+
+Version split:
+
+- Product Runtime: 0.81.0
+- Information Engine: 0.76, unchanged - this release adds a discovery path,
+  not a new engine capability.
+
+### Why this version exists
+
+Every source DanceMate has collected from until now was a search API: Daum
+Cafe, Naver Blog/Cafe/Web. A source with real event data but no search API -
+a community's own board - had no way in. This release adds one: `WEB`, a
+platform that scrapes a board's own list page instead of calling a provider.
+
+`runtime/web_discovery.py` is the new module - fetch the list page, parse its
+rows (title, detail URL, posted date), robots.txt honoured exactly as deep
+acquisition already honours it. `runtime/acquisition.py` gained one more
+article-extraction method (`METHOD_TEMPLATE_BOARD`, a `readEdit`-div board
+template several small Korean community sites share) alongside the existing
+Daum-marker/og:description/whole-page chain. `runtime/collectors.py` gained a
+`WEB` branch in `_collect_live`/`_collect_snapshot`, no engine collector
+involved and no credential required. Nothing in `engine/` changed.
+
+### The first WEB source is real, not a fixture
+
+**SRC-W-001, K-TANGO** (`www.k-tango.net`) - the Korea Tango Community &
+Festival organizing committee's own board, chosen for the same reasons a
+source is chosen for this product: public without login, `robots.txt`
+declares no restriction, the board's own posts carry real date/time/venue/fee
+in plain server-rendered HTML with no JavaScript rendering required. Two
+other real candidates were checked and set aside before this one - `ktnow.kr`
+(Tango NOW) is a real tango-schedule site but its data exists only behind a
+React/Firebase client SDK with no server-rendered content or same-origin API;
+`onoffmix.com`'s `robots.txt` blocks every crawler except a named allowlist a
+runtime fetcher does not match. See `docs/SOURCE_DATA_PIPELINE.md` for the
+full comparison.
+
+Run against the live site on 2026-09-05:
+
+```
+discovery:   10 posts found on /cnf/festival02/, all 10 new
+acquisition: 9 FETCHED_FULL, 1 FETCHED_PARTIAL (avg 610 chars/post)
+ingest:      9 ingested, 0 failed, 3 event candidates produced
+```
+
+The three candidates - two K-TANGO SF 2024 festival announcements and one
+with `venue_text = "연세대학교 대강당"` (Yonsei University's main hall)
+extracted straight from the post body - all landed at `engine_status =
+POSSIBLE`, `review_state = PENDING`, with real `source_url`s pointing back
+at the actual board posts. That is this release's success bar: a real public
+source's event data, discovered without a search API, stored in PostgreSQL
+with its evidence and provenance intact, waiting in the same Human
+Verification queue every other source's candidates already sit in.
+
+One extraction limitation showed up honestly rather than being hidden: a
+K-TANGO post that lists five separate sub-events in one bulletin (a
+performance, a venue tour, three milongas, each with its own date/time/venue/
+fee) is not something the engine's single-event extractor was built to split
+apart, so the candidate it produced took one event's date but a different
+listed time. This is an existing engine characteristic meeting a new kind of
+source text, not a regression this release introduced, and it is exactly what
+Human Verification exists to catch - the candidate is `PENDING`, not silently
+accepted.
+
+### What did not change
+
+`sources`, `source_items`, `source_item_content`, `content_fetch_log`,
+`candidate_review_state`, `events` - every table this release writes to
+already existed for Daum/Naver. Deep acquisition's retry/backoff/quota
+handling, the scheduler's per-source failure isolation, and the Information
+Engine's classify/extract/verify pipeline are all untouched; a WEB source
+exercises exactly the same code a Daum or Naver source already exercises
+from `source_items` onward. `runtime/tests` (747 passed / 9 skipped on the
+board, plus the 135 collector/acquisition/source tests specific to this
+change) and the existing Daum/Naver sources' collection results (unchanged:
+still `PASS`, still producing their own items) confirm it.
+
+Two pre-existing test failures were observed and are not from this change:
+`test_freshness_reads_as_time_ago_while_it_is_recent` (a clock-relative
+assertion, unrelated to source collection) and
+`test_the_dashboard_buckets_match_what_the_search_returns` (asserts a global
+event count against the live staging database, which now legitimately holds
+more events than when that test was written - the exact pitfall
+`memory/dancemate-board-test-run.md` already documents about staging-DB test
+isolation). Neither touches `runtime/collectors.py`, `web_discovery.py`, or
+`acquisition.py`.
+
+### Known limitations
+
+- One board, one list page - `web_discovery.py` does not paginate yet.
+  K-TANGO's board fits on one page today (10 posts, 2023-2025); a future WEB
+  source with more history will need pagination added.
+- `events.organizer_id` does not exist, so K-TANGO's `ORGANIZER` role is
+  recorded on the source, not the event.
+- Engine `VERIFIED` status is unreachable for any current source (runtime
+  `source_role` vocabulary never matches the engine's `ACCEPTABLE_SOURCE_ROLES`)
+  - a pre-existing cross-source characteristic, not introduced here.
+- Warm reboot hang on the ROCKPro64 remains open; out of scope for this
+  release (infrastructure, not the data pipeline).
+
+### Next recommended step
+
+A second WEB source is the real test of whether `web_discovery.py`'s row
+parser and `METHOD_TEMPLATE_BOARD` generalize past K-TANGO's board software,
+or need a per-site override the way Daum's marker text already is one.
+
 ## v0.80.2 Date Inference Safety + Blocked Fetch Retry + Full Green Regression
 
 Status:

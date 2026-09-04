@@ -39,6 +39,35 @@ DESKTOP_SHELL = """<html><head><title>Daum 카페</title></head><body>
 <style>html, body, iframe { margin: 0; padding: 0; height: 100%; }</style>
 <iframe id="down" src="/_c21_/home"></iframe></body></html>"""
 
+# Shaped like a K-TANGO board post: site nav chrome, then readTop/readEdit/
+# readBottom - the template several small Korean community boards share.
+# readEdit is real article HTML (<p>/<b>/<br> tags), not the plain text a
+# marker search would need; readBottom is prev/next navigation that must not
+# leak into the body.
+TEMPLATE_BOARD_URL = "http://www.k-tango.net/cnf/festival02/read.jsp?reqPageNo=1&no=10"
+TEMPLATE_BOARD_PAGE = """<html><head><title>K-TANGO</title></head><body>
+<header><nav>K-TANGO 소개 PROGRAM GALLERY NOTICE 로그인</nav></header>
+<div class="board_con"><div class="inner"><div class="sub_tit"><h3>페스티벌 안내</h3></div></div></div>
+<div class="programCon"><div class="programRead">
+<div class="readTop">
+<p class="imgTitle">2024 K-TANGO SF : 신청폼</p>
+<p class="imgTitle_sub">K-TANGO 2024-09-01 16:06</p>
+</div>
+<div class="readEdit">
+<p>일시 : 2024년 09월 26일 목요일 PM 19:00 ~ PM20:30</p>
+<p>장소 : 연세대학교 대강당</p>
+<p>참가비 : 20,000원</p>
+<p>내용 : 해외탱고아티스트, 국내 탱고가수, 전통무용수들의 공연입니다. 100,000원 상당 공연티켓을 선착순 500명 무료배포합니다.</p>
+<p>많은 신청 바랍니다. 문의는 홈페이지 공지사항을 참고해 주세요.</p>
+</div>
+<div class="readBottom"><table>
+<tr><th>이전글</th><td><a href="read.jsp?reqPageNo=1&no=12">2025 K-TANGO CF</a></td></tr>
+<tr><th>다음글</th><td><a href="read.jsp?reqPageNo=1&no=11">2024 K-TANGO SF : 서울밀롱가데이</a></td></tr>
+</table></div>
+</div></div>
+<footer>K-TANGO CF 조직위원회 (주)KSACN TEL. 02-571-0108</footer>
+</body></html>"""
+
 
 class _Response(io.BytesIO):
     def __init__(self, body: str, *, status=200, url=DAUM_URL, content_type="text/html;charset=UTF-8"):
@@ -121,6 +150,18 @@ def test_title_and_images_are_extracted():
     assert images == ["https://m.cafe.daum.net/poster.jpg"]
 
 
+def test_a_template_board_post_is_read_from_its_readEdit_div():
+    """K-TANGO and boards on the same template: the article is a real element,
+    not a text marker, and is preferred over the whole-page fallback."""
+    text, method = acquisition.extract_article(TEMPLATE_BOARD_PAGE)
+    assert method == acquisition.METHOD_TEMPLATE_BOARD
+    assert "연세대학교 대강당" in text
+    assert "20,000원" in text
+    assert "로그인" not in text, "header nav must not be in the article"
+    assert "이전글" not in text, "prev/next footer must not be in the article"
+    assert "조직위원회" not in text, "page footer must not be in the article"
+
+
 # --- personal data ----------------------------------------------------------
 
 def test_phone_numbers_are_removed_before_storage():
@@ -181,6 +222,14 @@ def test_a_full_article_is_reported_as_fetched_full():
     assert outcome.content_length >= acquisition.FULL_TEXT_THRESHOLD
     assert outcome.redacted_spans >= 1, "the phone number should have been removed"
     assert outcome.content_hash
+
+
+def test_a_full_template_board_page_is_reported_as_fetched_full():
+    opener = _opener({TEMPLATE_BOARD_URL: _Response(TEMPLATE_BOARD_PAGE, url=TEMPLATE_BOARD_URL)})
+    outcome = acquisition.fetch(TEMPLATE_BOARD_URL, opener=opener)
+    assert outcome.status == acquisition.FETCHED_FULL
+    assert outcome.method == acquisition.METHOD_TEMPLATE_BOARD
+    assert "연세대학교" in outcome.text
 
 
 def test_a_shell_only_page_is_never_reported_as_full():

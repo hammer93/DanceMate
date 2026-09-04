@@ -33,10 +33,12 @@ def _source(**overrides):
 
 # --- capability reporting ---------------------------------------------------
 
-def test_only_the_engine_backed_platforms_are_collectable():
+def test_only_the_engine_backed_platforms_and_web_are_collectable():
+    """FACEBOOK and DIRECTORY have no collector; WEB needs no credential."""
     assert set(collectors.SUPPORTED_PLATFORMS) == {
-        "DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG", "NAVER_WEB",
+        "DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG", "NAVER_WEB", "WEB",
     }
+    assert collectors.missing_credentials("WEB") == []
 
 
 def test_each_naver_platform_reads_the_search_api_hub_serves_for_it():
@@ -155,6 +157,89 @@ def test_test_source_reports_snapshot_when_live_is_unavailable(engine_settings, 
 def test_test_source_reports_unsupported_rather_than_raising(settings):
     report = collectors.test_source(settings, _source(platform="FACEBOOK"))
     assert report["status"] == "UNSUPPORTED"
+
+
+# --- WEB board collection: no engine collector, no credential --------------
+
+def _web_source(**overrides):
+    payload = {
+        "source_id": 99,
+        "source_key": "SRC-W-001",
+        "name": "K-TANGO",
+        "platform": "WEB",
+        "source_role": "ORGANIZER",
+        "authority_level": "PRIMARY_ORGANIZER",
+        "enabled": True,
+        "url": "http://www.k-tango.net/",
+        "queries": [],
+        "config": {"board_urls": ["http://www.k-tango.net/cnf/festival02/index.jsp"]},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_web_needs_no_credential_and_is_always_live(settings):
+    report = collectors.describe_capability("WEB")
+    assert report["live"] is True
+    assert report["missing_credentials"] == []
+
+
+def test_web_collection_dispatches_to_web_discovery(settings, monkeypatch):
+    from runtime import web_discovery
+
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append((list_url, source_id))
+        return [
+            {
+                "source_url": "http://www.k-tango.net/cnf/festival02/read.jsp?no=10",
+                "title": "2024 K-TANGO SF",
+                "body": "",
+                "published_at": "2024-09-01T00:00:00+00:00",
+                "acquisition_quality": "METADATA_ONLY",
+            }
+        ]
+
+    monkeypatch.setattr(web_discovery, "discover", fake_discover)
+    result = collectors.collect(settings, _web_source(), mode=collectors.MODE_LIVE)
+
+    assert calls == [
+        ("http://www.k-tango.net/cnf/festival02/index.jsp", "SRC-W-001")
+    ]
+    assert result.mode == collectors.MODE_LIVE
+    assert len(result.items) == 1
+    assert result.items[0].url == "http://www.k-tango.net/cnf/festival02/read.jsp?no=10"
+
+
+def test_web_collection_without_board_urls_is_refused(settings):
+    with pytest.raises(collectors.CollectorUnavailable, match="board_urls"):
+        collectors.collect(settings, _web_source(config={}), mode=collectors.MODE_LIVE)
+
+
+def test_web_collection_deduplicates_across_configured_boards(settings, monkeypatch):
+    from runtime import web_discovery
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        return [
+            {
+                "source_url": "http://www.k-tango.net/cnf/festival02/read.jsp?no=10",
+                "title": "same post, different board",
+                "body": "",
+                "published_at": None,
+                "acquisition_quality": "METADATA_ONLY",
+            }
+        ]
+
+    monkeypatch.setattr(web_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "board_urls": [
+            "http://www.k-tango.net/cnf/festival02/index.jsp",
+            "http://www.k-tango.net/cnf/festival/index.jsp",
+        ]
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert len(result.items) == 1
 
 
 def test_test_source_never_writes_anything(engine_settings):

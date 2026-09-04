@@ -200,6 +200,15 @@ _OG_TITLE = re.compile(
 )
 _IMG_SRC = re.compile(r"<img[^>]+src=[\"']([^\"']+)", re.I)
 
+# A board template shared by several small Korean community sites (K-TANGO
+# among them): the post body sits in a `readEdit` div, between the byline and
+# the prev/next-post footer. Unlike Daum's marker text, these are real element
+# boundaries, so the check is host-independent - any board built on the same
+# software carries the same classes.
+_TEMPLATE_BOARD_START = '<div class="readEdit">'
+_TEMPLATE_BOARD_END = '<div class="readBottom">'
+
+METHOD_TEMPLATE_BOARD = "template_board"
 METHOD_ARTICLE_REGION = "article_region"
 METHOD_OG_DESCRIPTION = "og_description"
 METHOD_VISIBLE_TEXT = "visible_text"
@@ -219,6 +228,14 @@ def extract_article(raw_html: str) -> tuple[str, str]:
     live Daum pages: article region 434 chars, og:description 190 (truncated
     mid-sentence by the site), whole visible page 813 including chrome.
     """
+    board_start = raw_html.find(_TEMPLATE_BOARD_START)
+    board_end = raw_html.find(_TEMPLATE_BOARD_END, board_start + 1 if board_start >= 0 else 0)
+    if board_start >= 0 and board_end > board_start:
+        segment = raw_html[board_start + len(_TEMPLATE_BOARD_START):board_end]
+        body = visible_text(segment)
+        if len(body) >= MINIMUM_USEFUL_TEXT:
+            return body, METHOD_TEMPLATE_BOARD
+
     text = visible_text(raw_html)
 
     start = text.find(_ARTICLE_START)

@@ -39,10 +39,15 @@ CREDENTIAL_ENV = {
     "NAVER_WEB": ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"),
 }
 
-# Platforms v0.75 can actually collect from. FACEBOOK is deliberately absent:
-# its access restrictions make it a poor first real source, and the engine's
-# own source list already marks it ACCESS_LIMITED.
-SUPPORTED_PLATFORMS = ("DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG", "NAVER_WEB")
+# Platforms this version can actually collect from. FACEBOOK is deliberately
+# absent: its access restrictions make it a poor first real source, and the
+# engine's own source list already marks it ACCESS_LIMITED.
+#
+# WEB needs no credential and no engine-side collector - runtime.web_discovery
+# scrapes the source's own board list page directly, so it is dispatched
+# separately from the Daum/Naver branch below rather than through
+# `_to_engine_source`/the engine's collector classes.
+SUPPORTED_PLATFORMS = ("DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG", "NAVER_WEB", "WEB")
 
 # Which Naver search each platform reads. API HUB serves blog, cafearticle and
 # webkr for these credentials; news and local are not subscribed.
@@ -100,14 +105,17 @@ def describe_capability(platform: str) -> dict[str, Any]:
     }
 
 
+def _config(source: dict[str, Any]) -> dict[str, Any]:
+    config = source.get("config") or {}
+    return json.loads(config) if isinstance(config, str) else config
+
+
 def _to_engine_source(source: dict[str, Any]) -> dict[str, Any]:
     """Shape a Source Master row the way the engine's collectors expect."""
-    config = source.get("config") or {}
+    config = _config(source)
     queries = source.get("queries") or []
     if isinstance(queries, str):
         queries = json.loads(queries)
-    if isinstance(config, str):
-        config = json.loads(config)
     engine_source = {
         "source_id": source["source_key"],
         "platform": source["platform"],
@@ -155,9 +163,7 @@ def _to_raw_item(record: Any) -> RawItem:
 
 
 def _snapshot_path(settings: Settings, source: dict[str, Any]) -> Path | None:
-    config = source.get("config") or {}
-    if isinstance(config, str):
-        config = json.loads(config)
+    config = _config(source)
     configured = config.get("snapshot_path")
     if configured:
         candidate = Path(configured)
@@ -221,6 +227,16 @@ def _collect_snapshot(
         from src.collectors.daum import load_snapshot  # noqa: PLC0415
 
         records = load_snapshot(path, engine_source, query="snapshot")
+    elif platform == "WEB":
+        from . import web_discovery  # noqa: PLC0415
+
+        list_url = (_config(source).get("board_urls") or [""])[0]
+        records = web_discovery.parse_list(
+            path.read_text(encoding="utf-8"), list_url
+        )
+        for record in records:
+            record["source_id"] = engine_source["source_id"]
+            record["platform"] = platform
     else:
         from src.collectors.naver import load_naver_snapshot  # noqa: PLC0415
 
@@ -239,6 +255,10 @@ def _collect_live(
     settings: Settings, source: dict[str, Any], engine_source: dict[str, Any]
 ) -> CollectionResult:
     platform = source["platform"]
+
+    if platform == "WEB":
+        return _collect_web(source, engine_source)
+
     engine_config = _engine_settings(settings)
 
     if platform == "DAUM_CAFE":
@@ -284,6 +304,40 @@ def _collect_live(
         mode=MODE_LIVE,
         items=[_to_raw_item(r) for r in records],
         detail=f"live {platform}: {len(records)} records",
+    )
+
+
+def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> CollectionResult:
+    """Walk every board list page a WEB source names in `config.board_urls`.
+
+    No credential, no engine collector - `web_discovery` reads the board's own
+    list page directly.
+    """
+    from . import web_discovery  # noqa: PLC0415
+
+    board_urls = _config(source).get("board_urls") or []
+    if not board_urls:
+        raise CollectorUnavailable(
+            "WEB source has no config.board_urls to collect from"
+        )
+
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for board_url in board_urls:
+        for record in web_discovery.discover(
+            board_url, source_id=engine_source["source_id"]
+        ):
+            url = record.get("source_url")
+            if url and url in seen:
+                continue
+            if url:
+                seen.add(url)
+            records.append(record)
+
+    return CollectionResult(
+        mode=MODE_LIVE,
+        items=[_to_raw_item(r) for r in records],
+        detail=f"live WEB: {len(records)} records from {len(board_urls)} board(s)",
     )
 
 
