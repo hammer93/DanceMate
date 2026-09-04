@@ -11,6 +11,18 @@ from .database import persist_events
 from .source_state import derive_source_state
 from .media_classifier import classify_media
 
+def _row_value(row, key):
+    """A column if the caller's query selected it, else None.
+
+    acquire_posts takes rows from several different queries, and sqlite3.Row
+    raises rather than returning None for a column that is not there.
+    """
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def acquire_pending_daum(con, *, mode="live", acquirer=None, limit=None, lineage_map=None):
     acquirer = acquirer or DaumPostAcquirer()
     rows = list(pending_metadata_posts(con))
@@ -59,7 +71,7 @@ def acquire_pending_daum(con, *, mode="live", acquirer=None, limit=None, lineage
             post = RawPostRecord(
                 source_id=row["source_id"], platform="DAUM_CAFE", source_url=row["source_url"],
                 title=row["title"], body=result.body_text,
-                published_at=row["published_at"], acquisition_quality=result.status
+                published_at=_row_value(row, "published_at"), acquisition_quality=result.status
             )
             source_role_row = con.execute("SELECT source_role FROM sources WHERE source_id=?", (row["source_id"],)).fetchone()
             source_role = source_role_row["source_role"] if source_role_row else "SECONDARY"

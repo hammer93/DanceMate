@@ -12,7 +12,8 @@ def test_lineage_inferred_across_separate_steps(tmp_path):
     con=init_db(tmp_path/"cli.sqlite3")
     seed_sources(con,json.loads((ROOT/"config"/"sources.json").read_text(encoding="utf-8")))
     p=RawPostRecord("SRC-N-001","NAVER_BLOG","https://snapshot.local/naver/blog/pista",
-                    "8/22 PISTA","snippet",acquisition_quality="METADATA_ONLY")
+                    "8/22 PISTA","snippet",published_at="2026-08-18",
+                    acquisition_quality="METADATA_ONLY")
     d=run_discovery_with_lineage(con,source_id=p.source_id,query="밀롱가",collector_callable=lambda:[p])
     pid,is_new=persist_raw_post(con,p)
     record_discovery_persist_result(con,lineage_id=d["lineage_id"],observation_id=d["observation_id"],

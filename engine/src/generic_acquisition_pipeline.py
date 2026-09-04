@@ -9,6 +9,18 @@ from .live_pipeline import process_discovered_post
 from .source_state import derive_source_state
 from .media_classifier import classify_media
 
+def _row_value(row, key):
+    """A column if the caller's query selected it, else None.
+
+    acquire_posts takes rows from several different queries, and sqlite3.Row
+    raises rather than returning None for a column that is not there.
+    """
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def acquire_posts(con, rows, *, mode, acquirer, lineage_map=None):
     summary=[]
     for row in rows:
@@ -51,7 +63,7 @@ def acquire_posts(con, rows, *, mode, acquirer, lineage_map=None):
             # without it -- dropping it here silently un-dated every post whose
             # body we successfully fetched.
             post=RawPostRecord(row["source_id"],row["platform"],row["source_url"],row["title"],result.body_text,
-                published_at=row["published_at"],acquisition_quality=result.status)
+                published_at=_row_value(row, "published_at"),acquisition_quality=result.status)
             sr=con.execute("SELECT source_role FROM sources WHERE source_id=?",(row["source_id"],)).fetchone()
             role=sr["source_role"] if sr else "SECONDARY"
             processed=process_discovered_post(con,post,role)
