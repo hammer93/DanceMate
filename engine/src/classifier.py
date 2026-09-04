@@ -66,10 +66,13 @@ def classify(title: str, body: str, known_event_type=None) -> str:
     has_social = social_evidence(title, body)
 
     if has_class:
+        # The tango rule is left exactly as it was. "Special Milonga Lesson
+        # 개설" mentions a milonga and is a lesson; only an open class attached
+        # to a milonga has ever counted as the milonga.
         if "open class" in text and has_milonga:
             return "MILONGA_WITH_CLASS"
-        if has_milonga:
-            return "MILONGA_WITH_CLASS"
+        # The same discipline for the other scenes: mentioning a social is not
+        # announcing one, and social_evidence is what tells them apart.
         if has_social:
             return "SOCIAL_WITH_CLASS"
         return "CLASS"

@@ -72,7 +72,17 @@ def test_a_duration_is_not_a_clock():
 def test_tango_is_unchanged():
     """The whole tango path has to behave exactly as it did in v0.74."""
     assert classify("9/5(토) 더 피스타 밀롱가", "장소: PISTA 입장료 13,000원") == "MILONGA"
-    assert classify("밀롱가 안내", "강습 후 밀롱가가 이어집니다") == "MILONGA_WITH_CLASS"
+    # MILONGA_WITH_CLASS has always needed both a class word and the phrase
+    # "open class"; a milonga on its own is a milonga.
+    assert classify("밀롱가 안내", "강습 open class 후 밀롱가") == "MILONGA_WITH_CLASS"
+    assert classify("밀롱가 강습 안내", "8주 강습 모집") == "CLASS"
+
+
+def test_a_lesson_that_names_a_milonga_is_still_a_lesson():
+    """The engine's own gate1 replay catches this one: 'Special Milonga Lesson
+    개설 (9월17일 개강)' must produce no event at all. Widening the milonga rule
+    to any class post that says milonga turned it into one."""
+    assert classify("Special Milonga Lesson개설 (9월17일 개강)", "8주 강습 모집") == "CLASS"
 
 
 def test_a_swing_social_is_an_event():
