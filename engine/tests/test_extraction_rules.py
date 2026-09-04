@@ -103,6 +103,30 @@ def test_no_range_means_no_time():
     assert rules.parse_time_range("이번 일요일에 만나요") is None
 
 
+def test_when_no_reading_names_the_event_type_an_explicit_marker_wins():
+    """danceinfo.net's own shape (v0.82): the same event's time is repeated
+    once plainly in a structured summary line and once with an explicit
+    AM/PM marker in the free-text body, neither one near the event-type
+    word. The plain repetition earlier in the text is exactly the reading
+    ambiguous=True exists to warn about - it must not win just for being
+    first, once a confirmed reading of the same event exists."""
+    text = "일정정보 5:30~9:30 장소 분당 실루엣 파티안내 Pm5:30~9:30 예매15,000원"
+    reading = rules.parse_time_range(text)
+    assert (reading.start, reading.end) == ("17:30", "21:30")
+    assert reading.meridiem_evidence == rules.EVIDENCE_EXPLICIT
+    assert reading.ambiguous is False
+
+
+def test_when_every_reading_is_ambiguous_the_first_one_is_still_used():
+    """No confirmed reading to prefer: falls back to position, same as
+    before this release - never silently drops a time just because it
+    cannot be confirmed."""
+    text = "1부 5:30~9:30 2부 10:00~11:00"
+    reading = rules.parse_time_range(text)
+    assert (reading.start, reading.end) == ("05:30", "09:30")
+    assert reading.ambiguous is True
+
+
 # --- PHASE B: venue ---------------------------------------------------------
 
 @pytest.mark.parametrize("text,name", [

@@ -212,6 +212,47 @@ def test_web_collection_dispatches_to_web_discovery(settings, monkeypatch):
     assert result.items[0].url == "http://www.k-tango.net/cnf/festival02/read.jsp?no=10"
 
 
+def test_a_web_source_with_no_parser_config_uses_the_board_discovery(settings, monkeypatch):
+    """Every WEB source registered before config.parser existed must keep
+    behaving exactly as before - board (K-TANGO-style HTML rows) stays the
+    default."""
+    from runtime import danceinfo_discovery, web_discovery
+
+    monkeypatch.setattr(web_discovery, "discover", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        danceinfo_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    collectors.collect(settings, _web_source(), mode=collectors.MODE_LIVE)
+
+
+def test_a_web_source_configured_for_danceinfo_json_uses_that_discovery(settings, monkeypatch):
+    from runtime import danceinfo_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://danceinfo.net/lessons/2401",
+            "title": "러블리밀롱가 7주년 파티안내", "body": "",
+            "published_at": None, "acquisition_quality": "METADATA_ONLY",
+        }]
+
+    monkeypatch.setattr(danceinfo_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "danceinfo_json",
+        "board_urls": ["https://danceinfo.net/lessons?date=2026-09-12&genre=all"],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert calls == ["https://danceinfo.net/lessons?date=2026-09-12&genre=all"]
+    assert len(result.items) == 1
+
+
 def test_web_collection_without_board_urls_is_refused(settings):
     with pytest.raises(collectors.CollectorUnavailable, match="board_urls"):
         collectors.collect(settings, _web_source(config={}), mode=collectors.MODE_LIVE)
