@@ -261,11 +261,24 @@ def admin_reacquire(source_item_id: int, _: str = Depends(require_admin)) -> Red
 
 # --- review -----------------------------------------------------------------
 
-def _review_rows(settings, con) -> list[dict[str, Any]]:
-    rows = candidates.list_candidates(settings, limit=300)
-    states = review.states(con, [r["candidate_id"] for r in rows])
+def _default_review_state(candidate_id: int) -> dict[str, Any]:
+    """review.state()'s fallback shape, without the per-row query.
+
+    A page is at most 50 rows and `review.states()` returns one query for all
+    of them, but only for the ones that actually have a row - a PENDING
+    candidate has never had one written. Building the same fallback locally
+    avoids up to 50 individual `review.state()` queries per page.
+    """
+    return {
+        "candidate_id": candidate_id, "review_state": review.PENDING,
+        "last_action": None, "last_reviewer": None, "last_review_at": None,
+        "corrected_json": {}, "duplicate_of_candidate_id": None, "action_count": 0,
+    }
+
+
+def _with_review_state(rows: list[dict[str, Any]], states: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
-        row["review"] = states.get(row["candidate_id"]) or review.state(con, row["candidate_id"])
+        row["review"] = states.get(row["candidate_id"]) or _default_review_state(row["candidate_id"])
     return rows
 
 
@@ -377,6 +390,14 @@ REVIEW_FILTERS: dict[str, tuple[str, Any]] = {
 DEFAULT_REVIEW_FILTER = "upcoming"
 
 
+def _raw_page(raw: Any) -> int:
+    try:
+        page = int(raw)
+    except (TypeError, ValueError):
+        page = 1
+    return max(1, page)
+
+
 @router.get("/admin/review", response_class=HTMLResponse)
 def admin_review(
     request: Request, show: str = "pending", filter: str = "",
@@ -385,35 +406,47 @@ def admin_review(
     from . import pagination
 
     settings = _settings()
-    with _connection() as con:
-        rows = _review_rows(settings, con)
-        metrics = review.metrics(con)
-
     chosen = (filter or show or DEFAULT_REVIEW_FILTER).strip().lower()
     if chosen not in REVIEW_FILTERS:
         chosen = DEFAULT_REVIEW_FILTER
-    visible = sorted(
-        [r for r in rows if REVIEW_FILTERS[chosen][1](r)], key=review_priority,
-    )
-    # The engine query behind `rows` already caps at 300 (candidates.list_candidates);
-    # this pages *within* that filtered, sorted result — a second, DB-level page
-    # for the engine's own store is future work, not something this release adds.
-    total = len(visible)
-    page = pagination.resolve_page(request.query_params.get("page"), total)
-    visible_page = visible[
-        pagination.sql_offset(page): pagination.sql_offset(page) + pagination.PAGE_SIZE
-    ]
 
+    with _connection() as con:
+        # Fetched once regardless of `chosen`: filter_counts() below needs it
+        # for the pending/reviewed tallies in the filter bar no matter which
+        # tab is open.
+        reviewed_ids = review.reviewed_candidate_ids(con)
+        metrics = review.metrics(con)
+
+    raw_page = _raw_page(request.query_params.get("page"))
+    result = candidates.query(
+        settings, filter_key=chosen, reviewed_ids=reviewed_ids,
+        page=raw_page, page_size=pagination.PAGE_SIZE,
+    )
+    total = result["total"]
+    page = pagination.resolve_page(request.query_params.get("page"), total)
+    if page != raw_page:
+        # Only reached for a param outside the real range (0, -1, "abc",
+        # 999999) - the common case costs one query, not two.
+        result = candidates.query(
+            settings, filter_key=chosen, reviewed_ids=reviewed_ids,
+            page=page, page_size=pagination.PAGE_SIZE,
+        )
+    visible_page = result["rows"]
+
+    with _connection() as con:
+        page_states = review.states(con, [r["candidate_id"] for r in visible_page])
+    _with_review_state(visible_page, page_states)
+
+    counts_by_filter = candidates.filter_counts(settings, reviewed_ids=reviewed_ids)
     filter_bar = '<div class="filterbar">' + "".join(
         f'<a href="/admin/review?filter={key}"'
         + (' class="on"' if key == chosen else "")
-        + f'>{E(label)} {sum(1 for r in rows if match(r))}</a>'
-        for key, (label, match) in REVIEW_FILTERS.items()
+        + f'>{E(label)} {counts_by_filter.get(key, 0)}</a>'
+        for key, (label, _match) in REVIEW_FILTERS.items()
     ) + "</div>"
 
     cards = admin._cards([
-        ("Review pending", sum(1 for r in rows if r["review"]["review_state"] == review.PENDING),
-         "candidates awaiting a person"),
+        ("Review pending", counts_by_filter.get("pending", 0), "candidates awaiting a person"),
         ("Approved today", metrics["today"][review.APPROVE], "APPROVE"),
         ("Edited today", metrics["today"][review.EDIT], "EDIT"),
         ("Rejected today", metrics["today"][review.REJECT], "REJECT"),
@@ -424,8 +457,9 @@ def admin_review(
     table_rows = []
     for row in visible_page:
         state_value = row["review"]["review_state"]
+        detail_href = f'/admin/review/{row["candidate_id"]}?queue={chosen}&page={page}'
         table_rows.append([
-            (f'<a href="/admin/review/{row["candidate_id"]}?queue={chosen}">'
+            (f'<a href="{detail_href}">'
              f'{E(str(row.get("event_name") or "-")[:48])}</a>'
              + _when_badge(row)),
             E(str(row.get("event_date") or "-")),
@@ -434,8 +468,7 @@ def admin_review(
             admin._badge(row["candidate_status"], row["status_tone"]),
             admin._badge(state_value, REVIEW_TONE.get(state_value, "muted")),
             E(str(row.get("source_id") or "-")),
-            f'<a href="/admin/review/{row["candidate_id"]}?queue={chosen}">'
-            "<button>Review</button></a>",
+            f'<a href="{detail_href}"><button>Review</button></a>',
         ])
 
     body = (
@@ -456,7 +489,6 @@ def admin_review(
     return HTMLResponse(admin._page("Review", "/admin/review", body, flash=admin._flash(request)))
 
 
-@router.get("/admin/review/{candidate_id}", response_class=HTMLResponse)
 def _event_summary(merged: dict[str, Any], found: dict[str, Any]) -> str:
     """The event in one block, in the order a reviewer needs it.
 
@@ -487,32 +519,37 @@ def _event_summary(merged: dict[str, Any], found: dict[str, Any]) -> str:
             f"{cells}</dl></div>")
 
 
-def _queue_position(settings, candidate_id: int, queue_key: str) -> str:
-    """Where this event sits in the queue, so a reviewer knows how far to go."""
+def _queue_position(settings, queue_key: str, reviewed_ids: set[int], page: int) -> str:
+    """How far into the queue this page is, so a reviewer knows how far to go.
+
+    An exact row ordinal ("47/842") would need the candidate's own rank in the
+    filtered order, which costs a full scan to compute - the one thing this
+    release removes. A page-level position costs one indexed COUNT instead,
+    and answers the same practical question ("how much is left").
+    """
+    from . import pagination
+
     try:
-        with _connection() as con:
-            rows = _review_rows(settings, con)
-    except Exception:  # pragma: no cover - defensive
+        result = candidates.query(
+            settings, filter_key=queue_key, reviewed_ids=reviewed_ids,
+            page=page, page_size=1,
+        )
+    except candidates.EngineStoreUnavailable:
         return ""
-    ordered = sorted(
-        [r for r in rows if REVIEW_FILTERS[queue_key][1](r)], key=review_priority,
-    )
-    ids = [r["candidate_id"] for r in ordered]
-    if candidate_id not in ids:
-        return f"{len(ids)}건 대기"
-    return f"{ids.index(candidate_id) + 1} / {len(ids)}"
+    total = result["total"]
+    return f"Page {page} / {pagination.total_pages(total)} · Total {total}"
 
 
+@router.get("/admin/review/{candidate_id}", response_class=HTMLResponse)
 def admin_review_detail(
-    candidate_id: int, request: Request, queue: str = "",
+    candidate_id: int, request: Request, queue: str = "", page: str = "1",
     _: str = Depends(require_admin),
 ) -> HTMLResponse:
     settings = _settings()
+    found = candidates.get(settings, candidate_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
     with _connection() as con:
-        rows = candidates.list_candidates(settings, limit=1000)
-        found = next((r for r in rows if r["candidate_id"] == candidate_id), None)
-        if found is None:
-            raise HTTPException(status_code=404, detail="candidate not found")
         current = review.state(con, candidate_id)
         actions = review.history(con, candidate_id)
         item = None
@@ -528,7 +565,10 @@ def admin_review_detail(
 
     queue_key = queue if queue in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
     queue_label = REVIEW_FILTERS[queue_key][0]
-    position = _queue_position(settings, candidate_id, queue_key)
+    page_num = _raw_page(page)
+    with _connection() as con:
+        reviewed_ids = review.reviewed_candidate_ids(con)
+    position = _queue_position(settings, queue_key, reviewed_ids, page_num)
 
     merged = review.apply_corrections(found, current)
     content = (item or {}).get("content") or {}
@@ -602,6 +642,7 @@ def admin_review_detail(
 </div>
 <div><label>Reason</label><input name="reason" placeholder="what you corrected and why"></div>
 <input type="hidden" name="queue" value="{E(queue_key)}">
+<input type="hidden" name="page" value="{page_num}">
 <div class="actions">
   <button class="primary" name="next_after" value="0">Save correction</button>
   <button class="primary" name="next_after" value="1">Save &amp; Next</button>
@@ -616,6 +657,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
 <form method="post" action="/admin/review/{candidate_id}/{action.lower()}" class="inline">
   <input type="hidden" name="reason" value="">
   <input type="hidden" name="queue" value="{E(queue_key)}">
+  <input type="hidden" name="page" value="{page_num}">
   <button name="next_after" value="0" title="{E(note)}"{primary}>{E(label)}</button>
   <button name="next_after" value="1" title="{E(note)} — 그리고 다음 항목으로">
     {E(label)} &amp; Next</button></form>"""
@@ -624,6 +666,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
 <form method="post" action="/admin/review/{candidate_id}/duplicate" class="inline">
   <input name="duplicate_of_candidate_id" placeholder="duplicate of candidate id" style="width:190px">
   <input type="hidden" name="queue" value="{E(queue_key)}">
+  <input type="hidden" name="page" value="{page_num}">
   <button name="next_after" value="0">DUPLICATE</button></form>"""
 
     history_rows = [
@@ -634,7 +677,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
     ]
 
     body = (
-        f'<p class="sub"><a href="/admin/review?filter={E(queue_key)}">&larr; '
+        f'<p class="sub"><a href="/admin/review?filter={E(queue_key)}&page={page_num}">&larr; '
         f'{E(queue_label)} 큐</a> &middot; {E(position)}</p>'
         f"<h2>Review candidate {candidate_id}</h2>"
         + _event_summary(merged, found)
@@ -671,17 +714,17 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
 
 
 def _candidate_snapshot(settings, candidate_id: int) -> dict[str, Any]:
-    for row in candidates.list_candidates(settings, limit=1000):
-        if row["candidate_id"] == candidate_id:
-            return {
-                "event_name": row.get("event_name"),
-                "event_date": row.get("event_date"),
-                "start_time": row.get("start_time"),
-                "end_time": row.get("end_time"),
-                "venue": row.get("venue"),
-                "fee": row.get("fee"),
-            }
-    return {}
+    row = candidates.get(settings, candidate_id)
+    if row is None:
+        return {}
+    return {
+        "event_name": row.get("event_name"),
+        "event_date": row.get("event_date"),
+        "start_time": row.get("start_time"),
+        "end_time": row.get("end_time"),
+        "venue": row.get("venue"),
+        "fee": row.get("fee"),
+    }
 
 
 @router.post("/admin/review/{candidate_id}/{action}")
@@ -700,6 +743,7 @@ def admin_review_action(
     organizer: str = Form(None),
     notes: str = Form(None),
     queue: str = Form(""),
+    page: str = Form("1"),
     next_after: str = Form(""),
     _: str = Depends(require_admin),
 ) -> RedirectResponse:
@@ -708,6 +752,7 @@ def admin_review_action(
         raise HTTPException(status_code=404, detail="unknown review action")
 
     settings = _settings()
+    page_num = _raw_page(page)
     before = _candidate_snapshot(settings, candidate_id)
     after = None
     if action_name == review.EDIT:
@@ -728,56 +773,98 @@ def admin_review_action(
                 ),
             )
     except review.ReviewError as exc:
-        return admin._back(_detail_url(candidate_id, queue), str(exc), "bad")
+        return admin._back(_detail_url(candidate_id, queue, page_num), str(exc), "bad")
     except Exception as exc:
         return admin._back(
-            _detail_url(candidate_id, queue), f"could not record: {exc}", "bad",
+            _detail_url(candidate_id, queue, page_num), f"could not record: {exc}", "bad",
         )
 
     if next_after == "1":
         # Straight on to the next one in the same queue. Reviewing eight events
-        # should not mean eight trips back to a list.
-        following = _next_in_queue(settings, candidate_id, queue)
+        # should not mean eight trips back to a list. The set fetched here is
+        # deliberately fresh (after review.record's commit above), since this
+        # very action may have just moved the candidate out of a
+        # pending/reviewed filter.
+        with _connection() as con:
+            reviewed_ids = review.reviewed_candidate_ids(con)
+        following, next_page = _next_in_queue(
+            settings, candidate_id, queue, page_num, reviewed_ids,
+        )
         if following is not None:
             return admin._back(
-                _detail_url(following, queue),
+                _detail_url(following, queue, next_page),
                 f"{action_name} recorded — next one",
             )
         return admin._back(
             f"/admin/review?filter={queue or DEFAULT_REVIEW_FILTER}",
             f"{action_name} recorded — that was the last one in this queue",
         )
-    return admin._back(_detail_url(candidate_id, queue), f"{action_name} recorded")
+    return admin._back(_detail_url(candidate_id, queue, page_num), f"{action_name} recorded")
 
 
-def _detail_url(candidate_id: int, queue: str) -> str:
-    suffix = f"?queue={queue}" if queue else ""
+def _detail_url(candidate_id: int, queue: str, page: int = 1) -> str:
+    params = []
+    if queue:
+        params.append(f"queue={queue}")
+    if page and page != 1:
+        params.append(f"page={page}")
+    suffix = f"?{'&'.join(params)}" if params else ""
     return f"/admin/review/{candidate_id}{suffix}"
 
 
-def _next_in_queue(settings, candidate_id: int, queue: str) -> int | None:
-    """The candidate after this one, in the order the queue was showing.
+def _next_in_queue(
+    settings, candidate_id: int, queue: str, page: int, reviewed_ids: set[int],
+) -> tuple[int | None, int]:
+    """The candidate after this one, and the page it is on.
 
-    Recomputed rather than carried in the URL: an action can change which
-    filter a candidate belongs to, and a stale list would send the reviewer to
-    something they have just dealt with.
+    Reads only the one page the reviewer was already looking at (and, at
+    most, the page after or before it) rather than the whole queue. If the
+    action just recorded moved this candidate out of the filter (approving it
+    off a "pending" queue, say), it is gone from a freshly-queried page and
+    whatever now leads that same page is the next thing needing attention.
     """
+    from . import pagination
+
     key = queue if queue in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
     try:
-        with _connection() as con:
-            rows = _review_rows(settings, con)
-    except Exception:  # pragma: no cover - defensive
-        return None
-    ordered = sorted(
-        [r for r in rows if REVIEW_FILTERS[key][1](r)], key=review_priority,
-    )
-    ids = [r["candidate_id"] for r in ordered]
+        result = candidates.query(
+            settings, filter_key=key, reviewed_ids=reviewed_ids,
+            page=page, page_size=pagination.PAGE_SIZE,
+        )
+    except candidates.EngineStoreUnavailable:
+        return None, page
+    ids = [r["candidate_id"] for r in result["rows"]]
+
     if candidate_id in ids:
-        remaining = ids[ids.index(candidate_id) + 1:]
-    else:
-        # This one has left the queue -- reviewing it is often what removed it.
-        remaining = ids
-    return remaining[0] if remaining else None
+        idx = ids.index(candidate_id)
+        if idx + 1 < len(ids):
+            return ids[idx + 1], page
+        try:
+            nxt = candidates.query(
+                settings, filter_key=key, reviewed_ids=reviewed_ids,
+                page=page + 1, page_size=pagination.PAGE_SIZE,
+            )
+        except candidates.EngineStoreUnavailable:
+            return None, page
+        if nxt["rows"]:
+            return nxt["rows"][0]["candidate_id"], page + 1
+        return None, page
+
+    # It left the queue -- reviewing it is often what removed it. The
+    # (refreshed) same page has shifted up to fill the gap.
+    if ids:
+        return ids[0], page
+    if page > 1:
+        try:
+            prev = candidates.query(
+                settings, filter_key=key, reviewed_ids=reviewed_ids,
+                page=page - 1, page_size=pagination.PAGE_SIZE,
+            )
+        except candidates.EngineStoreUnavailable:
+            return None, page
+        if prev["rows"]:
+            return prev["rows"][0]["candidate_id"], page - 1
+    return None, page
 
 
 # --- usage ------------------------------------------------------------------
@@ -917,13 +1004,27 @@ def api_intake_detail(source_item_id: int, _: str = Depends(require_admin)) -> J
 
 
 @api.get("/review")
-def api_review(_: str = Depends(require_admin)) -> JSONResponse:
+def api_review(
+    filter: str = DEFAULT_REVIEW_FILTER, page: int = 1, _: str = Depends(require_admin),
+) -> JSONResponse:
+    from . import pagination
+
     settings = _settings()
+    chosen = filter if filter in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
     with _connection() as con:
-        return admin._dump({
-            "metrics": review.metrics(con),
-            "candidates": _review_rows(settings, con),
-        })
+        reviewed_ids = review.reviewed_candidate_ids(con)
+        metrics = review.metrics(con)
+    result = candidates.query(
+        settings, filter_key=chosen, reviewed_ids=reviewed_ids,
+        page=_raw_page(page), page_size=pagination.PAGE_SIZE,
+    )
+    return admin._dump({
+        "metrics": metrics,
+        "filter": chosen,
+        "page": _raw_page(page),
+        "total": result["total"],
+        "candidates": result["rows"],
+    })
 
 
 @api.post("/review/{candidate_id}")

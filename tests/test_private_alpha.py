@@ -233,13 +233,33 @@ def _live(pg, unique, suffix="1", **overrides):
 
 
 def test_the_dashboard_buckets_match_what_the_search_returns(pg, unique):
+    """Both draw from the same "a place to dance" definition - checked as the
+    delta this test's own two rows cause, not as an absolute count against
+    the live staging DB's total. A live board keeps accumulating real events
+    (and the occasional real CANCELLED one) between test runs; scoping to the
+    change this test itself made is what keeps that from ever flipping this
+    test between pass and fail on its own.
+    """
+    before = {
+        "today": quality.upcoming_buckets(pg)["today"],
+        "tomorrow": quality.upcoming_buckets(pg)["tomorrow"],
+    }
+    before_served = {
+        key: events_api.search(pg, when=key, limit=events_api.MAX_LIMIT)["total"]
+        for key in ("today", "tomorrow")
+    }
+
     _live(pg, unique, "1")
     _live(pg, unique, "2",
           event_date=(events_api.today() + timedelta(days=1)).isoformat())
-    buckets = quality.upcoming_buckets(pg)
-    for key, when in (("today", "today"), ("tomorrow", "tomorrow")):
-        served = events_api.search(pg, when=when, limit=events_api.MAX_LIMIT)["total"]
-        assert buckets[key] == served, key
+
+    for key in ("today", "tomorrow"):
+        bucket_delta = quality.upcoming_buckets(pg)[key] - before[key]
+        served_delta = (
+            events_api.search(pg, when=key, limit=events_api.MAX_LIMIT)["total"]
+            - before_served[key]
+        )
+        assert bucket_delta == served_delta == 1, key
 
 
 def test_the_coverage_matrix_shows_the_gaps(pg, unique):

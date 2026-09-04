@@ -451,12 +451,42 @@ def test_a_social_takes_its_genre_from_the_community_that_posted_it(pg, unique):
     assert normalization._genre_id(pg, "MILONGA", item_id) == tango["genre_id"]
 
 
+def _swing_counts(pg):
+    """(facet count, count within the served page) for SWING, right now.
+
+    `_facets()` counts every matching row; `search()`'s page is capped at
+    MAX_LIMIT. On a live board with more than MAX_LIMIT upcoming events the
+    two are not the same *absolute* number by construction - only a delta
+    around one known change is a fair comparison, which is why the test
+    below reads this twice and diffs, rather than asserting either value on
+    its own.
+    """
+    shown = events_api.search(pg, when="upcoming", limit=events_api.MAX_LIMIT)
+    served = len([e for e in shown["events"] if e["genre"] == "SWING"])
+    chips = public._facets(pg, "upcoming")
+    swing_chip = [g for g in chips["genres"] if g["value"] == "SWING"]
+    counted = swing_chip[0]["events"] if swing_chip else 0
+    return counted, served
+
+
 def test_a_filter_chip_counts_the_window_the_page_shows(pg, unique):
     """A chip is a promise. 'Swing 1' beside a page that returns nothing is the
-    same small lie as offering an empty filter."""
+    same small lie as offering an empty filter.
+
+    Checked as a delta - the change this test's own SWING event causes - not
+    as an absolute count against the live board's total: `search()`'s page is
+    capped at MAX_LIMIT while `_facets()` counts every match, so on a live
+    board carrying more than MAX_LIMIT upcoming events the two are two
+    different *absolute* numbers by design, not a bug. Only the delta a known
+    change causes is safe to assert against a database this test does not
+    control the rest of.
+    """
     from runtime import master_data
 
     swing = next(g for g in master_data.list_genres(pg) if g["code"] == "SWING")
+
+    before_counted, before_served = _swing_counts(pg)
+
     far = _live(pg, unique, "1",
                 event_date=(events_api.today() + timedelta(days=90)).isoformat())
     with pg.cursor() as cur:
@@ -467,8 +497,14 @@ def test_a_filter_chip_counts_the_window_the_page_shows(pg, unique):
     listed = [e["id"] for e in shown["events"]]
     assert far["event_id"] not in listed  # 90 days out, past the window
 
-    chips = public._facets(pg, "upcoming")
-    swing_chip = [g for g in chips["genres"] if g["value"] == "SWING"]
-    counted = swing_chip[0]["events"] if swing_chip else 0
-    served = len([e for e in shown["events"] if e["genre"] == "SWING"])
-    assert counted == served
+    # Outside the window: neither count should move.
+    counted, served = _swing_counts(pg)
+    assert (counted - before_counted, served - before_served) == (0, 0)
+
+    near = _live(pg, unique, "2")  # default date (+3 days) - inside the window
+    with pg.cursor() as cur:
+        cur.execute("UPDATE events SET genre_id = %s WHERE event_id = %s",
+                    (swing["genre_id"], near["event_id"]))
+
+    counted, served = _swing_counts(pg)
+    assert (counted - before_counted, served - before_served) == (1, 1)

@@ -17,6 +17,7 @@ if ! validate_env; then
   die ".env validation failed - fix the warnings above before starting"
 fi
 ensure_directories
+verify_repo_ownership
 
 require_compose_file
 compose config --quiet || die "$COMPOSE_FILE is not valid"

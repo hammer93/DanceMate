@@ -22,7 +22,11 @@ telling us nothing about tonight.
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+SEOUL = ZoneInfo("Asia/Seoul")
 
 # The condition the alpha search itself uses. Quality is measured over exactly
 # what a reader can reach, so the dashboard and the site cannot drift apart.
@@ -53,6 +57,20 @@ def _rows(cur) -> list[dict[str, Any]]:
     return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+def _seoul_today() -> date:
+    """Today in Seoul, computed in Python - never SQL `current_date`.
+
+    `current_date` is the PostgreSQL server's own timezone (UTC on this
+    deployment). Between midnight and 09:00 KST, Seoul has already turned
+    over to a new date while `current_date` has not; every "upcoming" count
+    in this module keyed off it would silently disagree with
+    events_api.search()'s Python/Seoul-based `when=` windows for that whole
+    nine-hour window, every day - caught only once a real board run happened
+    to execute inside it.
+    """
+    return datetime.now(SEOUL).date()
+
+
 def completeness(con, *, upcoming_only: bool = False) -> dict[str, Any]:
     """Field-by-field completeness over the events a user can reach.
 
@@ -60,7 +78,7 @@ def completeness(con, *, upcoming_only: bool = False) -> dict[str, Any]:
     matters operationally -- last month's missing fee is not worth anyone's
     afternoon.
     """
-    window = " AND event_date >= current_date" if upcoming_only else ""
+    window = " AND event_date >= %(today)s" if upcoming_only else ""
     with con.cursor() as cur:
         cur.execute(
             "SELECT count(*) AS events, "
@@ -75,7 +93,8 @@ def completeness(con, *, upcoming_only: bool = False) -> dict[str, Any]:
             "  count(*) FILTER (WHERE engine_status = 'VERIFIED') AS verified, "
             "  count(*) FILTER (WHERE review_state <> 'PENDING') AS human_reviewed, "
             f"  count(*) FILTER (WHERE {WRONG_TIME_SQL}) AS wrong_time "
-            f"FROM events WHERE {LISTED}{window}"
+            f"FROM events WHERE {LISTED}{window}",
+            {"today": _seoul_today()},
         )
         found = _row(cur)
 
@@ -109,10 +128,11 @@ def by_region(con) -> list[dict[str, Any]]:
         cur.execute(
             "SELECT coalesce(r.name, '(지역 미확인)') AS region, r.code AS region_code, "
             "       count(*) AS events, "
-            "       count(*) FILTER (WHERE e.event_date >= current_date) AS upcoming "
+            "       count(*) FILTER (WHERE e.event_date >= %(today)s) AS upcoming "
             "FROM events e LEFT JOIN regions r ON r.region_id = e.region_id "
             f"WHERE {LISTED_E} "
-            "GROUP BY 1, 2 ORDER BY events DESC"
+            "GROUP BY 1, 2 ORDER BY events DESC",
+            {"today": _seoul_today()},
         )
         return _rows(cur)
 
@@ -121,10 +141,11 @@ def by_genre(con) -> list[dict[str, Any]]:
     with con.cursor() as cur:
         cur.execute(
             "SELECT coalesce(g.code, '(장르 미확인)') AS genre, count(*) AS events, "
-            "       count(*) FILTER (WHERE e.event_date >= current_date) AS upcoming "
+            "       count(*) FILTER (WHERE e.event_date >= %(today)s) AS upcoming "
             "FROM events e LEFT JOIN genres g ON g.genre_id = e.genre_id "
             f"WHERE {LISTED_E} "
-            "GROUP BY 1 ORDER BY events DESC"
+            "GROUP BY 1 ORDER BY events DESC",
+            {"today": _seoul_today()},
         )
         return _rows(cur)
 
@@ -163,7 +184,8 @@ def freshness(con) -> dict[str, Any]:
             "  max(i.collected_at) AS newest "
             "FROM events e LEFT JOIN source_items i ON i.source_item_id = e.source_item_id "
             "WHERE e.provenance = 'LIVE' AND e.listing_state = 'LISTED' "
-            "  AND e.canonical_event_id IS NULL AND e.event_date >= current_date"
+            "  AND e.canonical_event_id IS NULL AND e.event_date >= %(today)s",
+            {"today": _seoul_today()},
         )
         return _row(cur)
 
@@ -182,18 +204,33 @@ def snapshot(con) -> dict[str, Any]:
     }
 
 
-def upcoming_buckets(con) -> dict[str, int]:
-    """How many listed events fall in each window a reader actually asks for."""
+def upcoming_buckets(con, *, today: date | None = None) -> dict[str, int]:
+    """How many listed events fall in each window a reader actually asks for.
+
+    Excludes CANCELLED the same way events_api.search()'s default does - a
+    cancelled event dated today is still LISTED (that stays true so a reader
+    holding the link is told it is off, not 404'd) but is not "a place to
+    dance tonight", so it must not appear in a count meant to answer that
+    question either. Before this, a bucket counting CANCELLED-but-LISTED rows
+    could exceed what search() actually served for the same window - not
+    noise, a real predicate mismatch, visible only once a real event on the
+    live board was ever marked CANCELLED for a listed today/tomorrow date.
+
+    ``today`` defaults to _seoul_today() - see its docstring for why this
+    must never be SQL `current_date`.
+    """
+    today = today or _seoul_today()
     with con.cursor() as cur:
         cur.execute(
             "SELECT "
-            "  count(*) FILTER (WHERE event_date = current_date) AS today, "
-            "  count(*) FILTER (WHERE event_date = current_date + 1) AS tomorrow, "
-            "  count(*) FILTER (WHERE event_date BETWEEN current_date "
-            "                     AND current_date + 7) AS this_week, "
-            "  count(*) FILTER (WHERE event_date >= current_date) AS upcoming, "
-            "  count(*) FILTER (WHERE event_date < current_date) AS past "
-            f"FROM events WHERE {LISTED}"
+            "  count(*) FILTER (WHERE event_date = %(today)s) AS today, "
+            "  count(*) FILTER (WHERE event_date = %(today)s + 1) AS tomorrow, "
+            "  count(*) FILTER (WHERE event_date BETWEEN %(today)s "
+            "                     AND %(today)s + 7) AS this_week, "
+            "  count(*) FILTER (WHERE event_date >= %(today)s) AS upcoming, "
+            "  count(*) FILTER (WHERE event_date < %(today)s) AS past "
+            f"FROM events WHERE {LISTED} AND engine_status <> 'CANCELLED'",
+            {"today": today},
         )
         return _row(cur)
 
@@ -204,7 +241,7 @@ def coverage_matrix(con, *, upcoming_only: bool = True) -> dict[str, Any]:
     The empty cells are the point. "Salsa in Busan: 0" is a coverage gap that
     no total can show, and it is the shape of the next release's work.
     """
-    window = " AND e.event_date >= current_date" if upcoming_only else ""
+    window = " AND e.event_date >= %(today)s" if upcoming_only else ""
     with con.cursor() as cur:
         cur.execute(
             "SELECT coalesce(g.code, '(장르 미확인)') AS genre, "
@@ -213,7 +250,7 @@ def coverage_matrix(con, *, upcoming_only: bool = True) -> dict[str, Any]:
             "LEFT JOIN genres g ON g.genre_id = e.genre_id "
             "LEFT JOIN regions r ON r.region_id = e.region_id "
             f"WHERE {LISTED_E}{window} GROUP BY 1, 2",
-            (),
+            {"today": _seoul_today()},
         )
         cells = _rows(cur)
         cur.execute("SELECT code, name FROM genres WHERE enabled ORDER BY code")
