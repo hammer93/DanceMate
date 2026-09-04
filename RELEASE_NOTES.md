@@ -1,5 +1,183 @@
 # DanceMate Release Notes
 
+## v0.78 Real Event Coverage + Alpha Event Quality + Admin/User UX Polish
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-04.
+
+Version split:
+
+- Product Runtime: 0.78
+- Information Engine: 0.74 (unchanged)
+
+### Why this version exists
+
+The pipeline worked and almost nothing was in it. One source, eighteen items,
+fifteen events, and a console that could say how much it had collected but not
+how good any of it was.
+
+### Coverage: 18 items to 97
+
+A live probe on 2026-09-04 asked the Daum cafe search four questions and
+counted what came back: 100 documents from a dozen dance communities across the
+country, of which the single source's `url_contains` filter kept **five**. The
+filter was pinned to one board, and everything else — tango in 대전, 대구,
+청주, 홍대, salsa at 오살사 and 엘마르, swing at 스위티스윙 and 스윙팩토리 —
+was discarded on the way in.
+
+Five of those communities are now their own sources, one per cafe, each with
+the cafe's own address read from the posts it returned rather than guessed.
+One source per community keeps provenance honest and lets an operator tune or
+disable them one at a time.
+
+| | before | after |
+|---|---|---|
+| Active sources | 1 | **6** |
+| Source items | 18 | **97** (96 live) |
+| Bodies fetched | 18 | **50** |
+| Listed events | 15 | **23** |
+| **Wrong times** | **0** | **0** |
+| **False VERIFIED** | **0** | **0** |
+
+Kakao usage for the whole expansion: 29 requests today, 127 items, 79 new. The
+month stands at 125 requests against a 5,000/day CONFIGURED budget.
+
+### Two things the new data made visible
+
+**Two of the five cafes serve their articles only to a logged-in reader.**
+43 items collected, 43 blocked, zero readable. Nothing is auto-disabled — a
+community that fixes its settings next week should not have been dropped this
+week — but the Sources page now shows items beside how many of them we could
+actually read. "21 items" reads like a working source; "21 items, 0 readable"
+is the same source and a different decision.
+
+**An event's genre came only from the extractor's event type**, so a milonga
+was tango and everything else was nothing. The genre now falls back to the
+community the post came from, because a swing cafe posts swing events and that
+is evidence rather than a guess. Without either, it stays empty.
+
+### Salsa and swing are blocked in the engine, not in the sources
+
+Worth stating precisely, because it is the next release's headline and it was
+measured rather than assumed. `src/live_pipeline.py` drops every post the
+classifier calls CLASS or OTHER, and `src/classifier.py` recognises exactly
+four event words: `milonga`, `밀롱가`, `쁘롱`, `쁘락`. A swing social announced
+as `■ 스윙타임빠 (9월 2일) 수 소셜 공지` is OTHER; one mentioning 강습 is CLASS.
+Either way it never becomes a candidate.
+
+So 스위티스윙 contributed 23 readable bodies and zero events, and every event
+on the site is still tango. Fixing that means giving the engine a social-dance
+event type — an engine 0.75 change with its own extraction measurement, not
+something to slip into a UX release.
+
+### Region: Seoul and Busan now tell each other apart
+
+There was no route, HTML or JSON, to create a region at all. Seoul arrived in a
+migration and nothing else could be added, so the two Busan venues 김프로
+registered on 2026-09-04 were filed under the country-level South Korea row.
+
+An Add Region form now sits beside Add Genre. Busan was registered, the two
+venues whose addresses start 부산 were corrected through the normal Edit route
+with an audit row each, and their four events followed:
+
+    /api/events?region=Seoul   -> 2 upcoming, all Seoul
+    /api/events?region=Busan   -> 1 upcoming, Busan
+
+No bleed in either direction. Exactly two venues were changed; the other six
+already matched their addresses, which was checked rather than assumed.
+
+### The dashboard says how good the data is
+
+Date, time, venue extracted, venue resolved, fee, region and human review, all
+measured over the events a reader can actually reach — the alpha search's own
+condition, so the panel and the site cannot drift apart. Every gap links to the
+review filter that shows it.
+
+Missing and wrong are counted apart and always will be. A blank fee is a fee we
+do not have; a 07:30 on an evening milonga is a time we have and got backwards.
+Engine v0.74 records the meridiem evidence it had, so a morning start on an
+EXPLICIT PM marker is a regression with its own alert, while an unmarked 5시30
+read as 05:30 is unconfirmed and not counted as wrong.
+
+Measured on the board after the expansion, over 23 listed events:
+
+| | |
+|---|---|
+| Date | 23/23 (100%) |
+| Time | 18/23 (78%), 8 of them unconfirmed |
+| Venue extracted | 10/23 (43%) |
+| Venue resolved | 10/23 (43%) |
+| Fee | 3/23 (13%) |
+| Region | 10/23 (43%) |
+| **Wrong critical fields** | **0** |
+| **VERIFIED** | **0** |
+
+Venue and fee dropped as a share because the new communities write differently
+from the one the extractor was tuned on. The counts went up; the percentages
+went down; both are true and both are on the screen.
+
+### The review queue sorts by what matters
+
+A value contradicting its post, then tonight and tomorrow, then a missing time,
+then venue, then fee, then by date. A sort key, not a model — and tonight
+outranks a more incomplete event three weeks out, because DanceMate exists to
+answer where to dance tonight. Filters for pending, today, conflict, unknown
+time, unknown venue, unknown fee and reviewed, each with its count rendered so
+an empty one is visible before it is clicked.
+
+### The site stops handing readers the engine's vocabulary
+
+VERIFIED does not mean true, it means the evidence gate passed, and neither
+phrase belongs on a page someone reads on the way out the door. Statuses are
+확인됨 / 확인 필요 / 예정 / 정보 충돌 / 취소, and a human review shows as
+관리자 확인 — worded apart on purpose, so an approval never looks like proof.
+
+Also new: when we last read the post behind an event, with a 재확인 필요 nudge
+when an event is tonight and what we know is a day old. Past events are out of
+the default list. Cancelled ones are out of the list but keep their page —
+someone holding the link deserves to be told it is off, not shown a 404. Genre
+and region chips appear only where there is more than one thing to choose,
+because offering a filter that returns nothing claims events exist that do not.
+And the layout survives a phone.
+
+### One defect the acceptance run caught
+
+Inserting the review filters above `admin_review` left the route decorator
+attached to the helper below it, so `GET /admin/review` resolved to a function
+taking a row and answered 422 asking for a request body. The page had been
+broken since the filters went in and the suite could not see it, because
+nothing asserted which function serves which path. Two tests now do.
+
+### Security
+
+The admin password was rotated on the board before any other work: a new
+40-character value, `.env` at mode 600, the previous file kept as a dated
+backup. Anonymous still 401, wrong password 401, new credentials 200. The value
+was not printed, logged, committed or written to any report — the incident that
+prompted the rotation was exactly that leak.
+
+### Verification
+
+| | |
+|---|---|
+| Runtime suite, host | 449 passed, 205 skipped |
+| Runtime suite, container | 645 passed, 9 skipped |
+| Migrations | 014, unchanged — no schema was needed |
+| `/version` | product 0.78, engine 0.74 |
+| Health | 6/6 PASS |
+| Resources after expansion | 488Mi of 3.8Gi RAM, 12% of 30G disk, DB 11MB, logs 8K |
+| Backup before starting | md5 match on the engine store, dump-complete marker, sqlite integrity ok |
+
+### Known and deliberate
+
+- Salsa and swing coverage is zero events, and the reason is in the engine, not
+  the sources. Named above with the file and the four words responsible.
+- Naver is still AUTH_FAILED and was not touched. No credential was changed and
+  the console keeps showing the state plainly.
+- Fee is 3/23. Most of these posts genuinely do not state one, and no rule was
+  added on a pattern that had not been measured.
+- Two blocked sources are left enabled and visible rather than removed.
+
 ## v0.77.3 Admin Master Data Edit & Management UX
 
 Status:
