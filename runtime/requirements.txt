@@ -15,3 +15,8 @@ psycopg[binary]==3.2.3
 # Required by FastAPI to parse the admin console's HTML form posts. Pure
 # Python, no build step, ~30KB.
 python-multipart==0.0.20
+# Image text fallback (v0.81.3): local OCR only, no paid Vision API. Pillow
+# ships manylinux aarch64 wheels; pytesseract is a pure-Python subprocess
+# wrapper around the `tesseract` binary the Dockerfile installs via apt.
+Pillow==11.0.0
+pytesseract==0.3.13

@@ -28,8 +28,9 @@ def test_migrations_are_discovered_in_order():
         "016_naver_api_hub",
         "017_blocked_fetch_retry",
         "018_venue_csv_import_action",
+        "019_image_ocr",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():

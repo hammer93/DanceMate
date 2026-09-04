@@ -22,6 +22,16 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Local OCR for image text fallback (v0.81.3): the `tesseract` binary plus
+# Korean and English trained data - ~16MB installed (measured on the
+# ROCKPro64 board), no compiler toolchain, no paid Vision API. Real event
+# posters mix Korean, English and digits in one image, so both language
+# packs are always loaded together (see runtime/ocr.py's LANGUAGES).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      tesseract-ocr tesseract-ocr-kor tesseract-ocr-eng \
+ && rm -rf /var/lib/apt/lists/*
+
 # Dependencies first so source edits do not invalidate the wheel layer.
 COPY runtime/requirements.txt /app/runtime/requirements.txt
 RUN pip install --no-cache-dir -r /app/runtime/requirements.txt

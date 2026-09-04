@@ -21,6 +21,7 @@ from . import (
     candidates,
     content_store,
     health,
+    image_fallback,
     review,
     review_hints,
     usage,
@@ -553,6 +554,7 @@ def admin_review_detail(
         current = review.state(con, candidate_id)
         actions = review.history(con, candidate_id)
         item = None
+        image_rows: list[dict[str, Any]] = []
         if found.get("source_url"):
             with con.cursor() as cur:
                 cur.execute(
@@ -562,6 +564,8 @@ def admin_review_detail(
                 row = cur.fetchone()
             if row:
                 item = content_store.detail(con, row[0])
+                image_rows = image_fallback.images_for_review(con, row[0])
+        ocr_fields = candidates.image_ocr_fields(settings, candidate_id)
 
     queue_key = queue if queue in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
     queue_label = REVIEW_FILTERS[queue_key][0]
@@ -598,6 +602,48 @@ def admin_review_detail(
                  f'font:13px/1.6 ui-monospace,monospace">{E(text)}</pre>'
                  if text else '<p class="note">not available</p>')
         return f'<details open><summary>{E(title)}</summary><p class="note">{E(note)}</p>{inner}</details>'
+
+    def image_evidence_block() -> str:
+        """What extract_with_image_fallback() saw and used, per image
+        (v0.81.3, Section 30) - every image this item's ingest ever fetched
+        or OCR'd, whether or not it ended up filling anything.
+        """
+        if not image_rows:
+            return ""
+        field_labels = {"date": "Date", "time": "Time", "fee": "Fee"}
+        detected_by_url: dict[str, list[str]] = {}
+        for f in ocr_fields:
+            url = f.get("inference")
+            if not url:
+                continue
+            detected_by_url.setdefault(url, []).append(
+                f"{field_labels.get(f['field'], f['field'])}: {f['value']}")
+
+        blocks = []
+        for row in image_rows:
+            url = row["image_url"]
+            used = bool(row.get("used_as_fallback"))
+            status = row.get("ocr_status") or row.get("fetch_status") or "-"
+            tone = "ok" if used else ("warn" if row.get("ocr_status") == "OCR_SUCCESS" else "muted")
+            detected = detected_by_url.get(url)
+            confidence = row.get("ocr_confidence")
+            blocks.append(
+                f'<details{" open" if used else ""}>'
+                f'<summary>Image {row["image_index"] + 1}'
+                + (' <span class="badge ok">IMAGE_OCR_USED</span>' if used else "")
+                + "</summary>"
+                f'<p class="note"><a href="{E(url)}" target="_blank" '
+                f'rel="noreferrer noopener">{E(url)}</a></p>'
+                f'<p class="note">{admin._badge(status, tone)}'
+                + (f" &middot; confidence {confidence:.0f}" if confidence is not None else "")
+                + "</p>"
+                + (f'<p class="note">Detected: {E(", ".join(detected))}</p>' if detected else "")
+                + (f'<pre style="white-space:pre-wrap;word-break:break-word;margin:0;'
+                   f'font:13px/1.6 ui-monospace,monospace">{E(row.get("ocr_text") or "")}</pre>'
+                   if row.get("ocr_text") else '<p class="note">no text recognised</p>')
+                + "</details>"
+            )
+        return "<h2>Image Evidence</h2>" + "".join(blocks)
 
     def value_row(label: str, field: str) -> list[str]:
         engine_value = merged.get(f"engine_{field}")
@@ -686,6 +732,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
                      "What the provider's search API returned.")
         + text_block("Acquired article text", content.get("extracted_text"),
                      "Fetched from the original post, personal data removed.")
+        + image_evidence_block()
         + "<h2>Extracted</h2>"
         + (
             "".join(
