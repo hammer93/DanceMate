@@ -123,6 +123,9 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         },
         "fee": row.get("fee"),
         "currency": "KRW" if row.get("fee") is not None else None,
+        "event_type": row.get("event_type"),
+        "event_type_label": EVENT_TYPE_LABELS.get(
+            (row.get("event_type") or "").upper()),
         "genre": row.get("genre_code"),
         "region": row.get("region_name"),
         "region_code": row.get("region_code"),
@@ -176,6 +179,20 @@ STATUS_LABELS = {
     "UPDATED": "확인됨",
     "UNKNOWN": "확인 필요",
 }
+
+# What kind of night this is, in words a reader uses. The engine's taxonomy
+# distinguishes MILONGA from SOCIAL because tango names its social event and
+# the other scenes do not; a reader does not need that distinction spelled out,
+# only what they are turning up to.
+EVENT_TYPE_LABELS = {
+    "MILONGA": "밀롱가",
+    "MILONGA_WITH_CLASS": "밀롱가 (강습 포함)",
+    "PRACTICA": "쁘락띠까",
+    "SOCIAL": "소셜",
+    "SOCIAL_WITH_CLASS": "소셜 (강습 포함)",
+    "PARTY": "파티",
+}
+
 
 # A person looked at this and stood by it. Deliberately worded apart from
 # 확인됨: a human review is not the engine's evidence gate, and conflating the

@@ -188,8 +188,8 @@ def _is_other_programme(text: str, match: re.Match) -> bool:
     return bool(_OTHER_PROGRAMME_TIME.search(window))
 
 
-def parse_time_range(text: str) -> TimeReading | None:
-    """The first clock range in ``text``, normalised to 24 hours.
+def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | None:
+    """The clock range this event runs at, normalised to 24 hours.
 
     Observed and covered::
 
@@ -201,7 +201,33 @@ def parse_time_range(text: str) -> TimeReading | None:
         PM 8시 – 12시           -> 20:00-00:00+1 en dash, end crosses midnight
         23:30 – 04:30          -> 23:30-04:30+1 no marker, already 24 hour
         5시30~9시30             -> 05:30-09:30   no marker: left alone, ambiguous
+
+    When ``event_type`` names something, a range written beside that name wins.
+    A workshop weekend lists three ranges::
+
+        - 15:00-16:30 발스윙 중고급
+        - 16:45-18:15 쉐그 초급
+        - 20:00-22:30 소셜
+
+    and the social runs at 20:00, not at 15:00. Taking the first range would
+    send someone to a class they did not sign up for, which is the same class
+    of error as reading PM as AM.
     """
+    readings = [r for r in _readings(text or "")]
+    if not readings:
+        return None
+    words = _EVENT_WORDS.get((event_type or "").upper())
+    if words:
+        for reading, start, end in readings:
+            window = ((text or "")[max(0, start - _TIME_NEAR_BEFORE):start]
+                      + (text or "")[end:end + _TIME_NEAR_AFTER])
+            if re.search(words, window, re.I):
+                return reading
+    return readings[0][0]
+
+
+def _readings(text: str):
+    """Every clock range in the text that is not another programme's."""
     for match in _RANGE_RE.finditer(text or ""):
         first = _clock_parts(match.group("t1"))
         second = _clock_parts(match.group("t2"))
@@ -238,15 +264,18 @@ def parse_time_range(text: str) -> TimeReading | None:
             end_abs += 1440
         if end_abs - start_abs > 1440:
             continue
-        return TimeReading(
-            start=_fmt(start_abs),
-            end=_fmt(end_abs),
-            end_day_offset=end_abs // 1440,
-            raw=re.sub(r"\s+", " ", match.group(0)).strip(),
-            meridiem_evidence=evidence,
-            ambiguous=ambiguous,
+        yield (
+            TimeReading(
+                start=_fmt(start_abs),
+                end=_fmt(end_abs),
+                end_day_offset=end_abs // 1440,
+                raw=re.sub(r"\s+", " ", match.group(0)).strip(),
+                meridiem_evidence=evidence,
+                ambiguous=ambiguous,
+            ),
+            match.start(),
+            match.end(),
         )
-    return None
 
 
 # --- venue ------------------------------------------------------------------
@@ -385,12 +414,16 @@ _FEE_LABEL = re.compile(
 )
 
 # What the event itself is called, per event type. A milonga's fee is the one
-# next to the word 밀롱가.
+# next to the word 밀롱가; a swing social's is the one next to 소셜.
 _EVENT_WORDS = {
     "MILONGA": r"밀롱가|milonga",
+    "MILONGA_WITH_CLASS": r"밀롱가|milonga",
     "PRACTICA": r"쁘락띠까|프락티카|practica",
     "CLASS": r"특강|수업|레슨|클래스|워크샵|워크숍|class|lesson|workshop",
     "PARTY": r"파티|party",
+    # The other scenes' name for the same thing.
+    "SOCIAL": r"소셜|social|파티|party",
+    "SOCIAL_WITH_CLASS": r"소셜|social|파티|party",
 }
 # Priced separately from the event and easy to mistake for it.
 _OTHER_PROGRAMME = re.compile(r"특강|수업|레슨|클래스|워크샵|워크숍|세미나|class|lesson|workshop", re.I)

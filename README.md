@@ -9,9 +9,9 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.78 (Real Event Coverage + Alpha Quality + Admin/User UX)
+- Product Runtime: v0.79 (Social Dance Classification + Coverage Recovery)
   - deployed and verified on the ROCKPro64 on 2026-09-03
-- Information Engine: v0.74 (`engine/`, 559 tests)
+- Information Engine: v0.75 (`engine/`, 646 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
 - Initial Genres:
@@ -24,6 +24,12 @@ DanceMate는
 손대지 않은 import 상태는 `engine-v0.73-baseline` 태그에 남아 있다:
 
     git checkout engine-v0.73-baseline -- engine/src/extractor.py
+
+Engine v0.75는 탱고 밖의 소셜 댄스를 인식한다. 탱고는 자기 소셜 이벤트에
+이름(밀롱가)이 있지만 살사·스윙은 그것을 `소셜`이나 `파티`라고 부른다. 단어만
+찾으면 강습 광고까지 이벤트가 되므로, **소셜이 제목에 있거나 자기 시각 바로 옆에
+쓰였을 때만** 근거로 인정한다. 강습+소셜 복합 공지는 소셜 쪽을 살리고, 소셜의
+시간을 쓴다(강습 시간이 아니라).
 
 ## 현재 개발 우선순위
 
@@ -57,7 +63,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.78"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.79"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

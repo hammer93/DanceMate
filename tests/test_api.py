@@ -18,13 +18,13 @@ def client(env, monkeypatch):
 def test_health_is_cheap_and_reports_the_runtime_version(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.78"}
+    assert response.json() == {"status": "ok", "version": "0.79"}
 
 
 def test_version_separates_product_runtime_from_information_engine(client):
     body = client.get("/version").json()
-    assert body["product_runtime"] == "0.78"
-    assert body["information_engine"] == "0.74"
+    assert body["product_runtime"] == "0.79"
+    assert body["information_engine"] == "0.75"
     assert body["environment"] == "test"
 
 

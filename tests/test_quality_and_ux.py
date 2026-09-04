@@ -383,3 +383,92 @@ def test_no_admin_page_takes_a_request_body():
             continue
         for name, param in inspect.signature(route.endpoint).parameters.items():
             assert param.annotation is not dict, (route.path, name)
+
+
+# --- v0.79: the other scenes' events ----------------------------------------
+
+def test_the_event_type_is_translated_before_it_reaches_a_reader():
+    """MILONGA and SOCIAL are the engine's distinction, not a reader's. What a
+    reader needs is what they are turning up to."""
+    for internal, shown in (
+        ("MILONGA", "밀롱가"),
+        ("SOCIAL", "소셜"),
+        ("SOCIAL_WITH_CLASS", "소셜 (강습 포함)"),
+    ):
+        assert events_api.EVENT_TYPE_LABELS[internal] == shown
+
+
+def test_a_swing_social_reads_as_a_social_on_the_page():
+    presented = events_api.present({
+        "event_id": 1, "event_name": "스윙타임빠 수 소셜", "event_date": date(2026, 9, 2),
+        "start_time": None, "end_time": None, "end_day_offset": 0,
+        "event_type": "SOCIAL", "genre_code": "SWING",
+        "engine_status": "POSSIBLE", "review_state": "PENDING",
+        "venue_status": "ABSENT", "fee": None,
+    })
+    assert presented["event_type_label"] == "소셜"
+    assert presented["genre"] == "SWING"
+    rendered = public._status_line(presented)
+    assert "소셜" in rendered
+    assert "SOCIAL" not in rendered
+
+
+def test_an_unknown_event_type_claims_nothing():
+    presented = events_api.present({
+        "event_id": 1, "event_name": "x", "event_date": date(2026, 9, 2),
+        "start_time": None, "end_time": None, "end_day_offset": 0,
+        "event_type": "SOMETHING_NEW", "engine_status": "POSSIBLE",
+        "review_state": "PENDING", "venue_status": "ABSENT", "fee": None,
+    })
+    assert presented["event_type_label"] is None
+
+
+def test_a_social_takes_its_genre_from_the_community_that_posted_it(pg, unique):
+    """The extractor can tell a milonga is tango. It cannot tell a 소셜 is
+    swing — only the cafe it was posted in can, and that is a hint the source
+    carries, not something read out of the text."""
+    from runtime import master_data, sources
+
+    swing = next(g for g in master_data.list_genres(pg) if g["code"] == "SWING")
+    source = sources.create_source(
+        pg, source_key=f"SRC-S-{unique}", name=f"스윙 카페 {unique}",
+        platform="DAUM_CAFE", source_role="COMMUNITY",
+        url=f"https://cafe.daum.net/s{unique}", genre_id=swing["genre_id"],
+        queries=["스윙 소셜"],
+    )
+    with pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO source_items (source_id, external_id, url, title, content_hash) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING source_item_id",
+            (source["source_id"], f"sw-{unique}",
+             f"https://cafe.daum.net/s{unique}/1/1", "수 소셜 공지", f"h-{unique}"),
+        )
+        item_id = cur.fetchone()[0]
+
+    assert normalization._genre_id(pg, "SOCIAL", item_id) == swing["genre_id"]
+    # A tango event still resolves from what it is, not from where it was posted.
+    tango = next(g for g in master_data.list_genres(pg) if g["code"] == "TANGO")
+    assert normalization._genre_id(pg, "MILONGA", item_id) == tango["genre_id"]
+
+
+def test_a_filter_chip_counts_the_window_the_page_shows(pg, unique):
+    """A chip is a promise. 'Swing 1' beside a page that returns nothing is the
+    same small lie as offering an empty filter."""
+    from runtime import master_data
+
+    swing = next(g for g in master_data.list_genres(pg) if g["code"] == "SWING")
+    far = _live(pg, unique, "1",
+                event_date=(events_api.today() + timedelta(days=90)).isoformat())
+    with pg.cursor() as cur:
+        cur.execute("UPDATE events SET genre_id = %s WHERE event_id = %s",
+                    (swing["genre_id"], far["event_id"]))
+
+    shown = events_api.search(pg, when="upcoming", limit=events_api.MAX_LIMIT)
+    listed = [e["id"] for e in shown["events"]]
+    assert far["event_id"] not in listed  # 90 days out, past the window
+
+    chips = public._facets(pg, "upcoming")
+    swing_chip = [g for g in chips["genres"] if g["value"] == "SWING"]
+    counted = swing_chip[0]["events"] if swing_chip else 0
+    served = len([e for e in shown["events"] if e["genre"] == "SWING"])
+    assert counted == served

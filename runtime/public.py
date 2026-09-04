@@ -178,27 +178,37 @@ def _page(title: str, body: str) -> str:
     )
 
 
-def _facets(con) -> dict[str, list[dict[str, Any]]]:
-    """The genres and regions that actually have upcoming events.
+def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
+    """The genres and regions that have events *in the window being shown*.
 
-    Offering a filter that returns nothing is a small lie: it says events of
-    that kind exist somewhere in here. Only what is on the shelf is shown.
+    Counted over the same dates the page lists, because a chip is a promise. A
+    "Swing 1" chip beside a page that returns nothing is the same small lie as
+    offering an empty filter: it says events of that kind are in here when they
+    are not.
     """
+    window = events_api.window(when)
+    where = [events_api._VISIBLE, "e.engine_status <> 'CANCELLED'"]
+    params: list[Any] = []
+    if window:
+        where.append("e.event_date BETWEEN %s AND %s")
+        params.extend(window)
+    else:
+        where.append("e.event_date >= current_date")
+    clause = " AND ".join(where)
+
     with con.cursor() as cur:
         cur.execute(
             "SELECT g.code AS value, g.name AS label, count(*) AS events "
             "FROM events e JOIN genres g ON g.genre_id = e.genre_id "
-            "WHERE " + events_api._VISIBLE + " AND e.event_date >= current_date "
-            "  AND e.engine_status <> 'CANCELLED' "
-            "GROUP BY 1, 2 ORDER BY events DESC"
+            f"WHERE {clause} GROUP BY 1, 2 ORDER BY events DESC",
+            tuple(params),
         )
         genres = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
         cur.execute(
             "SELECT r.name AS value, r.name AS label, count(*) AS events "
             "FROM events e JOIN regions r ON r.region_id = e.region_id "
-            "WHERE " + events_api._VISIBLE + " AND e.event_date >= current_date "
-            "  AND e.engine_status <> 'CANCELLED' "
-            "GROUP BY 1, 2 ORDER BY events DESC"
+            f"WHERE {clause} GROUP BY 1, 2 ORDER BY events DESC",
+            tuple(params),
         )
         regions = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
     return {"genres": genres, "regions": regions}
@@ -300,6 +310,8 @@ def _status_line(event: dict[str, Any]) -> str:
     it means the evidence gate passed.
     """
     parts = []
+    if event.get("event_type_label"):
+        parts.append(f'<span class="status">{E(event["event_type_label"])}</span>')
     if event.get("cancelled"):
         parts.append('<span class="status">취소</span>')
     elif event.get("status_label"):
@@ -356,7 +368,7 @@ def home() -> HTMLResponse:
         with _connection() as con:
             result = events_api.search(con, when=events_api.WHEN_TODAY, limit=20)
             upcoming = events_api.search(con, when=events_api.WHEN_UPCOMING, limit=5)
-            facets = _facets(con)
+            facets = _facets(con, events_api.WHEN_TODAY)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
 
@@ -393,7 +405,7 @@ def events_page(
         events_api.window(when)
         with _connection() as con:
             result = events_api.search(con, when=when, genre=genre, region=region, limit=100)
-            facets = _facets(con)
+            facets = _facets(con, when)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except db.DatabaseUnavailable:
@@ -437,6 +449,8 @@ def event_page(event_id: int) -> HTMLResponse:
         ("주소", E(venue.get("address")) if venue.get("address")
                  else '<span class="unknown">주소 미확인</span>'),
         ("요금", _fee_line(event)),
+        ("종류", E(event.get("event_type_label") or "")
+                 or '<span class="unknown">-</span>'),
         ("장르", E(event.get("genre") or "") or '<span class="unknown">-</span>'),
         ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
         ("상태", _status_line(event) or '<span class="unknown">-</span>'),

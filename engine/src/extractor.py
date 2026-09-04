@@ -52,25 +52,32 @@ def _convert_hour(h: int, ap: str | None):
     return h, 0
 
 
-def _norm_time(text: str):
+def _norm_time(text: str, event_type: str | None = None):
     """Backwards-compatible shim: (start, end, end_day_offset, raw)."""
-    reading = extraction_rules.parse_time_range(text)
+    reading = extraction_rules.parse_time_range(text, event_type)
     if reading is None:
         return None, None, 0, None
     return reading.start, reading.end, reading.end_day_offset, reading.raw
 
 
-def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=None):
+def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=None,
+                   event_type=None):
+    """One event read out of one post.
+
+    ``event_type`` is the classifier's verdict. It decides which words the time
+    and fee rules look beside: a milonga's fee sits next to 밀롱가, a swing
+    social's next to 소셜. Left out, everything behaves as it did before.
+    """
     text = f"{title} {body}"
     name = name_hint or re.sub(r"\s+", " ", title).strip()
-    ev = EventCandidate(name=name, event_type="MILONGA")
+    ev = EventCandidate(name=name, event_type=event_type or "MILONGA")
 
     date, raw, inference = _norm_date(text)
     if date:
         ev.date = date
         ev.evidences.append(Evidence("date", date, raw, source_role=source_role, inference=inference))
 
-    reading = extraction_rules.parse_time_range(text)
+    reading = extraction_rules.parse_time_range(text, ev.event_type)
     if reading:
         ev.start_time = reading.start
         ev.end_time = reading.end
