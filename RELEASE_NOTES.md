@@ -1,5 +1,124 @@
 # DanceMate Release Notes
 
+## v0.80.2 Date Inference Safety + Blocked Fetch Retry + Full Green Regression
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-04.
+
+Version split:
+
+- Product Runtime: 0.80.2
+- Information Engine: **0.76** — third version in which DanceMate modifies
+  engine logic. `engine-v0.75` is untouched.
+
+### Why this version exists
+
+Three defects, no new features. A post from 2024 was showing as an event this
+week; 47 items that had been refused once were never going to be asked again;
+and one engine test needed a writable checkout, so the board could not report
+a clean run.
+
+### The year of a date has to come from somewhere
+
+`_norm_date` attached a hardcoded 2026 to any date written without a year. So
+"9/25" in a blog post from September 2024 became the 25th of September 2026,
+and DanceMate would have sent somebody out on the wrong night for an event
+that happened two years ago.
+
+The year now comes from when the post was written — the nearest of the year
+before it, of it, and after it. That single rule is what makes "1/3" written on
+28 December mean January without a special case for December, and what keeps a
+2011 post in 2011. An explicit year in the text always wins, in both
+directions: a 2024 post announcing 2026 is announcing 2026, and a 2026 post
+about 2024-09-25 means 2024.
+
+With no post date there is nothing to reason from, so no date is claimed.
+**Missing is recoverable; wrong is the failure this service exists to
+prevent.** That costs nothing today: all 264 source items on the board carry a
+published date.
+
+`MAX_DAYS_FROM_POST` is 200, measured rather than picked. On the board, real
+announcements land between 13 days before their post and 22 days after; the
+wrong-year cluster starts at 369. 200 sits in the empty gap, and a test pins
+it there.
+
+The provenance goes on the evidence row, which already had a column for it:
+EXPLICIT_YEAR, SOURCE_YEAR, UNKNOWN_YEAR. A date we read but could not place
+is recorded with a null value, so the console shows a refusal rather than a
+post nobody looked at.
+
+### Two more things the audit turned up
+
+Fixing the year rule removed one of the three wrong events. Finding the other
+two meant looking at every listed event against the date of its post.
+
+**A four-digit year was being chewed into a month and a day.** "수빈 y 제이나
+서울 탱고캠프 전야제 밀롱가 공연 2010.12 곡명 : El amanecer" is a post about a
+performance, and 2010.12 is when the music was recorded. The loose month/day
+pattern matched the `10.12` inside it. The pattern is now bounded on both
+sides. The year rule alone would only have moved this to 2011; it was a
+separate bug wearing the same symptom.
+
+**The post's date was being dropped on re-extraction.** Both acquisition
+pipelines rebuild a record from the stored row when a body finally arrives,
+and neither copied `published_at`. Every post whose body we successfully
+fetched came back through the new rule with nothing to place its dates in a
+year. `raw_posts` had held the column all along.
+
+A forced re-read also now reaches items we only ever had a search snippet for.
+It used to filter on the two fetched statuses, which is right when the body
+changed and wrong when the extractor did — and the 2011 post was
+FETCH_BLOCKED, so the one item that most needed re-reading could not be
+reached.
+
+### Result of the re-read
+
+265 stored posts re-extracted, no external calls. Upcoming events with a date
+more than 300 days from their post: **2 before, 0 after.**
+
+### A page that refused us once was never asked again
+
+FETCH_BLOCKED was in neither the settled set nor the retryable one. It read as
+caution and behaved as amnesia. Underneath it were two separate mistakes:
+blocked items were not selected for retry at all, and BODY_UNAVAILABLE — the
+code on every one of those items — was not a known retry class, so it fell
+through to the network default and was scheduled fifteen minutes out. A
+fifteen-minute promise nothing ever kept.
+
+Blocked items now come back after a day, then three, then weekly, indefinitely:
+about fifty requests a year, cheap enough to keep the door open and the only
+way a source coming back is ever noticed. Recovery needs no special case — the
+row stores whatever the last attempt produced.
+
+What does **not** come back: a login wall stays settled, because asking again
+changes nothing and looks like an attack; robots.txt and an unsupported
+content type are never retried at all; a 404 keeps its two attempts.
+
+Retries carry up to 20% forward jitter, and migration 017 spread the existing
+backlog across the following day rather than making all of them due the moment
+this deployed. On the board: 70 blocked rows, every one scheduled, none
+unscheduled, at most 7 in any hour, 1 due immediately.
+
+Migration 017 also adds `last_attempt_at`. `fetched_at` records only success,
+so nothing answered "did we even try?" — which is the question an operator
+asks of a source that yields nothing.
+
+### The engine can now report a clean run
+
+`run_daily` takes a `report_dir`; production still defaults to the
+repository's `data/reports`. The test points it at `tmp_path` and asserts the
+run stays out of the checkout. As a side effect the engine suite no longer
+dirties `engine/data` on every run.
+
+### Verified on the board
+
+- Runtime suite in the container, repository mounted read-only:
+  **734 passed, 9 skipped, 0 failed**
+- Engine suite, same mount: see the final report
+- `check-server.sh`: 6/6 PASS
+- NAVER API HUB blog / cafearticle / webkr: 200
+- Memory 576Mi of 3.8Gi; disk 12% of 30G
+
 ## v0.80 Private Alpha Readiness + Real Human Review + Upcoming Event Quality
 
 Status:

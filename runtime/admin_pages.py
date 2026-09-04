@@ -194,6 +194,10 @@ def admin_intake_detail(
         ("Method", E(str(content.get("acquisition_method") or "-"))),
         ("Fetched URL", E(str(content.get("fetched_url") or "-"))),
         ("HTTP status", E(str(content.get("http_status") or "-"))),
+        # Two different facts: when we last asked, and when we last got
+        # anything. A blocked item has one and not the other, and an operator
+        # looking at a silent source needs to tell them apart.
+        ("Last attempt", E(str(content.get("last_attempt_at") or "-"))[:19]),
         ("Fetched at", E(str(content.get("fetched_at") or "-"))[:19]),
         ("Text length", f'<span class="num">{content.get("content_length") or 0}</span>'),
         ("Content hash", f'<code>{E(str(content.get("content_hash") or "-")[:24])}</code>'),

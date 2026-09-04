@@ -18,7 +18,8 @@ def process_discovered_post(con, post, source_role="SECONDARY"):
     if classification not in EVENT_CLASSIFICATIONS:
         return {"classification": classification, "events": []}
     ev = extract_single(post.title, post.body, source_role=source_role,
-                        event_type=classification)
+                        event_type=classification,
+                        published=getattr(post, "published_at", None))
     verify(ev, source_role=source_role)
     # Search snippets are incomplete by definition. Never allow METADATA_ONLY to
     # independently become VERIFIED even if all three fields happen to appear.

@@ -9,7 +9,14 @@ def process_fixture(key, fx):
     c = classify(fx["title"], fx["body"], fx.get("known_event_type"))
     if c == "CLASS":
         return c, []
-    events = extract_ocho_weekly(fx["title"], fx["body"]) if key == "OCHO" else [extract_single(fx["title"], fx["body"], source_role=fx.get("source_role","SECONDARY"))]
+    published = fx.get("published")
+    events = (
+        extract_ocho_weekly(fx["title"], fx["body"], published=published)
+        if key == "OCHO"
+        else [extract_single(fx["title"], fx["body"],
+                             source_role=fx.get("source_role", "SECONDARY"),
+                             published=published)]
+    )
     for ev in events:
         verify(ev, source_role=fx.get("source_role","SECONDARY"))
     return c, events

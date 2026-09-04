@@ -103,6 +103,10 @@ def record_outcome(
             "  redacted_spans = %s, fetch_error = %s, error_code = %s, "
             "  attempt_count = %s, "
             "  first_attempt_at = COALESCE(first_attempt_at, %s), "
+            "  last_attempt_at = %s, "
+            # fetched_at means "we got the body", and stays null on a refusal.
+            # last_attempt_at means "we asked", which is the one an operator
+            # needs when nothing is coming back.
             "  fetched_at = %s, next_attempt_at = %s, updated_at = now() "
             "WHERE source_item_id = %s RETURNING *",
             (
@@ -112,7 +116,7 @@ def record_outcome(
                 outcome.content_hash, previous_hash, len(outcome.images),
                 json.dumps(outcome.images[:10]), outcome.redacted_spans,
                 (outcome.error or None), outcome.error_code, attempt_count,
-                now, (now if outcome.text else None), retry_at, source_item_id,
+                now, now, (now if outcome.text else None), retry_at, source_item_id,
             ),
         )
         stored = _row(cur)
@@ -153,17 +157,25 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     freshness = "" if force else (
         " AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at)"
     )
+    # Normally only items whose article body we actually fetched are worth
+    # re-reading: nothing else has changed. A forced pass is the other case --
+    # the extractor changed, so every post we hold reads differently now,
+    # including the ones we only ever had a search snippet for. Those are
+    # exactly where a wrong date hides, because a snippet is mostly title.
+    statuses = ([acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL]
+                if not force else None)
     with con.cursor() as cur:
         cur.execute(
-            "SELECT c.*, i.url, i.source_id, s.source_key, s.source_role, i.raw "
+            "SELECT c.*, i.url, i.source_id, i.published_at, "
+            "       s.source_key, s.source_role, i.raw "
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
-            "WHERE c.acquisition_status IN (%s, %s) "
-            "  AND c.extracted_text IS NOT NULL"
+            "WHERE " + ("c.acquisition_status = ANY(%s) AND c.extracted_text IS NOT NULL"
+                        if statuses else "true")
             + freshness +
-            " ORDER BY c.fetched_at LIMIT %s",
-            (acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL, limit),
+            " ORDER BY c.fetched_at NULLS LAST, c.source_item_id LIMIT %s",
+            ((statuses, limit) if statuses else (limit,)),
         )
         return _rows(cur)
 

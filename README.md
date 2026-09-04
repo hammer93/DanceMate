@@ -9,9 +9,9 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.80 (Private Alpha Readiness + Real Human Review)
+- Product Runtime: v0.80.2 (Date Inference Safety + Blocked Fetch Retry)
   - deployed and verified on the ROCKPro64 on 2026-09-04
-- Information Engine: v0.75 (`engine/`) — v0.80에서 변경 없음
+- Information Engine: v0.76 (`engine/`) — 연도 추론 규칙 변경
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
 - Initial Genres:
@@ -24,6 +24,13 @@ DanceMate는
 손대지 않은 import 상태는 `engine-v0.73-baseline` 태그에 남아 있다:
 
     git checkout engine-v0.73-baseline -- engine/src/extractor.py
+
+Engine v0.76은 **연도 없는 날짜의 연도를 게시일에서 가져온다.** `9/25`는 그
+글이 쓰인 시점 근처의 9월 25일을 뜻하므로, 게시일 전후 세 해 중 가장 가까운
+해를 고른다. 12월 28일 글의 `1/3`이 다음 해 1월이 되는 것도, 2011년 글이
+2011년에 머무는 것도 같은 규칙 하나다. 본문에 연도가 명시돼 있으면 그것이
+언제나 이긴다. **게시일이 없으면 날짜를 만들지 않는다** — 빠진 날짜는 되돌릴 수
+있지만 틀린 날짜는 사람을 엉뚱한 날 밖으로 내보낸다.
 
 Engine v0.75는 탱고 밖의 소셜 댄스를 인식한다. 탱고는 자기 소셜 이벤트에
 이름(밀롱가)이 있지만 살사·스윙은 그것을 `소셜`이나 `파티`라고 부른다. 단어만
@@ -63,7 +70,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.80"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.80.2"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

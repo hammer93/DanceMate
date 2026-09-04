@@ -12,6 +12,7 @@ def run_live_lineage_snapshot(con, root):
         collector_callable=lambda:[RawPostRecord("SRC-D-001","DAUM_CAFE",
             "https://snapshot.local/live-lineage/pista","8/22 더 피스타 밀롱가",
             "8/22 더 피스타 밀롱가 홍대 PISTA 입장료 13,000원",
+            published_at="2026-08-18",
             acquisition_quality="METADATA_ONLY")])
     post=d["rows"][0]
     post_id,is_new=persist_raw_post(con,post)
@@ -23,7 +24,7 @@ def run_live_lineage_snapshot(con, root):
     if processed["events"]:
         persist_events(con,post_id,processed["events"]); con.commit()
 
-    row=con.execute("""SELECT rp.post_id,rp.source_id,rp.source_url,rp.title,rp.body,rp.acquisition_quality,s.platform
+    row=con.execute("""SELECT rp.post_id,rp.source_id,rp.source_url,rp.title,rp.body,rp.published_at,rp.acquisition_quality,s.platform
                        FROM raw_posts rp JOIN sources s ON s.source_id=rp.source_id WHERE rp.post_id=?""",(post_id,)).fetchone()
     acq=SnapshotGenericPostAcquirer(root/"data"/"acquisition_snapshots",{post.source_url:"naver-blocked.html"})
     aq=acquire_posts(con,[row],mode="snapshot",acquirer=acq,

@@ -103,7 +103,9 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         source_url=raw.get("source_url") or item.get("url") or "",
         title=raw.get("title") or item.get("title") or "",
         body=body,
-        published_at=raw.get("published_at"),
+        # The stored raw JSON is the collector's own record; the column is the
+        # runtime's. Either will do, and one of them is always there.
+        published_at=raw.get("published_at") or item.get("published_at"),
         cafe_name=raw.get("cafe_name"),
         thumbnail_url=raw.get("thumbnail_url"),
         discovery_query=raw.get("discovery_query"),

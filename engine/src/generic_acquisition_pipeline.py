@@ -9,6 +9,18 @@ from .live_pipeline import process_discovered_post
 from .source_state import derive_source_state
 from .media_classifier import classify_media
 
+def _row_value(row, key):
+    """A column if the caller's query selected it, else None.
+
+    acquire_posts takes rows from several different queries, and sqlite3.Row
+    raises rather than returning None for a column that is not there.
+    """
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
+
+
 def acquire_posts(con, rows, *, mode, acquirer, lineage_map=None):
     summary=[]
     for row in rows:
@@ -46,8 +58,12 @@ def acquire_posts(con, rows, *, mode, acquirer, lineage_map=None):
         upgraded=False
         if result.status in {"FULL","BODY_ONLY"} and result.body_text:
             update_raw_post_acquisition(con,row["post_id"],body=result.body_text,acquisition_quality=result.status)
+            # Carry the post's own date. Re-extraction reads the dates out of
+            # the body again, and a bare "8/22" cannot be placed in a year
+            # without it -- dropping it here silently un-dated every post whose
+            # body we successfully fetched.
             post=RawPostRecord(row["source_id"],row["platform"],row["source_url"],row["title"],result.body_text,
-                acquisition_quality=result.status)
+                published_at=_row_value(row, "published_at"),acquisition_quality=result.status)
             sr=con.execute("SELECT source_role FROM sources WHERE source_id=?",(row["source_id"],)).fetchone()
             role=sr["source_role"] if sr else "SECONDARY"
             processed=process_discovered_post(con,post,role)
@@ -77,7 +93,7 @@ def acquire_posts(con, rows, *, mode, acquirer, lineage_map=None):
     return summary
 
 def metadata_rows(con, platforms=None):
-    sql="""SELECT rp.post_id,rp.source_id,rp.source_url,rp.title,rp.body,rp.acquisition_quality,s.platform
+    sql="""SELECT rp.post_id,rp.source_id,rp.source_url,rp.title,rp.body,rp.published_at,rp.acquisition_quality,s.platform
            FROM raw_posts rp JOIN sources s ON s.source_id=rp.source_id
            WHERE rp.source_url IS NOT NULL AND rp.source_url<>'' AND rp.acquisition_quality='METADATA_ONLY'"""
     args=[]
