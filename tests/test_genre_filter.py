@@ -203,7 +203,9 @@ def test_the_single_genre_query_still_works(pg):
     both = events_api.search(pg, when="upcoming", genres=["TANGO", "SALSA"], limit=50)
     none_of_them = events_api.search(pg, when="upcoming", genres=[], limit=50)
 
-    assert all(e["genre"] == "Tango" for e in tango["events"] if e.get("genre"))
+    # The API still speaks codes; the page speaks labels.
+    assert all(e["genre"] == "TANGO" for e in tango["events"] if e.get("genre"))
+    assert all(e["genre_label"] == "Tango" for e in tango["events"] if e.get("genre"))
     assert both["total"] >= tango["total"]
     assert none_of_them["total"] == 0
     assert none_of_them["events"] == []

@@ -662,7 +662,8 @@ def event_page(event_id: int) -> HTMLResponse:
         ("요금", _fee_line(event)),
         ("종류", E(event.get("event_type_label") or "")
                  or '<span class="unknown">-</span>'),
-        ("장르", E(event.get("genre") or "") or '<span class="unknown">-</span>'),
+        ("장르", E(event.get("genre_label") or "")
+                 or '<span class="unknown">-</span>'),
         ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
         ("상태", _status_line(event, with_type=False)
                  or '<span class="unknown">-</span>'),
