@@ -52,7 +52,7 @@ def test_a_style_with_no_events_keeps_its_box():
     point -- so assert it against a page state where swing has nothing.
     """
     facets = {"genres": [{"value": "TANGO", "label": "Tango", "events": 3}],
-              "regions": []}
+              "regions": [], "region_options": []}
     html = public._filter_bar("/events", "today", facets, OPTIONS, ALL, None)
     assert _offered(html) == ALL
     assert "Swing" in html
@@ -124,9 +124,9 @@ def test_every_time_tab_carries_the_selection(tab):
 
 
 def test_changing_region_keeps_the_styles_and_the_other_way_round():
-    facets = {"genres": [], "regions": [
-        {"value": "Seoul", "label": "Seoul", "events": 2},
-        {"value": "Busan", "label": "Busan", "events": 1}]}
+    regions = [{"value": "Seoul", "label": "Seoul", "events": 2},
+               {"value": "Busan", "label": "Busan", "events": 1}]
+    facets = {"genres": [], "regions": regions, "region_options": regions}
     html = public._filter_bar("/events", "today", facets, OPTIONS, ["SALSA"], "Seoul")
     # Every region link keeps salsa ...
     assert html.count("genres=SALSA") == 3  # 전체 + Seoul + Busan
@@ -209,3 +209,41 @@ def test_the_single_genre_query_still_works(pg):
     assert both["total"] >= tango["total"]
     assert none_of_them["total"] == 0
     assert none_of_them["events"] == []
+
+
+# --- 4, 18: the first screen shows where, too -------------------------------
+
+def test_the_region_row_is_offered_even_when_today_has_none(pg):
+    """Seoul and Busan are questions the first screen should let you ask.
+
+    Built from the region master, so a day with one region-less event does not
+    take the region filter off the page.
+    """
+    options = public._region_options(pg, [])
+    names = [o["label"] for o in options]
+    assert "Seoul" in names and "Busan" in names
+    # Cities only: the country row is not somewhere to go.
+    assert "South Korea" not in names
+    assert all(o["events"] == 0 for o in options)
+
+
+def test_region_counts_come_from_the_window_being_shown(pg):
+    counted = [{"value": "Busan", "label": "Busan", "events": 4}]
+    options = public._region_options(pg, counted)
+    by_name = {o["label"]: o["events"] for o in options}
+    assert by_name["Busan"] == 4
+    assert by_name.get("Seoul") == 0
+    # Busiest first, so the row reads as an answer as well as a question.
+    assert options[0]["label"] == "Busan"
+
+
+def test_the_first_screen_order_is_when_then_style_then_place():
+    """Requirement 4: none of this may need a scroll to reach."""
+    regions = [{"value": "Seoul", "label": "Seoul", "events": 1}]
+    facets = {"genres": [], "regions": regions, "region_options": regions}
+    page = (public._nav("today") +
+            public._filter_bar("/", None, facets, OPTIONS, ALL, None))
+    tabs = page.index("<nav>")
+    styles = page.index('form class="row genres"')
+    places = page.index("지역")
+    assert tabs < styles < places
