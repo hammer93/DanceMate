@@ -158,9 +158,28 @@ class ImageFetchResult:
         return self.status == "FETCHED"
 
 
+def _normalize_url(url: str) -> str:
+    """Percent-encode a URL's path/query for transport, without double-
+    encoding anything already percent-encoded.
+
+    Found live: real K-TANGO upload filenames contain literal spaces and
+    Korean characters ("1724737931402_582. KTSF 스페셜공연 국문포스터.jpg"),
+    which `extract_images()` carries through unencoded (real HTML routinely
+    does, and browsers accept it) - urllib.request does not, and raises
+    before any of this module's own safety checks even run.
+    """
+    parts = urllib.parse.urlsplit(url)
+    safe = "%/:@!$&'()*+,;="  # reserved/sub-delim chars, and '%' so an
+    # already-encoded byte like "%EA" is not re-encoded into "%25EA".
+    path = urllib.parse.quote(parts.path, safe=safe)
+    query = urllib.parse.quote(parts.query, safe=safe + "?")
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
+
+
 def fetch_image(url: str, *, opener=None, resolver=None,
                 max_bytes: int = MAX_IMAGE_BYTES) -> ImageFetchResult:
     """One image, bounded by size/type/redirect/host safety. Never raises."""
+    url = _normalize_url(url)
     try:
         resolve_safe(url, resolver=resolver)
     except UnsafeImageURL as exc:

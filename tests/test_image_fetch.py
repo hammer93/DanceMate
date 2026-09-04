@@ -114,6 +114,30 @@ def _safe_resolver(monkeypatch):
     monkeypatch.setattr(image_fetch.socket, "getaddrinfo", _resolver_for("93.184.216.34"))
 
 
+# --- URL normalization (found live: unencoded Korean/space filenames) -------
+
+def test_a_url_with_spaces_and_korean_characters_is_percent_encoded():
+    """Found live on K-TANGO: a real upload filename with a literal space and
+    Korean text, which urllib.request rejects outright unless normalized."""
+    raw = "http://www.k-tango.net/upload/editor/1724737931402_582. KTSF 스페셜공연 국문포스터.jpg"
+    normalized = image_fetch._normalize_url(raw)
+    assert " " not in normalized
+    assert "스페셜공연" not in normalized  # encoded, not stripped
+    assert normalized.startswith("http://www.k-tango.net/upload/editor/1724737931402_582.")
+
+
+def test_normalization_does_not_double_encode_an_already_encoded_url():
+    already = "https://cdn.example.test/path/%EA%B0%80.jpg"
+    assert image_fetch._normalize_url(already) == already
+
+
+def test_a_previously_unfetchable_real_url_now_fetches(monkeypatch):
+    monkeypatch.setattr(image_fetch.socket, "getaddrinfo", _resolver_for("93.184.216.34"))
+    raw = "http://www.k-tango.net/upload/editor/1724737931402_582. KTSF 스페셜공연 국문포스터.jpg"
+    result = image_fetch.fetch_image(raw, opener=_opener_for(JPEG_MAGIC))
+    assert result.ok
+
+
 def test_a_real_jpeg_is_fetched_successfully():
     result = image_fetch.fetch_image(
         "https://cdn.example.test/poster.jpg", opener=_opener_for(JPEG_MAGIC),
