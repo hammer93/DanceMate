@@ -65,6 +65,7 @@ def list_events(
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     genre: str | None = None,
+    genres: list[str] | None = Query(None, description="repeat, or comma-separate"),
     region: str | None = None,
     status: str | None = None,
     limit: int = events_api.DEFAULT_LIMIT,
@@ -79,7 +80,8 @@ def list_events(
         with _connection() as con:
             return _json(events_api.search(
                 con, when=when, on=date, date_from=date_from, date_to=date_to,
-                genre=genre, region=region, status=status, limit=limit, offset=offset,
+                genre=genre, genres=_split_genres(genres), region=region,
+                status=status, limit=limit, offset=offset,
                 include_past=include_past, include_cancelled=include_cancelled,
             ))
     except events_api.SearchError as exc:
@@ -146,6 +148,19 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .filters a { border:1px solid var(--line); border-radius:999px; padding:.2rem .7rem;
              text-decoration:none; font-size:.8rem; background:var(--card); color:var(--muted); }
 .filters a[aria-current="true"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+.filters form.genres { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center;
+                       margin:0 0 .5rem; }
+.filters label.chip { display:inline-flex; align-items:center; gap:.35rem;
+                      border:1px solid var(--line); border-radius:999px;
+                      padding:.25rem .7rem; font-size:.8rem; background:var(--card);
+                      color:var(--muted); cursor:pointer; }
+.filters label.chip:has(input:checked) { border-color:var(--accent); color:var(--accent);
+                                         font-weight:600; }
+.filters label.chip:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
+.filters label.chip input { accent-color:var(--accent); margin:0; }
+.filters .apply { border:1px solid var(--line); border-radius:999px; padding:.25rem .7rem;
+                  font-size:.8rem; background:var(--card); color:var(--fg); cursor:pointer; }
+.filters form.auto .apply { display:none; }
 .status { font-size:.7rem; border:1px solid var(--line); border-radius:4px;
           padding:.05rem .35rem; color:var(--muted); }
 .status.ok { border-color:var(--accent); color:var(--accent); }
@@ -182,6 +197,88 @@ def _page(title: str, body: str) -> str:
         f"<title>{E(title)}</title><style>{STYLE}</style></head>"
         f"<body><main>{body}</main></body></html>"
     )
+
+
+# The three DanceMate promises to show a filter for, whatever the data says
+# today. Read from the genre master in practice; this is the floor, so an empty
+# or unreachable master never leaves the first screen without its filter.
+BASELINE_GENRES = (("TANGO", "Tango"), ("SALSA", "Salsa"), ("SWING", "Swing"))
+
+# Said when a filter is the reason the list is empty. Never followed by
+# quietly re-ticking something to make the page look fuller.
+EMPTY_FILTERED = "선택한 조건에 해당하는 행사가 없습니다."
+EMPTY_TODAY = "오늘 확인된 행사가 없습니다. 수집된 글에서 확인된 것만 보여드립니다."
+
+
+def _is_narrowed(options: list[dict[str, str]], selected: list[str]) -> bool:
+    """Has the reader actually restricted anything?"""
+    return set(selected) < {o["code"] for o in options}
+
+
+def _split_genres(values: list[str] | None) -> list[str] | None:
+    """Accept ?genres=TANGO&genres=SALSA and ?genres=TANGO,SALSA alike.
+
+    None means the reader said nothing about genre. An empty list means they
+    said "none of them", which is different and must survive as such.
+    """
+    if values is None:
+        return None
+    codes: list[str] = []
+    for value in values:
+        for part in (value or "").split(","):
+            code = part.strip().upper()
+            if code and code not in codes:
+                codes.append(code)
+    return codes
+
+
+def _genre_options(con) -> list[dict[str, str]]:
+    """Every genre a reader may filter by: the enabled ones in the master.
+
+    A genre with no events today still gets a chip. Hiding it would make the
+    first screen change shape from day to day, and "is there any swing on?" is
+    a question the page should answer with an empty list, not by removing the
+    question.
+    """
+    from . import master_data
+
+    options: list[dict[str, str]] = []
+    try:
+        rows = master_data.list_genres(con, enabled_only=True)
+    except Exception:  # noqa: BLE001 - the filter is not worth a 500
+        rows = []
+    for row in rows:
+        code = (row.get("code") or "").strip().upper()
+        if code:
+            options.append({"code": code, "label": row.get("name") or code.title()})
+    known = {o["code"] for o in options}
+    for code, label in BASELINE_GENRES:
+        if code not in known:
+            options.append({"code": code, "label": label})
+    order = {code: n for n, (code, _) in enumerate(BASELINE_GENRES)}
+    options.sort(key=lambda o: (order.get(o["code"], len(order)), o["label"]))
+    return options
+
+
+def _selected_genres(options: list[dict[str, str]], asked: list[str] | None,
+                     declared: bool) -> list[str]:
+    """Which chips are ticked. Everything, until the reader says otherwise."""
+    if asked is None and not declared:
+        return [o["code"] for o in options]
+    return list(asked or [])
+
+
+def _genre_constraint(options: list[dict[str, str]], selected: list[str]) -> list[str] | None:
+    """What to pass to search: None when the selection covers everything.
+
+    With every box ticked the reader has asked for all of it, and an event
+    whose genre we could not read is still part of all of it. Constraining on
+    the full list would drop exactly those, which is not what ticking every box
+    means.
+    """
+    if set(selected) >= {o["code"] for o in options}:
+        return None
+    return selected
 
 
 def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
@@ -224,37 +321,93 @@ def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
     return {"genres": genres, "regions": regions}
 
 
-def _filter_bar(when: str, facets: dict[str, list[dict[str, Any]]],
-                genre: str | None, region: str | None) -> str:
-    """Genre and region, shown only when there is more than one to choose."""
+def _genre_query(selected: list[str], options: list[dict[str, str]]) -> dict[str, str]:
+    """The genre half of a link, canonical and comma-joined so it is shareable.
+
+    Nothing at all when everything is selected: the default should not clutter
+    every link on the page, and an absent parameter already means "all".
+    """
+    if set(selected) >= {o["code"] for o in options}:
+        return {}
+    return {"genres": ",".join(selected), "genres_set": "1"}
+
+
+def _genre_filter(action: str, when: str | None, region: str | None,
+                  options: list[dict[str, str]], selected: list[str]) -> str:
+    """Dance styles, always all of them, always showing which are on.
+
+    Real checkboxes rather than styled links: the checked state is carried by
+    the control itself, so it survives a reader who cannot see the colour and
+    it answers to the keyboard without anything being added. The submit button
+    is what makes it work with no JavaScript at all; the script below hides it
+    and submits on change, which is what "immediately" means for everyone else.
+    """
+    chosen = set(selected)
+    boxes = []
+    for option in options:
+        mark = " checked" if option["code"] in chosen else ""
+        boxes.append(
+            f'<label class="chip"><input type="checkbox" name="genres" '
+            f'value="{E(option["code"])}"{mark}> {E(option["label"])}</label>'
+        )
+    hidden = '<input type="hidden" name="genres_set" value="1">'
+    if when:
+        hidden += f'<input type="hidden" name="when" value="{E(when)}">'
+    if region:
+        hidden += f'<input type="hidden" name="region" value="{E(region)}">'
+    return (
+        f'<form class="row genres" method="get" action="{E(action)}">'
+        f'{hidden}<span class="key">춤 종류</span>'
+        + "".join(boxes)
+        + '<button class="apply">적용</button></form>'
+    )
+
+
+def _region_chips(action: str, when: str | None, rows: list[dict[str, Any]],
+                  chosen: str | None, genre_query: dict[str, str]) -> str:
+    """Where. Only places that have something, and never the country row."""
     from urllib.parse import urlencode
 
-    def chips(key: str, rows: list[dict[str, Any]], chosen: str | None) -> str:
-        if len(rows) < 2:
-            return ""
-        links = []
-        for row in [{"value": None, "label": "전체"}] + rows:
-            params = {"when": when}
-            if genre and key != "genre":
-                params["genre"] = genre
-            if region and key != "region":
-                params["region"] = region
-            if row["value"]:
-                params[key] = row["value"]
-            mark = ' aria-current="true"' if (row["value"] or None) == chosen else ""
-            count = f' {row["events"]}' if row.get("events") else ""
-            links.append(
-                f'<a href="/events?{urlencode(params)}"{mark}>{E(row["label"])}{count}</a>'
-            )
-        title = "장르" if key == "genre" else "지역"
-        return (f'<div class="row"><span class="key">{title}</span>'
-                + "".join(links) + "</div>")
-
-    body = chips("genre", facets["genres"], genre) + chips("region", facets["regions"], region)
-    return f'<div class="filters">{body}</div>' if body else ""
+    if len(rows) < 2:
+        return ""
+    links = []
+    for row in [{"value": None, "label": "전체"}] + rows:
+        params: dict[str, str] = {}
+        if when:
+            params["when"] = when
+        params.update(genre_query)
+        if row["value"]:
+            params["region"] = row["value"]
+        mark = ' aria-current="true"' if (row["value"] or None) == chosen else ""
+        count = f' {row["events"]}' if row.get("events") else ""
+        query = f"?{urlencode(params)}" if params else ""
+        links.append(f'<a href="{E(action)}{query}"{mark}>{E(row["label"])}{count}</a>')
+    return ('<div class="row"><span class="key">지역</span>' + "".join(links) + "</div>")
 
 
-def _nav(current: str, genre: str | None = None, region: str | None = None) -> str:
+AUTO_SUBMIT = (
+    "<script>(function(){var f=document.querySelector('form.genres');"
+    "if(!f)return;f.classList.add('auto');"
+    "f.addEventListener('change',function(){f.submit();});})();</script>"
+)
+
+
+def _filter_bar(action: str, when: str | None, facets: dict[str, list[dict[str, Any]]],
+                options: list[dict[str, str]], selected: list[str],
+                region: str | None) -> str:
+    """Dance style first, then where. Both above the list, both without scrolling."""
+    return (
+        '<div class="filters">'
+        + _genre_filter(action, when, region, options, selected)
+        + _region_chips(action, when, facets["regions"], region,
+                        _genre_query(selected, options))
+        + "</div>"
+        + AUTO_SUBMIT
+    )
+
+
+def _nav(current: str, genre: str | None = None, region: str | None = None,
+         genre_query: dict[str, str] | None = None) -> str:
     from urllib.parse import urlencode
 
     links = []
@@ -262,6 +415,7 @@ def _nav(current: str, genre: str | None = None, region: str | None = None) -> s
         params = {"when": key}
         if genre:
             params["genre"] = genre
+        params.update(genre_query or {})
         if region:
             params["region"] = region
         mark = ' aria-current="page"' if key == current else ""
@@ -387,25 +541,39 @@ def _count(kind: str, event_id: int | None = None) -> None:
 
 
 @router.get("/", response_class=HTMLResponse)
-def home() -> HTMLResponse:
-    """Tonight, without asking anyone to choose a filter first."""
+def home(
+    genres: list[str] | None = Query(None),
+    genres_set: str | None = Query(None),
+    region: str | None = None,
+) -> HTMLResponse:
+    """Tonight, with the dance styles on screen before anything is scrolled."""
+    asked = _split_genres(genres)
     try:
         with _connection() as con:
-            result = events_api.search(con, when=events_api.WHEN_TODAY, limit=20)
-            upcoming = events_api.search(con, when=events_api.WHEN_UPCOMING, limit=5)
+            options = _genre_options(con)
+            selected = _selected_genres(options, asked, bool(genres_set))
+            constraint = _genre_constraint(options, selected)
+            result = events_api.search(
+                con, when=events_api.WHEN_TODAY, genres=constraint, region=region,
+                limit=20)
+            upcoming = events_api.search(
+                con, when=events_api.WHEN_UPCOMING, genres=constraint, region=region,
+                limit=5)
             facets = _facets(con, events_api.WHEN_TODAY)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
 
+    narrowed = _is_narrowed(options, selected) or bool(region)
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
             _event_item(e) for e in result["events"]
         ) + "</ul>"
     else:
         nearest = "".join(_event_item(e) for e in upcoming["events"])
+        # The nearest events are still inside the reader's filter -- the search
+        # above carries it -- so this widens the dates, never the conditions.
         listing = (
-            '<p class="empty">오늘 확인된 행사가 없습니다. '
-            "수집된 글에서 확인된 것만 보여드립니다.</p>"
+            f'<p class="empty">{EMPTY_FILTERED if narrowed else EMPTY_TODAY}</p>'
             + (f'<h2>다가오는 행사</h2><ul class="events">{nearest}</ul>' if nearest else "")
         )
 
@@ -413,8 +581,8 @@ def home() -> HTMLResponse:
     body = (
         "<h1>DanceMate</h1>"
         '<p class="sub">오늘 어디서 출까.</p>'
-        + _nav("today")
-        + _filter_bar("today", facets, None, None)
+        + _nav("today", genre_query=_genre_query(selected, options))
+        + _filter_bar("/", None, facets, options, selected, region)
         + listing
         + _footer()
     )
@@ -425,12 +593,22 @@ def home() -> HTMLResponse:
 def events_page(
     when: str = Query(events_api.WHEN_TODAY),
     genre: str | None = None,
+    genres: list[str] | None = Query(None),
+    genres_set: str | None = Query(None),
     region: str | None = None,
 ) -> HTMLResponse:
+    asked = _split_genres(genres)
+    # ?genre=TANGO still works; it simply means that one is ticked.
+    if asked is None and genre:
+        asked = _split_genres([genre])
     try:
         events_api.window(when)
         with _connection() as con:
-            result = events_api.search(con, when=when, genre=genre, region=region, limit=100)
+            options = _genre_options(con)
+            selected = _selected_genres(options, asked, bool(genres_set) or bool(genre))
+            result = events_api.search(
+                con, when=when, genres=_genre_constraint(options, selected),
+                region=region, limit=100)
             facets = _facets(con, when)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -441,19 +619,24 @@ def events_page(
         listing = "<ul class=\"events\">" + "".join(
             _event_item(e) for e in result["events"]
         ) + "</ul>"
+    elif _is_narrowed(options, selected) or region:
+        listing = f'<p class="empty">{EMPTY_FILTERED}</p>'
     else:
         listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>'
 
     _count(alpha_metrics.EVENT_LIST_VIEW)
     label = dict(TABS).get(when, when)
-    narrowed = " · ".join(x for x in (genre, region) if x)
+    chosen_labels = [o["label"] for o in options if o["code"] in set(selected)]
+    narrowed = " · ".join(
+        x for x in (", ".join(chosen_labels) if _is_narrowed(options, selected) else "",
+                    region or "") if x)
     body = (
         f"<h1>{E(label)}</h1>"
         f'<p class="sub">{result["total"]}건'
         + (f" · {E(narrowed)}" if narrowed else "")
         + " · Asia/Seoul 기준</p>"
-        + _nav(when, genre, region)
-        + _filter_bar(when, facets, genre, region)
+        + _nav(when, region=region, genre_query=_genre_query(selected, options))
+        + _filter_bar("/events", when, facets, options, selected, region)
         + listing + _footer()
     )
     return HTMLResponse(_page(f"{label} - DanceMate", body))

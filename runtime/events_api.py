@@ -21,6 +21,7 @@ Dates are Asia/Seoul. "Today" means today where the dancer is, not UTC: at
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from collections.abc import Sequence
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -202,7 +203,8 @@ REVIEWED_STATES = ("APPROVED", "CONFIRMED", "EDITED")
 
 
 def search(con, *, when: str | None = None, on: Any = None, date_from: Any = None,
-           date_to: Any = None, genre: str | None = None, region: str | None = None,
+           date_to: Any = None, genre: str | None = None,
+           genres: "Sequence[str] | None" = None, region: str | None = None,
            status: str | None = None, limit: int = DEFAULT_LIMIT, offset: int = 0,
            include_past: bool = False, include_cancelled: bool = False,
            now: datetime | None = None) -> dict[str, Any]:
@@ -245,6 +247,16 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
     if genre:
         where.append("g.code = %s")
         params.append(genre.strip().upper())
+    if genres is not None:
+        # An explicit set of genres. An empty set means the reader unchecked
+        # everything, which is a real answer -- nothing matches -- and not a
+        # reason to quietly show them everything instead.
+        codes = [g.strip().upper() for g in genres if g and g.strip()]
+        if codes:
+            where.append("g.code = ANY(%s)")
+            params.append(codes)
+        else:
+            where.append("false")
     if region:
         where.append("(r.code = %s OR r.name ILIKE %s)")
         params.extend([region.strip().upper(), region.strip()])
