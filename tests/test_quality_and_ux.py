@@ -449,3 +449,26 @@ def test_a_social_takes_its_genre_from_the_community_that_posted_it(pg, unique):
     # A tango event still resolves from what it is, not from where it was posted.
     tango = next(g for g in master_data.list_genres(pg) if g["code"] == "TANGO")
     assert normalization._genre_id(pg, "MILONGA", item_id) == tango["genre_id"]
+
+
+def test_a_filter_chip_counts_the_window_the_page_shows(pg, unique):
+    """A chip is a promise. 'Swing 1' beside a page that returns nothing is the
+    same small lie as offering an empty filter."""
+    from runtime import master_data
+
+    swing = next(g for g in master_data.list_genres(pg) if g["code"] == "SWING")
+    far = _live(pg, unique, "1",
+                event_date=(events_api.today() + timedelta(days=90)).isoformat())
+    with pg.cursor() as cur:
+        cur.execute("UPDATE events SET genre_id = %s WHERE event_id = %s",
+                    (swing["genre_id"], far["event_id"]))
+
+    shown = events_api.search(pg, when="upcoming", limit=events_api.MAX_LIMIT)
+    listed = [e["id"] for e in shown["events"]]
+    assert far["event_id"] not in listed  # 90 days out, past the window
+
+    chips = public._facets(pg, "upcoming")
+    swing_chip = [g for g in chips["genres"] if g["value"] == "SWING"]
+    counted = swing_chip[0]["events"] if swing_chip else 0
+    served = len([e for e in shown["events"] if e["genre"] == "SWING"])
+    assert counted == served
