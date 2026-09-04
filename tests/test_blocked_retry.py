@@ -191,12 +191,15 @@ def test_a_blocked_item_leaves_the_queue_then_comes_back_to_it(pg, unique):
 
     item_id = _synthetic_item(pg, unique)
     content_store.ensure_row(pg, item_id)
+    # A fresh row starts METADATA_ONLY; intake is what queues it. Follow the
+    # real lifecycle rather than assuming a new row is already due.
+    assert content_store.mark_pending(pg, [item_id]) == 1
 
-    def queued(now=None):
-        due = content_store.due_for_acquisition(pg, limit=1000)
+    def queued():
+        due = content_store.due_for_acquisition(pg, limit=5000)
         return any(row["source_item_id"] == item_id for row in due)
 
-    assert queued(), "a fresh item should be waiting to be fetched"
+    assert queued(), "a queued item should be waiting to be fetched"
 
     # It refuses its body.
     stored = content_store.record_outcome(
@@ -234,7 +237,7 @@ def test_an_item_not_yet_due_is_left_alone(pg, unique):
     content_store.record_outcome(
         pg, item_id, _outcome(acquisition.FETCH_BLOCKED, "BODY_UNAVAILABLE"))
 
-    due = content_store.due_for_acquisition(pg, limit=1000)
+    due = content_store.due_for_acquisition(pg, limit=5000)
     assert item_id not in {row["source_item_id"] for row in due}
 
 
@@ -246,5 +249,5 @@ def test_a_login_wall_never_returns_to_the_queue(pg, unique):
     stored = content_store.record_outcome(
         pg, item_id, _outcome(acquisition.LOGIN_REQUIRED, "BLOCKED"))
     assert stored["next_attempt_at"] is None
-    due = content_store.due_for_acquisition(pg, limit=1000)
+    due = content_store.due_for_acquisition(pg, limit=5000)
     assert item_id not in {row["source_item_id"] for row in due}
