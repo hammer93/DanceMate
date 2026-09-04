@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import html
 from typing import Any, Callable
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import db, events_api
+from . import alpha_metrics, db, events_api
 from .config import Settings
 
 router = APIRouter(tags=["events"])
@@ -207,7 +208,11 @@ def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
         cur.execute(
             "SELECT r.name AS value, r.name AS label, count(*) AS events "
             "FROM events e JOIN regions r ON r.region_id = e.region_id "
-            f"WHERE {clause} GROUP BY 1, 2 ORDER BY events DESC",
+            # Only places, not the country-level row. "South Korea" as a filter
+            # option next to Seoul and Busan tells a reader nothing about where
+            # to go, and offering it makes the other two look like subsets.
+            f"WHERE {clause} AND r.city IS NOT NULL "
+            "GROUP BY 1, 2 ORDER BY events DESC",
             tuple(params),
         )
         regions = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
@@ -341,10 +346,17 @@ def _checked_line(event: dict[str, Any]) -> str:
         seen = seen.replace(tzinfo=timezone.utc)
     local = seen.astimezone(events_api.SEOUL)
     today = events_api.today()
-    when = ("오늘" if local.date() == today else
-            f"{local.month}/{local.day}") + local.strftime(" %H:%M")
-    stale = (datetime.now(timezone.utc) - seen).total_seconds() > 24 * 3600
-    soon = event.get("date") and event["date"] <= (today).isoformat()
+    age = (datetime.now(timezone.utc) - seen).total_seconds()
+    # "2시간 전" reads faster than a timestamp for anything recent; a date is
+    # clearer once it is no longer today.
+    if age < 3600:
+        when = f"{max(1, int(age // 60))}분 전"
+    elif local.date() == today:
+        when = f"{int(age // 3600)}시간 전"
+    else:
+        when = f"{local.month}/{local.day} {local:%H:%M}"
+    stale = age > 24 * 3600
+    soon = event.get("date") and event["date"] <= today.isoformat()
     tail = " · 재확인 필요" if (stale and soon) else ""
     return f'<span class="checked">{E(when)} 확인{E(tail)}</span>'
 
@@ -359,6 +371,11 @@ def _event_item(event: dict[str, Any]) -> str:
         f'<span>{_fee_line(event)}</span>{_status_line(event)}</div>'
         "</a></li>"
     )
+
+
+def _count(kind: str, event_id: int | None = None) -> None:
+    """Record one view. Never blocks the page; see runtime.alpha_metrics."""
+    alpha_metrics.record(_settings(), kind, event_id=event_id)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -384,6 +401,7 @@ def home() -> HTMLResponse:
             + (f'<h2>다가오는 행사</h2><ul class="events">{nearest}</ul>' if nearest else "")
         )
 
+    _count(alpha_metrics.EVENT_LIST_VIEW)
     body = (
         "<h1>DanceMate</h1>"
         '<p class="sub">오늘 어디서 출까.</p>'
@@ -418,6 +436,7 @@ def events_page(
     else:
         listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>'
 
+    _count(alpha_metrics.EVENT_LIST_VIEW)
     label = dict(TABS).get(when, when)
     narrowed = " · ".join(x for x in (genre, region) if x)
     body = (
@@ -441,6 +460,7 @@ def event_page(event_id: int) -> HTMLResponse:
         return _unavailable_page("DanceMate")
     if event is None:
         raise HTTPException(status_code=404, detail="no such event")
+    _count(alpha_metrics.EVENT_DETAIL_VIEW, event_id)
 
     venue = event.get("venue") or {}
     rows = [
@@ -458,9 +478,14 @@ def event_page(event_id: int) -> HTMLResponse:
     ]
     details = "".join(f"<dt>{E(k)}</dt><dd>{v}</dd>" for k, v in rows)
 
+    # Through a redirect rather than straight out, so "they went to read the
+    # post" can be counted. That is the one signal worth having: a detail view
+    # says the card was interesting, a source click says the card was not
+    # enough. It is a measurement of DanceMate, not of a person.
     sources = "".join(
-        f'<li class="event"><a href="{E(source["url"])}" rel="nofollow noopener" '
-        f'target="_blank">{E(source["event_name"] or source["url"])}</a></li>'
+        f'<li class="event"><a href="/events/{event["id"]}/source?to={quote(source["url"], safe="")}" '
+        f'rel="nofollow noopener" target="_blank">'
+        f'{E(source["event_name"] or source["url"])}</a></li>'
         for source in event.get("sources") or []
     )
     origin = (
@@ -483,6 +508,27 @@ def event_page(event_id: int) -> HTMLResponse:
     return HTMLResponse(_page(f"{event.get('name')} - DanceMate", body))
 
 
+@router.get("/events/{event_id}/source")
+def event_source(event_id: int, to: str) -> RedirectResponse:
+    """Send a reader to the original post, and count that they went.
+
+    Only to a URL this event actually lists. An open redirect on a page anyone
+    can reach is a way to lend DanceMate's address to somebody else's link.
+    """
+    try:
+        with _connection() as con:
+            event = events_api.get_event(con, event_id)
+    except db.DatabaseUnavailable:
+        raise HTTPException(status_code=503, detail=UNAVAILABLE) from None
+    if event is None:
+        raise HTTPException(status_code=404, detail="no such event")
+    allowed = {s["url"] for s in event.get("sources") or [] if s.get("url")}
+    if to not in allowed:
+        raise HTTPException(status_code=400, detail="not a source of this event")
+    _count(alpha_metrics.SOURCE_LINK_CLICK, event_id)
+    return RedirectResponse(to, status_code=303)
+
+
 def _footer() -> str:
     """Say where this came from and what it is.
 
@@ -490,9 +536,9 @@ def _footer() -> str:
     number nobody has checked.
     """
     return (
-        "<footer>수집된 공개 게시글에서 추출한 정보입니다. "
-        "확인되지 않은 항목은 비워 둡니다 — 원문을 함께 확인해 주세요. "
-        "DanceMate alpha.</footer>"
+        "<footer><strong>DanceMate Alpha</strong> · 공개 게시글에서 추출한 "
+        "정보이고 바뀔 수 있습니다. 확인되지 않은 항목은 비워 두니, 가시기 전에 "
+        "원문을 함께 확인해 주세요.</footer>"
     )
 
 

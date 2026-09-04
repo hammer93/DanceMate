@@ -180,3 +180,60 @@ def snapshot(con) -> dict[str, Any]:
         "wrong": wrong_values(con),
         "freshness": freshness(con),
     }
+
+
+def upcoming_buckets(con) -> dict[str, int]:
+    """How many listed events fall in each window a reader actually asks for."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE event_date = current_date) AS today, "
+            "  count(*) FILTER (WHERE event_date = current_date + 1) AS tomorrow, "
+            "  count(*) FILTER (WHERE event_date BETWEEN current_date "
+            "                     AND current_date + 7) AS this_week, "
+            "  count(*) FILTER (WHERE event_date >= current_date) AS upcoming, "
+            "  count(*) FILTER (WHERE event_date < current_date) AS past "
+            f"FROM events WHERE {LISTED}"
+        )
+        return _row(cur)
+
+
+def coverage_matrix(con, *, upcoming_only: bool = True) -> dict[str, Any]:
+    """Genre against region, over what a reader can reach.
+
+    The empty cells are the point. "Salsa in Busan: 0" is a coverage gap that
+    no total can show, and it is the shape of the next release's work.
+    """
+    window = " AND e.event_date >= current_date" if upcoming_only else ""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT coalesce(g.code, '(장르 미확인)') AS genre, "
+            "       coalesce(r.name, '(지역 미확인)') AS region, count(*) AS events "
+            "FROM events e "
+            "LEFT JOIN genres g ON g.genre_id = e.genre_id "
+            "LEFT JOIN regions r ON r.region_id = e.region_id "
+            f"WHERE {LISTED_E}{window} GROUP BY 1, 2",
+            (),
+        )
+        cells = _rows(cur)
+        cur.execute("SELECT code, name FROM genres WHERE enabled ORDER BY code")
+        genres = [row[0] for row in cur.fetchall()]
+        cur.execute(
+            "SELECT name FROM regions WHERE enabled AND city IS NOT NULL ORDER BY name"
+        )
+        regions = [row[0] for row in cur.fetchall()]
+
+    grid = {g: {r: 0 for r in regions} for g in genres}
+    extra_regions: list[str] = []
+    for cell in cells:
+        genre, region = cell["genre"], cell["region"]
+        grid.setdefault(genre, {r: 0 for r in regions})
+        if region not in regions and region not in extra_regions:
+            extra_regions.append(region)
+        grid[genre][region] = cell["events"]
+    return {
+        "genres": sorted(grid),
+        "regions": regions + extra_regions,
+        "grid": grid,
+        "upcoming_only": upcoming_only,
+    }

@@ -285,6 +285,22 @@ def _has_wrong_time(row: dict[str, Any]) -> bool:
                for h in row.get("hints") or [])
 
 
+def _when_badge(row: dict[str, Any]) -> str:
+    """How close this event is, said once rather than worked out per row."""
+    away = _days_away(row)
+    if away is None:
+        return ' <span class="badge muted">날짜 미확인</span>'
+    if away < 0:
+        return ' <span class="badge muted">지난 행사</span>'
+    if away == 0:
+        return ' <span class="badge bad">오늘</span>'
+    if away == 1:
+        return ' <span class="badge warn">내일</span>'
+    if away <= 7:
+        return f' <span class="badge warn">{away}일 뒤</span>'
+    return f' <span class="badge muted">{away}일 뒤</span>'
+
+
 def review_priority(row: dict[str, Any]) -> tuple:
     """What a reviewer should look at first.
 
@@ -306,20 +322,41 @@ def review_priority(row: dict[str, Any]) -> tuple:
     )
 
 
+def _is_upcoming(row: dict[str, Any]) -> bool:
+    away = _days_away(row)
+    return away is not None and away >= 0
+
+
+def _within(row: dict[str, Any], days: int) -> bool:
+    away = _days_away(row)
+    return away is not None and 0 <= away <= days
+
+
 # The questions an operator actually arrives with, each with the predicate
 # behind it. Counts are rendered beside every one, so an empty filter is
 # visible before it is clicked.
+#
+# Upcoming comes first and is the default. A private alpha is judged on where
+# somebody can dance tonight; last month's missing fee is not worth an
+# afternoon, and a queue that opens on all 33 rows buries the eight that are.
 REVIEW_FILTERS: dict[str, tuple[str, Any]] = {
-    "pending": ("검토 대기", _is_pending),
-    "today": ("오늘·내일", lambda r: (_days_away(r) is not None
-                                      and 0 <= _days_away(r) <= 1)),
+    "upcoming": ("앞으로", _is_upcoming),
+    "today": ("오늘", lambda r: _within(r, 0)),
+    "tomorrow": ("내일", lambda r: (_days_away(r) == 1)),
+    "week": ("이번 주", lambda r: _within(r, 7)),
     "conflict": ("충돌", lambda r: r["candidate_status"] in ("CONFLICT", "UNKNOWN")),
-    "unknown_time": ("시간 미확인", lambda r: not r.get("start_time")),
-    "unknown_venue": ("장소 미확인", lambda r: not r.get("venue")),
-    "unknown_fee": ("요금 미확인", lambda r: r.get("fee") is None),
+    "unknown_time": ("시간 미확인",
+                     lambda r: _is_upcoming(r) and not r.get("start_time")),
+    "unknown_venue": ("장소 미확인",
+                      lambda r: _is_upcoming(r) and not r.get("venue")),
+    "unknown_fee": ("요금 미확인",
+                    lambda r: _is_upcoming(r) and r.get("fee") is None),
+    "pending": ("검토 대기", _is_pending),
     "reviewed": ("검토 완료", lambda r: r["review"]["review_state"] != review.PENDING),
     "all": ("전체", lambda r: True),
 }
+
+DEFAULT_REVIEW_FILTER = "upcoming"
 
 
 @router.get("/admin/review", response_class=HTMLResponse)
@@ -332,9 +369,9 @@ def admin_review(
         rows = _review_rows(settings, con)
         metrics = review.metrics(con)
 
-    chosen = (filter or show or "pending").strip().lower()
+    chosen = (filter or show or DEFAULT_REVIEW_FILTER).strip().lower()
     if chosen not in REVIEW_FILTERS:
-        chosen = "pending"
+        chosen = DEFAULT_REVIEW_FILTER
     visible = sorted(
         [r for r in rows if REVIEW_FILTERS[chosen][1](r)], key=review_priority,
     )
@@ -360,14 +397,17 @@ def admin_review(
     for row in visible:
         state_value = row["review"]["review_state"]
         table_rows.append([
-            f'<a href="/admin/review/{row["candidate_id"]}">{E(str(row.get("event_name") or "-")[:48])}</a>',
+            (f'<a href="/admin/review/{row["candidate_id"]}?queue={chosen}">'
+             f'{E(str(row.get("event_name") or "-")[:48])}</a>'
+             + _when_badge(row)),
             E(str(row.get("event_date") or "-")),
             E(str(row.get("start_time") or "-")),
             E(str(row.get("venue") or "-")),
             admin._badge(row["candidate_status"], row["status_tone"]),
             admin._badge(state_value, REVIEW_TONE.get(state_value, "muted")),
             E(str(row.get("source_id") or "-")),
-            f'<a href="/admin/review/{row["candidate_id"]}"><button>Review</button></a>',
+            f'<a href="/admin/review/{row["candidate_id"]}?queue={chosen}">'
+            "<button>Review</button></a>",
         ])
 
     body = (
@@ -388,8 +428,55 @@ def admin_review(
 
 
 @router.get("/admin/review/{candidate_id}", response_class=HTMLResponse)
+def _event_summary(merged: dict[str, Any], found: dict[str, Any]) -> str:
+    """The event in one block, in the order a reviewer needs it.
+
+    Date, time, venue, fee first, because those are what someone deciding
+    whether to go actually reads. Everything below is how we came to believe
+    them.
+    """
+    def cell(value: Any, missing: str) -> str:
+        return (E(str(value)) if value not in (None, "")
+                else f'<span class="badge warn">{E(missing)}</span>')
+
+    away = _days_away(merged)
+    when = ("오늘" if away == 0 else "내일" if away == 1
+            else f"{away}일 뒤" if away is not None and away > 0
+            else "지난 행사" if away is not None else "날짜 미확인")
+    rows = [
+        ("날짜", cell(merged.get("event_date"), "날짜 미확인") + f' <span class="badge muted">{E(when)}</span>'),
+        ("시간", cell(merged.get("start_time"), "시간 미확인")
+                 + (f' ~ {E(str(merged.get("end_time")))}' if merged.get("end_time") else "")),
+        ("장소", cell(merged.get("venue"), "장소 미확인")),
+        ("요금", cell(merged.get("fee"), "요금 미확인")),
+        ("종류", cell(found.get("event_type"), "-")),
+        ("상태", admin._badge(found.get("candidate_status"), found.get("status_tone", "muted"))),
+    ]
+    cells = "".join(f"<dt>{E(k)}</dt><dd>{v}</dd>" for k, v in rows)
+    return (f'<div class="tablewrap" style="padding:12px 16px">'
+            f'<dl style="display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;margin:0">'
+            f"{cells}</dl></div>")
+
+
+def _queue_position(settings, candidate_id: int, queue_key: str) -> str:
+    """Where this event sits in the queue, so a reviewer knows how far to go."""
+    try:
+        with _connection() as con:
+            rows = _review_rows(settings, con)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    ordered = sorted(
+        [r for r in rows if REVIEW_FILTERS[queue_key][1](r)], key=review_priority,
+    )
+    ids = [r["candidate_id"] for r in ordered]
+    if candidate_id not in ids:
+        return f"{len(ids)}건 대기"
+    return f"{ids.index(candidate_id) + 1} / {len(ids)}"
+
+
 def admin_review_detail(
-    candidate_id: int, request: Request, _: str = Depends(require_admin)
+    candidate_id: int, request: Request, queue: str = "",
+    _: str = Depends(require_admin),
 ) -> HTMLResponse:
     settings = _settings()
     with _connection() as con:
@@ -409,6 +496,10 @@ def admin_review_detail(
                 row = cur.fetchone()
             if row:
                 item = content_store.detail(con, row[0])
+
+    queue_key = queue if queue in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
+    queue_label = REVIEW_FILTERS[queue_key][0]
+    position = _queue_position(settings, candidate_id, queue_key)
 
     merged = review.apply_corrections(found, current)
     content = (item or {}).get("content") or {}
@@ -481,20 +572,30 @@ def admin_review_detail(
   {field_input("notes", "Notes", (current.get("corrected_json") or {}).get("notes"))}
 </div>
 <div><label>Reason</label><input name="reason" placeholder="what you corrected and why"></div>
-<div class="actions"><button class="primary">Save correction</button></div>
-<p class="note">The engine's own values are kept; your correction is stored alongside them.</p>
+<input type="hidden" name="queue" value="{E(queue_key)}">
+<div class="actions">
+  <button class="primary" name="next_after" value="0">Save correction</button>
+  <button class="primary" name="next_after" value="1">Save &amp; Next</button>
+</div>
+<p class="note">The engine's own values are kept; your correction is stored alongside them.
+Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
 </form></details>"""
 
     def simple_form(action: str, label: str, note: str) -> str:
+        primary = " class=\"primary\"" if action.lower() in ("approve", "confirm") else ""
         return f"""
 <form method="post" action="/admin/review/{candidate_id}/{action.lower()}" class="inline">
   <input type="hidden" name="reason" value="">
-  <button title="{E(note)}">{E(label)}</button></form>"""
+  <input type="hidden" name="queue" value="{E(queue_key)}">
+  <button name="next_after" value="0" title="{E(note)}"{primary}>{E(label)}</button>
+  <button name="next_after" value="1" title="{E(note)} — 그리고 다음 항목으로">
+    {E(label)} &amp; Next</button></form>"""
 
     duplicate_form = f"""
 <form method="post" action="/admin/review/{candidate_id}/duplicate" class="inline">
   <input name="duplicate_of_candidate_id" placeholder="duplicate of candidate id" style="width:190px">
-  <button>DUPLICATE</button></form>"""
+  <input type="hidden" name="queue" value="{E(queue_key)}">
+  <button name="next_after" value="0">DUPLICATE</button></form>"""
 
     history_rows = [
         [E(str(a["created_at"])[:19]), admin._badge(a["action"]), E(a["reviewer"]),
@@ -504,8 +605,11 @@ def admin_review_detail(
     ]
 
     body = (
+        f'<p class="sub"><a href="/admin/review?filter={E(queue_key)}">&larr; '
+        f'{E(queue_label)} 큐</a> &middot; {E(position)}</p>'
         f"<h2>Review candidate {candidate_id}</h2>"
-        "<h2>Evidence</h2>" + evidence
+        + _event_summary(merged, found)
+        + "<h2>Evidence</h2>" + evidence
         + text_block("Search snippet (discovery)", snippet,
                      "What the provider's search API returned.")
         + text_block("Acquired article text", content.get("extracted_text"),
@@ -566,6 +670,8 @@ def admin_review_action(
     genre: str = Form(None),
     organizer: str = Form(None),
     notes: str = Form(None),
+    queue: str = Form(""),
+    next_after: str = Form(""),
     _: str = Depends(require_admin),
 ) -> RedirectResponse:
     action_name = action.upper()
@@ -593,10 +699,56 @@ def admin_review_action(
                 ),
             )
     except review.ReviewError as exc:
-        return admin._back(f"/admin/review/{candidate_id}", str(exc), "bad")
+        return admin._back(_detail_url(candidate_id, queue), str(exc), "bad")
     except Exception as exc:
-        return admin._back(f"/admin/review/{candidate_id}", f"could not record: {exc}", "bad")
-    return admin._back(f"/admin/review/{candidate_id}", f"{action_name} recorded")
+        return admin._back(
+            _detail_url(candidate_id, queue), f"could not record: {exc}", "bad",
+        )
+
+    if next_after == "1":
+        # Straight on to the next one in the same queue. Reviewing eight events
+        # should not mean eight trips back to a list.
+        following = _next_in_queue(settings, candidate_id, queue)
+        if following is not None:
+            return admin._back(
+                _detail_url(following, queue),
+                f"{action_name} recorded — next one",
+            )
+        return admin._back(
+            f"/admin/review?filter={queue or DEFAULT_REVIEW_FILTER}",
+            f"{action_name} recorded — that was the last one in this queue",
+        )
+    return admin._back(_detail_url(candidate_id, queue), f"{action_name} recorded")
+
+
+def _detail_url(candidate_id: int, queue: str) -> str:
+    suffix = f"?queue={queue}" if queue else ""
+    return f"/admin/review/{candidate_id}{suffix}"
+
+
+def _next_in_queue(settings, candidate_id: int, queue: str) -> int | None:
+    """The candidate after this one, in the order the queue was showing.
+
+    Recomputed rather than carried in the URL: an action can change which
+    filter a candidate belongs to, and a stale list would send the reviewer to
+    something they have just dealt with.
+    """
+    key = queue if queue in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
+    try:
+        with _connection() as con:
+            rows = _review_rows(settings, con)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    ordered = sorted(
+        [r for r in rows if REVIEW_FILTERS[key][1](r)], key=review_priority,
+    )
+    ids = [r["candidate_id"] for r in ordered]
+    if candidate_id in ids:
+        remaining = ids[ids.index(candidate_id) + 1:]
+    else:
+        # This one has left the queue -- reviewing it is often what removed it.
+        remaining = ids
+    return remaining[0] if remaining else None
 
 
 # --- usage ------------------------------------------------------------------
