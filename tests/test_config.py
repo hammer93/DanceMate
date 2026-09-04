@@ -11,13 +11,13 @@ def test_defaults_load_without_any_environment(monkeypatch):
     for key in ("DANCEMATE_VERSION", "POSTGRES_HOST", "SCHEDULER_HEARTBEAT_SECONDS"):
         monkeypatch.delenv(key, raising=False)
     loaded = config.load_settings()
-    assert loaded.version == config.PRODUCT_VERSION == "0.77.2"
+    assert loaded.version == config.PRODUCT_VERSION == "0.77.3"
     assert loaded.postgres_host == "postgres"
     assert loaded.scheduler_heartbeat_seconds == 60
 
 
 def test_product_and_engine_versions_are_distinct(settings):
-    assert settings.version == "0.77.2"
+    assert settings.version == "0.77.3"
     assert settings.engine_version == "0.74"
 
 

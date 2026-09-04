@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import admin, admin_pages, events_admin, health, public
+from . import admin, admin_pages, events_admin, health, master_admin, public
 from .config import PRODUCT_VERSION, Settings, load_settings
 
 app = FastAPI(
@@ -50,6 +50,8 @@ app.include_router(admin_pages.router)
 app.include_router(admin_pages.api)
 app.include_router(events_admin.router)
 app.include_router(events_admin.api)
+app.include_router(master_admin.router)
+app.include_router(master_admin.api)
 
 # The alpha user surface: / , /events , /events/{id} and /api/events. Mounted
 # last so it can never shadow an operator route.

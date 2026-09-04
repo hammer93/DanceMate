@@ -812,3 +812,25 @@ def test_the_venue_page_says_how_many_events_a_deletion_would_change():
 def test_both_removal_routes_require_authentication(client):
     for path in ("/admin/venues/1/delete", "/admin/venues/1/enabled"):
         assert client.post(path).status_code in (401, 503), path
+
+
+def test_a_link_records_the_venue_name_so_it_survives_a_later_deletion(pg, unique, seoul_id):
+    """Only the delete paths were passing venue_name, so a create-and-link row
+    lost its name the moment the venue it named was removed."""
+    venue_text = f"테스트홀 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"이름 기록 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    recorded = next(a for a in venue_resolution.history(pg) if a["raw_venue"] == venue_text)
+    assert recorded["venue_name"] == f"이름 기록 {unique}"
+
+    venue_resolution.delete_venue(
+        pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
+    )
+    after = next(a for a in venue_resolution.history(pg)
+                 if a["raw_venue"] == venue_text
+                 and a["action"] == venue_resolution.CREATE_AND_LINK)
+    assert after["resolved_venue_name"] == f"이름 기록 {unique}"

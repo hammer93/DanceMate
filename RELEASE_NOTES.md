@@ -1,5 +1,164 @@
 # DanceMate Release Notes
 
+## v0.77.3 Admin Master Data Edit & Management UX
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-04.
+
+Version split:
+
+- Product Runtime: 0.77.3
+- Information Engine: 0.74 (unchanged — this release touches no extraction)
+
+### Why this version exists
+
+Registering master data from the console worked. Correcting it afterwards did
+not. Venues had no Edit at all; genres could only be toggled; regions had
+nothing; organizers had nothing; sources could only be changed through a JSON
+PATCH. The way to fix a typo was to open the database.
+
+### One editing pattern, five entities
+
+Genres, regions, venues, organizers and sources are different things, but the
+operator's question is the same each time — *this row is slightly wrong, let me
+fix it* — so they share one form, one route shape and one set of rules.
+
+The form opens inline where the row is listed and arrives filled in with what
+the row says. An empty form asks someone to retype the record in front of them.
+Cancel is closing the block: nothing was sent, so nothing has to be undone.
+
+What the pattern refuses to do matters more than what it does.
+
+**Identity does not move.** A rename keeps the same id, so 라 벤따나 can become
+La Ventana with its events still attached and the raw string still resolving
+through its alias — the unresolved queue does not reopen.
+
+**Codes are read-only, not merely discouraged.** `TANGO` and `KR-SEOUL` are how
+sources, filters and bookmarked URLs find a row; renaming one breaks every
+reference silently. Source keys likewise, since the Information Engine's config
+matches on them. They are rendered, disabled, so an operator can see the value
+without being invited to change it.
+
+**Provider credentials appear nowhere.** Not in any editable list, not in the
+config blob, not rendered. A console that can show a secret is a console that
+can leak one.
+
+**Enabling through an edit clears the same bar as the Enable button**, so
+editing is not a way around v0.75's rule that a source the scheduler will fetch
+from has to validate first. An interval change is picked up by the next due
+calculation.
+
+**A rejected edit is a sentence, not a 500.** A duplicate name in one region,
+an interval under the floor, an empty required field, a bad foreign key — each
+comes back as something an operator can act on. The same name in a *different*
+region is allowed, because the unique index allows it: Studio A in Seoul and
+Studio A in Busan are different places.
+
+**Only fields that actually differ are written.** Open a form, save it
+unchanged, and nothing is written and nothing is recorded.
+
+### Venue aliases
+
+The edit form lists a venue's spellings with how many events currently reach it
+through each one. Removing a busy alias means that spelling stops resolving and
+returns to the unresolved queue, so it asks first — a question, not a refusal.
+
+### Address and region disagreement
+
+An address naming a different region than the one selected is reported, never
+applied. The operator may know better, and silently rewriting their choice
+would make the region filter wrong in a way nobody could see.
+
+### Audit
+
+Migration 014 records every master-data change: entity, id, name kept verbatim,
+action, reviewer, and the fields that changed. Kept separate from
+venue_resolution_actions, which answers a different question — that table is
+about strings read from posts, this one about the master rows themselves.
+Disabling is recorded as DISABLE, not as an edit that happened to touch the
+enabled column, so "who turned this off" is one query.
+
+### Three defects, all found by the container run
+
+The host suite passed and the board's did not, three times over, and each was
+real:
+
+**A blank name could be saved.** `update_venue` and `update_organizer` accepted
+a whitespace-only name, so an edit could rename a venue into something no list
+can display. `create_venue` has always refused that; an edit had no reason not
+to.
+
+**The value compared was not the value stored.** `changed_fields` trimmed
+before comparing but handed on the raw string, so `"  PISTA  "` was written
+with its spaces and an all-whitespace name reached the database looking
+non-empty.
+
+**A create-and-link audit row lost its venue name.** Only the delete paths were
+passing `venue_name`, so the row recording a link would have gone nameless the
+moment that venue was removed.
+
+A fourth was a test of mine, worth writing down: it built a source with
+`source_role="SECONDARY"`. That is the Information Engine's vocabulary. The
+runtime's roles are COMMUNITY, PROMOTION_BOARD, VENUE, ORGANIZER, DIRECTORY and
+AGGREGATOR, and the two are not interchangeable.
+
+### What the board looked like
+
+Between the last release and this one, 김프로 resolved all eight waiting venue
+strings — the audit trail shows eight CREATE_AND_LINK actions on 2026-09-04
+between 01:02 and 01:12, with addresses no extractor produced (`부산진구 부전로
+34`, `서울시 마포구 양화로 12길 24 선진빌딩 B1`) because a person knew them.
+
+| | |
+|---|---|
+| Venues registered | 8 |
+| Live events with a resolved venue | **10 of 15** |
+| Unresolved queue | 0 |
+
+아미고스튜디오 and 데땅고 are Busan addresses filed under the country-level
+region, because Busan is not registered as a region yet. That is the honest
+outcome of a region list that has only Seoul in it.
+
+The check that noticed this change first read as test data leaking into the
+staging database. Reading the audit trail before touching anything is what
+distinguished an operator's afternoon of work from a mess to clean up.
+
+### Verification
+
+| | |
+|---|---|
+| Runtime suite, host | 423 passed, 194 skipped |
+| Runtime suite, container | 607 passed, 9 skipped |
+| Migrations on the board | 014 of 014 applied |
+| `/version` | product 0.77.3, engine 0.74 |
+| Health | 6/6 PASS |
+| Console pages | venues, organizers, sources, master all 200 with Edit |
+| Synthetic end-to-end | PASS, data removed |
+| Live data after every run | 15 live events, 8 venues, 0 organizers |
+
+Browser acceptance against the real board: 8 Edit forms on Venues prefilled with
+the real names, addresses and regions; 6 on Sources with `SRC-D-001` and friends
+read-only and the interval editable; 5 on Genres & Regions with `TANGO` and
+`KR-SEOUL` read-only. No credential-shaped string appears on any of them.
+
+The synthetic run walked one venue and one organizer through the real HTTP
+routes: created and linked → renamed and re-addressed, with the event still
+attached and the raw string still resolving → alias added and resolving →
+region changed, and the event dropped out of `?region=Seoul` → organizer
+renamed and disabled → safe delete still working afterwards. Then removed, with
+live counts checked.
+
+### Known and deliberate
+
+- The Human Review screen shows the venue string as extracted from the post,
+  not the master venue's name. That is not stale data — a reviewer is checking
+  extraction against the post, and the raw string is the thing being checked.
+- Enable/disable stays a separate button rather than a checkbox in the edit
+  form. An unchecked checkbox is simply absent from a form submission, which
+  would read as "unchanged" and silently ignore the operator.
+- Genres, regions and organizers still have no delete. They are disabled, and
+  events already tagged with one still have to resolve.
+
 ## v0.77.2 Venue Default Prefill + Safe Venue Delete
 
 Status:

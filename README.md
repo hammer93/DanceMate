@@ -9,7 +9,7 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.77.2 (Venue Default Prefill + Safe Venue Delete)
+- Product Runtime: v0.77.3 (Admin Master Data Edit & Management UX)
   - deployed and verified on the ROCKPro64 on 2026-09-03
 - Information Engine: v0.74 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
@@ -57,7 +57,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77.2"}`    |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77.3"}`    |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -110,6 +110,15 @@ those events back to the raw string they were read from and puts the string
 back in the queue — the posts, the evidence, the events and every review stay
 where they are. **Deactivate** takes a venue out of circulation without
 unlinking anything.
+
+Every master-data screen — Genres, Regions, Venues, Organizers, Sources —
+shares one **Edit** form, opened inline where the row is listed and prefilled
+with what the row says. A rename keeps the row's id, so events, sources and
+filters pointing at it keep pointing at it. Codes (`TANGO`, `KR-SEOUL`) and
+source keys are rendered read-only: they are how everything else finds the row.
+Provider credentials are never rendered and never editable. Enabling a source
+through an edit clears the same validation as the Enable button. Every change
+is recorded with the reviewer and the fields that differed.
 
 The pipeline runs as five scheduler jobs: `source-intake` discovers posts
 through a provider's search API, `content-acquisition` fetches the original

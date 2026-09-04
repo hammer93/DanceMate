@@ -23,8 +23,9 @@ def test_migrations_are_discovered_in_order():
         "011_time_evidence",
         "012_venue_resolution_actions",
         "013_venue_removal_actions",
+        "014_master_data_actions",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():
