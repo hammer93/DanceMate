@@ -21,7 +21,7 @@ import logging
 import sys
 from typing import Any
 
-from . import acquisition, content_store, db, intake
+from . import acquisition, content_store, db, image_fallback, intake
 from .config import Settings
 from .engine_adapter import engine_db_path
 
@@ -43,9 +43,42 @@ def _engine(settings: Settings):
         from src import database as engine_db  # noqa: PLC0415
         from src.collectors.base import RawPostRecord  # noqa: PLC0415
         from src.live_pipeline import process_discovered_post  # noqa: PLC0415
+        from src.extractor import extract_single, needs_image_fallback  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - depends on deployment
         raise EngineIngestUnavailable(f"engine package not importable: {exc}") from exc
-    return engine_db, RawPostRecord, process_discovered_post
+    return engine_db, RawPostRecord, process_discovered_post, extract_single, needs_image_fallback
+
+
+def _gather_image_texts(pg, settings: Settings, extract_single, needs_image_fallback,
+                        item: dict, content: dict | None, post) -> list[tuple[str, str]]:
+    """Image fallback's own cost gate (v0.81.3): only worth fetching and
+    OCR-ing images at all when the body itself left date/start_time/fee
+    missing. `extract_single()` is cheap (no I/O) and safe to call here as a
+    plain precheck - `process_discovered_post()` runs it again for the real
+    result, with the correct classification this precheck does not bother
+    computing (event_type=None here only changes which EVENT_WORDS the
+    precheck's own context-safety windowing uses, not the final answer).
+
+    Never raises: a fetch/OCR failure here must not fail the item's own
+    ingestion (Section 39) - only a missing image list is treated as "no
+    fallback available", everything else about *why* is already recorded by
+    image_fallback.gather_image_texts() itself.
+    """
+    urls = (content or {}).get("poster_candidates") or []
+    if not urls:
+        return []
+    try:
+        precheck = extract_single(post.title, post.body, published=post.published_at)
+        if not needs_image_fallback(precheck):
+            return []
+        return image_fallback.gather_image_texts(
+            pg, settings, source_item_id=item["source_item_id"],
+            candidate_urls=urls, surrounding_text=post.title,
+        )
+    except Exception as exc:
+        log.warning("image fallback skipped for source item %s: %s",
+                   item.get("source_item_id"), exc)
+        return []
 
 
 def _open_engine_store(settings: Settings, engine_db):
@@ -120,7 +153,8 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
     Returns counts rather than raising: the scheduler records the summary and
     carries on. Individual item failures are marked FAILED and reported.
     """
-    engine_db, RawPostRecord, process_discovered_post = _engine(settings)
+    engine_db, RawPostRecord, process_discovered_post, extract_single, needs_image_fallback = \
+        _engine(settings)
 
     with db.connect(settings, autocommit=True) as pg:
         items = intake.pending_items(pg, limit=limit)
@@ -140,16 +174,29 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                         skipped += 1
                         continue
 
+                    image_texts = _gather_image_texts(
+                        pg, settings, extract_single, needs_image_fallback,
+                        item, content, post,
+                    )
+
                     post_id, is_new = engine_db.persist_raw_post(engine_con, post)
                     if is_new:
                         result = process_discovered_post(
                             engine_con, post,
                             item.get("source_role") or DEFAULT_SOURCE_ROLE,
+                            image_texts=image_texts,
                         )
                         events = result.get("events") or []
                         if events:
                             engine_db.persist_events(engine_con, post_id, events)
                             candidates += len(events)
+                        used = {
+                            e.inference
+                            for ev in events for e in ev.evidences
+                            if e.evidence_type == "IMAGE_OCR" and e.inference
+                        }
+                        if used:
+                            image_fallback.mark_used_as_fallback(pg, item["source_item_id"], used)
                     engine_con.commit()
                     intake.mark_ingested(pg, item["source_item_id"], intake.INGEST_DONE)
                     ingested += 1
@@ -200,7 +247,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
     holding values the current engine would no longer produce. Both safeguards
     above still apply, so a forced pass cannot overwrite anyone's review.
     """
-    engine_db, RawPostRecord, process_discovered_post = _engine(settings)
+    engine_db, RawPostRecord, process_discovered_post, _extract_single, _needs_fallback = \
+        _engine(settings)
 
     with db.connect(settings, autocommit=True) as pg:
         items = content_store.needing_reprocess(pg, limit=limit, force=force)

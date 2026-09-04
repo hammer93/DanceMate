@@ -446,3 +446,31 @@ def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str
     finally:
         con.close()
     return {row["candidate_id"]: row["inference"] for row in rows if row["inference"]}
+
+
+def image_ocr_fields(settings: Settings, candidate_id: int) -> list[dict[str, Any]]:
+    """Which fields this candidate drew from an image (v0.81.3), for the
+    Review detail page's Image Evidence section - never from list/venue,
+    since extract_with_image_fallback() only ever fills date/time/fee.
+
+    Each row's `inference` carries the image URL/ref
+    (extract_with_image_fallback() writes it there), and `value` is the
+    field it filled - already what a reviewer needs, straight off the
+    evidences table.
+    """
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return []
+    try:
+        rows = con.execute(
+            "SELECT field, value, raw_text, inference FROM evidences "
+            "WHERE candidate_id = ? AND evidence_type = 'IMAGE_OCR' "
+            "ORDER BY evidence_id",
+            (candidate_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    return [dict(row) for row in rows]
