@@ -1,5 +1,182 @@
 # DanceMate Release Notes
 
+## v0.79 Social Dance Event Classification + Coverage Recovery + Review Calibration
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-04.
+
+Version split:
+
+- Product Runtime: 0.79
+- Information Engine: **0.75** — second version in which DanceMate modifies
+  engine logic. `engine-v0.74` is untouched and remains the baseline.
+
+### Why this version exists
+
+v0.78 added swing and salsa communities and got zero events from them, and
+named the reason: `live_pipeline` drops every post the classifier calls CLASS
+or OTHER, and the classifier knew exactly four event words, all tango.
+
+### The hard half was never finding socials
+
+It was not finding them where they are not.
+
+The twenty-three swing posts collected on 2026-09-04 were read and labelled
+before a line was changed: 2 socials, 2 mixed programmes, 12 lesson adverts, 2
+sales notices, 1 performance timetable, 4 multi-day festivals left UNKNOWN
+because whether they are a night out is a genuine judgement call.
+
+**Six of those twenty-three say 소셜 or 파티 without announcing one.** Three
+lesson blurbs explaining where you will use what you learn — `소셜에서 쓰는
+동작들` — a season ticket that admits you to socials, a `파티팩` ticket bundle,
+and a `졸업파티` sitting beside the lesson timetable's clock. A keyword match
+turns every one of them into an event, which is worse than the zero we had.
+
+So a social counts as announced when it is in the title, or written next to its
+own clock with nothing but spacing and particles between:
+
+    ■ 스윙타임빠 (9월 2일) 수 소셜 공지        title
+    7시30분부터 소셜이 진행 됩니다              clock, particle, name
+    20:00-22:30 소셜                        clock, name
+
+`파티팩` and `정기권` are products. `10시간` is a length, not a time, so a
+festival boasting about ten hours of social does not qualify on that alone.
+
+Against the labelled twenty-three: **4 wanted, 4 found, 0 missed, 0 false
+positives.**
+
+### A post that teaches and then dances is both
+
+Reading it as a class only is what lost the swing events. `SOCIAL_WITH_CLASS`
+keeps the social, and the time rules keep the social's own hours. A workshop
+weekend lists three ranges:
+
+    - 15:00-16:30 발스윙 중고급
+    - 16:45-18:15 쉐그 초급
+    - 20:00-22:30 소셜
+
+and the event runs at 20:00. Taking the first range would send someone to a
+class they did not sign up for, which is the same class of error as reading PM
+as AM.
+
+### Coverage
+
+Two of v0.78's five new cafes serve articles only to a logged-in reader, so two
+public salsa cafes the same search returns were registered instead. Both are
+readable.
+
+| | v0.78 | v0.79 |
+|---|---|---|
+| Active sources | 6 | **8** |
+| Source items | 97 | **110** (109 live) |
+| Listed events | 23 | **33** |
+| Tango | 23 | 22 |
+| **Salsa** | **0** | **8** |
+| **Swing** | **0** | **3** |
+| Wrong times | 0 | **0** |
+| False VERIFIED | 0 | **0** |
+
+Kakao: 39 requests today, 156 items, 92 new. Month 135 requests against a
+5,000/day CONFIGURED budget.
+
+Every genre now has at least one upcoming event: Tango 6, Salsa 1, Swing 1.
+
+### Tango moved by one, and it moved the right way
+
+v0.78 listed 23 tango events and v0.79 lists 22. Compared post by post against
+the v0.74 classifier over all 27 tango-source bodies, exactly one changed:
+
+    [금요특강] 26년 9월 18일 시작!! 밀롱가/땅고 실전패턴!!
+    "매주 금요일 만나는 클라스!! 수업때만 잘 따라와도~"
+
+MILONGA to CLASS, because 워크샵 joined the class vocabulary and the body
+contains it. It is a weekly lesson course that mentions 밀롱가 a dozen times,
+and v0.78 was listing it as a tango event. One false positive removed, not one
+event lost — but it is a change and it is named rather than folded into a total.
+
+### Two defects, both caught by things that exist to catch them
+
+**The engine's own gate1 replay caught a false positive I introduced.** Adding
+the social branch, I also generalised the tango one: any class post mentioning
+a milonga became MILONGA_WITH_CLASS. The fixture `Special Milonga Lesson개설
+(9월17일 개강)` must produce no event and produced one. v0.74 required both a
+class word and the phrase `open class`, and was right to. Restored exactly, and
+verified case by case against the v0.74 classifier: identical on every tango
+input.
+
+**Re-extraction could not remove a candidate, only replace it.**
+`reprocess_acquired` deleted a post's old candidates only when the new
+extraction produced some, so a post that stopped being an event kept the
+candidate it used to have — and the counter reported the stale one as if
+nothing had changed. That makes a rule correction unable to take effect: the
+engine says "this is a lesson" and the event it used to be sits there,
+normalised and listed, forever. It is how five candidates survived the fix
+above. Candidates a person has reviewed are still never touched.
+
+**A filter chip promised what its page would not show.** Chips were counted
+over everything from today onward while the page lists a window; a swing social
+three months out put "Swing 1" beside a page returning nothing. Both read the
+same dates now.
+
+### Blocked sources
+
+Login is not bypassed and no credential was touched.
+
+| Source | Items | Readable | Events | State | Recommendation |
+|---|---|---|---|---|---|
+| 오살사 살사댄스 종합정보 | 21 | **0** | 0 | FETCH_BLOCKED | **REPLACE** — 인천살사 엘마르 and SDA cover salsa and are readable |
+| 스윙팩토리 부산 스윙댄스 | 22 | **0** | 0 | FETCH_BLOCKED | **KEEP_BLOCKED** — the only Busan swing community found; costs one search call every three hours |
+| 전국 밀롱가 정보 블로그 (Naver) | 0 | 0 | 0 | AUTH_FAILED | unchanged, shown plainly |
+
+All 47 blocked items carry a backoff, so nothing is re-fetched in a loop.
+Neither source was disabled: that is 김프로's call, and a community that fixes
+its settings next week should not have been dropped this week.
+
+### The reader gets words, not enums
+
+`MILONGA` and `SOCIAL` are the engine's distinction, because tango names its
+social event and the other scenes do not. A reader needs what they are turning
+up to, so the page shows 밀롱가 / 소셜 / 소셜 (강습 포함) beside 확인 필요, and
+the genre chips read Tango / Salsa / Swing with counts that match the page.
+
+A social's genre comes from the community that posted it: the extractor can
+tell a milonga is tango and cannot tell a 소셜 is swing. That stays a hint —
+an event whose type names its genre still resolves from what it is.
+
+### Review queue
+
+Ordering was checked against the live queue rather than asserted. The top of
+`/admin/review` is today's salsa social with no time, then tomorrow's events
+missing a time, then those missing a venue. Filter counts: 시간 미확인 15,
+장소 미확인 30, 요금 미확인 45, 충돌 0, 전체 51.
+
+Human review is still 0. Nothing here approves a live candidate on 김프로's
+behalf.
+
+### Verification
+
+| | |
+|---|---|
+| Engine suite | 645 passed (gate1 included) |
+| Runtime suite, host | 452 passed, 207 skipped |
+| Runtime suite, container | 649 passed, 9 skipped |
+| Golden dataset | 4/4 found, 0 missed, 0 false positives |
+| Migrations | 014, unchanged — no schema was needed |
+| `/version` | product 0.79, engine 0.75 |
+| Health | 6/6 PASS |
+| Resources | 494Mi of 3.8Gi RAM, 12% of 30G disk, DB 11MB |
+| Backup before starting | md5 match, dump-complete marker, sqlite integrity ok |
+
+### Known and deliberate
+
+- Salsa's 8 events and swing's 3 are mostly not upcoming; one of each is. The
+  communities post about past nights as well as future ones.
+- Venue resolution is 10/33 and fee 4/33. The new communities write differently
+  from the tango boards the extractor was tuned on, and no rule was added on a
+  pattern that had not been measured.
+- Four multi-day festivals stayed UNKNOWN and produce no events. Whether a
+  three-day workshop weekend is a night out is a judgement, not a rule.
+
 ## v0.78 Real Event Coverage + Alpha Event Quality + Admin/User UX Polish
 
 Status:
