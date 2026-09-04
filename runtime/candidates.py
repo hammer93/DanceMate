@@ -217,16 +217,21 @@ def query(
         where = _FILTER_WHERE[filter_key]
         params = [today] * _FILTER_PARAM_COUNT[filter_key]
     elif filter_key in ("pending", "reviewed"):
+        # `x NOT IN (NULL)` (and `x IN (NULL)`) is NULL - never true - for
+        # every x, in SQL's three-valued logic; a literal "NOT IN (NULL)"
+        # placeholder for "nothing reviewed yet" silently matched zero rows
+        # instead of every reviewable one. Handled as its own case instead.
         ids = sorted(reviewed_ids or set())
-        placeholders = ",".join("?" for _ in ids) or "NULL"
-        if filter_key == "reviewed":
-            where = f"c.candidate_id IN ({placeholders})"
-            params = list(ids)
-        else:  # pending
-            where = (
-                f"c.candidate_id NOT IN ({placeholders}) "
-                "AND c.status IN ('POSSIBLE', 'EXPECTED', 'CONFLICT', 'UNKNOWN')"
-            )
+        reviewable = "c.status IN ('POSSIBLE', 'EXPECTED', 'CONFLICT', 'UNKNOWN')"
+        if not ids:
+            where = reviewable if filter_key == "pending" else "1=0"
+            params = []
+        else:
+            placeholders = ",".join("?" for _ in ids)
+            if filter_key == "reviewed":
+                where = f"c.candidate_id IN ({placeholders})"
+            else:  # pending
+                where = f"c.candidate_id NOT IN ({placeholders}) AND {reviewable}"
             params = list(ids)
 
     try:

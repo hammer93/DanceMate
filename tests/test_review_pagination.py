@@ -101,6 +101,31 @@ def test_page_6_is_reachable_past_the_old_300_row_window(seeded):
     assert _names(result["rows"])[-1] == "Synthetic Event 300"
 
 
+def test_pending_with_nothing_reviewed_yet_shows_every_reviewable_row(seeded):
+    """SQL's `x NOT IN (NULL)` is NULL - never true - for any x. A board with
+    zero human review actions ever recorded (reviewed_ids empty) hit this
+    directly: "pending" silently matched nothing instead of every POSSIBLE
+    candidate, found live on the board before this was caught."""
+    result = candidates.query(seeded, filter_key="pending", reviewed_ids=set(),
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE)
+    assert result["total"] == TOTAL_ROWS
+
+
+def test_reviewed_with_nothing_reviewed_yet_shows_no_rows(seeded):
+    result = candidates.query(seeded, filter_key="reviewed", reviewed_ids=set(),
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE)
+    assert result["total"] == 0
+
+
+def test_pending_excludes_exactly_the_reviewed_ids(seeded):
+    reviewed = {1, 2, 3}
+    result = candidates.query(seeded, filter_key="pending", reviewed_ids=reviewed,
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE)
+    assert result["total"] == TOTAL_ROWS - len(reviewed)
+    seen_ids = {r["candidate_id"] for r in result["rows"]}
+    assert seen_ids.isdisjoint(reviewed)
+
+
 def test_page_7_starts_on_the_301st_row(seeded):
     """The exact row the old `limit=300` fetch could never have returned."""
     result = candidates.query(seeded, filter_key="upcoming", reviewed_ids=set(),
