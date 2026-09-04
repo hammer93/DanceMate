@@ -129,6 +129,27 @@ def states(con, candidate_ids: list[int]) -> dict[int, dict[str, Any]]:
         return {row["candidate_id"]: row for row in _rows(cur)}
 
 
+def reviewed_candidate_ids(con) -> set[int]:
+    """Every candidate_id with a non-PENDING review state.
+
+    This is the whole set, not scoped to a page - it's what
+    `candidates.query()`'s "pending"/"reviewed" filters test membership
+    against, since that decision needs Postgres's `candidate_review_state`
+    and the candidates themselves live in the engine's separate SQLite file.
+    Typically far smaller than the candidate pool (it only grows as review
+    actually happens), so one query here replaces what `_review_rows()` used
+    to do as up to 300 individual `review.state()` fallback queries - `states()`
+    only returns rows that exist, and a PENDING candidate has never had one
+    written, so every unreviewed row fell through to `review.state()` per row.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT candidate_id FROM candidate_review_state WHERE review_state <> %s",
+            (PENDING,),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
 def record(
     con, *, candidate_id: int, action: str, reviewer: str = "admin",
     before: dict[str, Any] | None = None, after: dict[str, Any] | None = None,
