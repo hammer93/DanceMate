@@ -73,15 +73,24 @@ def admin_intake(
     today: str = "",
     _: str = Depends(require_admin),
 ) -> HTMLResponse:
+    from . import pagination
     from . import sources as source_master
 
     with _connection() as con:
+        total = content_store.count_listing(
+            con,
+            status=status or None,
+            source_id=int(source_id) if source_id else None,
+            today_only=bool(today),
+        )
+        page = pagination.resolve_page(request.query_params.get("page"), total)
         rows = content_store.listing(
             con,
             status=status or None,
             source_id=int(source_id) if source_id else None,
             today_only=bool(today),
-            limit=300,
+            limit=pagination.PAGE_SIZE,
+            offset=pagination.sql_offset(page),
         )
         summary = content_store.summary(con)
         all_sources = source_master.list_sources(con)
@@ -152,6 +161,11 @@ def admin_intake(
              "Acquisition", "Chars", "Engine", ""],
             table_rows,
             empty="nothing collected yet",
+        )
+        + pagination.nav(
+            "/admin/intake",
+            {"status": status, "source_id": source_id, "today": today},
+            page, total,
         )
     )
     return HTMLResponse(admin._page("Intake", "/admin/intake", body, flash=admin._flash(request)))
@@ -368,6 +382,8 @@ def admin_review(
     request: Request, show: str = "pending", filter: str = "",
     _: str = Depends(require_admin),
 ) -> HTMLResponse:
+    from . import pagination
+
     settings = _settings()
     with _connection() as con:
         rows = _review_rows(settings, con)
@@ -379,6 +395,14 @@ def admin_review(
     visible = sorted(
         [r for r in rows if REVIEW_FILTERS[chosen][1](r)], key=review_priority,
     )
+    # The engine query behind `rows` already caps at 300 (candidates.list_candidates);
+    # this pages *within* that filtered, sorted result — a second, DB-level page
+    # for the engine's own store is future work, not something this release adds.
+    total = len(visible)
+    page = pagination.resolve_page(request.query_params.get("page"), total)
+    visible_page = visible[
+        pagination.sql_offset(page): pagination.sql_offset(page) + pagination.PAGE_SIZE
+    ]
 
     filter_bar = '<div class="filterbar">' + "".join(
         f'<a href="/admin/review?filter={key}"'
@@ -398,7 +422,7 @@ def admin_review(
     ])
 
     table_rows = []
-    for row in visible:
+    for row in visible_page:
         state_value = row["review"]["review_state"]
         table_rows.append([
             (f'<a href="/admin/review/{row["candidate_id"]}?queue={chosen}">'
@@ -427,6 +451,7 @@ def admin_review(
             table_rows,
             empty="nothing to review in this view",
         )
+        + pagination.nav("/admin/review", {"filter": chosen}, page, total)
     )
     return HTMLResponse(admin._page("Review", "/admin/review", body, flash=admin._flash(request)))
 

@@ -61,15 +61,22 @@ def _clock(value: Any) -> str:
 
 @router.get("/admin/events", response_class=HTMLResponse)
 def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import pagination
+
     with _connection() as con:
         summary = normalization.metrics(con)
         duplicate_summary = duplicates.metrics(con)
+        with con.cursor() as cur:
+            cur.execute("SELECT count(*) FROM events")
+            total = cur.fetchone()[0]
+        page = pagination.resolve_page(request.query_params.get("page"), total)
         with con.cursor() as cur:
             cur.execute(
                 "SELECT e.*, v.name AS venue_name FROM events e "
                 "LEFT JOIN venues v ON v.venue_id = e.venue_id "
                 "ORDER BY e.event_date DESC, e.start_time NULLS LAST, e.event_id "
-                "LIMIT 200"
+                "LIMIT %s OFFSET %s",
+                (pagination.PAGE_SIZE, pagination.sql_offset(page)),
             )
             names = [c.name for c in cur.description]
             rows = [dict(zip(names, row)) for row in cur.fetchall()]
@@ -118,7 +125,9 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
         '<p class="note">Only LIVE events appear on the user surface. A '
         "snapshot replay and a PoC fixture stay here and nowhere else.</p>"
     )
-    body = "<h2>Events</h2>" + cards + note + table
+    body = "<h2>Events</h2>" + cards + note + table + pagination.nav(
+        "/admin/events", {}, page, total
+    )
     return HTMLResponse(admin._page("Events", "/admin/events", body,
                                     flash=admin._flash(request)))
 
@@ -431,8 +440,14 @@ def admin_dismiss_venue(
 
 @router.get("/admin/duplicates", response_class=HTMLResponse)
 def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import pagination
+
     with _connection() as con:
-        pairs = duplicates.open_pairs(con)
+        total = duplicates.count_open_pairs(con)
+        page = pagination.resolve_page(request.query_params.get("page"), total)
+        pairs = duplicates.open_pairs(
+            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
+        )
         summary = duplicates.metrics(con)
 
     rows = []
@@ -474,7 +489,7 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
     body = ("<h2>Duplicates</h2>" + cards + note + admin._table(
         ["Date", "Event", "Other", "Matched", "Differs", "Decide"], rows,
         empty="nothing ambiguous - the rules settled everything they found",
-    ))
+    ) + pagination.nav("/admin/duplicates", {}, page, total))
     return HTMLResponse(admin._page("Duplicates", "/admin/duplicates", body,
                                     flash=admin._flash(request)))
 

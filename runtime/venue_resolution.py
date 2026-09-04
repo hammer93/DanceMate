@@ -741,9 +741,11 @@ def set_venue_enabled(con, venue_id: int, enabled: bool, *,
     return {"venue": updated, "action": recorded}
 
 
-def venues_with_usage(con) -> list[dict[str, Any]]:
+def venues_with_usage(
+    con, *, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
     """The venue list, each row carrying what depends on it."""
-    venues = master_data.list_venues(con)
+    venues = master_data.list_venues(con, limit=limit, offset=offset)
     if not venues:
         return []
     with con.cursor() as cur:

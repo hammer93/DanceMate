@@ -21,8 +21,8 @@ import html
 import json
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from . import (
     acquisition, candidates, collectors, content_store, db, health, intake,
@@ -159,6 +159,14 @@ details.editrow input[disabled]{background:var(--bg);color:var(--muted)}
 .filterbar a{border:1px solid var(--line);border-radius:999px;padding:3px 11px;
 text-decoration:none;font-size:12px;background:var(--card);color:var(--muted)}
 .filterbar a.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.pager{display:flex;align-items:center;justify-content:space-between;gap:12px;
+flex-wrap:wrap;margin-top:10px;padding:8px 2px;font-size:12px;color:var(--muted)}
+.pager-nav{display:flex;align-items:center;gap:10px}
+.pager-link{border:1px solid var(--line);border-radius:6px;padding:4px 10px;
+text-decoration:none;color:var(--fg);background:var(--card)}
+.pager-link:hover{border-color:var(--accent);color:var(--accent)}
+.pager-link.off{color:var(--muted);border-color:var(--line);opacity:.5}
+.pager-status{font-variant-numeric:tabular-nums}
 """
 
 NAV = (
@@ -640,11 +648,15 @@ def _source_yield(found: dict[str, Any], op: dict[str, Any] | None = None) -> st
 
 @router.get("/admin/sources", response_class=HTMLResponse)
 def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
-    from . import master_admin, master_edit
+    from . import master_admin, master_edit, pagination
 
     settings = _settings()
     with _connection() as con:
-        rows = sources.list_sources(con)
+        total = sources.count_sources(con)
+        page = pagination.resolve_page(request.query_params.get("page"), total)
+        rows = sources.list_sources(
+            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
+        )
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
         outcomes = sources.acquisition_outcomes(con)
@@ -760,6 +772,7 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         + f'<p class="note">Engine root: <code>{E(str(settings.engine_root))}</code>. '
           "Live collection needs the platform's API credentials in <code>.env</code>; "
           "without them a source can still be tested against a recorded snapshot.</p>"
+        + pagination.nav("/admin/sources", {}, page, total)
     )
     return HTMLResponse(_page("Sources", "/admin/sources", body, flash=_flash(request)))
 
@@ -918,10 +931,15 @@ def _venue_actions(venue: dict[str, Any]) -> str:
 
 @router.get("/admin/venues", response_class=HTMLResponse)
 def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
-    from . import venue_resolution  # local: keeps the v0.75 console import list stable
+    from . import pagination, venue_resolution  # local: keeps the v0.75 console import list stable
 
     with _connection() as con:
-        venues = venue_resolution.venues_with_usage(con)
+        total = master_data.count_venues(con)
+        page = pagination.resolve_page(request.query_params.get("page"), total)
+        venues = venue_resolution.venues_with_usage(
+            con, limit=pagination.PAGE_SIZE,
+            offset=pagination.sql_offset(page),
+        )
         regions = master_data.list_regions(con)
         alias_rows = {v["venue_id"]: master_data.venue_aliases(con, v["venue_id"])
                       for v in venues}
@@ -961,6 +979,12 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
   one venue. The venue name is registered as an alias automatically.</p>
 </form></details>"""
 
+    csv_bar = (
+        '<p class="actions">'
+        '<a href="/admin/venues/export.csv"><button>Export CSV</button></a> '
+        '<a href="/admin/venues/import"><button>Import CSV</button></a>'
+        "</p>"
+    )
     body = ('<h2>Venues</h2>'
             '<p class="note">Venue strings read from posts that this list does '
             'not recognise are queued at '
@@ -968,10 +992,10 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
             'Deleting a venue removes the link and nothing else — the posts, '
             'the evidence and the events stay, and the strings they were read '
             'from go back in that queue.</p>'
-            ) + add_form + _table(
+            ) + csv_bar + add_form + _table(
         ["Name", "Region", "Address", "Aliases", "Events using", "State", "Actions"], rows,
         empty="no venue registered yet",
-    )
+    ) + pagination.nav("/admin/venues", {}, page, total)
     return HTMLResponse(_page("Venues", "/admin/venues", body, flash=_flash(request)))
 
 
@@ -997,12 +1021,191 @@ def admin_create_venue(
     return _back("/admin/venues", f"added venue {name}")
 
 
+# --- venue CSV import/export -------------------------------------------------
+
+@router.get("/admin/venues/export.csv")
+def admin_venues_export_csv(_: str = Depends(require_admin)) -> Response:
+    from . import venue_csv
+
+    with _connection() as con:
+        rows = venue_csv.export_rows(con)
+    body = venue_csv.to_csv(rows)
+    filename = venue_csv.export_filename()
+    return Response(
+        content=body, media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/venues/import/template.csv")
+def admin_venues_import_template(_: str = Depends(require_admin)) -> Response:
+    from . import venue_csv
+
+    return Response(
+        content=venue_csv.template_csv(), media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="dancemate_venues_template.csv"'
+        },
+    )
+
+
+def _preview_rows_table(preview_result: dict[str, Any]) -> str:
+    tone = {
+        "NEW": "ok", "UPDATE": "warn", "DUPLICATE": "bad", "INVALID": "bad",
+    }
+    rows = []
+    for entry in preview_result["rows"]:
+        detail = (
+            E("; ".join(entry["errors"])) if entry["errors"]
+            else E("; ".join(entry["reasons"])) if entry["reasons"]
+            else "-"
+        )
+        rows.append([
+            str(entry["row"]),
+            _badge(entry["status"], tone.get(entry["status"], "muted")),
+            E(entry["name"] or "-"),
+            E(entry["region"] or "-"),
+            E(entry["address"] or "-"),
+            E(", ".join(entry["aliases"]) or "-"),
+            detail,
+        ])
+    return _table(
+        ["Row", "Status", "Name", "Region", "Address", "Aliases", "Detail"],
+        rows, empty="the file has no data rows",
+    )
+
+
+@router.get("/admin/venues/import", response_class=HTMLResponse)
+def admin_venues_import_form(
+    request: Request, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    body = f"""<h2>Import Venues (CSV)</h2>
+<p class="note">Nothing is written until you review a preview and press Confirm.
+<a href="/admin/venues/import/template.csv">Download the template</a> for the
+expected columns — {E(", ".join(("name", "region", "address", "aliases", "notes", "active")))},
+aliases separated by <code>|</code>.</p>
+<form method="post" action="/admin/venues/import" enctype="multipart/form-data">
+  <div class="grid">
+    <div><label>CSV file (max 5MB)</label><input type="file" name="csvfile" accept=".csv" required></div>
+  </div>
+  <div class="actions"><button class="primary">Preview</button></div>
+</form>"""
+    return HTMLResponse(
+        _page("Import Venues", "/admin/venues", body, flash=_flash(request))
+    )
+
+
+@router.post("/admin/venues/import", response_class=HTMLResponse)
+async def admin_venues_import_preview(
+    csvfile: UploadFile, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    import base64
+
+    from . import venue_csv
+
+    raw = await csvfile.read()
+    if len(raw) > venue_csv.MAX_UPLOAD_BYTES:
+        return _back(
+            "/admin/venues/import",
+            f"file is over the {venue_csv.MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
+            "bad",
+        )
+    try:
+        rows = venue_csv.parse_csv(raw)
+    except (venue_csv.ImportTooLarge, UnicodeDecodeError) as exc:
+        return _back("/admin/venues/import", f"could not read the file: {exc}", "bad")
+
+    with _connection() as con:
+        result = venue_csv.preview(con, rows)
+
+    counts = result["counts"]
+    cards = _cards([
+        ("Rows", result["total"], "parsed from the file"),
+        ("New", counts["NEW"], "will be created"),
+        ("Update", counts["UPDATE"], "matched to an existing venue"),
+        ("Duplicate", counts["DUPLICATE"],
+         "same name, different address — never auto-merged"),
+        ("Invalid", counts["INVALID"], "must be fixed before Confirm"),
+    ])
+    can_confirm = counts["INVALID"] == 0 and result["total"] > 0
+    confirm_form = ""
+    if can_confirm:
+        encoded = base64.b64encode(raw).decode("ascii")
+        confirm_form = f"""
+<form method="post" action="/admin/venues/import/confirm">
+  <input type="hidden" name="csv_b64" value="{E(encoded)}">
+  <input type="hidden" name="filename" value="{E(csvfile.filename or 'import.csv')}">
+  <div class="actions"><button class="primary">Confirm Import</button>
+  <a href="/admin/venues/import"><button type="button">Cancel</button></a></div>
+</form>"""
+    else:
+        confirm_form = (
+            '<p class="note">Fix the INVALID rows and upload again — '
+            "Confirm is disabled while any row is invalid.</p>"
+            if counts["INVALID"] else
+            '<p class="note">Nothing to import — the file has no data rows.</p>'
+        )
+
+    body = (
+        "<h2>Import Preview</h2>" + cards + confirm_form
+        + _preview_rows_table(result)
+    )
+    return HTMLResponse(_page("Import Preview", "/admin/venues", body))
+
+
+@router.post("/admin/venues/import/confirm")
+def admin_venues_import_confirm(
+    csv_b64: str = Form(...), filename: str = Form("import.csv"),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    import base64
+
+    from . import venue_csv
+
+    try:
+        raw = base64.b64decode(csv_b64)
+        rows = venue_csv.parse_csv(raw)
+    except Exception as exc:
+        return _back("/admin/venues", f"could not re-read the upload: {exc}", "bad")
+
+    try:
+        with _connection() as con:
+            # Re-derived from the same rows Preview showed - a stale or
+            # tampered confirm can never apply something Preview never saw.
+            result = venue_csv.preview(con, rows)
+            # One savepoint-backed transaction for the whole batch: a failure
+            # on row 8 of 10 must not leave rows 1-7 committed under an
+            # autocommit connection that would otherwise commit each
+            # statement as it runs.
+            with con.transaction():
+                applied = venue_csv.apply_import(
+                    con, result["rows"], reviewer=reviewer, filename=filename
+                )
+    except venue_csv.ImportRejected as exc:
+        return _back("/admin/venues", str(exc), "bad")
+    except Exception as exc:
+        return _back("/admin/venues", f"import failed: {exc}", "bad")
+
+    return _back(
+        "/admin/venues",
+        f"imported {filename}: {applied['created']} created, "
+        f"{applied['updated']} updated, {applied['noop']} unchanged, "
+        f"{applied['duplicate_skipped']} duplicate(s) skipped",
+    )
+
+
 # --- organizers -------------------------------------------------------------
 
 @router.get("/admin/organizers", response_class=HTMLResponse)
 def admin_organizers(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import pagination
+
     with _connection() as con:
-        organizers = master_data.list_organizers(con)
+        total = master_data.count_organizers(con)
+        page = pagination.resolve_page(request.query_params.get("page"), total)
+        organizers = master_data.list_organizers(
+            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
+        )
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
 
@@ -1063,7 +1266,7 @@ def admin_organizers(request: Request, _: str = Depends(require_admin)) -> HTMLR
             "Event가 계속 해석되어야 합니다.</p>" + add_form) + _table(
         ["Name", "Genre", "Region", "Contact", "State", "Actions"], rows,
         empty="no organizer registered yet",
-    )
+    ) + pagination.nav("/admin/organizers", {}, page, total)
     return HTMLResponse(_page("Organizers", "/admin/organizers", body, flash=_flash(request)))
 
 
@@ -1148,9 +1351,19 @@ def admin_candidates(request: Request, _: str = Depends(require_admin)) -> HTMLR
 
 @router.get("/admin/master", response_class=HTMLResponse)
 def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import pagination
+
     with _connection() as con:
-        genres = master_data.list_genres(con)
-        regions = master_data.list_regions(con)
+        genre_total = master_data.count_genres(con)
+        genre_page = pagination.resolve_page(
+            request.query_params.get("genre_page"), genre_total)
+        genres = master_data.list_genres(
+            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(genre_page))
+        region_total = master_data.count_regions(con)
+        region_page = pagination.resolve_page(
+            request.query_params.get("region_page"), region_total)
+        regions = master_data.list_regions(
+            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(region_page))
 
     from . import master_admin, master_edit
 
@@ -1198,6 +1411,8 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
 <p class="note">Genres are disabled, never deleted - events already tagged with
 one still have to resolve.</p></form></details>"""
         + _table(["Code", "Name", "State", "Actions"], genre_rows, empty="no genre")
+        + pagination.nav("/admin/master", {"region_page": region_page}, genre_page,
+                         genre_total, page_param="genre_page")
         + "<h2>Regions</h2>"
         + """<details><summary>Add Region</summary>
 <form method="post" action="/admin/regions"><div class="grid">
@@ -1214,6 +1429,8 @@ one still have to resolve.</p></form></details>"""
           "Region filter가 사용하므로 수정할 수 없습니다.</p>"
         + _table(["Code", "Name", "Country", "City", "State", "Actions"], region_rows,
                  empty="no region")
+        + pagination.nav("/admin/master", {"genre_page": genre_page}, region_page,
+                         region_total, page_param="region_page")
     )
     return HTMLResponse(_page("Genres & Regions", "/admin/master", body, flash=_flash(request)))
 

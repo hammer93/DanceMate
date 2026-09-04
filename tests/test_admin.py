@@ -16,9 +16,17 @@ ADMIN_PAGES = (
     "/admin",
     "/admin/sources",
     "/admin/venues",
+    "/admin/venues/export.csv",
+    "/admin/venues/import",
+    "/admin/venues/import/template.csv",
     "/admin/organizers",
     "/admin/candidates",
     "/admin/master",
+    "/admin/events",
+    "/admin/duplicates",
+    "/admin/intake",
+    "/admin/review",
+    "/admin/usage",
 )
 
 ADMIN_APIS = (
