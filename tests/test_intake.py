@@ -123,13 +123,21 @@ def test_a_failed_run_records_its_error(pg, source):
 
 
 def test_pending_items_feed_the_ingest_queue(pg, source):
+    # A generous limit on purpose. pending_items batches at 50 by default and
+    # orders oldest first, so a staging queue with a real backlog would push
+    # this test's own row off the end -- which says nothing about the state
+    # transition being tested.
+    deep = 100000
+
     intake.store_item(pg, source["source_id"], _item())
-    pending = [p for p in intake.pending_items(pg) if p["source_id"] == source["source_id"]]
+    pending = [p for p in intake.pending_items(pg, limit=deep)
+               if p["source_id"] == source["source_id"]]
     assert len(pending) == 1
     assert pending[0]["source_key"] == source["source_key"]
 
     intake.mark_ingested(pg, pending[0]["source_item_id"])
-    still_pending = [p for p in intake.pending_items(pg) if p["source_id"] == source["source_id"]]
+    still_pending = [p for p in intake.pending_items(pg, limit=deep)
+                     if p["source_id"] == source["source_id"]]
     assert still_pending == []
 
 
