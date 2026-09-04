@@ -452,7 +452,7 @@ def test_the_form_says_when_it_inferred_the_split():
     form = events_admin._new_venue_form(
         entry, venue_resolution.suggest(entry["venue_text"]), [], None,
     )
-    assert "추정한 값" in form
+    assert "원문 문자열에서 나눈 값" in form
 
 
 def test_a_venue_string_is_escaped_in_the_form():
@@ -491,3 +491,324 @@ def test_a_fixture_only_string_is_marked_as_having_no_live_post():
     # Rendered through the page so the badge is checked where it appears.
     rendered = events_admin._new_venue_form(entry, suggestion, [], None)
     assert "OCHO" in rendered
+
+
+# --- an address the post gives but the venue string does not -----------------
+
+@pytest.mark.parametrize("body,venue,expected", [
+    # The address runs straight into the next field; it stops at the emoji.
+    ("📍 홍대 PISTA 서울 마포구 월드컵북로6길 49 B1 📩 예약 / 문의 🐰 바니 [전화번호]",
+     "PISTA", "서울 마포구 월드컵북로6길 49 B1"),
+    # A building and floor belong to the address; the fee that follows does not.
+    ("장소 : 엔빠스(EnPaz Tango Studio) 서울특별시 서초구 반포대로30길 82 우서빌딩 지하 1층 밀롱가 : 13,000원",
+     "엔빠스(EnPaz Tango Studio)", "서울특별시 서초구 반포대로30길 82 우서빌딩 지하 1층"),
+    ("주소: 서울 강남구 테헤란로 1 2층", "어딘가", "서울 강남구 테헤란로 1 2층"),
+])
+def test_an_address_written_next_to_the_venue_is_that_venues(body, venue, expected):
+    assert venue_resolution.address_in(body, venue) == expected
+
+
+@pytest.mark.parametrize("body,venue", [
+    # A parking address in the same post is not the venue's address.
+    ("공원 공영주차장은 서울 마포구 어딘가로 12 입니다. 장소: 데땅고", "데땅고"),
+    ("장소: 아미고스튜디오 DJ : 로띠 이번 주 수고해 주실 부산", "아미고스튜디오"),
+    ("", "PISTA"),
+])
+def test_an_address_that_is_not_this_venues_is_left_alone(body, venue):
+    assert venue_resolution.address_in(body, venue) is None
+
+
+def test_the_post_fills_the_address_the_venue_string_does_not_carry(pg, unique):
+    """The complaint this release answers: the name and the address were on
+    screen and the form still asked for them."""
+    venue_text = f"픽업홀 {unique}"
+    address = "서울 마포구 월드컵북로6길 49 B1"
+    normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT source_item_id FROM events WHERE candidate_id = %s",
+            (int(f"{unique[-6:]}1"),),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        pytest.skip("this candidate has no stored post body to read")
+
+    entry = _queued(pg, venue_text)
+    filled = venue_resolution.prefill(pg, entry)
+    assert filled["name"] == venue_text
+    assert filled["address"] is None  # nothing in the post yet
+
+
+def test_prefill_reports_where_each_value_came_from(pg, unique):
+    venue_text = f"라 벤따나 {unique} (서울 마포구 잔다리로 48, 2층)"
+    normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
+    entry = _queued(pg, venue_text)
+    filled = venue_resolution.prefill(pg, entry)
+    assert filled["name"] == f"라 벤따나 {unique}"
+    assert filled["address"] == "서울 마포구 잔다리로 48, 2층"
+    assert filled["address_source"] == "raw string"
+    assert filled["region_id"] is not None
+
+
+def test_two_posts_disagreeing_on_the_address_offer_neither(pg, unique):
+    """Two answers is not a stronger signal than none. The posts are linked on
+    the same screen; the operator reads them."""
+    assert venue_resolution.address_from_context(pg, f"존재하지않는장소{unique}") is None
+
+
+# --- removing a venue -------------------------------------------------------
+
+def test_a_venue_nothing_uses_can_be_deleted(pg, unique, seoul_id):
+    venue = master_data.create_venue(pg, name=f"미사용 홀 {unique}", region_id=seoul_id)
+    assert venue_resolution.usage(pg, venue["venue_id"])["in_use"] is False
+
+    result = venue_resolution.delete_venue(pg, venue["venue_id"], reviewer="tester")
+    assert result["events_unlinked"] == 0
+    assert master_data.get_venue(pg, venue["venue_id"]) is None
+
+
+def test_a_venue_events_use_refuses_a_plain_delete(pg, unique, seoul_id):
+    """Told before, not after: the exception carries the counts the console puts
+    in the confirmation."""
+    venue_text = f"테스트홀 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=venue_text, region_id=seoul_id, reviewer="tester",
+    )
+    venue_id = created["venue"]["venue_id"]
+
+    with pytest.raises(venue_resolution.VenueInUse) as raised:
+        venue_resolution.delete_venue(pg, venue_id, reviewer="tester")
+    assert raised.value.usage["events"] == 1
+    assert master_data.get_venue(pg, venue_id) is not None
+
+
+def test_unlink_and_delete_sends_the_events_back_to_their_raw_string(pg, unique, seoul_id):
+    venue_text = f"테스트홀 {unique}"
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    venue_id = created["venue"]["venue_id"]
+    assert normalization.get(pg, stored["event_id"])["venue_id"] == venue_id
+
+    result = venue_resolution.delete_venue(pg, venue_id, reviewer="tester", unlink=True)
+    assert result["events_unlinked"] == 1
+    assert master_data.get_venue(pg, venue_id) is None
+
+    back = normalization.get(pg, stored["event_id"])
+    assert back["venue_id"] is None
+    assert back["region_id"] is None
+    assert back["venue_status"] == normalization.VENUE_UNRESOLVED
+    # The string is what the post said, and the post has not changed.
+    assert back["venue_text"] == venue_text
+
+
+def test_the_raw_string_goes_back_in_the_queue(pg, unique, seoul_id):
+    """Deleting a venue loses no information: the string can be decided again."""
+    venue_text = f"테스트홀 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    assert venue_text not in [v["venue_text"] for v in normalization.unresolved_venues(pg)]
+
+    venue_resolution.delete_venue(
+        pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
+    )
+    assert venue_text in [v["venue_text"] for v in normalization.unresolved_venues(pg)]
+
+
+def test_deleting_a_venue_keeps_the_event_and_its_provenance(pg, unique, seoul_id):
+    """A venue is a link. The posts, the candidate and the event exist without it
+    and survive it."""
+    venue_text = f"테스트홀 {unique}"
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    venue_resolution.delete_venue(
+        pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
+    )
+    survived = normalization.get(pg, stored["event_id"])
+    assert survived is not None
+    assert survived["candidate_id"] == stored["candidate_id"]
+    assert survived["source_url"] == stored["source_url"]
+    assert survived["event_date"] == stored["event_date"]
+    assert survived["fee"] == stored["fee"]
+
+
+def test_the_user_surface_and_the_region_filter_follow_the_deletion(pg, unique, seoul_id):
+    venue_text = f"테스트홀 {unique}"
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    assert events_api.get_event(pg, stored["event_id"])["region"] == "Seoul"
+
+    venue_resolution.delete_venue(
+        pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
+    )
+    after = events_api.get_event(pg, stored["event_id"])
+    assert after["venue"]["status"] == "UNRESOLVED"
+    assert after["venue"]["name"] == venue_text
+    assert after["region"] is None
+    # A stale region filter would keep offering it as a Seoul event.
+    assert not [e for e in events_api.search(
+        pg, on="2026-09-05", region="Seoul", limit=100)["events"]
+        if e["id"] == stored["event_id"]]
+
+
+def test_an_automatic_merge_based_on_that_venue_is_released(pg, unique, seoul_id):
+    """The rules merged on date, place and time. Take the place away and the
+    merge no longer follows from anything, so the next scan decides again."""
+    from runtime import duplicates
+
+    first = normalization.normalize_candidate(pg, _candidate(unique, "1"))
+    second = normalization.normalize_candidate(pg, _candidate(unique, "2"))
+    entry = _queued(pg, f"테스트홀 {unique}")
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    duplicates.scan(pg, on=date(2026, 9, 5))
+    merged = [e for e in (first, second)
+              if normalization.get(pg, e["event_id"])["canonical_event_id"] is not None]
+    assert len(merged) == 1
+
+    result = venue_resolution.delete_venue(
+        pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
+    )
+    assert result["automatic_merges_released"] >= 1
+    for event in (first, second):
+        assert normalization.get(pg, event["event_id"])["canonical_event_id"] is None
+
+
+def test_a_human_duplicate_decision_survives_a_venue_deletion(pg, unique, seoul_id):
+    """Automation releases what automation decided. It does not overturn a person."""
+    from runtime import duplicates
+
+    first = normalization.normalize_candidate(pg, _candidate(unique, "1"))
+    second = normalization.normalize_candidate(pg, _candidate(unique, "2", start_time="22:00"))
+    entry = _queued(pg, f"테스트홀 {unique}")
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+    )
+    duplicates.scan(pg, on=date(2026, 9, 5))
+    pair = next(p for p in duplicates.open_pairs(pg)
+                if p["event_id"] in (first["event_id"], second["event_id"]))
+    duplicates.resolve_pair(
+        pg, pair["pair_id"], decision=duplicates.DUPLICATE,
+        canonical_event_id=first["event_id"], reviewer="kimpro",
+    )
+
+    venue_resolution.delete_venue(
+        pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
+    )
+    kept = normalization.get(pg, second["event_id"])
+    assert kept["canonical_event_id"] == first["event_id"]
+    assert kept["duplicate_decided_by"] == duplicates.HUMAN
+
+
+def test_deactivating_keeps_everything_and_only_stops_offering_it(pg, unique, seoul_id):
+    venue_text = f"테스트홀 {unique}"
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=venue_text, region_id=seoul_id, reviewer="tester",
+    )
+    venue_id = created["venue"]["venue_id"]
+
+    result = venue_resolution.set_venue_enabled(pg, venue_id, False, reviewer="tester")
+    assert result["venue"]["enabled"] is False
+    assert normalization.get(pg, stored["event_id"])["venue_id"] == venue_id
+    assert venue_id not in [v["venue_id"]
+                            for v in master_data.list_venues(pg, enabled_only=True)]
+
+    venue_resolution.set_venue_enabled(pg, venue_id, True, reviewer="tester")
+    assert master_data.get_venue(pg, venue_id)["enabled"] is True
+
+
+@pytest.mark.parametrize("unlink,expected", [
+    (False, venue_resolution.VENUE_DELETE),
+    (True, venue_resolution.VENUE_UNLINK_DELETE),
+])
+def test_every_removal_is_audited_and_stays_readable(pg, unique, seoul_id, unlink, expected):
+    """The record outlives the venue it names."""
+    if unlink:
+        venue_text = f"테스트홀 {unique}"
+        normalization.normalize_candidate(pg, _candidate(unique))
+        entry = _queued(pg, venue_text)
+        venue = venue_resolution.create_and_link(
+            pg, unresolved_venue_id=entry["unresolved_venue_id"],
+            name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
+        )["venue"]
+    else:
+        venue = master_data.create_venue(pg, name=f"미사용 홀 {unique}", region_id=seoul_id)
+
+    venue_resolution.delete_venue(pg, venue["venue_id"], reviewer="kimpro", unlink=unlink)
+    recorded = next(a for a in venue_resolution.history(pg)
+                    if a["venue_id"] == venue["venue_id"] and a["action"] == expected)
+    assert recorded["reviewer"] == "kimpro"
+    assert recorded["venue_name"] == venue["name"]
+    # Still readable after the venue itself is gone.
+    assert recorded["resolved_venue_name"] == venue["name"]
+    assert recorded["before_json"]["name"] == venue["name"]
+
+
+def test_deleting_a_venue_that_does_not_exist_changes_nothing(pg):
+    with pytest.raises(LookupError):
+        venue_resolution.delete_venue(pg, 999999999, reviewer="tester")
+
+
+def test_the_venue_list_carries_what_depends_on_each_row(pg, unique, seoul_id):
+    venue_text = f"테스트홀 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique))
+    entry = _queued(pg, venue_text)
+    created = venue_resolution.create_and_link(
+        pg, unresolved_venue_id=entry["unresolved_venue_id"],
+        name=venue_text, region_id=seoul_id, reviewer="tester",
+    )
+    unused = master_data.create_venue(pg, name=f"미사용 홀 {unique}", region_id=seoul_id)
+
+    listed = {v["venue_id"]: v for v in venue_resolution.venues_with_usage(pg)}
+    assert listed[created["venue"]["venue_id"]]["events"] == 1
+    assert listed[created["venue"]["venue_id"]]["in_use"] is True
+    assert listed[unused["venue_id"]]["events"] == 0
+    assert listed[unused["venue_id"]]["in_use"] is False
+
+
+def test_the_venue_page_says_how_many_events_a_deletion_would_change():
+    from runtime import admin
+
+    used = admin._venue_actions(
+        {"venue_id": 1, "name": "라 벤따나", "enabled": True, "in_use": True,
+         "events": 3, "listed_events": 2, "aliases": ["라 벤따나"]},
+    )
+    assert "Unlink &amp; Delete" in used
+    assert "Event 3건에서 사용 중" in used
+    assert "Deactivate" in used
+
+    unused = admin._venue_actions(
+        {"venue_id": 2, "name": "미사용", "enabled": True, "in_use": False,
+         "events": 0, "listed_events": 0, "aliases": []},
+    )
+    assert "<summary>Delete</summary>" in unused
+    assert "어떤 Event에서도 쓰이지 않습니다" in unused
+
+
+def test_both_removal_routes_require_authentication(client):
+    for path in ("/admin/venues/1/delete", "/admin/venues/1/enabled"):
+        assert client.post(path).status_code in (401, 503), path

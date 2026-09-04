@@ -506,16 +506,60 @@ def admin_source_action(
 
 # --- venues -----------------------------------------------------------------
 
+def _venue_actions(venue: dict[str, Any]) -> str:
+    """Delete, unlink-and-delete or deactivate, whichever this venue allows.
+
+    A venue nothing references can simply go. One that events point at cannot
+    be deleted by the same button and the same click: the confirmation names
+    how many events would change, because finding that out afterwards is not a
+    confirmation.
+    """
+    venue_id = venue["venue_id"]
+    toggle = (
+        f'<form class="inline" method="post" action="/admin/venues/{venue_id}/enabled">'
+        f'<input type="hidden" name="enabled" value="{"0" if venue["enabled"] else "1"}">'
+        f'<button>{"Deactivate" if venue["enabled"] else "Reactivate"}</button></form>'
+    )
+    if not venue["in_use"]:
+        confirm = (
+            f'<details><summary>Delete</summary>'
+            f'<p class="note">이 장소는 어떤 Event에서도 쓰이지 않습니다. '
+            f'삭제하면 alias {len(venue.get("aliases") or [])}건도 함께 사라집니다.</p>'
+            f'<form method="post" action="/admin/venues/{venue_id}/delete">'
+            '<div class="actions"><button>확인, 삭제합니다</button></div></form></details>'
+        )
+    else:
+        confirm = (
+            f'<details><summary>Unlink &amp; Delete</summary>'
+            f'<p class="note"><strong>이 장소는 Event {venue["events"]}건에서 사용 중입니다.</strong> '
+            "삭제하면 해당 Event는 게시글에서 읽은 원래 문자열로 되돌아가고 "
+            "(사용자 화면에서 다시 &quot;미확인&quot;), 그 문자열은 Unresolved 대기열로 "
+            "돌아갑니다. 게시글·근거·Event·리뷰는 그대로 남습니다.</p>"
+            f'<form method="post" action="/admin/venues/{venue_id}/delete">'
+            '<input type="hidden" name="unlink" value="1">'
+            '<div class="actions"><button>확인, 해제하고 삭제합니다</button></div>'
+            "</form></details>"
+        )
+    return f'<div class="actionbar">{toggle}{confirm}</div>'
+
+
 @router.get("/admin/venues", response_class=HTMLResponse)
 def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import venue_resolution  # local: keeps the v0.75 console import list stable
+
     with _connection() as con:
-        venues = master_data.list_venues(con)
+        venues = venue_resolution.venues_with_usage(con)
         regions = master_data.list_regions(con)
 
     rows = [
         [E(v["name"]), E(str(v.get("region_name") or "-")), E(str(v.get("address") or "-")),
          ", ".join(E(a) for a in (v.get("aliases") or [])) or "-",
-         _badge("ENABLED" if v["enabled"] else "DISABLED", "ok" if v["enabled"] else "muted")]
+         (f'<strong>{v["events"]}</strong>'
+          + (f' <span class="muted">({v["listed_events"]} listed)</span>'
+             if v["listed_events"] else "")
+          if v["events"] else '<span class="muted">0</span>'),
+         _badge("ENABLED" if v["enabled"] else "DISABLED", "ok" if v["enabled"] else "muted"),
+         _venue_actions(v)]
         for v in venues
     ]
     region_options = "".join(
@@ -540,9 +584,12 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
     body = ('<h2>Venues</h2>'
             '<p class="note">Venue strings read from posts that this list does '
             'not recognise are queued at '
-            '<a href="/admin/venues/unresolved">Unresolved Venues</a>.</p>'
+            '<a href="/admin/venues/unresolved">Unresolved Venues</a>. '
+            'Deleting a venue removes the link and nothing else — the posts, '
+            'the evidence and the events stay, and the strings they were read '
+            'from go back in that queue.</p>'
             ) + add_form + _table(
-        ["Name", "Region", "Address", "Aliases", "State"], rows,
+        ["Name", "Region", "Address", "Aliases", "Events using", "State", "Actions"], rows,
         empty="no venue registered yet",
     )
     return HTMLResponse(_page("Venues", "/admin/venues", body, flash=_flash(request)))
