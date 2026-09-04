@@ -215,3 +215,65 @@ def test_the_year_provenance_reaches_the_evidence_row():
         published=date(2026, 9, 1))
     dates = [e for e in explicit.evidences if e.field == "date"]
     assert dates and dates[0].inference == EXPLICIT_YEAR
+
+
+# --- a date read out of the middle of a longer number -----------------------
+
+def test_a_four_digit_year_is_not_chewed_into_a_month_and_a_day():
+    """The second wrong event on the board, and a different bug entirely.
+
+    "수빈 y 제이나 서울 탱고캠프 전야제 밀롱가 공연 2010.12 곡명 : El amanecer"
+    is a post about a performance, and 2010.12 is when the music was recorded.
+    The loose month/day pattern matched the 10.12 inside it and produced an
+    event in October.
+    """
+    found, raw, _ = _norm_date(
+        "수빈 y 제이나 서울 탱고캠프 전야제 밀롱가 공연 2010.12 곡명 : El amanecer",
+        published=date(2011, 6, 4))
+    assert found is None, f"read {found} out of a recording credit"
+    assert raw is None
+
+
+@pytest.mark.parametrize("text", [
+    "2010.12 곡명",        # the observed one: a year and a month
+    "2026.09 공연 기록",   # the same shape in the current year
+    "20260905",            # a bare timestamp-ish run of digits
+])
+def test_digits_inside_a_longer_number_are_left_alone(text):
+    """Only shapes actually seen in collected posts. A version string like
+    v1.25 still reads as a date, and that is left alone deliberately: no post
+    in the corpus contains one, and guarding against it would be guessing."""
+    found, _, _ = _norm_date(text, published=date(2026, 9, 1))
+    assert found is None, text
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("9/5 토요밀롱가", "2026-09-05"),
+    ("9/12(토)5시30분 파티", "2026-09-12"),
+    ("밀롱가 9.5 저녁", "2026-09-05"),
+    ("(9/5) 밀롱가", "2026-09-05"),
+])
+def test_a_real_bare_date_still_reads(text, expected):
+    """The boundary must not cost us the dates the pattern is there for."""
+    found, _, _ = _norm_date(text, published=date(2026, 9, 1))
+    assert found == expected
+
+
+# --- the caller may hold a date in any shape --------------------------------
+
+@pytest.mark.parametrize("published", [
+    "2024-09-26",
+    "2024-09-26T00:00:00+00:00",
+    "2024-09-26 00:00:00+00:00",
+    date(2024, 9, 26),
+])
+def test_the_post_date_is_accepted_however_the_caller_holds_it(published):
+    """source_items hands this over as a timestamp, tests as a date, and the
+    engine's own raw_json as a string. All three reach the same answer."""
+    found, _, _ = _norm_date("9월 25일 밀롱가", published=published)
+    assert found == "2024-09-25"
+
+
+def test_an_unparseable_post_date_is_treated_as_no_date_rather_than_crashing():
+    found, _, provenance = _norm_date("9월 25일 밀롱가", published="not a date")
+    assert (found, provenance) == (None, UNKNOWN_YEAR)

@@ -7,7 +7,10 @@ DATE_PATTERNS = [
     re.compile(r"(?P<y>20\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<y>\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
-    re.compile(r"(?P<m>\d{1,2})[./](?P<d>\d{1,2})"),
+    # Bounded on both sides, or it reads a date out of the middle of a longer
+    # number. "2010.12" -- a recording date in a post about a tango camp --
+    # matched as 10.12 and became an event this October.
+    re.compile(r"(?<!\d)(?P<m>\d{1,2})[./](?P<d>\d{1,2})(?!\d)"),
 ]
 # Kept for callers that still reference it. Time reading itself moved to
 # extraction_rules.parse_time_range, which also handles a meridiem marker
@@ -20,6 +23,24 @@ TIME_RE = re.compile(
 )
 FEE_RE = re.compile(r"(?:입장료|fee\s*:?)\s*([0-9][0-9,]*)\s*원?", re.I)
 DJ_RE = re.compile(r"DJ\s*[:.]?\s*([A-Za-z가-힣._]+)", re.I)
+
+
+def _as_date(value):
+    """Whatever the caller had -- a date, a datetime, an ISO string -- as a date."""
+    from datetime import date as _date, datetime as _datetime
+
+    if value is None or isinstance(value, _date) and not isinstance(value, _datetime):
+        return value
+    if isinstance(value, _datetime):
+        return value.date()
+    try:
+        return _datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    try:
+        return _date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 # Where a date's year came from. Recorded on the evidence row, because "the
@@ -86,6 +107,7 @@ def _norm_date(text: str, published=None, default_year=None):
     """
     from datetime import date as _date
 
+    published = _as_date(published)
     if published is None and default_year:
         published = _date(int(default_year), 7, 1)  # mid-year: no month bias
 
@@ -110,24 +132,6 @@ def _norm_date(text: str, published=None, default_year=None):
             return None, m.group(0), provenance
         return resolved.isoformat(), m.group(0), provenance
     return None, None, None
-
-
-def _as_date(value):
-    """Whatever the caller had -- a date, a datetime, an ISO string -- as a date."""
-    from datetime import date as _date, datetime as _datetime
-
-    if value is None or isinstance(value, _date) and not isinstance(value, _datetime):
-        return value
-    if isinstance(value, _datetime):
-        return value.date()
-    try:
-        return _datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
-    except ValueError:
-        pass
-    try:
-        return _date.fromisoformat(str(value)[:10])
-    except ValueError:
-        return None
 
 
 def _convert_hour(h: int, ap: str | None):

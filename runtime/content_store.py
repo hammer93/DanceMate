@@ -157,17 +157,24 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     freshness = "" if force else (
         " AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at)"
     )
+    # Normally only items whose article body we actually fetched are worth
+    # re-reading: nothing else has changed. A forced pass is the other case --
+    # the extractor changed, so every post we hold reads differently now,
+    # including the ones we only ever had a search snippet for. Those are
+    # exactly where a wrong date hides, because a snippet is mostly title.
+    statuses = ([acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL]
+                if not force else None)
     with con.cursor() as cur:
         cur.execute(
             "SELECT c.*, i.url, i.source_id, s.source_key, s.source_role, i.raw "
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
-            "WHERE c.acquisition_status IN (%s, %s) "
-            "  AND c.extracted_text IS NOT NULL"
+            "WHERE " + ("c.acquisition_status = ANY(%s) AND c.extracted_text IS NOT NULL"
+                        if statuses else "true")
             + freshness +
-            " ORDER BY c.fetched_at LIMIT %s",
-            (acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL, limit),
+            " ORDER BY c.fetched_at NULLS LAST, c.source_item_id LIMIT %s",
+            ((statuses, limit) if statuses else (limit,)),
         )
         return _rows(cur)
 
