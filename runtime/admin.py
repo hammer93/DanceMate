@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
     acquisition, candidates, collectors, content_store, db, health, intake,
-    master_data, quota, review, sources, usage,
+    master_data, quota, review, source_ops, sources, usage,
 )
 from .admin_auth import require_admin
 from .config import Settings
@@ -266,6 +266,103 @@ def _quality_bar(label: str, part: int, whole: int, *, link: str | None = None,
             f'<span class="qval">{E(shown)}</span>{tail}</div>')
 
 
+def _today_panel(settings: Settings) -> str:
+    """What an operator has to deal with today, before anything else.
+
+    The dashboard used to open on totals -- sources registered, items ever
+    collected. Those are true and they are not the morning's question, which is
+    what is on tonight and what still needs looking at.
+    """
+    from . import quality, review
+
+    try:
+        with _connection() as con:
+            buckets = quality.upcoming_buckets(con)
+            upcoming = quality.completeness(con, upcoming_only=True)
+            metrics = review.metrics(con)
+    except db.DatabaseUnavailable:
+        return ""
+
+    pending = max(0, upcoming["events"] - upcoming["human_reviewed"])
+    cards = _cards([
+        ("오늘", buckets["today"], "listed for today"),
+        ("내일", buckets["tomorrow"], "listed for tomorrow"),
+        ("이번 주", buckets["this_week"], "today through +7 days"),
+        ("검토 대기", pending, f'of {upcoming["events"]} upcoming'),
+        ("검토 완료", upcoming["human_reviewed"], "a person has ruled on these"),
+        ("지난 행사", buckets["past"], "kept, not shown to readers"),
+    ])
+    actions = (
+        '<div class="filterbar">'
+        '<a href="/admin/review?filter=today">오늘 검토</a>'
+        '<a href="/admin/review?filter=tomorrow">내일 검토</a>'
+        '<a href="/admin/review?filter=unknown_time">시간 미확인</a>'
+        '<a href="/admin/review?filter=unknown_venue">장소 미확인</a>'
+        '<a href="/admin/venues/unresolved">장소 연결</a>'
+        "</div>"
+    )
+    return "<h2>오늘 할 일</h2>" + cards + actions
+
+
+def _alpha_panel(settings: Settings) -> str:
+    """What people actually opened. No identifiers behind any of these numbers."""
+    from . import alpha_metrics
+
+    found = alpha_metrics.snapshot(settings)
+    if not found.get("available"):
+        return ""
+    counts = found["counts"]
+    cards = _cards([
+        (alpha_metrics.LABELS[kind], counts[kind]["today"],
+         f'{counts[kind]["recent"]} in {found["days"]} days')
+        for kind in alpha_metrics.KINDS
+    ])
+    opened = found["most_opened"]
+    listing = ""
+    if opened:
+        rows = "".join(
+            f'<li>{E(str(o["event_name"] or o["event_id"])[:56])} '
+            f'<span class="badge muted">{o["views"]}회</span></li>'
+            for o in opened if o.get("event_id")
+        )
+        listing = f'<ul class="sources">{rows}</ul>' if rows else ""
+    return (
+        '<h2>Alpha usage</h2>' + cards + listing
+        + '<p class="note">식별자·IP·세션을 저장하지 않습니다. 세 가지 횟수와 '
+          "날짜뿐입니다. 원문 이동이 많다면 추출이 부족하다는 뜻입니다.</p>"
+    )
+
+
+def _coverage_panel(settings: Settings) -> str:
+    """Genre against region. The zeroes are the interesting cells."""
+    from . import quality
+
+    try:
+        with _connection() as con:
+            matrix = quality.coverage_matrix(con)
+    except db.DatabaseUnavailable:
+        return ""
+    if not matrix["genres"]:
+        return ""
+    header = "".join(f"<th>{E(r)}</th>" for r in matrix["regions"])
+    rows = []
+    for genre in matrix["genres"]:
+        cells = "".join(
+            (f'<td class="num">{matrix["grid"][genre].get(region, 0)}</td>'
+             if matrix["grid"][genre].get(region, 0)
+             else '<td class="num"><span class="badge muted">0</span></td>')
+            for region in matrix["regions"]
+        )
+        rows.append(f"<tr><td>{E(genre)}</td>{cells}</tr>")
+    return (
+        '<h2>Coverage <span class="note">— 앞으로의 행사 기준</span></h2>'
+        '<div class="tablewrap"><table><thead><tr><th>Genre</th>'
+        f"{header}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+        '<p class="note">0인 칸이 다음에 채울 곳입니다. 실제 공개 소스가 없으면 '
+        "억지로 채우지 않습니다.</p>"
+    )
+
+
 def _quality_panel(settings: Settings) -> str:
     """What the data would look like to a dancer, and what is wrong with it."""
     from . import quality
@@ -291,7 +388,7 @@ def _quality_panel(settings: Settings) -> str:
         _quality_bar("Region", upcoming["region_known"], total,
                      link="/admin/venues", missing_label="지역 미확인"),
         _quality_bar("Human reviewed", upcoming["human_reviewed"], total,
-                     link="/admin/review?filter=pending", missing_label="미검토"),
+                     link="/admin/review?filter=upcoming", missing_label="미검토"),
     ])
 
     wrong = found["wrong"]
@@ -381,7 +478,10 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         )
     ]
 
+    today_panel = _today_panel(settings)
     quality_panel = _quality_panel(settings)
+    coverage_panel = _coverage_panel(settings)
+    alpha_panel = _alpha_panel(settings)
 
     cards = _cards([
         ("Sources", intake_summary.get("sources", "-"),
@@ -413,9 +513,12 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
     ]
 
     body = (
-        "<h2>Today</h2>"
-        + cards
+        today_panel
         + quality_panel
+        + coverage_panel
+        + alpha_panel
+        + "<h2>Collection</h2>"
+        + cards
         + "<h2>Components</h2>"
         + _table(["Component", "Status", "Detail"], status_rows, empty="no status")
         + "<h2>Providers today</h2>"
@@ -473,7 +576,39 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
 
 # --- sources ----------------------------------------------------------------
 
-def _source_yield(found: dict[str, Any]) -> str:
+def _source_decision(op: dict[str, Any]) -> str:
+    """What a person decided, and what the numbers suggest if nobody has.
+
+    The recommendation is offered with its reason attached, so an operator can
+    disagree with the reasoning rather than with a verdict.
+    """
+    if not op:
+        return "-"
+    decided = op.get("operational_decision")
+    recommended = op.get("recommended")
+    options = "".join(
+        f'<option value="{d}"{" selected" if d == (decided or recommended) else ""}>'
+        f"{E(source_ops.LABELS[d])}</option>"
+        for d in source_ops.DECISIONS
+    )
+    current = (
+        _badge(decided, source_ops.TONES.get(decided, "muted"))
+        + f'<div class="note">{E(str(op.get("decision_reason") or ""))[:70]}</div>'
+        if decided else
+        _badge(f"권고: {recommended}", "muted")
+        + f'<div class="note">{E(op.get("recommendation_reason") or "")}</div>'
+    )
+    form = (
+        f'<form class="inline" method="post" '
+        f'action="/admin/sources/{op["source_id"]}/decision">'
+        f'<select name="decision">{options}</select>'
+        '<input name="reason" placeholder="이유 (선택)" style="width:150px">'
+        "<button>Record</button></form>"
+    )
+    return current + form
+
+
+def _source_yield(found: dict[str, Any], op: dict[str, Any] | None = None) -> str:
     """Items collected, and how many of them we could actually read.
 
     "21 items" reads like a working source. "21 items, 0 readable" is the same
@@ -490,7 +625,16 @@ def _source_yield(found: dict[str, Any]) -> str:
     parts.append(f'<div class="note"><span class="badge {tone}">본문 {fetched}</span>')
     if blocked:
         parts.append(f' <span class="badge warn">차단 {blocked}</span>')
-    parts.append(f' · 이벤트 {events}</div>')
+    parts.append(f' · 이벤트 {events}')
+    upcoming = (op or {}).get("upcoming_events", 0)
+    # The number that decides whether a source still earns its requests: a
+    # hundred past events and none upcoming is a source that has stopped being
+    # useful, and no total tells them apart.
+    parts.append(
+        f' <span class="badge ok">앞으로 {upcoming}</span>' if upcoming
+        else ' <span class="badge muted">앞으로 0</span>'
+    )
+    parts.append("</div>")
     return "".join(parts)
 
 
@@ -504,6 +648,7 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
         outcomes = sources.acquisition_outcomes(con)
+        operations = {o["source_id"]: o for o in source_ops.overview(con)}
 
     table_rows = []
     for source in rows:
@@ -562,7 +707,9 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
             f'<span class="num">{source["collection_interval_minutes"]}m</span>',
             _badge(source["last_status"], "ok" if source["last_status"] == "PASS" else "muted")
             + "<br>" + E(str(source["last_collected_at"] or "never")[:19]),
-            _source_yield(outcomes.get(source["source_id"], {})),
+            _source_yield(outcomes.get(source["source_id"], {}),
+                          operations.get(source["source_id"], {})),
+            _source_decision(operations.get(source["source_id"], {})),
             _badge("LIVE" if capability["live"] else "SNAPSHOT",
                    "ok" if capability["live"] else "warn")
             + f'<div class="note">{E(capability["detail"])}</div>',
@@ -605,8 +752,8 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
     body = (
         "<h2>Sources</h2>" + add_form
         + _table(
-            ["Source", "Platform", "State", "Interval", "Last collection", "Items / readable",
-             "Collector", "Actions"],
+            ["Source", "Platform", "State", "Interval", "Last collection",
+             "Items / readable", "Decision", "Collector", "Actions"],
             table_rows,
             empty="no source registered yet",
         )
@@ -650,6 +797,34 @@ def admin_create_source(
     except Exception as exc:
         return _back("/admin/sources", f"could not add source: {exc}", "bad")
     return _back("/admin/sources", f"added {created['source_key']} (disabled)")
+
+
+@router.post("/admin/sources/{source_id}/decision")
+def admin_source_decision(
+    source_id: int,
+    decision: str = Form(...),
+    reason: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    """Record an operator's decision about a source. Collection is unchanged.
+
+    Writing down "replace this" and actually stopping collection are two steps
+    on purpose: an operator often wants the note before the action, and a
+    blocked community that fixes its settings next week should not have been
+    dropped this week.
+    """
+    try:
+        with _connection() as con:
+            updated = source_ops.set_decision(
+                con, source_id, decision.strip().upper(), reviewer=reviewer,
+                reason=reason,
+            )
+    except Exception as exc:
+        return _back("/admin/sources", f"could not record decision: {exc}", "bad")
+    if updated is None:
+        return _back("/admin/sources", f"no source {source_id}", "bad")
+    return _back("/admin/sources",
+                 f"{updated['source_key']}: {decision.strip().upper()} 기록됨")
 
 
 @router.post("/admin/sources/{source_id}/{action}")

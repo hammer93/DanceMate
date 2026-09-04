@@ -224,10 +224,14 @@ def test_env_example_documents_the_health_host():
 ACCEPTANCE = REPO_ROOT / "deploy" / "rockpro64" / "acceptance_marker.py"
 
 
-def test_acceptance_marker_tool_is_importable_and_compiles():
+def test_acceptance_marker_tool_is_importable_and_compiles(tmp_path):
     import py_compile
 
-    py_compile.compile(str(ACCEPTANCE), doraise=True)
+    # Byte-compile somewhere else. The default writes the .pyc next to the
+    # source, which fails whenever the checkout is mounted read-only -- exactly
+    # how the suite runs on the board.
+    py_compile.compile(str(ACCEPTANCE), cfile=str(tmp_path / "marker.pyc"),
+                       doraise=True)
 
 
 def test_acceptance_marker_writes_to_both_stores():
