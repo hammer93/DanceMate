@@ -76,6 +76,104 @@ def test_event_names_are_escaped():
     assert "&lt;script&gt;" in rendered
 
 
+def test_the_representative_source_link_is_rendered():
+    rendered = public._event_item({
+        "id": 1, "name": "더 피스타 밀롱가", "date": "2026-09-05",
+        "start_time": "19:30", "end_time": "23:30", "ends_next_day": False,
+        "venue": {"name": None, "status": "ABSENT"}, "fee": None,
+        "source_link": {"url": "https://cafe.daum.net/latindance/5HTC/22276",
+                        "label": "Daum Cafe"},
+    })
+    assert "출처: Daum Cafe" in rendered
+    assert 'href="https://cafe.daum.net/latindance/5HTC/22276"' in rendered
+    assert 'target="_blank"' in rendered
+    assert 'rel="noopener noreferrer"' in rendered
+    assert "원문 보기" in rendered
+
+
+def test_a_missing_source_url_shows_no_link_at_all():
+    """No fake source link - the card's own /events/{id} link is expected,
+    but nothing inside the .source block should be a link."""
+    rendered = public._event_item({
+        "id": 1, "name": "이름 없는 행사", "date": "2026-09-05",
+        "start_time": None, "end_time": None, "ends_next_day": False,
+        "venue": {"name": None, "status": "ABSENT"}, "fee": None,
+        "source_link": {"url": None, "label": None},
+    })
+    assert "출처 미확인" in rendered
+    source_block = rendered[rendered.index('<div class="source">'):]
+    assert "<a href" not in source_block
+
+
+def test_the_source_link_is_never_nested_inside_the_card_link():
+    """Two <a> in one anchor is invalid HTML browsers resolve unpredictably."""
+    rendered = public._event_item({
+        "id": 1, "name": "이벤트", "date": "2026-09-05",
+        "start_time": None, "end_time": None, "ends_next_day": False,
+        "venue": {"name": None, "status": "ABSENT"}, "fee": None,
+        "source_link": {"url": "https://example.com/post/1", "label": "Example"},
+    })
+    card_link_end = rendered.index("</a>")
+    source_link_start = rendered.index('<a href="https://example.com')
+    assert card_link_end < source_link_start
+
+
+def test_internal_source_codes_never_reach_the_card():
+    """SRC-W-001, NAVER_BLOG - a reader sees a brand, never the wiring."""
+    rendered = public._event_item({
+        "id": 1, "name": "이벤트", "date": "2026-09-05",
+        "start_time": None, "end_time": None, "ends_next_day": False,
+        "venue": {"name": None, "status": "ABSENT"}, "fee": None,
+        "source_link": {"url": "https://cafe.daum.net/x/y/1", "label": "Daum Cafe"},
+    })
+    assert "SRC-" not in rendered
+    assert "DAUM_CAFE" not in rendered
+    assert "NAVER_BLOG" not in rendered
+
+
+# --- events_api.source_label / valid_public_url ------------------------------
+
+def test_a_search_api_platform_gets_its_brand_name():
+    from runtime import events_api
+
+    assert events_api.source_label("DAUM_CAFE", "외부홍보게시판(파티)") == "Daum Cafe"
+    assert events_api.source_label("NAVER_BLOG", "소셜댄스 블로그 검색") == "Naver Blog"
+
+
+def test_a_web_source_uses_its_own_registered_name():
+    """WEB has no brand of its own here - K-TANGO is the source's own name."""
+    from runtime import events_api
+
+    assert events_api.source_label("WEB", "K-TANGO") == "K-TANGO"
+
+
+def test_an_unregistered_source_yields_no_label_rather_than_a_guess():
+    from runtime import events_api
+
+    assert events_api.source_label(None, None) is None
+    assert events_api.source_label("WEB", None) is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://cafe.daum.net/x/y/1",
+    "http://www.k-tango.net/cnf/festival02/read.jsp?no=10",
+])
+def test_valid_http_urls_pass_through(url):
+    from runtime import events_api
+
+    assert events_api.valid_public_url(url) == url
+
+
+@pytest.mark.parametrize("url", [
+    None, "", "javascript:alert(1)", "not a url", "ftp://example.com/file",
+    "mailto:a@b.com", "//example.com/no-scheme",
+])
+def test_malformed_or_non_web_urls_are_blocked(url):
+    from runtime import events_api
+
+    assert events_api.valid_public_url(url) is None
+
+
 def test_the_page_admits_it_is_an_alpha():
     footer = public._footer()
     assert "alpha" in footer.lower()
@@ -159,6 +257,72 @@ def test_the_detail_page_links_back_to_the_original_posts(pg, unique):
     assert len(found) == 1
     event = events_api.get_event(pg, found[0]["id"])
     assert all(source["url"].startswith("https://") for source in event["sources"])
+
+
+def test_the_representative_source_is_the_events_own_registered_source(pg, unique):
+    """A WEB source's own name (K-TANGO), not its platform code, and the same
+    link on the list result as on the detail page for the same event."""
+    from runtime import events_api, intake, sources
+
+    source = sources.create_source(
+        pg, source_key=f"SRC-W-{unique}", name=f"K-TANGO {unique}",
+        platform="WEB", source_role="ORGANIZER",
+        url="http://www.k-tango.net/", queries=[],
+        config={"board_urls": ["http://www.k-tango.net/cnf/festival02/index.jsp"]},
+    )
+    url = f"http://www.k-tango.net/cnf/festival02/read.jsp?no={unique}"
+    intake.store_item(
+        pg, source["source_id"],
+        intake.RawItem(external_id=url, url=url, title="2026 K-TANGO SF"),
+    )
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT source_item_id FROM source_items WHERE url = %s", (url,)
+        )
+        source_item_id = cur.fetchone()[0]
+
+    _live(pg, unique, "1", source_url=url, source_item_id=source_item_id)
+
+    found = [e for e in events_api.search(pg, when="today", limit=100)["events"]
+             if unique in (e["name"] or "")]
+    assert len(found) == 1
+    listed = found[0]
+
+    assert listed["source_link"]["url"] == url
+    assert listed["source_link"]["label"] == f"K-TANGO {unique}"
+
+    detail = events_api.get_event(pg, listed["id"])
+    assert detail["source_link"] == listed["source_link"]
+    # Same event context: the detail page's own canonical entry in `sources`
+    # is this exact post, not some other event's.
+    canonical = [s for s in detail["sources"] if s["is_canonical"]]
+    assert len(canonical) == 1
+    assert canonical[0]["url"] == url
+
+
+def test_a_daum_source_shows_its_platform_brand_not_its_operational_name(pg, unique):
+    from runtime import events_api, intake, sources
+
+    source = sources.create_source(
+        pg, source_key=f"SRC-D-{unique}", name=f"외부홍보게시판(파티) {unique}",
+        platform="DAUM_CAFE", source_role="PROMOTION_BOARD",
+        url=f"https://cafe.daum.net/{unique}", queries=["밀롱가"],
+    )
+    url = f"https://cafe.daum.net/latindance/x/{unique}"
+    intake.store_item(
+        pg, source["source_id"],
+        intake.RawItem(external_id=url, url=url, title="밀롱가 공지"),
+    )
+    with pg.cursor() as cur:
+        cur.execute("SELECT source_item_id FROM source_items WHERE url = %s", (url,))
+        source_item_id = cur.fetchone()[0]
+
+    _live(pg, unique, "1", source_url=url, source_item_id=source_item_id)
+
+    found = [e for e in events_api.search(pg, when="today", limit=100)["events"]
+             if unique in (e["name"] or "")]
+    assert found[0]["source_link"]["label"] == "Daum Cafe"
+    assert "외부홍보게시판" not in found[0]["source_link"]["label"]
 
 
 def test_a_time_the_post_did_not_qualify_is_shown_but_flagged():

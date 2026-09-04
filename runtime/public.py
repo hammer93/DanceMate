@@ -167,6 +167,11 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .status + .status { margin-left:.3rem; }
 .checked { color:var(--muted); font-size:.75rem; }
 .cancelled { text-decoration: line-through; }
+/* A card's <a> is the whole event; the source link sits outside it as a
+   sibling, never nested inside another link. */
+.source { padding: 0 1rem .8rem; font-size:.8rem; color:var(--muted); }
+.source a { color:var(--accent); text-decoration:none; margin-left:.3rem; }
+.source a:hover { text-decoration:underline; }
 .banner { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
           border-radius:8px; padding:.8rem 1rem; margin-bottom:1rem; font-size:.875rem; }
 @media (max-width: 30rem) {
@@ -552,6 +557,26 @@ def _checked_line(event: dict[str, Any]) -> str:
     return f'<span class="checked">{E(when)} 확인{E(tail)}</span>'
 
 
+def _source_line(event: dict[str, Any]) -> str:
+    """Where this listing came from, with a link to check it.
+
+    A sibling of the card's <a>, not nested inside it - two links in one
+    anchor is invalid HTML and browsers resolve it unpredictably. Only a real
+    http(s) URL becomes a link (events_api.present() already validated it);
+    otherwise this says so rather than making one up.
+    """
+    link = event.get("source_link") or {}
+    url = link.get("url")
+    label = link.get("label")
+    if not url:
+        return '<div class="source"><span class="unknown">출처 미확인</span></div>'
+    prefix = f"출처: {E(label)}" if label else "출처"
+    return (
+        f'<div class="source">{prefix}'
+        f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">원문 보기</a></div>'
+    )
+
+
 def _event_item(event: dict[str, Any]) -> str:
     cancelled = " cancelled" if event.get("cancelled") else ""
     return (
@@ -560,7 +585,9 @@ def _event_item(event: dict[str, Any]) -> str:
         f'<div class="name{cancelled}">{E(event.get("name") or "")}</div>'
         f'<div class="meta"><span>{_venue_line(event)}</span>'
         f'<span>{_fee_line(event)}</span>{_status_line(event)}</div>'
-        "</a></li>"
+        "</a>"
+        f"{_source_line(event)}"
+        "</li>"
     )
 
 

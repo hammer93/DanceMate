@@ -20,6 +20,7 @@ Dates are Asia/Seoul. "Today" means today where the dancer is, not UTC: at
 
 from __future__ import annotations
 
+import urllib.parse
 from datetime import date, datetime, time, timedelta
 from collections.abc import Sequence
 from typing import Any
@@ -97,6 +98,37 @@ def _clock(value: Any) -> str | None:
     return value.strftime("%H:%M") if isinstance(value, time) else str(value)[:5]
 
 
+# A reader never sees the internal platform code or a source's operational
+# registration name (e.g. "외부홍보게시판(파티)") - this is the brand a person
+# would recognise instead. A WEB source has no such brand of its own here, so
+# it falls through to the source's own registered name (e.g. "K-TANGO").
+PLATFORM_LABELS = {
+    "DAUM_CAFE": "Daum Cafe",
+    "NAVER_CAFE": "Naver Cafe",
+    "NAVER_BLOG": "Naver Blog",
+    "NAVER_WEB": "Naver",
+    "FACEBOOK": "Facebook",
+}
+
+
+def source_label(platform: str | None, name: str | None) -> str | None:
+    """The friendly label a reader sees for where an event's post came from."""
+    return PLATFORM_LABELS.get(platform or "") or name or None
+
+
+def valid_public_url(url: str | None) -> str | None:
+    """http(s) only. A malformed or non-web URL is never rendered as a link."""
+    if not url:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return url
+
+
 def present(row: dict[str, Any]) -> dict[str, Any]:
     """One event as the API returns it.
 
@@ -142,6 +174,15 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "last_checked": (row["collected_at"].isoformat()
                          if row.get("collected_at") else None),
         "source_url": row.get("source_url"),
+        # The representative source for THIS event row specifically - never a
+        # different event's post. Rule: the event's own directly-linked
+        # source_item (normalization.source_of's URL match), which is what
+        # source_item_id / source_url already denormalize onto every event
+        # row. No fallback: a missing URL means no link, not a guessed one.
+        "source_link": {
+            "url": valid_public_url(row.get("source_url")),
+            "label": source_label(row.get("source_platform"), row.get("source_name")),
+        },
     }
 
 
@@ -152,12 +193,17 @@ _SELECT = (
     # When the post behind this event was last collected. A dancer deciding
     # tonight is relying on something we read at some point, and when that was
     # is part of the answer.
-    "       i.collected_at AS collected_at "
+    "       i.collected_at AS collected_at, "
+    # The event's own source, for a reader who wants to check the original
+    # post — not "every post that ever mentioned this event" (get_event's
+    # duplicates.sources_of does that on the detail page), just this row's.
+    "       src.name AS source_name, src.platform AS source_platform "
     "FROM events e "
     "LEFT JOIN venues v ON v.venue_id = e.venue_id "
     "LEFT JOIN genres g ON g.genre_id = e.genre_id "
     "LEFT JOIN regions r ON r.region_id = e.region_id "
     "LEFT JOIN source_items i ON i.source_item_id = e.source_item_id "
+    "LEFT JOIN sources src ON src.source_id = i.source_id "
 )
 
 # Every alpha query starts here. Live, not a duplicate, not hidden.
