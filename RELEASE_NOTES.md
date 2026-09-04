@@ -1,5 +1,121 @@
 # DanceMate Release Notes
 
+## v0.80 Private Alpha Readiness + Real Human Review + Upcoming Event Quality
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-04.
+
+Version split:
+
+- Product Runtime: 0.80
+- Information Engine: 0.75 — unchanged. No extraction or classification rule
+  moved in this release.
+
+### Why this version exists
+
+Not to extract anything new. To answer one question: can 김프로 open DanceMate
+and decide where to dance tonight, without being misled?
+
+Everything here follows from that. The dashboard opens on tonight instead of
+totals. The review queue is ordered by how soon an event happens instead of
+when it was collected. A source carries the decision somebody made about it,
+separately from what the fetcher observes. And three counters say whether any
+of it was used.
+
+### The console now opens on the morning's question
+
+`/admin` led with sources registered and items ever collected. Both true,
+neither the thing an operator needs at 9am. It now opens on 오늘 / 내일 /
+이번 주 / 검토 대기, with the five filters that lead somewhere, and the totals
+have moved down under Collection where they belong.
+
+Below that, coverage as genre against region, over upcoming events only. The
+zeroes are the point: SALSA in Busan is 0, and no total shows that. It is the
+shape of the next release's work, and it is not filled in by inventing sources.
+
+### The review queue is about what is coming
+
+The queue was ordered by collection time, which buries tonight's event under
+last week's. It now sorts by how soon the event is and how much is missing, and
+the default filter is 앞으로 rather than everything ever collected. Every
+action carries Save & Next, so reviewing eight events is one pass, not eight
+trips back to a list.
+
+### A decision about a source is not an observation about it
+
+"This cafe serves bodies only to a logged-in reader" is something the fetcher
+learns every hour. "Replace it" is a judgement made once, and the console had
+nowhere to put it. Sources now carry ACTIVE / KEEP / REPLACE / DISABLE /
+MONITOR with a reason and a date, and a recommendation is offered beside it
+with the counts behind it.
+
+Nothing is applied automatically. Recording REPLACE does not stop collection,
+and no source was disabled by this release.
+
+Two decisions were recorded on 2026-09-04:
+
+- **오살사 살사댄스 종합정보** — REPLACE. 21 items collected, 0 bodies read,
+  and two other salsa sources are readable.
+- **스윙팩토리 부산 스윙댄스** — KEEP, against a REPLACE recommendation. Its
+  22 items are equally unreadable, but the recommendation counts alternatives
+  by genre and ignores region: the "alternative" is 스위티스윙, which is not in
+  Busan. **The recommendation is genre-blind, and this is the case that shows
+  it.** A human overrode it, which is what the column is for.
+
+### Three counters, no identifiers
+
+List view, detail view, source click. A date and a count, and for detail views
+an event id. No IP address, no session, no user identifier, no column that
+could hold one. The source link goes through a redirect that validates the
+destination against that event's own sources — a foreign URL is refused with
+400 — so "they left to read the post" is countable. That is the one signal
+worth having: a detail view says the card was interesting, a source click says
+the card was not enough.
+
+### Fixes found by actually opening the pages
+
+- **A recorded source decision reached nothing.** `/admin/sources/{id}/{action}`
+  was registered first and matches the same path as `.../decision`, so every
+  Record button resolved to the catch-all, which 404s on an action it does not
+  know. The form looked fine and saved nothing. Starlette matches in
+  registration order; the specific route now comes first, with a test that
+  asserts the order rather than the symptom.
+- **The detail page said the same thing twice.** 종류 and 상태 both rendered
+  the kind-of-event badge, and inside a `<dd>` the badges are plain inline
+  siblings rather than flex children, so they touched: `소셜 (강습 포함)확인
+  필요`.
+- **A test needed a writable checkout.** `py_compile` writes the `.pyc` beside
+  the source unless told otherwise, so it failed the moment the repo was
+  mounted read-only — which is how the suite runs on the board.
+
+### What is honest about the times
+
+Three of the seven upcoming events show a clock with 시간 미확인 beside it:
+`07:00`, `08:00`, `05:30`. All three almost certainly mean the evening, and
+none of the three posts wrote 오후 or PM anywhere. The rule from v0.77 stands:
+a dance event is not a reason to turn 7:30 into 19:30. The reading is shown
+with the caveat, and those posts sit at the top of the review queue where a
+person can settle them.
+
+### Known limits, stated rather than fixed
+
+- **A blocked body is never re-fetched.** `FETCH_BLOCKED` is in neither
+  `SETTLED` nor `RETRYABLE`, so those 47 items are not retried at all — safer
+  than the one-day backoff, but it also means a community that fixes its
+  settings next week goes unnoticed. The stored `next_attempt_at` suggests a
+  15-minute retry that never happens.
+- **The source recommendation ignores region**, as 스윙팩토리 shows above.
+- **Human review of live events: 0.** The queue is ordered, the actions work,
+  and no live event was approved by Claude. All five actions are verified
+  against synthetic candidates on a rolled-back connection, never through the
+  live route.
+
+### Verified on the board
+
+- Full runtime suite in the container, repo mounted: **682 passed, 9 skipped**
+- `check-server.sh`: 6/6 PASS
+- Memory 634Mi used of 3.8Gi; disk 13% of 30G; containers under 64MiB each
+
 ## v0.79 Social Dance Event Classification + Coverage Recovery + Review Calibration
 
 Status:

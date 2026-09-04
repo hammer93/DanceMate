@@ -9,9 +9,9 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.79 (Social Dance Classification + Coverage Recovery)
-  - deployed and verified on the ROCKPro64 on 2026-09-03
-- Information Engine: v0.75 (`engine/`, 646 tests)
+- Product Runtime: v0.80 (Private Alpha Readiness + Real Human Review)
+  - deployed and verified on the ROCKPro64 on 2026-09-04
+- Information Engine: v0.75 (`engine/`) — v0.80에서 변경 없음
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
 - Initial Genres:
@@ -63,7 +63,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.79"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.80"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -97,13 +97,31 @@ credentials come from
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`, and the console refuses every
 request when no password is set. JSON equivalents live under `/api/admin/`.
 
+Dashboard는 **오늘 할 일**로 시작한다 — 오늘 / 내일 / 이번 주 / 검토 대기 /
+검토 완료 / 지난 행사, 그리고 바로 이어지는 다섯 개의 Review 필터. 수집 총계는
+그 아래 Collection으로 내려갔다. 아침에 필요한 것은 총계가 아니라 오늘이다.
+
+**Coverage** 패널은 장르 × 지역을 앞으로의 행사 기준으로 보여준다. 0인 칸이
+요점이다 — 총계로는 부산 살사가 0이라는 사실이 보이지 않는다. 실제 공개 소스가
+없으면 억지로 채우지 않는다.
+
+**Alpha usage** 패널은 목록 열람 / 상세 열람 / 원문 이동 세 가지 횟수만
+보여준다. IP·세션·사용자 식별자를 저장하지 않으며, 저장할 컬럼 자체가 없다.
+
 Dashboard의 **Data Quality** 패널은 사용자에게 보이는 행사만을 대상으로
 date/time/venue/fee/region/review 완성도를 보여주고, 각 결측을 해당 Review
 필터로 연결한다. **누락과 오류는 분리해서 센다** — 빈 요금은 모르는 것이고,
 저녁 밀롱가의 07:30은 알면서 틀린 것이라 별도 alert이 뜬다.
 
-Review 큐는 게시글과 어긋나는 값 → 오늘·내일 → 시간 미확인 → 장소 미확인 →
-요금 미확인 → 날짜순으로 정렬된다.
+Review 큐는 **앞으로 열리는 행사**가 기본이며, 게시글과 어긋나는 값 → 오늘·내일
+→ 시간 미확인 → 장소 미확인 → 요금 미확인 → 날짜순으로 정렬된다. 모든 조치에
+Save & Next가 붙어 있어 여덟 건을 검토하는 데 목록으로 여덟 번 돌아가지 않는다.
+
+Sources 페이지의 **Decision** 열은 사람이 내린 판단(ACTIVE / KEEP / REPLACE /
+DISABLE / MONITOR)을 이유·날짜와 함께 기록한다. 옆에 권고가 근거 숫자와 함께
+표시되지만 **자동으로 적용되지 않는다**. REPLACE를 기록해도 수집은 멈추지 않고,
+중단은 별도의 조치다. 권고는 장르만 보고 지역을 보지 않으므로(부산 스윙의
+대체가 서울 스윙으로 계산된다) 사람의 판단이 권고를 덮을 수 있다.
 
 Pages: Dashboard, Intake, Review, Events, Duplicates, Sources, Venues,
 Organizers, Genres & Regions, Usage, System. Unresolved Venues sits under
