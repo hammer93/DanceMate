@@ -11,7 +11,7 @@ DanceMate는
 
 - Product Runtime: v0.79 (Social Dance Classification + Coverage Recovery)
   - deployed and verified on the ROCKPro64 on 2026-09-03
-- Information Engine: v0.75 (`engine/`, 645 tests)
+- Information Engine: v0.75 (`engine/`, 646 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Initial Region: Seoul
 - Initial Genres:
