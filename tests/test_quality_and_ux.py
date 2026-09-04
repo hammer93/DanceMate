@@ -344,3 +344,42 @@ def test_a_genre_the_extractor_could_not_name_comes_from_the_community(pg, uniqu
     assert normalization._genre_id(pg, "MILONGA", source_item_id) == tango["genre_id"]
     # Neither: empty, not the most common one.
     assert normalization._genre_id(pg, "SOMETHING", None) is None
+
+
+def test_every_admin_page_is_bound_to_the_function_that_renders_it():
+    """A patch once left a route decorator attached to the helper above the
+    page function, so /admin/review answered 422 asking for a request body."""
+    from runtime.app import app
+
+    expected = {
+        "/admin": "admin_dashboard",
+        "/admin/review": "admin_review",
+        "/admin/sources": "admin_sources",
+        "/admin/master": "admin_master",
+        "/admin/venues": "admin_venues",
+        "/admin/organizers": "admin_organizers",
+        "/admin/events": "admin_events",
+        "/admin/venues/unresolved": "admin_unresolved_venues",
+        "/admin/duplicates": "admin_duplicates",
+    }
+    bound = {
+        route.path: route.endpoint.__name__
+        for route in app.routes
+        if getattr(route, "methods", None) and "GET" in route.methods
+    }
+    for path, name in expected.items():
+        assert bound.get(path) == name, f"{path} is handled by {bound.get(path)}"
+
+
+def test_no_admin_page_takes_a_request_body():
+    """A GET page that wants a body is a decorator on the wrong function."""
+    import inspect
+
+    from runtime.app import app
+
+    for route in app.routes:
+        methods = getattr(route, "methods", None) or set()
+        if methods != {"GET"} or not route.path.startswith("/admin"):
+            continue
+        for name, param in inspect.signature(route.endpoint).parameters.items():
+            assert param.annotation is not dict, (route.path, name)

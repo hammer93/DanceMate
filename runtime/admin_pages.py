@@ -251,7 +251,6 @@ def _review_rows(settings, con) -> list[dict[str, Any]]:
     return rows
 
 
-@router.get("/admin/review", response_class=HTMLResponse)
 def _is_pending(row: dict[str, Any]) -> bool:
     return (row["review"]["review_state"] == review.PENDING
             and row["candidate_status"] in review.REVIEWABLE_ENGINE_STATUSES)
@@ -323,6 +322,7 @@ REVIEW_FILTERS: dict[str, tuple[str, Any]] = {
 }
 
 
+@router.get("/admin/review", response_class=HTMLResponse)
 def admin_review(
     request: Request, show: str = "pending", filter: str = "",
     _: str = Depends(require_admin),
