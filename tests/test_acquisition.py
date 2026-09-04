@@ -285,13 +285,23 @@ def test_a_settled_status_is_never_retried():
 
 
 def test_a_network_failure_retries_soon():
-    when = acquisition.next_attempt_at(acquisition.FETCH_FAILED, "NETWORK", 1, now=NOW)
+    # jitter=False for the exact policy. The spread itself is tested in
+    # tests/test_blocked_retry.py, where it is the subject rather than noise.
+    when = acquisition.next_attempt_at(
+        acquisition.FETCH_FAILED, "NETWORK", 1, now=NOW, jitter=False)
     assert when == NOW + timedelta(minutes=15)
 
 
 def test_a_blocked_page_waits_a_day_rather_than_being_hammered():
-    when = acquisition.next_attempt_at(acquisition.FETCH_BLOCKED, "BLOCKED", 1, now=NOW)
+    when = acquisition.next_attempt_at(
+        acquisition.FETCH_BLOCKED, "BLOCKED", 1, now=NOW, jitter=False)
     assert when == NOW + timedelta(days=1)
+
+
+def test_a_blocked_page_is_asked_again_at_all():
+    """It used to be in neither the settled set nor the retryable one, so the
+    wait above was a promise nothing ever kept."""
+    assert acquisition.FETCH_BLOCKED in acquisition.RETRYABLE
 
 
 def test_retries_stop_after_the_attempt_limit():

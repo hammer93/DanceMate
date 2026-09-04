@@ -47,7 +47,17 @@ LOGIN_REQUIRED = "LOGIN_REQUIRED"
 UNSUPPORTED = "UNSUPPORTED"
 
 SETTLED = frozenset({FETCHED_FULL, FETCHED_PARTIAL, LOGIN_REQUIRED, UNSUPPORTED})
-RETRYABLE = frozenset({FETCH_PENDING, FETCH_FAILED})
+
+# FETCH_BLOCKED belongs here. It used to be in neither set, which read as
+# caution and behaved as amnesia: 47 items on the board had been asked for
+# once, refused once, and were never going to be asked again. A community that
+# fixes its settings next week deserves to be noticed, so blocked items come
+# back round -- slowly, and never on the same tick as each other.
+#
+# LOGIN_REQUIRED stays settled. Nothing about retrying changes whether we have
+# an account, and hammering a login wall is exactly the behaviour a source
+# owner would object to. It moves when the credentials do.
+RETRYABLE = frozenset({FETCH_PENDING, FETCH_FAILED, FETCH_BLOCKED})
 
 # Text at or above this is treated as a real article body rather than a shell.
 FULL_TEXT_THRESHOLD = 120
@@ -61,18 +71,52 @@ MIN_DELAY_SECONDS = 1.5
 DEFAULT_TIMEOUT = 20
 
 # Retry policy. Deliberately coarse - four rules, not a framework.
-RETRY_BACKOFF = {
-    "NETWORK": timedelta(minutes=15),
-    "SERVER_ERROR": timedelta(minutes=30),
-    "NOT_FOUND": timedelta(hours=12),
-    "BLOCKED": timedelta(days=1),
+#
+# Each entry is the wait after the first failure, the second, and so on; the
+# last value repeats. A transient network blip is worth another go in a
+# quarter of an hour. A page that will not give up its body is worth another
+# go tomorrow, then in three days, then weekly -- often enough to notice a
+# source coming back, rare enough that a year of asking is fifty-odd requests.
+RETRY_SCHEDULE = {
+    "NETWORK": (timedelta(minutes=15),),
+    "SERVER_ERROR": (timedelta(minutes=30),),
+    "NOT_FOUND": (timedelta(hours=12),),
+    "BLOCKED": (timedelta(hours=24), timedelta(hours=72), timedelta(days=7)),
 }
+# Kept: callers and tests read the first delay from here.
+RETRY_BACKOFF = {name: waits[0] for name, waits in RETRY_SCHEDULE.items()}
+
+# How many times to bother. None means keep trying on the schedule above,
+# which only BLOCKED does -- it is the one class that can stop being true
+# without anything about the URL changing.
 MAX_ATTEMPTS = {
     "NETWORK": 5,
     "SERVER_ERROR": 5,
     "NOT_FOUND": 2,
-    "BLOCKED": 2,
+    "BLOCKED": None,
 }
+
+# Refusals about the URL itself rather than about today. Asking again is
+# either pointless or rude.
+PERMANENT_ERRORS = frozenset({"ROBOTS_DISALLOWED", "UNSUPPORTED_CONTENT_TYPE"})
+
+# Which schedule an error code follows. Without this the code had to *be* one
+# of the four class names, and BODY_UNAVAILABLE -- the code on every one of the
+# 47 blocked items on the board -- fell through to the network default and was
+# scheduled fifteen minutes out. It then sat there, because blocked items were
+# not selected for retry at all: a fifteen-minute promise that was never kept.
+RETRY_CLASS = {
+    "BODY_UNAVAILABLE": "BLOCKED",
+    "BLOCKED": "BLOCKED",
+    "THIN_BODY": "BLOCKED",
+    "NOT_FOUND": "NOT_FOUND",
+    "SERVER_ERROR": "SERVER_ERROR",
+    "NETWORK": "NETWORK",
+}
+
+# Retries are spread across this fraction of their own delay, so a batch that
+# failed together does not come back together.
+RETRY_JITTER = 0.2
 
 
 # --- personal data ----------------------------------------------------------
@@ -408,17 +452,31 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
 
 
 def next_attempt_at(
-    status: str, error_code: str | None, attempt_count: int, *, now: datetime | None = None
+    status: str, error_code: str | None, attempt_count: int, *,
+    now: datetime | None = None, jitter: bool = True
 ) -> datetime | None:
     """When may this be retried? None means never automatically.
 
-    A settled outcome is not retried, an exhausted one is not retried, and a
-    blocked page waits a day rather than being attacked every tick.
+    A settled outcome is not retried, an exhausted one is not retried, a
+    refusal about the URL itself is not retried, and a blocked page waits a
+    day, then three, then a week.
     """
+    import random
+
     if status in SETTLED:
         return None
-    retry_class = error_code if error_code in RETRY_BACKOFF else "NETWORK"
-    if attempt_count >= MAX_ATTEMPTS.get(retry_class, 3):
+    if error_code in PERMANENT_ERRORS:
         return None
+    retry_class = RETRY_CLASS.get(error_code or "", "NETWORK")
+    limit = MAX_ATTEMPTS.get(retry_class, 3)
+    if limit is not None and attempt_count >= limit:
+        return None
+
+    waits = RETRY_SCHEDULE[retry_class]
+    delay = waits[min(max(attempt_count, 1) - 1, len(waits) - 1)]
+    if jitter and RETRY_JITTER:
+        # Forwards only: a spread must never pull a retry earlier than the
+        # policy says, only later.
+        delay += delay * RETRY_JITTER * random.random()
     now = now or datetime.now(timezone.utc)
-    return now + RETRY_BACKOFF[retry_class]
+    return now + delay

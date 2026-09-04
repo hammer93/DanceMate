@@ -103,6 +103,10 @@ def record_outcome(
             "  redacted_spans = %s, fetch_error = %s, error_code = %s, "
             "  attempt_count = %s, "
             "  first_attempt_at = COALESCE(first_attempt_at, %s), "
+            "  last_attempt_at = %s, "
+            # fetched_at means "we got the body", and stays null on a refusal.
+            # last_attempt_at means "we asked", which is the one an operator
+            # needs when nothing is coming back.
             "  fetched_at = %s, next_attempt_at = %s, updated_at = now() "
             "WHERE source_item_id = %s RETURNING *",
             (
@@ -112,7 +116,7 @@ def record_outcome(
                 outcome.content_hash, previous_hash, len(outcome.images),
                 json.dumps(outcome.images[:10]), outcome.redacted_spans,
                 (outcome.error or None), outcome.error_code, attempt_count,
-                now, (now if outcome.text else None), retry_at, source_item_id,
+                now, now, (now if outcome.text else None), retry_at, source_item_id,
             ),
         )
         stored = _row(cur)
