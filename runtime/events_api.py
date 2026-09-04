@@ -125,19 +125,31 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "currency": "KRW" if row.get("fee") is not None else None,
         "genre": row.get("genre_code"),
         "region": row.get("region_name"),
+        "region_code": row.get("region_code"),
         "status": row.get("engine_status"),
+        "status_label": STATUS_LABELS.get(
+            (row.get("engine_status") or "").upper(), "확인 필요"),
+        "cancelled": (row.get("engine_status") or "").upper() == CANCELLED,
         "reviewed": row.get("review_state"),
+        "human_reviewed": (row.get("review_state") or "").upper() in REVIEWED_STATES,
+        "last_checked": (row["collected_at"].isoformat()
+                         if row.get("collected_at") else None),
         "source_url": row.get("source_url"),
     }
 
 
 _SELECT = (
     "SELECT e.*, v.name AS venue_name, v.address AS venue_address, "
-    "       g.code AS genre_code, r.name AS region_name "
+    "       g.code AS genre_code, r.name AS region_name, r.code AS region_code, "
+    # When the post behind this event was last collected. A dancer deciding
+    # tonight is relying on something we read at some point, and when that was
+    # is part of the answer.
+    "       i.collected_at AS collected_at "
     "FROM events e "
     "LEFT JOIN venues v ON v.venue_id = e.venue_id "
     "LEFT JOIN genres g ON g.genre_id = e.genre_id "
     "LEFT JOIN regions r ON r.region_id = e.region_id "
+    "LEFT JOIN source_items i ON i.source_item_id = e.source_item_id "
 )
 
 # Every alpha query starts here. Live, not a duplicate, not hidden.
@@ -147,12 +159,43 @@ _VISIBLE = (
     "AND e.canonical_event_id IS NULL"
 )
 
+# What a cancelled event is called in the engine's vocabulary. It stays
+# reachable by id -- someone who has the link deserves to learn it is off --
+# but it does not belong in a list of places to go.
+CANCELLED = "CANCELLED"
+
+# The engine's lifecycle vocabulary is not a reader's. VERIFIED does not mean
+# "true", it means "the evidence gate passed", and neither phrase belongs on a
+# page someone reads on the way out the door.
+STATUS_LABELS = {
+    "VERIFIED": "확인됨",
+    "POSSIBLE": "확인 필요",
+    "EXPECTED": "예정",
+    "CONFLICT": "정보 충돌",
+    "CANCELLED": "취소",
+    "UPDATED": "확인됨",
+    "UNKNOWN": "확인 필요",
+}
+
+# A person looked at this and stood by it. Deliberately worded apart from
+# 확인됨: a human review is not the engine's evidence gate, and conflating the
+# two would let an approval look like proof.
+REVIEWED_LABEL = "관리자 확인"
+REVIEWED_STATES = ("APPROVED", "CONFIRMED", "EDITED")
+
 
 def search(con, *, when: str | None = None, on: Any = None, date_from: Any = None,
            date_to: Any = None, genre: str | None = None, region: str | None = None,
            status: str | None = None, limit: int = DEFAULT_LIMIT, offset: int = 0,
+           include_past: bool = False, include_cancelled: bool = False,
            now: datetime | None = None) -> dict[str, Any]:
-    """Events a dancer could go to, soonest first."""
+    """Events a dancer could go to, soonest first.
+
+    Past and cancelled events are excluded unless asked for. Both still exist,
+    both are still reachable by id, and the console can see all of them -- but
+    a list of where to dance is about tonight, and last Tuesday is not an
+    answer to it.
+    """
     if limit < 1 or limit > MAX_LIMIT:
         raise SearchError(f"limit must be between 1 and {MAX_LIMIT}")
     if offset < 0:
@@ -171,6 +214,11 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
     elif keyword is not None and start is None and end is None:
         start, end = keyword
 
+    if not include_past and start is None:
+        where.append("e.event_date >= current_date")
+    if not include_cancelled:
+        where.append("e.engine_status <> %s")
+        params.append(CANCELLED)
     if start is not None:
         where.append("e.event_date >= %s")
         params.append(start)
@@ -220,6 +268,8 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
             "status": status,
             "limit": limit,
             "offset": offset,
+            "include_past": include_past,
+            "include_cancelled": include_cancelled,
             "timezone": "Asia/Seoul",
         },
     }
@@ -231,6 +281,8 @@ def get_event(con, event_id: int) -> dict[str, Any] | None:
     The sources list is the point of keeping duplicates rather than deleting
     them: a reader who wants to check the fee can go and read the post.
     """
+    # No date or cancellation filter here on purpose: someone holding the link
+    # to a cancelled event should be told it is off, not shown a 404.
     with con.cursor() as cur:
         cur.execute(_SELECT + "WHERE e.event_id = %s AND " + _VISIBLE, (event_id,))
         rows = _rows(cur)

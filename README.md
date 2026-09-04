@@ -9,7 +9,7 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.77.3 (Admin Master Data Edit & Management UX)
+- Product Runtime: v0.78 (Real Event Coverage + Alpha Quality + Admin/User UX)
   - deployed and verified on the ROCKPro64 on 2026-09-03
 - Information Engine: v0.74 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
@@ -57,7 +57,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77.3"}`    |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.78"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -74,7 +74,14 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 | `GET /api/events/{id}` | 이벤트 하나와 그것을 언급한 모든 게시글 |
 
 날짜는 Asia/Seoul 기준. LIVE로 수집된 것만 노출한다 — snapshot과 fixture는
-콘솔에만 남고 사용자에게 가지 않는다.
+콘솔에만 남고 사용자에게 가지 않는다. 지난 행사와 취소된 행사는 기본 목록에서
+빠지지만, 취소된 행사의 상세 페이지는 남는다 — 링크를 가진 사람은 취소 사실을
+알아야 한다.
+
+엔진의 상태 용어는 사용자에게 그대로 나가지 않는다: 확인됨 / 확인 필요 / 예정 /
+정보 충돌 / 취소. 사람이 검토한 행사는 `관리자 확인`으로 따로 표시하며, 이는
+엔진의 근거 게이트와 다른 것이다. 각 행사에는 원문을 마지막으로 읽은 시각이
+표시되고, 오늘 행사인데 하루 이상 지났으면 `재확인 필요`가 붙는다.
 
 ### Admin console (LAN only, HTTP Basic)
 
@@ -83,6 +90,14 @@ Sources, Venues, Organizers, Genres & Regions, Usage, System. Server-rendered;
 credentials come from
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`, and the console refuses every
 request when no password is set. JSON equivalents live under `/api/admin/`.
+
+Dashboard의 **Data Quality** 패널은 사용자에게 보이는 행사만을 대상으로
+date/time/venue/fee/region/review 완성도를 보여주고, 각 결측을 해당 Review
+필터로 연결한다. **누락과 오류는 분리해서 센다** — 빈 요금은 모르는 것이고,
+저녁 밀롱가의 07:30은 알면서 틀린 것이라 별도 alert이 뜬다.
+
+Review 큐는 게시글과 어긋나는 값 → 오늘·내일 → 시간 미확인 → 장소 미확인 →
+요금 미확인 → 날짜순으로 정렬된다.
 
 Pages: Dashboard, Intake, Review, Events, Duplicates, Sources, Venues,
 Organizers, Genres & Regions, Usage, System. Unresolved Venues sits under

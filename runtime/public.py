@@ -68,6 +68,8 @@ def list_events(
     status: str | None = None,
     limit: int = events_api.DEFAULT_LIMIT,
     offset: int = 0,
+    include_past: bool = False,
+    include_cancelled: bool = False,
 ) -> JSONResponse:
     try:
         # Validated before a connection is opened, so a bad query is a 400 even
@@ -77,6 +79,7 @@ def list_events(
             return _json(events_api.search(
                 con, when=when, on=date, date_from=date_from, date_to=date_to,
                 genre=genre, region=region, status=status, limit=limit, offset=offset,
+                include_past=include_past, include_cancelled=include_cancelled,
             ))
     except events_api.SearchError as exc:
         return _json({"detail": str(exc)}, status_code=400)
@@ -132,6 +135,27 @@ dt { color:var(--muted); font-size:.875rem; }
 dd { margin:0; }
 footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px solid var(--line);
          padding-top:1rem; }
+.filters { margin: 0 0 1.25rem; }
+.filters .row { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; margin-top:.5rem; }
+.filters .key { color:var(--muted); font-size:.8rem; width:2.6rem; flex:none; }
+.filters a { border:1px solid var(--line); border-radius:999px; padding:.2rem .7rem;
+             text-decoration:none; font-size:.8rem; background:var(--card); color:var(--muted); }
+.filters a[aria-current="true"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+.status { font-size:.7rem; border:1px solid var(--line); border-radius:4px;
+          padding:.05rem .35rem; color:var(--muted); }
+.status.ok { border-color:var(--accent); color:var(--accent); }
+.checked { color:var(--muted); font-size:.75rem; }
+.cancelled { text-decoration: line-through; }
+.banner { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
+          border-radius:8px; padding:.8rem 1rem; margin-bottom:1rem; font-size:.875rem; }
+@media (max-width: 30rem) {
+  main { padding: 1rem .75rem 3rem; }
+  h1 { font-size: 1.2rem; }
+  li.event a { padding: .8rem .85rem; }
+  .filters .key { width: 100%; }
+  dl { grid-template-columns: 1fr; gap:.15rem .5rem; }
+  dl dt { margin-top:.5rem; }
+}
 """.strip()
 
 WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
@@ -154,11 +178,74 @@ def _page(title: str, body: str) -> str:
     )
 
 
-def _nav(current: str) -> str:
+def _facets(con) -> dict[str, list[dict[str, Any]]]:
+    """The genres and regions that actually have upcoming events.
+
+    Offering a filter that returns nothing is a small lie: it says events of
+    that kind exist somewhere in here. Only what is on the shelf is shown.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT g.code AS value, g.name AS label, count(*) AS events "
+            "FROM events e JOIN genres g ON g.genre_id = e.genre_id "
+            "WHERE " + events_api._VISIBLE + " AND e.event_date >= current_date "
+            "  AND e.engine_status <> 'CANCELLED' "
+            "GROUP BY 1, 2 ORDER BY events DESC"
+        )
+        genres = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
+        cur.execute(
+            "SELECT r.name AS value, r.name AS label, count(*) AS events "
+            "FROM events e JOIN regions r ON r.region_id = e.region_id "
+            "WHERE " + events_api._VISIBLE + " AND e.event_date >= current_date "
+            "  AND e.engine_status <> 'CANCELLED' "
+            "GROUP BY 1, 2 ORDER BY events DESC"
+        )
+        regions = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
+    return {"genres": genres, "regions": regions}
+
+
+def _filter_bar(when: str, facets: dict[str, list[dict[str, Any]]],
+                genre: str | None, region: str | None) -> str:
+    """Genre and region, shown only when there is more than one to choose."""
+    from urllib.parse import urlencode
+
+    def chips(key: str, rows: list[dict[str, Any]], chosen: str | None) -> str:
+        if len(rows) < 2:
+            return ""
+        links = []
+        for row in [{"value": None, "label": "전체"}] + rows:
+            params = {"when": when}
+            if genre and key != "genre":
+                params["genre"] = genre
+            if region and key != "region":
+                params["region"] = region
+            if row["value"]:
+                params[key] = row["value"]
+            mark = ' aria-current="true"' if (row["value"] or None) == chosen else ""
+            count = f' {row["events"]}' if row.get("events") else ""
+            links.append(
+                f'<a href="/events?{urlencode(params)}"{mark}>{E(row["label"])}{count}</a>'
+            )
+        title = "장르" if key == "genre" else "지역"
+        return (f'<div class="row"><span class="key">{title}</span>'
+                + "".join(links) + "</div>")
+
+    body = chips("genre", facets["genres"], genre) + chips("region", facets["regions"], region)
+    return f'<div class="filters">{body}</div>' if body else ""
+
+
+def _nav(current: str, genre: str | None = None, region: str | None = None) -> str:
+    from urllib.parse import urlencode
+
     links = []
     for key, label in TABS:
+        params = {"when": key}
+        if genre:
+            params["genre"] = genre
+        if region:
+            params["region"] = region
         mark = ' aria-current="page"' if key == current else ""
-        links.append(f'<a href="/events?when={key}"{mark}>{E(label)}</a>')
+        links.append(f'<a href="/events?{urlencode(params)}"{mark}>{E(label)}</a>')
     return "<nav>" + "".join(links) + "</nav>"
 
 
@@ -205,13 +292,59 @@ def _fee_line(event: dict[str, Any]) -> str:
     return f"{fee:,}원"
 
 
+def _status_line(event: dict[str, Any]) -> str:
+    """What we know about this event, in words a reader owes nobody to decode.
+
+    The engine says VERIFIED or POSSIBLE. Neither belongs on a page someone
+    reads on the way out the door, and VERIFIED does not mean "true" anyway --
+    it means the evidence gate passed.
+    """
+    parts = []
+    if event.get("cancelled"):
+        parts.append('<span class="status">취소</span>')
+    elif event.get("status_label"):
+        tone = " ok" if event.get("status") == "VERIFIED" else ""
+        parts.append(f'<span class="status{tone}">{E(event["status_label"])}</span>')
+    if event.get("human_reviewed"):
+        parts.append('<span class="status">관리자 확인</span>')
+    return "".join(parts)
+
+
+def _checked_line(event: dict[str, Any]) -> str:
+    """When we last read the post behind this.
+
+    Not a freshness score. The timestamp, and a nudge when an event is close
+    and what we know about it is not.
+    """
+    from datetime import datetime, timezone
+
+    stamp = event.get("last_checked")
+    if not stamp:
+        return ""
+    try:
+        seen = datetime.fromisoformat(stamp)
+    except ValueError:
+        return ""
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    local = seen.astimezone(events_api.SEOUL)
+    today = events_api.today()
+    when = ("오늘" if local.date() == today else
+            f"{local.month}/{local.day}") + local.strftime(" %H:%M")
+    stale = (datetime.now(timezone.utc) - seen).total_seconds() > 24 * 3600
+    soon = event.get("date") and event["date"] <= (today).isoformat()
+    tail = " · 재확인 필요" if (stale and soon) else ""
+    return f'<span class="checked">{E(when)} 확인{E(tail)}</span>'
+
+
 def _event_item(event: dict[str, Any]) -> str:
+    cancelled = " cancelled" if event.get("cancelled") else ""
     return (
         f'<li class="event"><a href="/events/{event["id"]}">'
         f'{_when_line(event)}'
-        f'<div class="name">{E(event.get("name") or "")}</div>'
+        f'<div class="name{cancelled}">{E(event.get("name") or "")}</div>'
         f'<div class="meta"><span>{_venue_line(event)}</span>'
-        f'<span>{_fee_line(event)}</span></div>'
+        f'<span>{_fee_line(event)}</span>{_status_line(event)}</div>'
         "</a></li>"
     )
 
@@ -223,6 +356,7 @@ def home() -> HTMLResponse:
         with _connection() as con:
             result = events_api.search(con, when=events_api.WHEN_TODAY, limit=20)
             upcoming = events_api.search(con, when=events_api.WHEN_UPCOMING, limit=5)
+            facets = _facets(con)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
 
@@ -242,6 +376,7 @@ def home() -> HTMLResponse:
         "<h1>DanceMate</h1>"
         '<p class="sub">오늘 어디서 출까.</p>'
         + _nav("today")
+        + _filter_bar("today", facets, None, None)
         + listing
         + _footer()
     )
@@ -258,6 +393,7 @@ def events_page(
         events_api.window(when)
         with _connection() as con:
             result = events_api.search(con, when=when, genre=genre, region=region, limit=100)
+            facets = _facets(con)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except db.DatabaseUnavailable:
@@ -271,10 +407,15 @@ def events_page(
         listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>'
 
     label = dict(TABS).get(when, when)
+    narrowed = " · ".join(x for x in (genre, region) if x)
     body = (
         f"<h1>{E(label)}</h1>"
-        f'<p class="sub">{result["total"]}건 · Asia/Seoul 기준</p>'
-        + _nav(when) + listing + _footer()
+        f'<p class="sub">{result["total"]}건'
+        + (f" · {E(narrowed)}" if narrowed else "")
+        + " · Asia/Seoul 기준</p>"
+        + _nav(when, genre, region)
+        + _filter_bar(when, facets, genre, region)
+        + listing + _footer()
     )
     return HTMLResponse(_page(f"{label} - DanceMate", body))
 
@@ -294,8 +435,12 @@ def event_page(event_id: int) -> HTMLResponse:
         ("일시", _when_line(event)),
         ("장소", _venue_line(event)),
         ("주소", E(venue.get("address")) if venue.get("address")
-                 else '<span class="unknown">-</span>'),
+                 else '<span class="unknown">주소 미확인</span>'),
         ("요금", _fee_line(event)),
+        ("장르", E(event.get("genre") or "") or '<span class="unknown">-</span>'),
+        ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
+        ("상태", _status_line(event) or '<span class="unknown">-</span>'),
+        ("최근 확인", _checked_line(event) or '<span class="unknown">-</span>'),
     ]
     details = "".join(f"<dt>{E(k)}</dt><dd>{v}</dd>" for k, v in rows)
 
@@ -309,9 +454,14 @@ def event_page(event_id: int) -> HTMLResponse:
         f'<ul class="events">{sources}</ul>' if sources else ""
     )
 
+    cancelled = (
+        '<div class="banner">이 행사는 <strong>취소</strong>로 표시되어 있습니다. '
+        "원문을 확인해 주세요.</div>" if event.get("cancelled") else ""
+    )
     body = (
         f'<p class="sub"><a href="/events?when=today">&larr; 목록</a></p>'
-        f"<h1>{E(event.get('name') or '')}</h1>"
+        + cancelled
+        + f"<h1>{E(event.get('name') or '')}</h1>"
         f"<dl>{details}</dl>"
         + origin
         + _footer()
