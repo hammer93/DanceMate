@@ -9,7 +9,7 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.77.1 (Venue Resolution Admin UX)
+- Product Runtime: v0.77.2 (Venue Default Prefill + Safe Venue Delete)
   - deployed and verified on the ROCKPro64 on 2026-09-03
 - Information Engine: v0.74 (`engine/`, 559 tests)
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
@@ -57,7 +57,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77.1"}`    |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.77.2"}`    |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -96,6 +96,20 @@ aliases the raw string to it and resolves the waiting events in one
 transaction. Nothing is registered automatically: a misread line must not
 become a permanent master record. Every decision is audited with the reviewer,
 the string, the action and how many events actually moved.
+
+The form fills itself from the string and, when the string is only a name, from
+the post behind it — an address written right after the venue's own name, or on
+a labelled 주소 line, never one merely present somewhere in the body. The region
+follows from the address. Every field stays editable and the form says where
+each value came from.
+
+A venue can be removed. `/admin/venues` shows how many events use each one; a
+venue nothing references can be deleted, and one that events point at needs
+**Unlink & Delete**, whose confirmation names the count first. Unlinking sends
+those events back to the raw string they were read from and puts the string
+back in the queue — the posts, the evidence, the events and every review stay
+where they are. **Deactivate** takes a venue out of circulation without
+unlinking anything.
 
 The pipeline runs as five scheduler jobs: `source-intake` discovers posts
 through a provider's search API, `content-acquisition` fetches the original

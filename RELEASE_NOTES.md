@@ -1,5 +1,133 @@
 # DanceMate Release Notes
 
+## v0.77.2 Venue Default Prefill + Safe Venue Delete
+
+Status:
+Deployed and verified on the ROCKPro64, 2026-09-04.
+
+Version split:
+
+- Product Runtime: 0.77.2
+- Information Engine: 0.74 (unchanged — this release touches no extraction)
+
+### Why this version exists
+
+Two complaints about the screen v0.77.1 built, both fair.
+
+**The form asked for what was already on screen.** `라 벤따나` was fine: its
+address sits inside the extracted string, so v0.77.1 already split it. `PISTA`
+and `엔빠스` were not. Their posts carry `서울 마포구 월드컵북로6길 49 B1` and
+`서울특별시 서초구 반포대로30길 82 우서빌딩 지하 1층`, and the form left Address
+empty, because it only ever looked at the extracted string.
+
+**A venue registered by mistake could not be removed.** There was no way back
+from a wrong Create & Link except editing the database.
+
+### Prefill now reads the post, not just the string
+
+The address has to be written immediately after the venue's own name — which is
+how these posts do it — or on a labelled `주소` line. Never merely present
+somewhere in the body: one post mentions a venue, a car park and next week's
+other milonga, and filling the form with the wrong one is worse than leaving it
+blank. Two posts disagreeing offer neither; two answers is not a stronger
+signal than none, and both posts are linked on the same screen.
+
+An address ends where the post stops talking about it. `서울 마포구 월드컵북로6길
+49 B1 📩 예약 / 문의` stops at the emoji; `반포대로30길 82 우서빌딩 지하 1층
+밀롱가 : 13,000원` keeps the building and the floor but not the fee.
+
+The region follows from the address, through the same Korean-to-English lookup
+v0.77.1 added. The form says which fields it filled and where each came from,
+and every one stays editable.
+
+Measured against the eight strings actually waiting on the board:
+
+| Raw string | Name | Address | Region | From |
+|---|---|---|---|---|
+| 라 벤따나 (서울 마포구 잔다리로 48, 2층) | 라 벤따나 | 서울 마포구 잔다리로 48, 2층 | Seoul | raw string |
+| PISTA | PISTA | 서울 마포구 월드컵북로6길 49 B1 | Seoul | **the post** |
+| 엔빠스(EnPaz Tango Studio) | 엔빠스 | 서울특별시 서초구 반포대로30길 82 우서빌딩 지하 1층 | Seoul | **the post** |
+| 아미고스튜디오 | 아미고스튜디오 | — | — | — |
+| Tango Andante | Tango Andante | — | — | — |
+| 데땅고 | 데땅고 | — | — | — |
+| OCHO | OCHO | — | — | — |
+| Tango O Nada | Tango O Nada | — | — | — |
+
+The five blanks are blank because no post behind them contains an address. That
+was checked rather than assumed.
+
+### A venue can be removed, and removing it takes nothing with it
+
+A venue here is a link. The posts, the evidence, the candidates and the events
+all exist without one and all survive one, so deletion undoes the link and
+stops.
+
+`/admin/venues` shows how many events use each row. A venue nothing references
+can be deleted outright. One that events point at cannot be deleted by the same
+click: the confirmation names the count first, because finding out afterwards
+is not a confirmation.
+
+**Unlink & Delete** sends those events back to the raw string they were read
+from — `venue_text` untouched, status back to UNRESOLVED, region cleared — puts
+the string back in the queue so it can be decided again, and then removes the
+venue. On the user surface the line returns to the raw string marked 미확인
+rather than disappearing.
+
+**Deactivate** is the gentler option, for a venue that is wrong for new work
+but right for what is already attached to it: nothing unlinked, nothing
+deleted, just out of circulation.
+
+Automatic merges based on that venue are released, because the duplicate rules
+merged on date, place and time and the place is gone; the next scan decides
+again on what is now true. A person's duplicate verdict is left exactly as it
+is — automation releases what automation decided.
+
+Migration 013 makes the audit survive its subject, the same lesson as 010: the
+`venue_id` foreign key blanked itself on delete and then failed the table's own
+rule that a linking action must name a venue. The column is now a plain id with
+the name stored beside it, so "deleted 라 벤따나, 2 events unlinked" stays
+readable after 라 벤따나 is gone.
+
+### One unrelated defect, found today
+
+`test_quota_is_per_day` asserted that KAKAO's usage on 2026-09-04 was exactly
+10 after recording 10. That held only while the hardcoded date was in the
+future. This morning it arrived, the scheduler had already spent six real
+requests against it, and the test read 16. The invariant it is actually about —
+recording against one day leaves every other day alone — is a delta, and the
+test beside it already measured that way. It would have broken today with or
+without this release.
+
+### Verification
+
+| | |
+|---|---|
+| Runtime suite, host | 413 passed, 164 skipped |
+| Runtime suite, container | 568 passed, 9 skipped |
+| Migrations on the board | 013 of 013 applied |
+| `/version` | product 0.77.2, engine 0.74 |
+| Health | 6/6 PASS |
+| Console pages | /admin/venues, unresolved, events, duplicates all 200 |
+| Synthetic end-to-end | PASS, data removed |
+| Live data after every run | 15 live events, 8 open queue entries, 0 venues |
+
+The synthetic run walked `TEST DELETE ALPHA` through the real HTTP routes:
+queued unresolved → Create & Link → venue on the user surface with its region →
+plain Delete **refused** while events used it → Unlink & Delete → event back to
+its raw string with its source, date and fee intact, region gone, string
+requeued, alias no longer resolving, audit row still naming the deleted venue.
+Then removed, with live counts checked before and after.
+
+### Known and deliberate
+
+- Venue resolution is still 0/15, and the eight live strings are untouched.
+  Two of them now come with an address the operator does not have to type.
+- No Undo button. Unlink & Delete already returns an event to exactly the state
+  a wrong link took it from, which is the same outcome an undo would produce;
+  a second path to it would be more code and one more thing to get wrong.
+- The venue dropdown is still a plain `<select>`. Filtering can wait for a list
+  long enough to need it.
+
 ## v0.77.1 Venue Resolution Admin UX Patch
 
 Status:
