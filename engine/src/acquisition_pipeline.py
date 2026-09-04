@@ -52,9 +52,14 @@ def acquire_pending_daum(con, *, mode="live", acquirer=None, limit=None, lineage
         reprocessed = []
         if result.status in {"FULL","BODY_ONLY"} and result.body_text:
             update_raw_post_acquisition(con, row["post_id"], body=result.body_text, acquisition_quality=result.status)
+            # Carry the post's own date. Re-extraction reads the dates out of
+            # the body again, and a bare "8/22" cannot be placed in a year
+            # without it -- dropping it here silently un-dated every post whose
+            # body we successfully fetched.
             post = RawPostRecord(
                 source_id=row["source_id"], platform="DAUM_CAFE", source_url=row["source_url"],
-                title=row["title"], body=result.body_text, acquisition_quality=result.status
+                title=row["title"], body=result.body_text,
+                published_at=row["published_at"], acquisition_quality=result.status
             )
             source_role_row = con.execute("SELECT source_role FROM sources WHERE source_id=?", (row["source_id"],)).fetchone()
             source_role = source_role_row["source_role"] if source_role_row else "SECONDARY"

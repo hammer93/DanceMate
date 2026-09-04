@@ -11,10 +11,14 @@ def test_acquisition_upgrade_and_recovery(tmp_path):
     con=init_db(tmp_path/"t.sqlite3")
     sources=json.loads((ROOT/"config"/"sources.json").read_text(encoding="utf-8"))
     seed_sources(con,sources)
+    # published_at is what places a bare "8/22" in a year. Every collector
+    # supplies it, so a post without one is not a shape production produces.
     p1=RawPostRecord("SRC-D-001","DAUM_CAFE","https://snapshot.local/daum/pista",
-        "8/22 더 피스타 밀롱가","snippet",acquisition_quality="METADATA_ONLY")
+        "8/22 더 피스타 밀롱가","snippet",published_at="2026-08-18",
+        acquisition_quality="METADATA_ONLY")
     p2=RawPostRecord("SRC-D-001","DAUM_CAFE","https://snapshot.local/daum/login",
-        "8/29 테스트 밀롱가","snippet",acquisition_quality="METADATA_ONLY")
+        "8/29 테스트 밀롱가","snippet",published_at="2026-08-25",
+        acquisition_quality="METADATA_ONLY")
     persist_raw_post(con,p1); persist_raw_post(con,p2)
     acq=SnapshotDaumPostAcquirer(ROOT/"data"/"acquisition_snapshots",{
         p1.source_url:"daum-full-pista.html",p2.source_url:"daum-partial-login-shell.html"})

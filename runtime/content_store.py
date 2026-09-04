@@ -166,7 +166,8 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
                 if not force else None)
     with con.cursor() as cur:
         cur.execute(
-            "SELECT c.*, i.url, i.source_id, s.source_key, s.source_role, i.raw "
+            "SELECT c.*, i.url, i.source_id, i.published_at, "
+            "       s.source_key, s.source_role, i.raw "
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "

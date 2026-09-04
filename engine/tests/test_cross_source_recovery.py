@@ -12,7 +12,8 @@ def test_cross_source_recovery_merges_same_event(tmp_path):
     con=init_db(tmp_path/"r.sqlite3")
     seed_sources(con,json.loads((ROOT/"config"/"sources.json").read_text(encoding="utf-8")))
     p=RawPostRecord("SRC-D-001","DAUM_CAFE","https://x/origin","8/22 더 피스타 밀롱가",
-        "8/22 더 피스타 밀롱가 홍대 PISTA 입장료 13,000원 DJ Hernan",acquisition_quality="BODY_ONLY")
+        "8/22 더 피스타 밀롱가 홍대 PISTA 입장료 13,000원 DJ Hernan",
+        published_at="2026-08-18",acquisition_quality="BODY_ONLY")
     pid,_=persist_raw_post(con,p)
     res=process_discovered_post(con,p,"SECONDARY")
     persist_events(con,pid,res["events"]); con.commit()

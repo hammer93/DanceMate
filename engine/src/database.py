@@ -2895,7 +2895,7 @@ def enqueue_recovery(con, post_id, source_id, event_hint, reason):
     con.commit()
 
 def pending_metadata_posts(con):
-    return con.execute("""SELECT post_id,source_id,source_url,title,body,acquisition_quality
+    return con.execute("""SELECT post_id,source_id,source_url,title,body,published_at,acquisition_quality
                           FROM raw_posts
                           WHERE source_url IS NOT NULL AND source_url<>'' AND acquisition_quality='METADATA_ONLY'
                           ORDER BY post_id""").fetchall()
