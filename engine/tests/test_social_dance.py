@@ -178,3 +178,23 @@ def test_the_default_event_type_is_unchanged_for_existing_callers():
     candidate = extract_single("밀롱가 안내", "9월 5일 시간: PM 07:30~11:30")
     assert candidate.event_type == "MILONGA"
     assert (candidate.start_time, candidate.end_time) == ("19:30", "23:30")
+
+
+def test_the_event_type_reaches_the_time_rule_through_extract_single():
+    """A patch once changed the compatibility shim instead of the real call
+    site, so the workshop's 15:00 was stored as the social's start time while
+    the rule itself was picking 20:00 correctly."""
+    candidate = extract_single(
+        "🌊BAL&SHAG 스페셜 워크샵 in 대전",
+        "소셜에서 바로 써먹을 수 있는 무브를 다룹니다. 강사: 랭보&홍지 "
+        "일정 8/8 (토) - 15:00-16:30 발스윙 중고급 - 16:45-18:15 쉐그 초급 "
+        "- 20:00-22:30 소셜 8/9 (일) - 13:00-14:30 슬로우발",
+        event_type="SOCIAL_WITH_CLASS",
+    )
+    assert (candidate.start_time, candidate.end_time) == ("20:00", "22:30")
+
+
+def test_the_compatibility_shim_still_works_without_a_type():
+    from src.extractor import _norm_time
+
+    assert _norm_time("시간: PM 07:30~11:30")[:2] == ("19:30", "23:30")

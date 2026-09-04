@@ -52,9 +52,9 @@ def _convert_hour(h: int, ap: str | None):
     return h, 0
 
 
-def _norm_time(text: str):
+def _norm_time(text: str, event_type: str | None = None):
     """Backwards-compatible shim: (start, end, end_day_offset, raw)."""
-    reading = extraction_rules.parse_time_range(text, ev.event_type)
+    reading = extraction_rules.parse_time_range(text, event_type)
     if reading is None:
         return None, None, 0, None
     return reading.start, reading.end, reading.end_day_offset, reading.raw
@@ -77,7 +77,7 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         ev.date = date
         ev.evidences.append(Evidence("date", date, raw, source_role=source_role, inference=inference))
 
-    reading = extraction_rules.parse_time_range(text)
+    reading = extraction_rules.parse_time_range(text, ev.event_type)
     if reading:
         ev.start_time = reading.start
         ev.end_time = reading.end
