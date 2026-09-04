@@ -8,6 +8,7 @@ and settings binding — one console, two files.
 from __future__ import annotations
 
 import html
+from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -15,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
     acquisition,
+    events_api,
     admin,
     candidates,
     content_store,
@@ -250,24 +252,99 @@ def _review_rows(settings, con) -> list[dict[str, Any]]:
 
 
 @router.get("/admin/review", response_class=HTMLResponse)
+def _is_pending(row: dict[str, Any]) -> bool:
+    return (row["review"]["review_state"] == review.PENDING
+            and row["candidate_status"] in review.REVIEWABLE_ENGINE_STATUSES)
+
+
+def _event_date(row: dict[str, Any]) -> date | None:
+    value = row.get("event_date")
+    if isinstance(value, date):
+        return value
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _days_away(row: dict[str, Any]) -> int | None:
+    """Days from today in Seoul. Negative for a date already past."""
+    day = _event_date(row)
+    return None if day is None else (day - events_api.today()).days
+
+
+def _has_wrong_time(row: dict[str, Any]) -> bool:
+    """A morning start on a candidate whose post marked the afternoon.
+
+    The same thing the quality panel counts, asked of a review row so the one
+    problem that is worse than a gap sorts above every gap.
+    """
+    start = str(row.get("start_time") or "")
+    if not start or start >= "12:00":
+        return False
+    return any(h["severity"] == review_hints.SEVERITY_WARN
+               for h in row.get("hints") or [])
+
+
+def review_priority(row: dict[str, Any]) -> tuple:
+    """What a reviewer should look at first.
+
+    A sort key, not a model. In order: a value that contradicts its post, then
+    tonight and tomorrow, then a missing time, then a missing venue, then a
+    missing fee, then by date. DanceMate exists to answer "where can I dance
+    tonight", so tonight outranks a more incomplete event three weeks out.
+    """
+    away = _days_away(row)
+    imminent = away is not None and 0 <= away <= 1
+    return (
+        0 if row["candidate_status"] == "CONFLICT" else 1,
+        0 if _has_wrong_time(row) else 1,
+        0 if imminent else 1,
+        0 if not row.get("start_time") else 1,
+        0 if not row.get("venue") else 1,
+        0 if row.get("fee") is None else 1,
+        away if away is not None else 9999,
+    )
+
+
+# The questions an operator actually arrives with, each with the predicate
+# behind it. Counts are rendered beside every one, so an empty filter is
+# visible before it is clicked.
+REVIEW_FILTERS: dict[str, tuple[str, Any]] = {
+    "pending": ("검토 대기", _is_pending),
+    "today": ("오늘·내일", lambda r: (_days_away(r) is not None
+                                      and 0 <= _days_away(r) <= 1)),
+    "conflict": ("충돌", lambda r: r["candidate_status"] in ("CONFLICT", "UNKNOWN")),
+    "unknown_time": ("시간 미확인", lambda r: not r.get("start_time")),
+    "unknown_venue": ("장소 미확인", lambda r: not r.get("venue")),
+    "unknown_fee": ("요금 미확인", lambda r: r.get("fee") is None),
+    "reviewed": ("검토 완료", lambda r: r["review"]["review_state"] != review.PENDING),
+    "all": ("전체", lambda r: True),
+}
+
+
 def admin_review(
-    request: Request, show: str = "pending", _: str = Depends(require_admin)
+    request: Request, show: str = "pending", filter: str = "",
+    _: str = Depends(require_admin),
 ) -> HTMLResponse:
     settings = _settings()
     with _connection() as con:
         rows = _review_rows(settings, con)
         metrics = review.metrics(con)
 
-    if show == "pending":
-        visible = [
-            r for r in rows
-            if r["review"]["review_state"] == review.PENDING
-            and r["candidate_status"] in review.REVIEWABLE_ENGINE_STATUSES
-        ]
-    elif show == "reviewed":
-        visible = [r for r in rows if r["review"]["review_state"] != review.PENDING]
-    else:
-        visible = rows
+    chosen = (filter or show or "pending").strip().lower()
+    if chosen not in REVIEW_FILTERS:
+        chosen = "pending"
+    visible = sorted(
+        [r for r in rows if REVIEW_FILTERS[chosen][1](r)], key=review_priority,
+    )
+
+    filter_bar = '<div class="filterbar">' + "".join(
+        f'<a href="/admin/review?filter={key}"'
+        + (' class="on"' if key == chosen else "")
+        + f'>{E(label)} {sum(1 for r in rows if match(r))}</a>'
+        for key, (label, match) in REVIEW_FILTERS.items()
+    ) + "</div>"
 
     cards = admin._cards([
         ("Review pending", sum(1 for r in rows if r["review"]["review_state"] == review.PENDING),
@@ -293,18 +370,14 @@ def admin_review(
             f'<a href="/admin/review/{row["candidate_id"]}"><button>Review</button></a>',
         ])
 
-    tabs = " ".join(
-        f'<a href="/admin/review?show={key}"><button{" class=primary" if show == key else ""}>'
-        f"{label}</button></a>"
-        for key, label in (("pending", "Pending"), ("reviewed", "Reviewed"), ("all", "All"))
-    )
-
     body = (
         "<h2>Human Verification</h2>" + cards
-        + f'<div class="actions">{tabs}</div>'
+        + filter_bar
         + '<p class="note">A human decision is recorded alongside the engine\'s status, '
           "never instead of it. APPROVE does not grant VERIFIED - only the engine's "
           "evidence gate does that.</p>"
+        + '<p class="note">정렬: 게시글과 어긋나는 값 → 오늘·내일 행사 → 시간 미확인 '
+          "→ 장소 미확인 → 요금 미확인 → 날짜순.</p>"
         + admin._table(
             ["Event", "Date", "Start", "Venue", "Engine", "Review", "Source", ""],
             table_rows,

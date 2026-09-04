@@ -151,6 +151,14 @@ details.editrow>summary:hover{background:var(--accent);color:#fff}
 details.editrow[open]{display:block;width:100%;border:1px solid var(--line);
 border-radius:8px;padding:12px 14px;background:var(--bg);margin-top:6px}
 details.editrow input[disabled]{background:var(--bg);color:var(--muted)}
+.qrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
+.qrow:last-child{border-bottom:none}
+.qlabel{width:170px;color:var(--muted);font-size:12px}
+.qval{font-variant-numeric:tabular-nums;font-weight:600;min-width:92px}
+.filterbar{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+.filterbar a{border:1px solid var(--line);border-radius:999px;padding:3px 11px;
+text-decoration:none;font-size:12px;background:var(--card);color:var(--muted)}
+.filterbar a.on{border-color:var(--accent);color:var(--accent);font-weight:600}
 """
 
 NAV = (
@@ -236,6 +244,101 @@ def _back(path: str, message: str, tone: str = "ok") -> RedirectResponse:
 
 # --- dashboard --------------------------------------------------------------
 
+def _quality_bar(label: str, part: int, whole: int, *, link: str | None = None,
+                 missing_label: str = "미확인") -> str:
+    """One field's completeness, with the gap named rather than implied.
+
+    "Time 31/42" leaves the reader to subtract. Saying "11 미확인" and linking to
+    those eleven is the difference between a number and something to act on.
+    """
+    from . import quality
+
+    percent = quality.percentage(part, whole)
+    gap = max(0, whole - part)
+    shown = f"{part}/{whole}" + (f" · {percent}%" if percent is not None else "")
+    if gap and link:
+        tail = (f' <a href="{link}" class="badge warn">{gap} {E(missing_label)}</a>')
+    elif gap:
+        tail = f' <span class="badge warn">{gap} {E(missing_label)}</span>'
+    else:
+        tail = ' <span class="badge ok">전부 확인됨</span>' if whole else ""
+    return (f'<div class="qrow"><span class="qlabel">{E(label)}</span>'
+            f'<span class="qval">{E(shown)}</span>{tail}</div>')
+
+
+def _quality_panel(settings: Settings) -> str:
+    """What the data would look like to a dancer, and what is wrong with it."""
+    from . import quality
+
+    try:
+        with _connection() as con:
+            found = quality.snapshot(con)
+    except db.DatabaseUnavailable:
+        return ""
+
+    upcoming = found["upcoming"]
+    total = upcoming["events"]
+    bars = "".join([
+        _quality_bar("Date", upcoming["date_known"], total),
+        _quality_bar("Time", upcoming["time_known"], total,
+                     link="/admin/review?filter=unknown_time"),
+        _quality_bar("Venue extracted", upcoming["venue_extracted"], total,
+                     link="/admin/review?filter=unknown_venue"),
+        _quality_bar("Venue resolved", upcoming["venue_resolved"], total,
+                     link="/admin/venues/unresolved", missing_label="미해결"),
+        _quality_bar("Fee", upcoming["fee_known"], total,
+                     link="/admin/review?filter=unknown_fee"),
+        _quality_bar("Region", upcoming["region_known"], total,
+                     link="/admin/venues", missing_label="지역 미확인"),
+        _quality_bar("Human reviewed", upcoming["human_reviewed"], total,
+                     link="/admin/review?filter=pending", missing_label="미검토"),
+    ])
+
+    wrong = found["wrong"]
+    if wrong:
+        rows = "".join(
+            f'<li><strong>{E(str(w["event_date"]))}</strong> {E(w["event_name"] or "")[:50]} '
+            f'— {E(str(w["start_time"]))} ({E(w["rule"])})</li>'
+            for w in wrong
+        )
+        alert = (
+            '<div class="callout" style="border-color:var(--bad)">'
+            f"<h3>Wrong critical field: {len(wrong)}</h3>"
+            "<p>게시글이 오후라고 적었는데 오전으로 읽힌 시각입니다. "
+            "값이 없는 것보다 나쁩니다 — 추출기 회귀입니다.</p>"
+            f'<ul class="sources">{rows}</ul></div>'
+        )
+    else:
+        alert = ('<p class="note"><span class="badge ok">Wrong critical field 0</span> '
+                 "게시글과 어긋나는 값은 없습니다. 위 숫자는 전부 '아직 모른다'입니다.</p>")
+
+    fresh = found["freshness"]
+    checked = fresh["checked_24h"] or 0
+    stale = (fresh["upcoming"] or 0) - checked
+    freshness = (
+        f'<div class="qrow"><span class="qlabel">최근 24시간 내 확인</span>'
+        f'<span class="qval">{checked}/{fresh["upcoming"] or 0}</span>'
+        + (f' <span class="badge warn">{stale}건 재확인 필요</span>' if stale else
+           ' <span class="badge ok">최신</span>' if fresh["upcoming"] else "")
+        + "</div>"
+    )
+
+    spread = " · ".join(
+        f'{E(r["region"])} {r["upcoming"]}' for r in found["by_region"]
+    ) or "-"
+    genres = " · ".join(
+        f'{E(g["genre"])} {g["upcoming"]}' for g in found["by_genre"]
+    ) or "-"
+
+    return (
+        '<h2>Data Quality <span class="note">— 사용자에게 보이는 앞으로의 행사 '
+        f'{total}건 기준</span></h2>'
+        + alert
+        + f'<div class="tablewrap" style="padding:12px 16px">{bars}{freshness}</div>'
+        + f'<p class="note">지역: {spread} &nbsp;|&nbsp; 장르: {genres}</p>'
+    )
+
+
 @router.get("/admin", response_class=HTMLResponse)
 def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
     settings = _settings()
@@ -278,6 +381,8 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         )
     ]
 
+    quality_panel = _quality_panel(settings)
+
     cards = _cards([
         ("Sources", intake_summary.get("sources", "-"),
          f"{intake_summary.get('enabled_sources', 0)} enabled"),
@@ -308,11 +413,12 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
     ]
 
     body = (
-        "<h2>Runtime</h2>"
+        "<h2>Today</h2>"
         + cards
+        + quality_panel
         + "<h2>Components</h2>"
         + _table(["Component", "Status", "Detail"], status_rows, empty="no status")
-        + "<h2>Today</h2>"
+        + "<h2>Providers today</h2>"
         + _table(
             ["Provider", "API requests", "Success", "Errors", "Items", "New", "Duplicate"],
             [
