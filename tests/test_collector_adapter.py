@@ -34,7 +34,19 @@ def _source(**overrides):
 # --- capability reporting ---------------------------------------------------
 
 def test_only_the_engine_backed_platforms_are_collectable():
-    assert set(collectors.SUPPORTED_PLATFORMS) == {"DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG"}
+    assert set(collectors.SUPPORTED_PLATFORMS) == {
+        "DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG", "NAVER_WEB",
+    }
+
+
+def test_each_naver_platform_reads_the_search_api_hub_serves_for_it():
+    assert collectors.NAVER_KIND == {
+        "NAVER_BLOG": "blog", "NAVER_CAFE": "cafe", "NAVER_WEB": "web",
+    }
+    # One API HUB subscription behind all three.
+    for platform in collectors.NAVER_KIND:
+        assert collectors.CREDENTIAL_ENV[platform] == (
+            "NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET")
 
 
 def test_facebook_is_not_offered_as_a_first_real_source():

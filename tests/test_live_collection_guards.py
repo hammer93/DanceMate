@@ -128,6 +128,8 @@ def test_the_http_status_is_reported_alongside_the_kind():
     [
         "Authorization: KakaoAK EXAMPLE-NOT-A-REAL-KEY",
         "X-Naver-Client-Secret: EXAMPLE-NOT-A-REAL-SECRET",
+        "X-NCP-APIGW-API-KEY: EXAMPLE-NOT-A-REAL-SECRET",
+        "X-NCP-APIGW-API-KEY-ID: EXAMPLE-NOT-A-REAL-KEY",
         "api_key=EXAMPLE-NOT-A-REAL-KEY",
         "client_secret: EXAMPLE-NOT-A-REAL-SECRET2",
     ],

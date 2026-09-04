@@ -194,7 +194,7 @@ verified; only the keys are missing.
 | Platform | Where | Variable(s) |
 |---|---|---|
 | `DAUM_CAFE` | Kakao Developers -> my application -> REST API key | `KAKAO_REST_API_KEY` |
-| `NAVER_BLOG`, `NAVER_CAFE` | Naver Developers -> application -> Search API | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` |
+| `NAVER_BLOG`, `NAVER_CAFE`, `NAVER_WEB` | NAVER API HUB -> Search (blog / cafearticle / webkr) | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` |
 
 Start with one. Kakao is the shorter path: one key, and `SRC-D-001` already
 carries six real search queries imported from the engine's own config.
