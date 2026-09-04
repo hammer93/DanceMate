@@ -15,6 +15,9 @@ from runtime import admin_auth
 ADMIN_PAGES = (
     "/admin",
     "/admin/sources",
+    "/admin/sources/export.csv",
+    "/admin/sources/import",
+    "/admin/sources/import/template.csv",
     "/admin/venues",
     "/admin/venues/export.csv",
     "/admin/venues/import",
@@ -134,6 +137,8 @@ def test_sources_page_lists_and_offers_the_actions(client, pg):
         assert platform in body
     assert "Test" in body
     assert "New sources start disabled" in body
+    assert "/admin/sources/export.csv" in body
+    assert "/admin/sources/import" in body
 
 
 def test_venues_page_explains_aliases(client, pg):

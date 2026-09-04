@@ -761,8 +761,14 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
   the scheduler collects only from enabled sources whose interval has elapsed.</p>
 </form></details>"""
 
+    csv_bar = (
+        '<p class="actions">'
+        '<a href="/admin/sources/export.csv"><button>Export CSV</button></a> '
+        '<a href="/admin/sources/import"><button>Import CSV</button></a>'
+        "</p>"
+    )
     body = (
-        "<h2>Sources</h2>" + add_form
+        "<h2>Sources</h2>" + add_form + csv_bar
         + _table(
             ["Source", "Platform", "State", "Interval", "Last collection",
              "Items / readable", "Decision", "Collector", "Actions"],
@@ -775,6 +781,186 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         + pagination.nav("/admin/sources", {}, page, total)
     )
     return HTMLResponse(_page("Sources", "/admin/sources", body, flash=_flash(request)))
+
+
+# --- source CSV import/export -------------------------------------------------
+
+@router.get("/admin/sources/export.csv")
+def admin_sources_export_csv(_: str = Depends(require_admin)) -> Response:
+    from . import source_csv
+
+    with _connection() as con:
+        rows = source_csv.export_rows(con)
+    body = source_csv.to_csv(rows)
+    filename = source_csv.export_filename()
+    return Response(
+        content=body, media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/sources/import/template.csv")
+def admin_sources_import_template(_: str = Depends(require_admin)) -> Response:
+    from . import source_csv
+
+    return Response(
+        content=source_csv.template_csv(), media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="dancemate_sources_template.csv"'
+        },
+    )
+
+
+def _source_preview_rows_table(preview_result: dict[str, Any]) -> str:
+    tone = {"NEW": "ok", "UPDATE": "warn", "INVALID": "bad"}
+    rows = []
+    for entry in preview_result["rows"]:
+        detail = (
+            E("; ".join(entry["errors"])) if entry["errors"]
+            else E("; ".join(entry["reasons"])) if entry["reasons"]
+            else "-"
+        )
+        rows.append([
+            str(entry["row"]),
+            _badge(entry["status"], tone.get(entry["status"], "muted")),
+            E(entry["source_key"] or "-"),
+            E(entry["name"] or "-"),
+            E(entry["platform"] or "-"),
+            E(entry["genre"] or "-"),
+            E(entry["region"] or "-"),
+            "true" if entry["enabled"] else "false",
+            detail,
+        ])
+    return _table(
+        ["Row", "Status", "Source key", "Name", "Platform", "Genre", "Region", "Enabled", "Detail"],
+        rows, empty="the file has no data rows",
+    )
+
+
+@router.get("/admin/sources/import", response_class=HTMLResponse)
+def admin_sources_import_form(
+    request: Request, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    from . import source_csv
+
+    body = f"""<h2>Import Sources (CSV)</h2>
+<p class="note">Nothing is written until you review a preview and press Confirm.
+<a href="/admin/sources/import/template.csv">Download the template</a> for the
+expected columns — {E(", ".join(source_csv.TEMPLATE_COLUMNS))},
+queries separated by <code>|</code>. Rows are matched by <code>id</code> or
+<code>source_key</code>; anything unmatched is created new. Enabling a source
+through import still has to pass the same checks Enable does on the Sources
+page — a row missing what its platform needs to collect is rejected, not
+written broken.</p>
+<form method="post" action="/admin/sources/import" enctype="multipart/form-data">
+  <div class="grid">
+    <div><label>CSV file (max 5MB)</label><input type="file" name="csvfile" accept=".csv" required></div>
+  </div>
+  <div class="actions"><button class="primary">Preview</button></div>
+</form>"""
+    return HTMLResponse(
+        _page("Import Sources", "/admin/sources", body, flash=_flash(request))
+    )
+
+
+@router.post("/admin/sources/import", response_class=HTMLResponse)
+async def admin_sources_import_preview(
+    csvfile: UploadFile, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    import base64
+
+    from . import source_csv
+
+    raw = await csvfile.read()
+    if len(raw) > source_csv.MAX_UPLOAD_BYTES:
+        return _back(
+            "/admin/sources/import",
+            f"file is over the {source_csv.MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
+            "bad",
+        )
+    try:
+        rows = source_csv.parse_csv(raw)
+    except (source_csv.ImportTooLarge, UnicodeDecodeError) as exc:
+        return _back("/admin/sources/import", f"could not read the file: {exc}", "bad")
+
+    with _connection() as con:
+        genres = master_data.list_genres(con)
+        regions = master_data.list_regions(con)
+        result = source_csv.preview(con, rows, genres=genres, regions=regions)
+
+    counts = result["counts"]
+    cards = _cards([
+        ("Rows", result["total"], "parsed from the file"),
+        ("New", counts["NEW"], "will be created"),
+        ("Update", counts["UPDATE"], "matched by id or source_key"),
+        ("Invalid", counts["INVALID"], "must be fixed before Confirm"),
+    ])
+    can_confirm = counts["INVALID"] == 0 and result["total"] > 0
+    confirm_form = ""
+    if can_confirm:
+        encoded = base64.b64encode(raw).decode("ascii")
+        confirm_form = f"""
+<form method="post" action="/admin/sources/import/confirm">
+  <input type="hidden" name="csv_b64" value="{E(encoded)}">
+  <input type="hidden" name="filename" value="{E(csvfile.filename or 'import.csv')}">
+  <div class="actions"><button class="primary">Confirm Import</button>
+  <a href="/admin/sources/import"><button type="button">Cancel</button></a></div>
+</form>"""
+    else:
+        confirm_form = (
+            '<p class="note">Fix the INVALID rows and upload again — '
+            "Confirm is disabled while any row is invalid.</p>"
+            if counts["INVALID"] else
+            '<p class="note">Nothing to import — the file has no data rows.</p>'
+        )
+
+    body = (
+        "<h2>Import Preview</h2>" + cards + confirm_form
+        + _source_preview_rows_table(result)
+    )
+    return HTMLResponse(_page("Import Preview", "/admin/sources", body))
+
+
+@router.post("/admin/sources/import/confirm")
+def admin_sources_import_confirm(
+    csv_b64: str = Form(...), filename: str = Form("import.csv"),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    import base64
+
+    from . import source_csv
+
+    try:
+        raw = base64.b64decode(csv_b64)
+        rows = source_csv.parse_csv(raw)
+    except Exception as exc:
+        return _back("/admin/sources", f"could not re-read the upload: {exc}", "bad")
+
+    try:
+        with _connection() as con:
+            genres = master_data.list_genres(con)
+            regions = master_data.list_regions(con)
+            # Re-derived from the same rows Preview showed - a stale or
+            # tampered confirm can never apply something Preview never saw.
+            result = source_csv.preview(con, rows, genres=genres, regions=regions)
+            # One savepoint-backed transaction for the whole batch: a failure
+            # partway through must not leave earlier rows committed under an
+            # autocommit connection that would otherwise commit each
+            # statement as it runs.
+            with con.transaction():
+                applied = source_csv.apply_import(
+                    con, result["rows"], reviewer=reviewer, filename=filename
+                )
+    except source_csv.ImportRejected as exc:
+        return _back("/admin/sources", str(exc), "bad")
+    except Exception as exc:
+        return _back("/admin/sources", f"import failed: {exc}", "bad")
+
+    return _back(
+        "/admin/sources",
+        f"imported {filename}: {applied['created']} created, "
+        f"{applied['updated']} updated, {applied['noop']} unchanged",
+    )
 
 
 @router.post("/admin/sources")
