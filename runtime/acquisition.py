@@ -208,8 +208,26 @@ _IMG_SRC = re.compile(r"<img[^>]+src=[\"']([^\"']+)", re.I)
 _TEMPLATE_BOARD_START = '<div class="readEdit">'
 _TEMPLATE_BOARD_END = '<div class="readBottom">'
 
+# danceinfo.net's lesson/event detail page (v0.82): a Next.js app whose
+# server-rendered visible text is otherwise usable as-is, except that
+# og:description is truncated (loses time/venue/fee, all further down the
+# body than extract_article() would otherwise reach) and the page ends every
+# listing with a "다가오는 추천 행사" block of *other* events' own titles and
+# dates - exactly the cross-event mixing v0.81.2's segmentation exists to
+# prevent, so it is worth excluding outright rather than relying on that
+# safety net alone. "행사일" ("event date") is a fixed structured-field label
+# heading the page's own date/time/venue/DJ block on every lesson page, not
+# page-specific content, the same kind of host-wide marker Daum's own text
+# markers already are - starting there (rather than at the later "강의 소개"
+# free-text section) keeps the labelled 장소/DJ fields extract_venue() and
+# DJ_RE already require, which the free-text description alone does not
+# carry.
+_DANCEINFO_START = "행사일"
+_DANCEINFO_END = "다가오는 추천"
+
 METHOD_TEMPLATE_BOARD = "template_board"
 METHOD_ARTICLE_REGION = "article_region"
+METHOD_DANCEINFO = "danceinfo_region"
 METHOD_OG_DESCRIPTION = "og_description"
 METHOD_VISIBLE_TEXT = "visible_text"
 METHOD_NONE = "none"
@@ -244,6 +262,13 @@ def extract_article(raw_html: str) -> tuple[str, str]:
         body = text[start + len(_ARTICLE_START):end].strip()
         if len(body) >= MINIMUM_USEFUL_TEXT:
             return body, METHOD_ARTICLE_REGION
+
+    start = text.find(_DANCEINFO_START)
+    end = text.find(_DANCEINFO_END, start + 1 if start >= 0 else 0)
+    if start >= 0 and end > start:
+        body = text[start + len(_DANCEINFO_START):end].strip()
+        if len(body) >= MINIMUM_USEFUL_TEXT:
+            return body, METHOD_DANCEINFO
 
     match = _OG_DESCRIPTION.search(raw_html)
     if match:

@@ -224,7 +224,7 @@ def test_env_is_git_ignored_but_the_template_is_not():
 
 
 def test_version_file_tracks_the_product_runtime_not_the_engine():
-    assert (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.81.3"
+    assert (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.82"
 
 
 # --- listen address vs published address ------------------------------------

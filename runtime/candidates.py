@@ -191,7 +191,7 @@ class InvalidFilter(ValueError):
 def query(
     settings: Settings, *, filter_key: str = "upcoming",
     reviewed_ids: set[int] | None = None, page: int = 1, page_size: int = 50,
-    today: str | None = None,
+    today: str | None = None, source_keys: list[str] | None = None,
 ) -> dict[str, Any]:
     """One page of the review queue, filtered and sorted entirely in SQL.
 
@@ -200,6 +200,13 @@ def query(
     `runtime/review.reviewed_candidate_ids`) since it does not live in this
     SQLite file. "pending"/"reviewed" filter on membership in that set; every
     other filter never touches it. Returns ``{"rows": [...], "total": N}``.
+
+    ``source_keys`` (v0.82, genre filtering) narrows to candidates whose post
+    came from one of these engine source_keys - genre itself is a Postgres
+    concept (sources.genre_id), not something this SQLite file's own
+    raw_posts.source_id (a TEXT key like "SRC-W-004") carries, so the caller
+    resolves "which source_keys are TANGO" once against Postgres and passes
+    the list in, the same shape reviewed_ids already uses.
     """
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
@@ -233,6 +240,20 @@ def query(
             else:  # pending
                 where = f"c.candidate_id NOT IN ({placeholders}) AND {reviewable}"
             params = list(ids)
+
+    if source_keys is not None:
+        if not source_keys:
+            # An empty list is "this genre has no sources", not "no filter" -
+            # matching NOT IN (NULL)'s three-valued-logic trap above, an empty
+            # IN (...) placeholder set must be handled explicitly or it would
+            # either error or (worse) silently match nothing for the wrong
+            # reason.
+            where = "1=0"
+            params = []
+        else:
+            placeholders = ",".join("?" for _ in source_keys)
+            where = f"({where}) AND p.source_id IN ({placeholders})"
+            params = params + list(source_keys)
 
     try:
         con = _connect(settings)
@@ -302,6 +323,7 @@ def get(settings: Settings, candidate_id: int) -> dict[str, Any] | None:
 
 def filter_counts(
     settings: Settings, *, reviewed_ids: set[int] | None = None, today: str | None = None,
+    source_keys: list[str] | None = None,
 ) -> dict[str, int]:
     """How many candidates match each REVIEW_FILTERS key, for the filter bar.
 
@@ -320,7 +342,7 @@ def filter_counts(
         try:
             out[key] = query(
                 settings, filter_key=key, reviewed_ids=reviewed_ids,
-                page=1, page_size=1, today=today,
+                page=1, page_size=1, today=today, source_keys=source_keys,
             )["total"]
         except EngineStoreUnavailable:
             out[key] = 0

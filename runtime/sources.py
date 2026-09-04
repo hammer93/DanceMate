@@ -137,6 +137,24 @@ def count_sources(con, *, enabled_only: bool = False) -> int:
         return cur.fetchone()[0]
 
 
+def source_keys_for_genre(con, genre_code: str) -> list[str]:
+    """source_key strings for every source tagged with this genre (v0.82).
+
+    The review queue lives in the engine's SQLite file, which knows posts
+    only by source_key - genre is a Postgres concept (sources.genre_id), so
+    a genre filter there has to start here: resolve the key list once, then
+    pass it to `runtime.candidates.query(source_keys=...)`.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT s.source_key FROM sources s "
+            "JOIN genres g ON g.genre_id = s.genre_id "
+            "WHERE g.code = %s",
+            (genre_code,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 def get_source(con, source_id: int) -> dict[str, Any] | None:
     with con.cursor() as cur:
         cur.execute("SELECT * FROM sources WHERE source_id = %s", (source_id,))

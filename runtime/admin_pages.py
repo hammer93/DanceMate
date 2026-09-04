@@ -24,6 +24,7 @@ from . import (
     image_fallback,
     review,
     review_hints,
+    sources,
     usage,
 )
 from .admin_auth import require_admin
@@ -401,7 +402,7 @@ def _raw_page(raw: Any) -> int:
 
 @router.get("/admin/review", response_class=HTMLResponse)
 def admin_review(
-    request: Request, show: str = "pending", filter: str = "",
+    request: Request, show: str = "pending", filter: str = "", genre: str = "",
     _: str = Depends(require_admin),
 ) -> HTMLResponse:
     from . import pagination
@@ -410,6 +411,7 @@ def admin_review(
     chosen = (filter or show or DEFAULT_REVIEW_FILTER).strip().lower()
     if chosen not in REVIEW_FILTERS:
         chosen = DEFAULT_REVIEW_FILTER
+    genre = genre.strip().upper()
 
     with _connection() as con:
         # Fetched once regardless of `chosen`: filter_counts() below needs it
@@ -417,11 +419,12 @@ def admin_review(
         # tab is open.
         reviewed_ids = review.reviewed_candidate_ids(con)
         metrics = review.metrics(con)
+        source_keys = sources.source_keys_for_genre(con, genre) if genre else None
 
     raw_page = _raw_page(request.query_params.get("page"))
     result = candidates.query(
         settings, filter_key=chosen, reviewed_ids=reviewed_ids,
-        page=raw_page, page_size=pagination.PAGE_SIZE,
+        page=raw_page, page_size=pagination.PAGE_SIZE, source_keys=source_keys,
     )
     total = result["total"]
     page = pagination.resolve_page(request.query_params.get("page"), total)
@@ -430,7 +433,7 @@ def admin_review(
         # 999999) - the common case costs one query, not two.
         result = candidates.query(
             settings, filter_key=chosen, reviewed_ids=reviewed_ids,
-            page=page, page_size=pagination.PAGE_SIZE,
+            page=page, page_size=pagination.PAGE_SIZE, source_keys=source_keys,
         )
     visible_page = result["rows"]
 
@@ -438,13 +441,21 @@ def admin_review(
         page_states = review.states(con, [r["candidate_id"] for r in visible_page])
     _with_review_state(visible_page, page_states)
 
-    counts_by_filter = candidates.filter_counts(settings, reviewed_ids=reviewed_ids)
+    counts_by_filter = candidates.filter_counts(
+        settings, reviewed_ids=reviewed_ids, source_keys=source_keys,
+    )
+    genre_suffix = f"&genre={genre}" if genre else ""
     filter_bar = '<div class="filterbar">' + "".join(
-        f'<a href="/admin/review?filter={key}"'
+        f'<a href="/admin/review?filter={key}{genre_suffix}"'
         + (' class="on"' if key == chosen else "")
         + f'>{E(label)} {counts_by_filter.get(key, 0)}</a>'
         for key, (label, _match) in REVIEW_FILTERS.items()
     ) + "</div>"
+    if genre:
+        filter_bar += (
+            f'<p class="note">장르: {E(genre)} '
+            f'&middot; <a href="/admin/review?filter={chosen}">전체 장르로</a></p>'
+        )
 
     cards = admin._cards([
         ("Review pending", counts_by_filter.get("pending", 0), "candidates awaiting a person"),
@@ -458,7 +469,7 @@ def admin_review(
     table_rows = []
     for row in visible_page:
         state_value = row["review"]["review_state"]
-        detail_href = f'/admin/review/{row["candidate_id"]}?queue={chosen}&page={page}'
+        detail_href = f'/admin/review/{row["candidate_id"]}?queue={chosen}&page={page}{genre_suffix}'
         table_rows.append([
             (f'<a href="{detail_href}">'
              f'{E(str(row.get("event_name") or "-")[:48])}</a>'
@@ -485,7 +496,7 @@ def admin_review(
             table_rows,
             empty="nothing to review in this view",
         )
-        + pagination.nav("/admin/review", {"filter": chosen}, page, total)
+        + pagination.nav("/admin/review", {"filter": chosen, "genre": genre}, page, total)
     )
     return HTMLResponse(admin._page("Review", "/admin/review", body, flash=admin._flash(request)))
 
@@ -520,7 +531,10 @@ def _event_summary(merged: dict[str, Any], found: dict[str, Any]) -> str:
             f"{cells}</dl></div>")
 
 
-def _queue_position(settings, queue_key: str, reviewed_ids: set[int], page: int) -> str:
+def _queue_position(
+    settings, queue_key: str, reviewed_ids: set[int], page: int,
+    source_keys: list[str] | None = None,
+) -> str:
     """How far into the queue this page is, so a reviewer knows how far to go.
 
     An exact row ordinal ("47/842") would need the candidate's own rank in the
@@ -533,7 +547,7 @@ def _queue_position(settings, queue_key: str, reviewed_ids: set[int], page: int)
     try:
         result = candidates.query(
             settings, filter_key=queue_key, reviewed_ids=reviewed_ids,
-            page=page, page_size=1,
+            page=page, page_size=1, source_keys=source_keys,
         )
     except candidates.EngineStoreUnavailable:
         return ""
@@ -543,10 +557,11 @@ def _queue_position(settings, queue_key: str, reviewed_ids: set[int], page: int)
 
 @router.get("/admin/review/{candidate_id}", response_class=HTMLResponse)
 def admin_review_detail(
-    candidate_id: int, request: Request, queue: str = "", page: str = "1",
+    candidate_id: int, request: Request, queue: str = "", page: str = "1", genre: str = "",
     _: str = Depends(require_admin),
 ) -> HTMLResponse:
     settings = _settings()
+    genre = genre.strip().upper()
     found = candidates.get(settings, candidate_id)
     if found is None:
         raise HTTPException(status_code=404, detail="candidate not found")
@@ -572,7 +587,8 @@ def admin_review_detail(
     page_num = _raw_page(page)
     with _connection() as con:
         reviewed_ids = review.reviewed_candidate_ids(con)
-    position = _queue_position(settings, queue_key, reviewed_ids, page_num)
+        source_keys = sources.source_keys_for_genre(con, genre) if genre else None
+    position = _queue_position(settings, queue_key, reviewed_ids, page_num, source_keys)
 
     merged = review.apply_corrections(found, current)
     content = (item or {}).get("content") or {}
@@ -689,6 +705,7 @@ def admin_review_detail(
 <div><label>Reason</label><input name="reason" placeholder="what you corrected and why"></div>
 <input type="hidden" name="queue" value="{E(queue_key)}">
 <input type="hidden" name="page" value="{page_num}">
+<input type="hidden" name="queue_genre" value="{E(genre)}">
 <div class="actions">
   <button class="primary" name="next_after" value="0">Save correction</button>
   <button class="primary" name="next_after" value="1">Save &amp; Next</button>
@@ -704,6 +721,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
   <input type="hidden" name="reason" value="">
   <input type="hidden" name="queue" value="{E(queue_key)}">
   <input type="hidden" name="page" value="{page_num}">
+  <input type="hidden" name="queue_genre" value="{E(genre)}">
   <button name="next_after" value="0" title="{E(note)}"{primary}>{E(label)}</button>
   <button name="next_after" value="1" title="{E(note)} — 그리고 다음 항목으로">
     {E(label)} &amp; Next</button></form>"""
@@ -713,6 +731,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
   <input name="duplicate_of_candidate_id" placeholder="duplicate of candidate id" style="width:190px">
   <input type="hidden" name="queue" value="{E(queue_key)}">
   <input type="hidden" name="page" value="{page_num}">
+  <input type="hidden" name="queue_genre" value="{E(genre)}">
   <button name="next_after" value="0">DUPLICATE</button></form>"""
 
     history_rows = [
@@ -722,8 +741,9 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
         for a in actions
     ]
 
+    genre_suffix = f"&genre={E(genre)}" if genre else ""
     body = (
-        f'<p class="sub"><a href="/admin/review?filter={E(queue_key)}&page={page_num}">&larr; '
+        f'<p class="sub"><a href="/admin/review?filter={E(queue_key)}&page={page_num}{genre_suffix}">&larr; '
         f'{E(queue_label)} 큐</a> &middot; {E(position)}</p>'
         f"<h2>Review candidate {candidate_id}</h2>"
         + _event_summary(merged, found)
@@ -791,6 +811,7 @@ def admin_review_action(
     notes: str = Form(None),
     queue: str = Form(""),
     page: str = Form("1"),
+    queue_genre: str = Form(""),
     next_after: str = Form(""),
     _: str = Depends(require_admin),
 ) -> RedirectResponse:
@@ -800,6 +821,7 @@ def admin_review_action(
 
     settings = _settings()
     page_num = _raw_page(page)
+    queue_genre = queue_genre.strip().upper()
     before = _candidate_snapshot(settings, candidate_id)
     after = None
     if action_name == review.EDIT:
@@ -820,10 +842,10 @@ def admin_review_action(
                 ),
             )
     except review.ReviewError as exc:
-        return admin._back(_detail_url(candidate_id, queue, page_num), str(exc), "bad")
+        return admin._back(_detail_url(candidate_id, queue, page_num, queue_genre), str(exc), "bad")
     except Exception as exc:
         return admin._back(
-            _detail_url(candidate_id, queue, page_num), f"could not record: {exc}", "bad",
+            _detail_url(candidate_id, queue, page_num, queue_genre), f"could not record: {exc}", "bad",
         )
 
     if next_after == "1":
@@ -834,33 +856,42 @@ def admin_review_action(
         # pending/reviewed filter.
         with _connection() as con:
             reviewed_ids = review.reviewed_candidate_ids(con)
+            source_keys = (
+                sources.source_keys_for_genre(con, queue_genre) if queue_genre else None
+            )
         following, next_page = _next_in_queue(
-            settings, candidate_id, queue, page_num, reviewed_ids,
+            settings, candidate_id, queue, page_num, reviewed_ids, source_keys,
         )
         if following is not None:
             return admin._back(
-                _detail_url(following, queue, next_page),
+                _detail_url(following, queue, next_page, queue_genre),
                 f"{action_name} recorded — next one",
             )
         return admin._back(
-            f"/admin/review?filter={queue or DEFAULT_REVIEW_FILTER}",
+            f"/admin/review?filter={queue or DEFAULT_REVIEW_FILTER}"
+            + (f"&genre={queue_genre}" if queue_genre else ""),
             f"{action_name} recorded — that was the last one in this queue",
         )
-    return admin._back(_detail_url(candidate_id, queue, page_num), f"{action_name} recorded")
+    return admin._back(
+        _detail_url(candidate_id, queue, page_num, queue_genre), f"{action_name} recorded",
+    )
 
 
-def _detail_url(candidate_id: int, queue: str, page: int = 1) -> str:
+def _detail_url(candidate_id: int, queue: str, page: int = 1, genre: str = "") -> str:
     params = []
     if queue:
         params.append(f"queue={queue}")
     if page and page != 1:
         params.append(f"page={page}")
+    if genre:
+        params.append(f"genre={genre}")
     suffix = f"?{'&'.join(params)}" if params else ""
     return f"/admin/review/{candidate_id}{suffix}"
 
 
 def _next_in_queue(
     settings, candidate_id: int, queue: str, page: int, reviewed_ids: set[int],
+    source_keys: list[str] | None = None,
 ) -> tuple[int | None, int]:
     """The candidate after this one, and the page it is on.
 
@@ -876,7 +907,7 @@ def _next_in_queue(
     try:
         result = candidates.query(
             settings, filter_key=key, reviewed_ids=reviewed_ids,
-            page=page, page_size=pagination.PAGE_SIZE,
+            page=page, page_size=pagination.PAGE_SIZE, source_keys=source_keys,
         )
     except candidates.EngineStoreUnavailable:
         return None, page
@@ -889,7 +920,7 @@ def _next_in_queue(
         try:
             nxt = candidates.query(
                 settings, filter_key=key, reviewed_ids=reviewed_ids,
-                page=page + 1, page_size=pagination.PAGE_SIZE,
+                page=page + 1, page_size=pagination.PAGE_SIZE, source_keys=source_keys,
             )
         except candidates.EngineStoreUnavailable:
             return None, page
@@ -905,7 +936,7 @@ def _next_in_queue(
         try:
             prev = candidates.query(
                 settings, filter_key=key, reviewed_ids=reviewed_ids,
-                page=page - 1, page_size=pagination.PAGE_SIZE,
+                page=page - 1, page_size=pagination.PAGE_SIZE, source_keys=source_keys,
             )
         except candidates.EngineStoreUnavailable:
             return None, page
@@ -1052,18 +1083,21 @@ def api_intake_detail(source_item_id: int, _: str = Depends(require_admin)) -> J
 
 @api.get("/review")
 def api_review(
-    filter: str = DEFAULT_REVIEW_FILTER, page: int = 1, _: str = Depends(require_admin),
+    filter: str = DEFAULT_REVIEW_FILTER, page: int = 1, genre: str = "",
+    _: str = Depends(require_admin),
 ) -> JSONResponse:
     from . import pagination
 
     settings = _settings()
     chosen = filter if filter in REVIEW_FILTERS else DEFAULT_REVIEW_FILTER
+    genre = genre.strip().upper()
     with _connection() as con:
         reviewed_ids = review.reviewed_candidate_ids(con)
         metrics = review.metrics(con)
+        source_keys = sources.source_keys_for_genre(con, genre) if genre else None
     result = candidates.query(
         settings, filter_key=chosen, reviewed_ids=reviewed_ids,
-        page=_raw_page(page), page_size=pagination.PAGE_SIZE,
+        page=_raw_page(page), page_size=pagination.PAGE_SIZE, source_keys=source_keys,
     )
     return admin._dump({
         "metrics": metrics,

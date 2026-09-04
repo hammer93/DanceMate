@@ -223,6 +223,18 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
                       + (text or "")[end:end + _TIME_NEAR_AFTER])
             if re.search(words, window, re.I):
                 return reading
+    # No reading named the event type nearby (or none was given): the same
+    # post can still repeat its own time, once plainly and once with an
+    # explicit AM/PM marker (a structured summary line and a free-text body
+    # saying the same thing, danceinfo.net's own shape) - preferring
+    # whichever repetition actually carries the marker is strictly safer
+    # than the first one found by position, since a plain "5:30~9:30"
+    # earlier in the text is exactly the reading `ambiguous=True` exists to
+    # warn about, not one to prefer over a confirmed match of the same
+    # event's own time.
+    explicit = next((r for r in readings if r[0].meridiem_evidence == EVIDENCE_EXPLICIT), None)
+    if explicit:
+        return explicit[0]
     return readings[0][0]
 
 

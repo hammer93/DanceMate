@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import json
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
@@ -306,6 +307,7 @@ def _today_panel(settings: Settings) -> str:
         '<a href="/admin/review?filter=tomorrow">내일 검토</a>'
         '<a href="/admin/review?filter=unknown_time">시간 미확인</a>'
         '<a href="/admin/review?filter=unknown_venue">장소 미확인</a>'
+        '<a href="/admin/review?filter=upcoming&genre=TANGO">탱고 검토</a>'
         '<a href="/admin/venues/unresolved">장소 연결</a>'
         "</div>"
     )
@@ -369,6 +371,48 @@ def _coverage_panel(settings: Settings) -> str:
         '<p class="note">0인 칸이 다음에 채울 곳입니다. 실제 공개 소스가 없으면 '
         "억지로 채우지 않습니다.</p>"
     )
+
+
+def _genre_coverage_panel(settings: Settings, genre_code: str, label: str) -> str:
+    """Sources / Upcoming / Today / Tomorrow / This Week for one genre, plus
+    a region x window matrix (v0.82 Coverage Metrics, Section 27-30) - a
+    single-genre expansion release is judged on whether ITS coverage grew,
+    which the all-genre _today_panel/_coverage_panel above cannot show.
+    """
+    from . import quality
+
+    try:
+        with _connection() as con:
+            source_keys = sources.source_keys_for_genre(con, genre_code)
+            buckets = quality.upcoming_buckets(con, genre_code=genre_code)
+            matrix = quality.genre_region_windows(con, genre_code)
+    except db.DatabaseUnavailable:
+        return ""
+    if not source_keys:
+        return ""
+
+    cards = _cards([
+        (f"{label} Sources", len(source_keys), "registered"),
+        (f"{label} Upcoming", buckets["upcoming"], "listed, not cancelled"),
+        (f"{label} Today", buckets["today"], "listed for today"),
+        (f"{label} Tomorrow", buckets["tomorrow"], "listed for tomorrow"),
+        (f"{label} This Week", buckets["this_week"], "today through +7 days"),
+    ])
+
+    rows = "".join(
+        f"<tr><td>{E(region)}</td>"
+        f'<td class="num">{matrix["grid"][region]["today"]}</td>'
+        f'<td class="num">{matrix["grid"][region]["tomorrow"]}</td>'
+        f'<td class="num">{matrix["grid"][region]["this_week"]}</td></tr>'
+        for region in matrix["regions"]
+    )
+    table = (
+        '<div class="tablewrap"><table><thead><tr><th>Region</th>'
+        "<th>Today</th><th>Tomorrow</th><th>This Week</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></div>"
+        if rows else '<p class="note">no region data yet</p>'
+    )
+    return f"<h2>{E(label)} Coverage</h2>" + cards + table
 
 
 def _quality_panel(settings: Settings) -> str:
@@ -489,6 +533,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
     today_panel = _today_panel(settings)
     quality_panel = _quality_panel(settings)
     coverage_panel = _coverage_panel(settings)
+    tango_coverage_panel = _genre_coverage_panel(settings, "TANGO", "Tango")
     alpha_panel = _alpha_panel(settings)
 
     cards = _cards([
@@ -524,6 +569,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         today_panel
         + quality_panel
         + coverage_panel
+        + tango_coverage_panel
         + alpha_panel
         + "<h2>Collection</h2>"
         + cards
@@ -646,6 +692,126 @@ def _source_yield(found: dict[str, Any], op: dict[str, Any] | None = None) -> st
     return "".join(parts)
 
 
+# --- v0.82 Source Transparency ------------------------------------------------
+#
+# "K-TANGO Festival Board" told an operator nothing about which site, board
+# or search query actually stands behind that name. Everything below answers
+# "where is this source actually looking" and "is it actually working" from
+# signals the pipeline already records - no new tracking column, no guess.
+
+def _truncate(text: str, length: int = 70) -> str:
+    return text if len(text) <= length else text[: length - 1] + "…"
+
+
+def _source_queries(source: dict[str, Any]) -> list[str]:
+    queries = source.get("queries") or []
+    if isinstance(queries, str):
+        queries = json.loads(queries)
+    return [str(q) for q in queries]
+
+
+def _source_target(source: dict[str, Any]) -> str:
+    """Where this source actually looks, in one line."""
+    platform = source["platform"]
+    url = source.get("url")
+    queries = _source_queries(source)
+    open_link = (
+        f' <a href="{E(url)}" target="_blank" rel="noreferrer noopener">'
+        "<button type=\"button\">Open Source</button></a>"
+    ) if url else ""
+
+    if platform in ("WEB", "DIRECTORY"):
+        if not url:
+            return '<span class="badge bad">no target URL</span>'
+        display = url.split("://", 1)[-1]
+        return f'<span title="{E(url)}">{E(_truncate(display))}</span>{open_link}'
+
+    # NAVER_BLOG / NAVER_CAFE / DAUM_CAFE / FACEBOOK: query-driven discovery.
+    # A url here (if set) is an extra filter - a cafe/domain restriction -
+    # never the target itself.
+    if queries:
+        shown = ", ".join(f'"{E(q)}"' for q in queries[:2])
+        if len(queries) > 2:
+            shown += f" +{len(queries) - 2}"
+        parts = [f"Query: {shown}"]
+    else:
+        parts = ['<span class="badge warn">no query configured</span>']
+    if url:
+        parts.append(
+            f'<div class="note">filter: <span title="{E(url)}">{E(_truncate(url, 50))}</span></div>'
+        )
+    return "".join(parts) + open_link
+
+
+HEALTH_ACTIVE = "ACTIVE"
+HEALTH_NO_NEW_ITEMS = "NO_NEW_ITEMS"
+HEALTH_FETCH_BLOCKED = "FETCH_BLOCKED"
+HEALTH_AUTH_FAILED = "AUTH_FAILED"
+HEALTH_PARSER_ERROR = "PARSER_ERROR"
+HEALTH_STALE = "STALE"
+HEALTH_DISABLED = "DISABLED"
+
+_HEALTH_TONE = {
+    HEALTH_ACTIVE: "ok", HEALTH_NO_NEW_ITEMS: "warn", HEALTH_FETCH_BLOCKED: "bad",
+    HEALTH_AUTH_FAILED: "bad", HEALTH_PARSER_ERROR: "bad", HEALTH_STALE: "warn",
+    HEALTH_DISABLED: "muted",
+}
+
+# How many missed collection intervals with nothing fresh before a source
+# counts as STALE rather than merely between ticks. Six intervals is not a
+# blip - it is the scheduler not reaching this source, or one that keeps
+# failing before ever reaching record_collection_result with a real outcome.
+_STALE_INTERVAL_MULTIPLE = 6
+
+
+def _source_health(source: dict[str, Any], outcome: dict[str, Any]) -> str:
+    """A status richer than Enabled/Disabled, derived from last_status
+    (already the collector's own operator-facing classification -
+    collector_errors.py), collection recency, and read yield - never a new
+    tracking column, never a guess about why."""
+    if not source.get("enabled"):
+        return HEALTH_DISABLED
+    last_status = (source.get("last_status") or "").upper()
+    if last_status in ("AUTH_FAILED", "CREDENTIALS_MISSING"):
+        return HEALTH_AUTH_FAILED
+    if last_status == "BAD_RESPONSE":
+        return HEALTH_PARSER_ERROR
+
+    last_collected = source.get("last_collected_at")
+    interval = source.get("collection_interval_minutes") or sources.DEFAULT_INTERVAL_MINUTES
+    if last_collected is None:
+        return HEALTH_STALE
+    now = datetime.now(timezone.utc)
+    last_collected = (
+        last_collected if last_collected.tzinfo else last_collected.replace(tzinfo=timezone.utc)
+    )
+    if (now - last_collected).total_seconds() > interval * 60 * _STALE_INTERVAL_MULTIPLE:
+        return HEALTH_STALE
+
+    items = outcome.get("items", 0) or 0
+    fetched = outcome.get("fetched", 0) or 0
+    blocked = (outcome.get("blocked", 0) or 0) + (outcome.get("login", 0) or 0)
+    events = outcome.get("events", 0) or 0
+    if items and fetched == 0 and blocked:
+        return HEALTH_FETCH_BLOCKED
+    if fetched and not events:
+        return HEALTH_NO_NEW_ITEMS
+    return HEALTH_ACTIVE
+
+
+def _last_success_text(when: Any) -> str:
+    if when is None:
+        return '<span class="badge muted">never</span>'
+    return E(str(when)[:19])
+
+
+def _last_error_text(entry: dict[str, Any] | None) -> str:
+    if not entry:
+        return '<span class="badge ok">none</span>'
+    detail = E(str(entry.get("error") or "")[:80])
+    return f'<span class="badge bad">{E(str(entry["at"])[:19])}</span><div class="note">{detail}</div>'
+
+
 @router.get("/admin/sources", response_class=HTMLResponse)
 def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
     from . import master_admin, master_edit, pagination
@@ -661,6 +827,11 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         regions = master_data.list_regions(con)
         outcomes = sources.acquisition_outcomes(con)
         operations = {o["source_id"]: o for o in source_ops.overview(con)}
+        last_success = intake.last_success_per_source(con)
+        last_error = intake.last_error_per_source(con)
+
+    genre_by_id = {g["genre_id"]: g["code"] for g in genres}
+    region_by_id = {r["region_id"]: r["name"] for r in regions}
 
     table_rows = []
     for source in rows:
@@ -712,13 +883,23 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
             f'action="/admin/sources/{source["source_id"]}/test">'
             "<button>Test</button></form></div>"
         )
+        health = _source_health(source, outcomes.get(source["source_id"], {}))
+        genre_region = " ".join(
+            f'<span class="badge muted">{E(v)}</span>' for v in (
+                genre_by_id.get(source.get("genre_id")),
+                region_by_id.get(source.get("region_id")),
+            ) if v
+        ) or '<span class="badge muted">-</span>'
         table_rows.append([
-            f'<code>{E(source["source_key"])}</code><br>{E(source["name"])}',
-            E(source["platform"]) + "<br>" + f'<span class="badge muted">{E(source["source_role"])}</span>',
-            _badge("ENABLED" if enabled else "DISABLED", "ok" if enabled else "muted"),
+            f'<a href="/admin/sources/{source["source_id"]}">'
+            f'<code>{E(source["source_key"])}</code><br>{E(source["name"])}</a>',
+            E(source["platform"]) + "<br>" + f'<span class="badge muted">{E(source["source_role"])}</span>'
+            + "<br>" + genre_region,
+            _source_target(source),
+            _badge(health, _HEALTH_TONE.get(health, "muted")),
             f'<span class="num">{source["collection_interval_minutes"]}m</span>',
-            _badge(source["last_status"], "ok" if source["last_status"] == "PASS" else "muted")
-            + "<br>" + E(str(source["last_collected_at"] or "never")[:19]),
+            "Success: " + _last_success_text(last_success.get(source["source_id"]))
+            + "<br>Error: " + _last_error_text(last_error.get(source["source_id"])),
             _source_yield(outcomes.get(source["source_id"], {}),
                           operations.get(source["source_id"], {})),
             _source_decision(operations.get(source["source_id"], {})),
@@ -761,11 +942,17 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
   the scheduler collects only from enabled sources whose interval has elapsed.</p>
 </form></details>"""
 
+    csv_bar = (
+        '<p class="actions">'
+        '<a href="/admin/sources/export.csv"><button>Export CSV</button></a> '
+        '<a href="/admin/sources/import"><button>Import CSV</button></a>'
+        "</p>"
+    )
     body = (
-        "<h2>Sources</h2>" + add_form
+        "<h2>Sources</h2>" + add_form + csv_bar
         + _table(
-            ["Source", "Platform", "State", "Interval", "Last collection",
-             "Items / readable", "Decision", "Collector", "Actions"],
+            ["Source", "Platform / Genre / Region", "Target", "Health", "Interval",
+             "Last Success / Error", "Items / readable", "Decision", "Collector", "Actions"],
             table_rows,
             empty="no source registered yet",
         )
@@ -775,6 +962,300 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         + pagination.nav("/admin/sources", {}, page, total)
     )
     return HTMLResponse(_page("Sources", "/admin/sources", body, flash=_flash(request)))
+
+
+# --- source CSV import/export -------------------------------------------------
+
+@router.get("/admin/sources/export.csv")
+def admin_sources_export_csv(_: str = Depends(require_admin)) -> Response:
+    from . import source_csv
+
+    with _connection() as con:
+        rows = source_csv.export_rows(con)
+    body = source_csv.to_csv(rows)
+    filename = source_csv.export_filename()
+    return Response(
+        content=body, media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/admin/sources/import/template.csv")
+def admin_sources_import_template(_: str = Depends(require_admin)) -> Response:
+    from . import source_csv
+
+    return Response(
+        content=source_csv.template_csv(), media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="dancemate_sources_template.csv"'
+        },
+    )
+
+
+def _source_preview_rows_table(preview_result: dict[str, Any]) -> str:
+    tone = {"NEW": "ok", "UPDATE": "warn", "INVALID": "bad"}
+    rows = []
+    for entry in preview_result["rows"]:
+        detail = (
+            E("; ".join(entry["errors"])) if entry["errors"]
+            else E("; ".join(entry["reasons"])) if entry["reasons"]
+            else "-"
+        )
+        rows.append([
+            str(entry["row"]),
+            _badge(entry["status"], tone.get(entry["status"], "muted")),
+            E(entry["source_key"] or "-"),
+            E(entry["name"] or "-"),
+            E(entry["platform"] or "-"),
+            E(entry["genre"] or "-"),
+            E(entry["region"] or "-"),
+            "true" if entry["enabled"] else "false",
+            detail,
+        ])
+    return _table(
+        ["Row", "Status", "Source key", "Name", "Platform", "Genre", "Region", "Enabled", "Detail"],
+        rows, empty="the file has no data rows",
+    )
+
+
+@router.get("/admin/sources/import", response_class=HTMLResponse)
+def admin_sources_import_form(
+    request: Request, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    from . import source_csv
+
+    body = f"""<h2>Import Sources (CSV)</h2>
+<p class="note">Nothing is written until you review a preview and press Confirm.
+<a href="/admin/sources/import/template.csv">Download the template</a> for the
+expected columns — {E(", ".join(source_csv.TEMPLATE_COLUMNS))},
+queries separated by <code>|</code>. Rows are matched by <code>id</code> or
+<code>source_key</code>; anything unmatched is created new. Enabling a source
+through import still has to pass the same checks Enable does on the Sources
+page — a row missing what its platform needs to collect is rejected, not
+written broken.</p>
+<form method="post" action="/admin/sources/import" enctype="multipart/form-data">
+  <div class="grid">
+    <div><label>CSV file (max 5MB)</label><input type="file" name="csvfile" accept=".csv" required></div>
+  </div>
+  <div class="actions"><button class="primary">Preview</button></div>
+</form>"""
+    return HTMLResponse(
+        _page("Import Sources", "/admin/sources", body, flash=_flash(request))
+    )
+
+
+@router.post("/admin/sources/import", response_class=HTMLResponse)
+async def admin_sources_import_preview(
+    csvfile: UploadFile, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    import base64
+
+    from . import source_csv
+
+    raw = await csvfile.read()
+    if len(raw) > source_csv.MAX_UPLOAD_BYTES:
+        return _back(
+            "/admin/sources/import",
+            f"file is over the {source_csv.MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit",
+            "bad",
+        )
+    try:
+        rows = source_csv.parse_csv(raw)
+    except (source_csv.ImportTooLarge, UnicodeDecodeError) as exc:
+        return _back("/admin/sources/import", f"could not read the file: {exc}", "bad")
+
+    with _connection() as con:
+        genres = master_data.list_genres(con)
+        regions = master_data.list_regions(con)
+        result = source_csv.preview(con, rows, genres=genres, regions=regions)
+
+    counts = result["counts"]
+    cards = _cards([
+        ("Rows", result["total"], "parsed from the file"),
+        ("New", counts["NEW"], "will be created"),
+        ("Update", counts["UPDATE"], "matched by id or source_key"),
+        ("Invalid", counts["INVALID"], "must be fixed before Confirm"),
+    ])
+    can_confirm = counts["INVALID"] == 0 and result["total"] > 0
+    confirm_form = ""
+    if can_confirm:
+        encoded = base64.b64encode(raw).decode("ascii")
+        confirm_form = f"""
+<form method="post" action="/admin/sources/import/confirm">
+  <input type="hidden" name="csv_b64" value="{E(encoded)}">
+  <input type="hidden" name="filename" value="{E(csvfile.filename or 'import.csv')}">
+  <div class="actions"><button class="primary">Confirm Import</button>
+  <a href="/admin/sources/import"><button type="button">Cancel</button></a></div>
+</form>"""
+    else:
+        confirm_form = (
+            '<p class="note">Fix the INVALID rows and upload again — '
+            "Confirm is disabled while any row is invalid.</p>"
+            if counts["INVALID"] else
+            '<p class="note">Nothing to import — the file has no data rows.</p>'
+        )
+
+    body = (
+        "<h2>Import Preview</h2>" + cards + confirm_form
+        + _source_preview_rows_table(result)
+    )
+    return HTMLResponse(_page("Import Preview", "/admin/sources", body))
+
+
+@router.post("/admin/sources/import/confirm")
+def admin_sources_import_confirm(
+    csv_b64: str = Form(...), filename: str = Form("import.csv"),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    import base64
+
+    from . import source_csv
+
+    try:
+        raw = base64.b64decode(csv_b64)
+        rows = source_csv.parse_csv(raw)
+    except Exception as exc:
+        return _back("/admin/sources", f"could not re-read the upload: {exc}", "bad")
+
+    try:
+        with _connection() as con:
+            genres = master_data.list_genres(con)
+            regions = master_data.list_regions(con)
+            # Re-derived from the same rows Preview showed - a stale or
+            # tampered confirm can never apply something Preview never saw.
+            result = source_csv.preview(con, rows, genres=genres, regions=regions)
+            # One savepoint-backed transaction for the whole batch: a failure
+            # partway through must not leave earlier rows committed under an
+            # autocommit connection that would otherwise commit each
+            # statement as it runs.
+            with con.transaction():
+                applied = source_csv.apply_import(
+                    con, result["rows"], reviewer=reviewer, filename=filename
+                )
+    except source_csv.ImportRejected as exc:
+        return _back("/admin/sources", str(exc), "bad")
+    except Exception as exc:
+        return _back("/admin/sources", f"import failed: {exc}", "bad")
+
+    return _back(
+        "/admin/sources",
+        f"imported {filename}: {applied['created']} created, "
+        f"{applied['updated']} updated, {applied['noop']} unchanged",
+    )
+
+
+# --- source detail ------------------------------------------------------------
+
+@router.get("/admin/sources/{source_id}", response_class=HTMLResponse)
+def admin_source_detail(
+    source_id: int, request: Request, _: str = Depends(require_admin)
+) -> HTMLResponse:
+    """Everything an operator needs to answer "where is this actually
+    looking, and is it working" about one source, in one screen
+    (v0.82 Source Transparency)."""
+    with _connection() as con:
+        source = sources.get_source(con, source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        genres = master_data.list_genres(con)
+        regions = master_data.list_regions(con)
+        outcomes = sources.acquisition_outcomes(con)
+        upcoming = source_ops.upcoming_yield(con)
+        breakdown = source_ops.event_breakdown(con, source_id)
+        recent = intake.recent_items(con, source_id=source_id, limit=10)
+        last_success = intake.last_success_per_source(con)
+        last_error = intake.last_error_per_source(con)
+
+    genre_by_id = {g["genre_id"]: g["code"] for g in genres}
+    region_by_id = {r["region_id"]: r["name"] for r in regions}
+    capability = collectors.describe_capability(source["platform"])
+    outcome = outcomes.get(source_id, {})
+    health = _source_health(source, outcome)
+
+    facts = _table(
+        ["Field", "Value"],
+        [
+            ["Name", E(source["name"])],
+            ["Source key", f'<code>{E(source["source_key"])}</code>'],
+            ["Platform", E(source["platform"])],
+            ["Role", E(source["source_role"])],
+            ["Authority", E(source["authority_level"])],
+            ["Genre", E(genre_by_id.get(source.get("genre_id")) or "-")],
+            ["Region", E(region_by_id.get(source.get("region_id")) or "-")],
+            ["Target", _source_target(source)],
+            ["Collection interval", f'{source["collection_interval_minutes"]} minutes'],
+            ["Enabled", _badge("ENABLED" if source["enabled"] else "DISABLED",
+                               "ok" if source["enabled"] else "muted")],
+            ["Collector", _badge("LIVE" if capability["live"] else "SNAPSHOT",
+                                 "ok" if capability["live"] else "warn")
+             + f'<div class="note">{E(capability["detail"])}</div>'],
+            ["Notes", E(source.get("notes") or "-")],
+            ["Created", E(str(source.get("created_at") or "-")[:19])],
+            ["Updated", E(str(source.get("updated_at") or "-")[:19])],
+        ],
+        empty="-",
+    )
+
+    health_panel = (
+        '<div class="tablewrap" style="padding:12px 16px">'
+        '<dl style="display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;margin:0">'
+        f'<dt>Health</dt><dd>{_badge(health, _HEALTH_TONE.get(health, "muted"))}</dd>'
+        f'<dt>Last Success</dt><dd>{_last_success_text(last_success.get(source_id))}</dd>'
+        f'<dt>Last Error</dt><dd>{_last_error_text(last_error.get(source_id))}</dd>'
+        "</dl></div>"
+    )
+
+    coverage = _cards([
+        ("Items collected", outcome.get("items", 0) or 0, "all time"),
+        ("Body readable", outcome.get("fetched", 0) or 0,
+         f"blocked {outcome.get('blocked', 0) or 0}, login {outcome.get('login', 0) or 0}"),
+        ("Upcoming events", upcoming.get(source_id, 0), "listed, today or later"),
+        ("Past events", breakdown.get("past", 0), "listed, before today"),
+        ("No event produced", breakdown.get("no_event", 0),
+         "ingested, no event came of it - non-event post or unparseable date"),
+        ("Acquisition blocked", breakdown.get("blocked", 0), "body could not be read"),
+    ])
+
+    recent_rows = []
+    for item in recent:
+        recent_rows.append([
+            E(str(item.get("collected_at") or "-")[:19]),
+            f'<a href="{E(item["url"])}" target="_blank" rel="noreferrer noopener">'
+            f'{E(str(item.get("title") or "-")[:70])}</a>' if item.get("url")
+            else E(str(item.get("title") or "-")[:70]),
+            E(str(item.get("published_at") or "-")[:19]),
+            _badge(item.get("ingest_state") or "-",
+                   "ok" if item.get("ingest_state") == "INGESTED" else "muted"),
+        ])
+    recent_table = _table(
+        ["Collected", "Title", "Published", "Ingest state"], recent_rows,
+        empty="nothing collected from this source yet",
+    )
+
+    queries = _source_queries(source)
+    raw_config = f"""
+<details><summary>Raw config</summary>
+<div class="tablewrap" style="padding:12px 16px">
+<pre style="white-space:pre-wrap;word-break:break-word;margin:0;font:13px/1.6 ui-monospace,monospace">{E(json.dumps({
+    "url": source.get("url"),
+    "queries": queries,
+    "config": source.get("config") or {},
+}, ensure_ascii=False, indent=2))}</pre>
+</div>
+<p class="note">API keys and secrets are never stored here - they live only in <code>.env</code>.</p>
+</details>"""
+
+    body = (
+        f'<p class="sub"><a href="/admin/sources">&larr; Sources</a></p>'
+        f"<h2>{E(source['name'])}</h2>"
+        + facts + health_panel + coverage
+        + "<h2>Recent Items</h2>" + recent_table
+        + raw_config
+        + '<p class="note"><a href="/admin/sources">back to Sources</a></p>'
+    )
+    return HTMLResponse(
+        _page(f"Source: {source['name']}", "/admin/sources", body, flash=_flash(request))
+    )
 
 
 @router.post("/admin/sources")
@@ -840,10 +1321,10 @@ def admin_source_decision(
                  f"{updated['source_key']}: {decision.strip().upper()} 기록됨")
 
 
-@router.post("/admin/sources/{source_id}/{action}")
+@router.post("/admin/sources/{source_id}/{action}", response_model=None)
 def admin_source_action(
-    source_id: int, action: str, _: str = Depends(require_admin)
-) -> RedirectResponse:
+    source_id: int, action: str, request: Request, _: str = Depends(require_admin)
+) -> HTMLResponse | RedirectResponse:
     if action not in ("enable", "disable", "test"):
         raise HTTPException(status_code=404, detail="unknown action")
     settings = _settings()
@@ -856,14 +1337,50 @@ def admin_source_action(
             return _back("/admin/sources", f"{source['source_key']} {action}d")
         report = collectors.test_source(settings, source)
 
+    return HTMLResponse(_page(
+        f"Test: {source['name']}", "/admin/sources",
+        _source_test_report(source, report), flash=_flash(request),
+    ))
+
+
+def _source_test_report(source: dict[str, Any], report: dict[str, Any]) -> str:
+    """The [Test] button's result (v0.82 Section 12): a dry run, nothing
+    written - discovery only, the same collect() the scheduler would call,
+    reported in full instead of squeezed into a one-line flash message."""
     status = report.get("status")
-    tone = {"PASS": "ok", "PASS_SNAPSHOT": "bad"}.get(status, "bad")
-    note = ""
+    tone = {"PASS": "ok", "PASS_SNAPSHOT": "warn", "PASS_NO_MATCH": "warn"}.get(status, "bad")
+    rows = [
+        ["Source", E(source["name"]) + f' (<code>{E(source["source_key"])}</code>)'],
+        ["Target", _source_target(source)],
+        ["Result", _badge(status or "-", tone)],
+        ["Mode", E(report.get("mode") or ("SNAPSHOT" if status == "PASS_SNAPSHOT" else "-"))],
+        ["Discovered", f'<span class="num">{report.get("items", 0)}</span>'],
+    ]
     if status == "PASS_SNAPSHOT":
         missing = ", ".join(report.get("missing_credentials") or []) or "credentials"
-        note = f" [SNAPSHOT, NOT LIVE - {missing} missing; the scheduler will skip this source]"
-    summary = f"{source['source_key']} test: {status} - {report.get('detail', '')}{note}"
-    return _back("/admin/sources", summary[:300], tone)
+        rows.append(["Warning", E(
+            f"SNAPSHOT, NOT LIVE - {missing} missing; the scheduler will skip this source"
+        )])
+    if report.get("missing_credentials"):
+        rows.append(["Missing credentials", E(", ".join(report["missing_credentials"]))])
+    if report.get("provider_results") is not None:
+        rows.append(["Provider returned", f'<span class="num">{report["provider_results"]}</span>'])
+        rows.append(["Matched this source's filter", f'<span class="num">{report.get("items", 0)}</span>'])
+    if report.get("detail"):
+        rows.append(["Detail", E(str(report["detail"])[:400])])
+    sample = report.get("sample_titles") or []
+    if sample:
+        rows.append(["Sample titles", "<br>".join(E(t) for t in sample)])
+
+    body = (
+        f'<p class="sub"><a href="/admin/sources">&larr; Sources</a></p>'
+        f"<h2>Source Test</h2>"
+        + _table(["Field", "Value"], rows, empty="-")
+        + '<p class="note">Nothing was written to the database - this is discovery only, '
+          "the same call the scheduler would make on its next tick. Body fetch and event "
+          "extraction happen later, in the normal collection pipeline.</p>"
+    )
+    return body
 
 
 # --- venues -----------------------------------------------------------------

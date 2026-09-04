@@ -228,10 +228,10 @@ def _collect_snapshot(
 
         records = load_snapshot(path, engine_source, query="snapshot")
     elif platform == "WEB":
-        from . import web_discovery  # noqa: PLC0415
-
-        list_url = (_config(source).get("board_urls") or [""])[0]
-        records = web_discovery.parse_list(
+        config = _config(source)
+        discovery = _web_discovery_module(config.get("parser") or WEB_PARSER_BOARD)
+        list_url = (config.get("board_urls") or [""])[0]
+        records = discovery.parse_list(
             path.read_text(encoding="utf-8"), list_url
         )
         for record in records:
@@ -307,24 +307,45 @@ def _collect_live(
     )
 
 
-def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> CollectionResult:
-    """Walk every board list page a WEB source names in `config.board_urls`.
+# Which discovery module reads a WEB source's list page(s), selected by the
+# source's own config.parser - not by platform, since two WEB sources can
+# have genuinely different page shapes (K-TANGO's HTML board rows vs
+# danceinfo.net's embedded listing JSON) that no single regex or selector
+# config could honestly cover (Section 34/35: verify before generalizing).
+# "board" (K-TANGO-style HTML rows) is the default so every WEB source
+# registered before this module existed keeps behaving exactly as before.
+WEB_PARSER_BOARD = "board"
+WEB_PARSER_DANCEINFO = "danceinfo_json"
 
-    No credential, no engine collector - `web_discovery` reads the board's own
-    list page directly.
-    """
+
+def _web_discovery_module(parser: str):
+    if parser == WEB_PARSER_DANCEINFO:
+        from . import danceinfo_discovery  # noqa: PLC0415
+
+        return danceinfo_discovery
     from . import web_discovery  # noqa: PLC0415
 
-    board_urls = _config(source).get("board_urls") or []
+    return web_discovery
+
+
+def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> CollectionResult:
+    """Walk every list page a WEB source names in `config.board_urls`.
+
+    No credential, no engine collector - the discovery module reads the
+    source's own list page(s) directly.
+    """
+    config = _config(source)
+    board_urls = config.get("board_urls") or []
     if not board_urls:
         raise CollectorUnavailable(
             "WEB source has no config.board_urls to collect from"
         )
+    discovery = _web_discovery_module(config.get("parser") or WEB_PARSER_BOARD)
 
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for board_url in board_urls:
-        for record in web_discovery.discover(
+        for record in discovery.discover(
             board_url, source_id=engine_source["source_id"]
         ):
             url = record.get("source_url")

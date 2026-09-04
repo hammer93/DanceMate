@@ -204,7 +204,9 @@ def snapshot(con) -> dict[str, Any]:
     }
 
 
-def upcoming_buckets(con, *, today: date | None = None) -> dict[str, int]:
+def upcoming_buckets(
+    con, *, today: date | None = None, genre_code: str | None = None,
+) -> dict[str, int]:
     """How many listed events fall in each window a reader actually asks for.
 
     Excludes CANCELLED the same way events_api.search()'s default does - a
@@ -218,19 +220,29 @@ def upcoming_buckets(con, *, today: date | None = None) -> dict[str, int]:
 
     ``today`` defaults to _seoul_today() - see its docstring for why this
     must never be SQL `current_date`.
+
+    ``genre_code`` (v0.82) narrows to one genre - e.g. "TANGO" for the
+    Coverage Metrics panel - by joining genres the same way coverage_matrix()
+    already does; None keeps the original all-genre behaviour.
     """
     today = today or _seoul_today()
+    join = " JOIN genres g ON g.genre_id = e.genre_id" if genre_code else ""
+    where = f"{LISTED_E} AND e.engine_status <> 'CANCELLED'"
+    params: dict[str, Any] = {"today": today}
+    if genre_code:
+        where += " AND g.code = %(genre_code)s"
+        params["genre_code"] = genre_code
     with con.cursor() as cur:
         cur.execute(
             "SELECT "
-            "  count(*) FILTER (WHERE event_date = %(today)s) AS today, "
-            "  count(*) FILTER (WHERE event_date = %(today)s + 1) AS tomorrow, "
-            "  count(*) FILTER (WHERE event_date BETWEEN %(today)s "
+            "  count(*) FILTER (WHERE e.event_date = %(today)s) AS today, "
+            "  count(*) FILTER (WHERE e.event_date = %(today)s + 1) AS tomorrow, "
+            "  count(*) FILTER (WHERE e.event_date BETWEEN %(today)s "
             "                     AND %(today)s + 7) AS this_week, "
-            "  count(*) FILTER (WHERE event_date >= %(today)s) AS upcoming, "
-            "  count(*) FILTER (WHERE event_date < %(today)s) AS past "
-            f"FROM events WHERE {LISTED} AND engine_status <> 'CANCELLED'",
-            {"today": today},
+            "  count(*) FILTER (WHERE e.event_date >= %(today)s) AS upcoming, "
+            "  count(*) FILTER (WHERE e.event_date < %(today)s) AS past "
+            f"FROM events e{join} WHERE {where}",
+            params,
         )
         return _row(cur)
 
@@ -274,3 +286,43 @@ def coverage_matrix(con, *, upcoming_only: bool = True) -> dict[str, Any]:
         "grid": grid,
         "upcoming_only": upcoming_only,
     }
+
+
+def genre_region_windows(
+    con, genre_code: str, *, today: date | None = None,
+) -> dict[str, Any]:
+    """One genre against region, split by Today/Tomorrow/This Week (v0.82
+    Coverage Metrics) - coverage_matrix() already answers "genre x region,
+    upcoming" for every genre at once; this answers the sharper "how much of
+    THIS genre's coverage is imminent, and where" a single-genre expansion
+    release needs, with the same empty-cell-is-the-point spirit.
+    """
+    today = today or _seoul_today()
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT coalesce(r.name, '(지역 미확인)') AS region, "
+            "  count(*) FILTER (WHERE e.event_date = %(today)s) AS today, "
+            "  count(*) FILTER (WHERE e.event_date = %(today)s + 1) AS tomorrow, "
+            "  count(*) FILTER (WHERE e.event_date BETWEEN %(today)s "
+            "                     AND %(today)s + 7) AS this_week "
+            "FROM events e "
+            "JOIN genres g ON g.genre_id = e.genre_id "
+            "LEFT JOIN regions r ON r.region_id = e.region_id "
+            f"WHERE {LISTED_E} AND e.engine_status <> 'CANCELLED' "
+            "  AND g.code = %(genre_code)s AND e.event_date >= %(today)s "
+            "GROUP BY 1 ORDER BY 1",
+            {"today": today, "genre_code": genre_code},
+        )
+        by_region = _rows(cur)
+        cur.execute(
+            "SELECT name FROM regions WHERE enabled AND city IS NOT NULL ORDER BY name"
+        )
+        known_regions = [row[0] for row in cur.fetchall()]
+
+    grid = {r: {"today": 0, "tomorrow": 0, "this_week": 0} for r in known_regions}
+    for row in by_region:
+        grid.setdefault(row["region"], {"today": 0, "tomorrow": 0, "this_week": 0})
+        grid[row["region"]] = {
+            "today": row["today"], "tomorrow": row["tomorrow"], "this_week": row["this_week"],
+        }
+    return {"genre": genre_code, "regions": list(grid), "grid": grid}

@@ -162,6 +162,39 @@ def test_a_template_board_post_is_read_from_its_readEdit_div():
     assert "조직위원회" not in text, "page footer must not be in the article"
 
 
+# Shaped like danceinfo.net's own lesson/event detail page: nav chrome, then
+# a structured 행사일/일정정보/장소/DJ block, a free-text description, and a
+# trailing "다가오는 추천 행사" block naming other events' own dates - the real
+# page's shape, not a captured copy of it.
+DANCEINFO_PAGE = """<html><head>
+<meta property="og:description" content="파티안내 · 2026-09-12 · 탱고 · 분당 실루엣 · 파티안내 일곱 해의…">
+</head><body>
+<nav>댄스인포 필터 강습/행사 장소 모임 인물</nav>
+<p>파티안내 - 탱고 파티(페스티발) · 경기남부</p>
+행사일 2026년 9월 12일 (토) 일정정보 5:30~9:30 장소 분당 실루엣 카카오맵 DJ DJ 네로
+강의 소개
+파티안내 Pm5:30~9:30 예매15,000/현매20,000
+다가오는 추천 행사
+9월 5일 토요일 오후 3시 다른 행사 안내
+<footer>이용약관 개인정보처리방침</footer>
+</body></html>"""
+
+
+def test_a_danceinfo_post_is_read_between_its_own_markers():
+    """danceinfo.net (v0.82): the structured 행사일/장소/DJ block and the free
+    text both matter (venue/DJ labels only appear in the structured block),
+    but the trailing "다가오는 추천 행사" block - other events' own dates -
+    must not leak in, or a later date-segmentation pass could pick it up as
+    if it were part of this event."""
+    text, method = acquisition.extract_article(DANCEINFO_PAGE)
+    assert method == acquisition.METHOD_DANCEINFO
+    assert "분당 실루엣" in text
+    assert "예매15,000" in text
+    assert "필터 강습" not in text, "top nav must not be in the article"
+    assert "다른 행사 안내" not in text, "the recommended-events block must not be in the article"
+    assert "이용약관" not in text, "page footer must not be in the article"
+
+
 # --- personal data ----------------------------------------------------------
 
 def test_phone_numbers_are_removed_before_storage():

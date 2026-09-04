@@ -199,6 +199,51 @@ def recent_runs(con, *, limit: int = 20) -> list[dict[str, Any]]:
         return _rows(cur)
 
 
+# Mirrors scheduler.intake_job's STATUS_* values. Duplicated rather than
+# imported: the scheduler package imports from runtime, never the other way,
+# and these two run-outcome literals are stable enough that a second runtime
+# module owning them outright is simpler than restructuring that direction
+# for two string constants.
+_RUN_OK_STATUSES = ("PASS", "SNAPSHOT")
+_RUN_FAIL_STATUS = "FAIL"
+
+
+def last_success_per_source(con) -> dict[int, datetime]:
+    """Per source, when its most recent successful run started - "success"
+    meaning it actually collected (PASS) or was an explicit recorded-snapshot
+    intake (SNAPSHOT), not merely that nothing raised.
+
+    Read straight from source_collection_runs' own history rather than a
+    tracking column: the history is already there, one row per run, so
+    "most recent row with an ok status" is simply the newest matching row.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT ON (source_id) source_id, started_at "
+            "FROM source_collection_runs WHERE status = ANY(%s) "
+            "ORDER BY source_id, started_at DESC",
+            (list(_RUN_OK_STATUSES),),
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def last_error_per_source(con) -> dict[int, dict[str, Any]]:
+    """Per source, its most recent failed run: when, and what the collector
+    reported (already redacted of anything credential-shaped by
+    collector_errors.classify() before it was ever stored)."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT ON (source_id) source_id, started_at, error "
+            "FROM source_collection_runs WHERE status = %s "
+            "ORDER BY source_id, started_at DESC",
+            (_RUN_FAIL_STATUS,),
+        )
+        return {
+            row[0]: {"at": row[1], "error": row[2]}
+            for row in cur.fetchall()
+        }
+
+
 def summary(con) -> dict[str, Any]:
     """Counts for the admin dashboard. One query per figure, all cheap."""
     with con.cursor() as cur:

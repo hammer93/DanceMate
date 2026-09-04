@@ -43,6 +43,47 @@ def _rows(cur) -> list[dict[str, Any]]:
     return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+def event_breakdown(con, source_id: int) -> dict[str, int]:
+    """Upcoming / past / no-event / blocked-body counts for one source
+    (v0.82 Source Transparency) - a source's detail page, not its list row,
+    since this is a per-source query.
+
+    Two queries rather than one multi-join: events and source_item_content
+    are both joined off source_items, and a source_item can carry more than
+    one event (a multi-program post), so one query joining both would fan
+    out and double-count the content-side (blocked) figure.
+
+    "no_event" is an approximation, not the engine's own classification: an
+    ingested item with no events row could be a real non-event post (a
+    class advert, a season-ticket notice) or one with no extractable date -
+    the engine does not report that distinction back to Postgres. Read as
+    "produced nothing", not as a precise rejection reason.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE e.provenance='LIVE' AND e.listing_state='LISTED' "
+            "    AND e.canonical_event_id IS NULL AND e.event_date >= current_date) AS upcoming, "
+            "  count(*) FILTER (WHERE e.provenance='LIVE' AND e.listing_state='LISTED' "
+            "    AND e.canonical_event_id IS NULL AND e.event_date < current_date) AS past, "
+            "  count(*) FILTER (WHERE e.event_id IS NULL) AS no_event "
+            "FROM source_items i LEFT JOIN events e ON e.source_item_id = i.source_item_id "
+            "WHERE i.source_id = %s AND i.ingest_state = 'INGESTED'",
+            (source_id,),
+        )
+        cols = [c.name for c in cur.description]
+        first = dict(zip(cols, cur.fetchone()))
+        cur.execute(
+            "SELECT count(*) FILTER (WHERE c.acquisition_status IN ('FETCH_BLOCKED', 'LOGIN_REQUIRED')) "
+            "FROM source_items i LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            "WHERE i.source_id = %s",
+            (source_id,),
+        )
+        blocked = cur.fetchone()[0] or 0
+    first["blocked"] = blocked
+    return first
+
+
 def upcoming_yield(con) -> dict[int, int]:
     """Upcoming listed events per source.
 
