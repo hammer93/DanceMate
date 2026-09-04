@@ -32,14 +32,21 @@ from .intake import RawItem
 # configuration problem rather than a collection failure.
 CREDENTIAL_ENV = {
     "DAUM_CAFE": ("KAKAO_REST_API_KEY",),
+    # All three Naver platforms are one NAVER API HUB subscription. The
+    # variables keep their old names; the keys behind them are API HUB keys.
     "NAVER_CAFE": ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"),
     "NAVER_BLOG": ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"),
+    "NAVER_WEB": ("NAVER_CLIENT_ID", "NAVER_CLIENT_SECRET"),
 }
 
 # Platforms v0.75 can actually collect from. FACEBOOK is deliberately absent:
 # its access restrictions make it a poor first real source, and the engine's
 # own source list already marks it ACCESS_LIMITED.
-SUPPORTED_PLATFORMS = ("DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG")
+SUPPORTED_PLATFORMS = ("DAUM_CAFE", "NAVER_CAFE", "NAVER_BLOG", "NAVER_WEB")
+
+# Which Naver search each platform reads. API HUB serves blog, cafearticle and
+# webkr for these credentials; news and local are not subscribed.
+NAVER_KIND = {"NAVER_BLOG": "blog", "NAVER_CAFE": "cafe", "NAVER_WEB": "web"}
 
 MODE_LIVE = "live"
 MODE_SNAPSHOT = "snapshot"
@@ -217,7 +224,7 @@ def _collect_snapshot(
     else:
         from src.collectors.naver import load_naver_snapshot  # noqa: PLC0415
 
-        kind = "blog" if platform == "NAVER_BLOG" else "cafe"
+        kind = NAVER_KIND.get(platform, "cafe")
         records = load_naver_snapshot(
             path, kind=kind, source_id=engine_source["source_id"], query="snapshot"
         )
@@ -254,7 +261,7 @@ def _collect_live(
         collector = NaverSearchCollector(
             timeout_seconds=naver.get("timeout_seconds", 15)
         )
-        kind = "blog" if platform == "NAVER_BLOG" else "cafe"
+        kind = NAVER_KIND.get(platform, "cafe")
         records = []
         seen: set[str] = set()
         for query in engine_source.get("queries") or []:
@@ -381,7 +388,7 @@ def _diagnose_empty_live(settings: Settings, source: dict[str, Any]) -> dict[str
             collector = NaverSearchCollector(
                 timeout_seconds=naver.get("timeout_seconds", 15)
             )
-            kind = "blog" if platform == "NAVER_BLOG" else "cafe"
+            kind = NAVER_KIND.get(platform, "cafe")
             records = collector.search(
                 queries[0], kind=kind, source_id=engine_source["source_id"],
                 display=naver.get("display", 100), start=1,

@@ -99,6 +99,9 @@ def classify(error: BaseException | str) -> Classified:
 _SECRET_PATTERNS = (
     re.compile(r"(KakaoAK)\s+\S+", re.IGNORECASE),
     re.compile(r"(X-Naver-Client-(?:Id|Secret))\s*[:=]\s*\S+", re.IGNORECASE),
+    # NAVER API HUB sends the key in an NCP gateway header. Nothing echoes it
+    # back today, but a redaction list that lags the code is how one gets out.
+    re.compile(r"(X-NCP-APIGW-API-KEY(?:-ID)?)\s*[:=]\s*\S+", re.IGNORECASE),
     re.compile(r"((?:api[_-]?key|client[_-]?secret|client[_-]?id|token))\s*[:=]\s*\S+",
                re.IGNORECASE),
 )
