@@ -342,3 +342,15 @@ def client(env, monkeypatch):
 
     monkeypatch.setattr(app_module, "_settings", None)
     return TestClient(app_module.app, raise_server_exceptions=False)
+
+
+def test_detail_status_row_does_not_repeat_the_kind_of_event():
+    """The detail page has a 종류 field; the 상태 badge must not say it again."""
+    event = {
+        "event_type_label": "소셜 (강습 포함)",
+        "status_label": "확인 필요",
+        "status": "POSSIBLE",
+    }
+    assert "소셜 (강습 포함)" in public._status_line(event)
+    assert "소셜 (강습 포함)" not in public._status_line(event, with_type=False)
+    assert "확인 필요" in public._status_line(event, with_type=False)

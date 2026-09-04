@@ -145,6 +145,7 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .status { font-size:.7rem; border:1px solid var(--line); border-radius:4px;
           padding:.05rem .35rem; color:var(--muted); }
 .status.ok { border-color:var(--accent); color:var(--accent); }
+.status + .status { margin-left:.3rem; }
 .checked { color:var(--muted); font-size:.75rem; }
 .cancelled { text-decoration: line-through; }
 .banner { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
@@ -307,15 +308,18 @@ def _fee_line(event: dict[str, Any]) -> str:
     return f"{fee:,}원"
 
 
-def _status_line(event: dict[str, Any]) -> str:
+def _status_line(event: dict[str, Any], *, with_type: bool = True) -> str:
     """What we know about this event, in words a reader owes nobody to decode.
 
     The engine says VERIFIED or POSSIBLE. Neither belongs on a page someone
     reads on the way out the door, and VERIFIED does not mean "true" anyway --
     it means the evidence gate passed.
+
+    ``with_type`` drops the kind-of-event badge for callers that already show
+    it in a field of its own; repeating it reads as two different facts.
     """
     parts = []
-    if event.get("event_type_label"):
+    if with_type and event.get("event_type_label"):
         parts.append(f'<span class="status">{E(event["event_type_label"])}</span>')
     if event.get("cancelled"):
         parts.append('<span class="status">취소</span>')
@@ -473,7 +477,8 @@ def event_page(event_id: int) -> HTMLResponse:
                  or '<span class="unknown">-</span>'),
         ("장르", E(event.get("genre") or "") or '<span class="unknown">-</span>'),
         ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
-        ("상태", _status_line(event) or '<span class="unknown">-</span>'),
+        ("상태", _status_line(event, with_type=False)
+                 or '<span class="unknown">-</span>'),
         ("최근 확인", _checked_line(event) or '<span class="unknown">-</span>'),
     ]
     details = "".join(f"<dt>{E(k)}</dt><dd>{v}</dd>" for k, v in rows)
