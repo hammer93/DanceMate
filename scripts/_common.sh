@@ -134,6 +134,70 @@ runtime_url() {
   printf 'http://%s:%s' "$host" "$port"
 }
 
+# Run a command inside a runtime image container, writing into the bind-
+# mounted repository *as the repository's own owner* rather than as root.
+#
+# v0.81.2: the working tree kept accumulating root-owned tracked files after
+# board test runs, repeatedly blocking the next `git checkout`/`pull` until
+# someone ran `chown -R` by hand. The cause was this exact kind of command
+# being run with `--user root` so an ad hoc `pip install` (needed because the
+# image's default `dancemate` user, uid 10001, cannot write into its own
+# site-packages) had root write the whole bind mount, including .pytest_cache
+# and __pycache__, as root. Running as the repository owner's own uid:gid
+# instead means anything the container writes into /src already has the
+# right owner - nothing to fix afterwards. `HOME=/tmp` gives `pip install
+# --user` (no root needed) a writable, disposable target inside the
+# container's own filesystem, never the bind mount.
+# Usage: container_run_as_repo_owner IMAGE [docker-run options...] -- CMD...
+# The `--` is required even with no extra options, so the split between
+# docker's own flags and the container's command is never ambiguous.
+container_run_as_repo_owner() {
+  local image="$1"; shift
+  local owner_uid owner_gid
+  owner_uid="$(stat -c '%u' "$REPO_ROOT")"
+  owner_gid="$(stat -c '%g' "$REPO_ROOT")"
+  local opts=() cmd=() in_cmd=0 arg
+  for arg in "$@"; do
+    if [[ "$in_cmd" -eq 1 ]]; then
+      cmd+=("$arg")
+    elif [[ "$arg" == "--" ]]; then
+      in_cmd=1
+    else
+      opts+=("$arg")
+    fi
+  done
+  docker run --rm \
+    --user "${owner_uid}:${owner_gid}" \
+    -e HOME=/tmp \
+    -v "$REPO_ROOT:/src" -w /src \
+    "${opts[@]}" \
+    "$image" \
+    "${cmd[@]}"
+}
+
+# FAILs loudly if any file git tracks is not owned by the repository's own
+# user - the guard a deploy script runs after touching the tree, so a stray
+# root-owned (or otherwise foreign-owned) file blocks *this* deploy with a
+# clear cause instead of silently breaking the next `git pull`.
+#
+# The expected owner is read from the repository directory itself, not a
+# hardcoded username: whatever legitimately owns the checkout is correct by
+# definition, on this host or any other.
+verify_repo_ownership() {
+  local expected_uid bad
+  expected_uid="$(stat -c '%u' "$REPO_ROOT")"
+  bad="$(
+    git -C "$REPO_ROOT" ls-files -z 2>/dev/null \
+      | xargs -0 -I{} find "$REPO_ROOT/{}" -maxdepth 0 -not -uid "$expected_uid" \
+          -printf '%u:%g %p\n' 2>/dev/null
+  )"
+  if [[ -n "$bad" ]]; then
+    warn "tracked files not owned by this repository's own user (uid $expected_uid):"
+    printf '%s\n' "$bad" | sed 's/^/  /' >&2
+    die "ownership guard failed - fix the step that wrote these as a different user (see scripts/fix-ownership.sh for the approved narrow chown fallback)"
+  fi
+}
+
 # Print a script's leading comment block as its usage text. Stops at the first
 # line that is not a comment, so usage can never bleed into the code below it.
 print_header_comment() {
