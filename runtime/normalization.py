@@ -180,14 +180,32 @@ def record_unresolved_venue(con, venue_text: str,
     return None if row is None else dict(zip(columns, row))
 
 
-def _genre_id(con, event_type: str | None) -> int | None:
+def _genre_id(con, event_type: str | None, source_item_id: int | None = None) -> int | None:
+    """The event's genre, from what it is or from where it was posted.
+
+    ``event_type`` settles it when the extractor recognised one: a milonga is
+    tango. When it did not, the community the post came from does -- a swing
+    cafe posts swing events, and that is evidence, not a guess. Without either,
+    the genre stays empty rather than defaulting to the most common one.
+    """
     code = GENRE_BY_EVENT_TYPE.get((event_type or "").upper())
-    if not code:
+    if code:
+        with con.cursor() as cur:
+            cur.execute("SELECT genre_id FROM genres WHERE code = %s", (code,))
+            row = cur.fetchone()
+        if row:
+            return row[0]
+    if source_item_id is None:
         return None
     with con.cursor() as cur:
-        cur.execute("SELECT genre_id FROM genres WHERE code = %s", (code,))
+        cur.execute(
+            "SELECT s.genre_id FROM source_items i "
+            "JOIN sources s ON s.source_id = i.source_id "
+            "WHERE i.source_item_id = %s",
+            (source_item_id,),
+        )
         row = cur.fetchone()
-    return row[0] if row else None
+    return row[0] if row and row[0] else None
 
 
 def _region_id(con, venue_id: int | None) -> int | None:
@@ -249,7 +267,8 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         "venue_id": venue_id,
         "venue_status": resolution["venue_status"],
         "fee": _as_int(merged.get("fee")),
-        "genre_id": _genre_id(con, candidate.get("event_type")),
+        "genre_id": _genre_id(con, candidate.get("event_type"),
+                              _as_int(candidate.get("source_item_id"))),
         "region_id": _region_id(con, venue_id),
         "engine_status": (candidate.get("candidate_status") or "POSSIBLE").upper(),
         "review_state": state,

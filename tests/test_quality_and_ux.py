@@ -315,3 +315,32 @@ def test_two_cities_do_not_bleed_into_each_others_filter(pg, unique):
         pg, region=f"Busan{unique}", limit=events_api.MAX_LIMIT)["events"]]
     assert here["event_id"] in in_seoul and here["event_id"] not in in_other
     assert there["event_id"] in in_other and there["event_id"] not in in_seoul
+
+
+def test_a_genre_the_extractor_could_not_name_comes_from_the_community(pg, unique):
+    """A swing cafe posts swing events. That is evidence, not a guess — and
+    without it every event on the site read as tango."""
+    from runtime import master_data, sources
+
+    swing = next(g for g in master_data.list_genres(pg) if g["code"] == "SWING")
+    source = sources.create_source(
+        pg, source_key=f"SRC-T-{unique}", name=f"스윙 커뮤니티 {unique}",
+        platform="DAUM_CAFE", source_role="COMMUNITY",
+        url=f"https://cafe.daum.net/t{unique}", genre_id=swing["genre_id"],
+        queries=["스윙 소셜"],
+    )
+    with pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO source_items (source_id, external_id, url, title, content_hash) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING source_item_id",
+            (source["source_id"], f"ext-{unique}",
+             f"https://cafe.daum.net/t{unique}/1/1", "스윙 소셜", f"hash-{unique}"),
+        )
+        source_item_id = cur.fetchone()[0]
+
+    assert normalization._genre_id(pg, "SWING_SOCIAL", source_item_id) == swing["genre_id"]
+    # An event type the extractor did recognise still wins.
+    tango = next(g for g in master_data.list_genres(pg) if g["code"] == "TANGO")
+    assert normalization._genre_id(pg, "MILONGA", source_item_id) == tango["genre_id"]
+    # Neither: empty, not the most common one.
+    assert normalization._genre_id(pg, "SOMETHING", None) is None

@@ -286,3 +286,29 @@ def is_due(source: dict[str, Any], *, now: datetime | None = None) -> bool:
 def due_sources(con, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """Enabled sources whose interval has elapsed, oldest collection first."""
     return [s for s in list_sources(con, enabled_only=True) if is_due(s, now=now)]
+
+
+def acquisition_outcomes(con) -> dict[int, dict[str, int]]:
+    """Per source: how many of its posts we could actually read.
+
+    A source can pass its Test, return results and still be useless, because
+    the cafe serves its articles only to a logged-in reader. That shows up here
+    as items with no body, and it is the operator's call whether to keep the
+    source -- an automatic rule would quietly drop a community that fixes its
+    settings next week.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT i.source_id, "
+            "  count(*) AS items, "
+            "  count(*) FILTER (WHERE c.acquisition_status LIKE 'FETCHED%%') AS fetched, "
+            "  count(*) FILTER (WHERE c.acquisition_status = 'FETCH_BLOCKED') AS blocked, "
+            "  count(*) FILTER (WHERE c.acquisition_status = 'LOGIN_REQUIRED') AS login, "
+            "  count(e.event_id) AS events "
+            "FROM source_items i "
+            "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            "LEFT JOIN events e ON e.source_item_id = i.source_item_id "
+            "GROUP BY i.source_id"
+        )
+        names = [c.name for c in cur.description]
+        return {row[0]: dict(zip(names, row)) for row in cur.fetchall()}

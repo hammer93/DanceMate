@@ -473,6 +473,27 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
 
 # --- sources ----------------------------------------------------------------
 
+def _source_yield(found: dict[str, Any]) -> str:
+    """Items collected, and how many of them we could actually read.
+
+    "21 items" reads like a working source. "21 items, 0 readable" is the same
+    source and a different decision.
+    """
+    items = found.get("items", 0)
+    if not items:
+        return '<span class="num">0</span>'
+    fetched = found.get("fetched", 0)
+    blocked = (found.get("blocked", 0) or 0) + (found.get("login", 0) or 0)
+    events = found.get("events", 0)
+    tone = "ok" if fetched else "bad"
+    parts = [f'<span class="num">{items}</span>']
+    parts.append(f'<div class="note"><span class="badge {tone}">본문 {fetched}</span>')
+    if blocked:
+        parts.append(f' <span class="badge warn">차단 {blocked}</span>')
+    parts.append(f' · 이벤트 {events}</div>')
+    return "".join(parts)
+
+
 @router.get("/admin/sources", response_class=HTMLResponse)
 def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
     from . import master_admin, master_edit
@@ -482,6 +503,7 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         rows = sources.list_sources(con)
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
+        outcomes = sources.acquisition_outcomes(con)
 
     table_rows = []
     for source in rows:
@@ -540,7 +562,7 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
             f'<span class="num">{source["collection_interval_minutes"]}m</span>',
             _badge(source["last_status"], "ok" if source["last_status"] == "PASS" else "muted")
             + "<br>" + E(str(source["last_collected_at"] or "never")[:19]),
-            f'<span class="num">{source["item_count"]}</span>',
+            _source_yield(outcomes.get(source["source_id"], {})),
             _badge("LIVE" if capability["live"] else "SNAPSHOT",
                    "ok" if capability["live"] else "warn")
             + f'<div class="note">{E(capability["detail"])}</div>',
@@ -583,7 +605,7 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
     body = (
         "<h2>Sources</h2>" + add_form
         + _table(
-            ["Source", "Platform", "State", "Interval", "Last collection", "Items",
+            ["Source", "Platform", "State", "Interval", "Last collection", "Items / readable",
              "Collector", "Actions"],
             table_rows,
             empty="no source registered yet",
