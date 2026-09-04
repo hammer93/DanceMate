@@ -243,20 +243,27 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         engine_con, post, item.get("source_role") or DEFAULT_SOURCE_ROLE
                     )
                     events = result.get("events") or []
-                    if events:
-                        # Replace this post's candidates rather than adding a
-                        # second set; evidences cascade off candidate_id.
-                        for candidate_id in existing_ids:
-                            engine_con.execute(
-                                "DELETE FROM evidences WHERE candidate_id=?", (candidate_id,)
-                            )
+                    # Replace this post's candidates with whatever the current
+                    # engine now makes of it -- including nothing.
+                    #
+                    # Guarding the delete on `events` meant a post that stopped
+                    # being an event kept the candidate it used to have. A rule
+                    # correction could then never take effect: the engine would
+                    # say "this is a lesson" and the old event would sit there,
+                    # normalised and listed, forever.
+                    #
+                    # Candidates a person has reviewed are never reached here;
+                    # that check runs above and skips the item entirely.
+                    for candidate_id in existing_ids:
                         engine_con.execute(
-                            "DELETE FROM event_candidates WHERE post_id=?", (post_id,)
+                            "DELETE FROM evidences WHERE candidate_id=?", (candidate_id,)
                         )
+                    engine_con.execute(
+                        "DELETE FROM event_candidates WHERE post_id=?", (post_id,)
+                    )
+                    if events:
                         engine_db.persist_events(engine_con, post_id, events)
-                        after_total += len(events)
-                    else:
-                        after_total += len(existing_ids)
+                    after_total += len(events)
                     engine_con.commit()
                     content_store.mark_reprocessed(pg, source_item_id)
                     reprocessed += 1
