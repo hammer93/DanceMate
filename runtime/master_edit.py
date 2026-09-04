@@ -115,7 +115,10 @@ def changed_fields(before: dict[str, Any], wanted: dict[str, Any],
         if isinstance(old, str):
             old = old.strip() or None
         if new != old:
-            changes[field] = wanted[field]
+            # The normalised value, so "  PISTA  " is stored as "PISTA" and an
+            # all-whitespace name reaches the update helper as empty, where it
+            # is refused rather than written.
+            changes[field] = new
     return changes
 
 

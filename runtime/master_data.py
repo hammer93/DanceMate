@@ -152,6 +152,15 @@ def create_venue(
 def update_venue(con, venue_id: int, **fields: Any) -> dict[str, Any] | None:
     allowed = ("name", "region_id", "address", "notes", "latitude", "longitude", "enabled")
     updates = {k: v for k, v in fields.items() if k in allowed}
+    if "name" in updates:
+        # create_venue refuses a blank name; so must an edit, or a venue can be
+        # renamed into something no list can show.
+        updates["name"] = (updates["name"] or "").strip()
+        if not updates["name"]:
+            raise ValueError("venue name is required")
+    for key in ("address", "notes"):
+        if key in updates and isinstance(updates[key], str):
+            updates[key] = updates[key].strip() or None
     if not updates:
         return get_venue(con, venue_id)
     assignments = ", ".join(f"{key} = %s" for key in updates)
@@ -241,6 +250,13 @@ def create_organizer(
 def update_organizer(con, organizer_id: int, **fields: Any) -> dict[str, Any] | None:
     allowed = ("name", "genre_id", "region_id", "contact_url", "notes", "enabled")
     updates = {k: v for k, v in fields.items() if k in allowed}
+    if "name" in updates:
+        updates["name"] = (updates["name"] or "").strip()
+        if not updates["name"]:
+            raise ValueError("organizer name is required")
+    for key in ("contact_url", "notes"):
+        if key in updates and isinstance(updates[key], str):
+            updates[key] = updates[key].strip() or None
     if not updates:
         with con.cursor() as cur:
             cur.execute("SELECT * FROM organizers WHERE organizer_id = %s", (organizer_id,))

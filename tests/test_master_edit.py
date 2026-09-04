@@ -319,7 +319,7 @@ def test_genres_and_regions_are_disabled_never_deleted(pg, unique, entity_type):
 def _source(pg, unique, **overrides):
     fields = {
         "source_key": f"SRC-T-{unique}", "name": f"테스트 소스 {unique}",
-        "platform": "DAUM_CAFE", "source_role": "SECONDARY",
+        "platform": "DAUM_CAFE", "source_role": "COMMUNITY",
         "url": "https://cafe.daum.net/latindance", "queries": ["밀롱가"],
     }
     fields.update(overrides)
