@@ -95,6 +95,31 @@ def _yearless_date(month: int, day: int, published):
     return best[1], SOURCE_YEAR
 
 
+def _resolve_date_match(m: "re.Match", published):
+    """One date pattern match, resolved to (date_iso_or_None, provenance).
+
+    Isolated from `_norm_date` so the same per-match resolution can run on
+    every date match a multi-program post carries (`_context_segments`), not
+    only the first one `_norm_date` itself stops at.
+    """
+    from datetime import date as _date
+
+    gd = m.groupdict()
+    raw_y = gd.get("y")
+    mo, d = int(gd["m"]), int(gd["d"])
+    if raw_y:
+        y = int(raw_y)
+        if len(raw_y) == 2:
+            y += 2000
+        try:
+            _date(y, mo, d)
+        except ValueError:
+            return None, UNKNOWN_YEAR
+        return f"{y:04d}-{mo:02d}-{d:02d}", EXPLICIT_YEAR
+    resolved, provenance = _yearless_date(mo, d, published)
+    return (resolved.isoformat() if resolved else None), provenance
+
+
 def _norm_date(text: str, published=None, default_year=None):
     """The event's date, and where its year came from.
 
@@ -115,23 +140,109 @@ def _norm_date(text: str, published=None, default_year=None):
         m = p.search(text)
         if not m:
             continue
-        gd = m.groupdict()
-        raw_y = gd.get("y")
-        mo, d = int(gd["m"]), int(gd["d"])
-        if raw_y:
-            y = int(raw_y)
-            if len(raw_y) == 2:
-                y += 2000
-            try:
-                _date(y, mo, d)
-            except ValueError:
-                return None, m.group(0), UNKNOWN_YEAR
-            return f"{y:04d}-{mo:02d}-{d:02d}", m.group(0), EXPLICIT_YEAR
-        resolved, provenance = _yearless_date(mo, d, published)
-        if resolved is None:
-            return None, m.group(0), provenance
-        return resolved.isoformat(), m.group(0), provenance
+        resolved, provenance = _resolve_date_match(m, published)
+        return resolved, m.group(0), provenance
     return None, None, None
+
+
+# --- event context segmentation (v0.81.2) ------------------------------------
+#
+# A post can announce more than one program under one title - a festival
+# weekend, a performance-then-milonga night, K-TANGO's own multi-day
+# schedules. extract_single() used to read date/time/venue/fee off the whole
+# post as one flat string; parse_time_range() and extract_fee() already guard
+# against picking a *different* program's clock or price (their event_type
+# proximity windowing), but _norm_date() and extract_venue() did not, and
+# nothing stopped a date that IS a different program's from pairing with a
+# time or venue that already correctly avoided it - the actual failure
+# observed on K-TANGO's board post: the extractor's date always wins
+# first-match, regardless of which program's time/venue the rest of the
+# function went on to pick.
+#
+# The fix does not attempt to parse "the" post into several events. It finds
+# where the post changes which date it is talking about, decides - narrowly,
+# by the same event_type-name proximity parse_time_range already trusts -
+# which one program the classification (MILONGA/SOCIAL/...) was actually
+# about, and then extracts date/time/venue/fee from *that program's own text
+# only*. A single-program post (the overwhelming majority, and every post
+# tested before this release) has exactly one segment spanning the whole
+# text, so nothing about it changes.
+
+def _all_date_matches(text: str) -> list["re.Match"]:
+    """Every date this text names, earliest first, not just the first pattern
+    to match. Overlapping matches from a later, looser pattern (the bare
+    "m/d" fallback) are dropped in favour of the earlier, more specific one
+    that already covers the same span - the same specificity order
+    DATE_PATTERNS already tries in, just not stopping at the first hit."""
+    found: list[re.Match] = []
+    covered: list[tuple[int, int]] = []
+    for pattern in DATE_PATTERNS:
+        for m in pattern.finditer(text):
+            if any(m.start() < e and s < m.end() for s, e in covered):
+                continue
+            found.append(m)
+            covered.append((m.start(), m.end()))
+    found.sort(key=lambda m: m.start())
+    return found
+
+
+def _context_segments(text: str, published):
+    """(context_id, start, end, date_iso) for each program the text names.
+
+    One entry, `context_id=None` spanning the whole text, when there is only
+    one date value in the post (or none) - which is "no segmentation", the
+    behaviour every post had before this. Two or more distinct dates create
+    one segment per date, split at the midpoint between consecutive date
+    matches so text naming a program *before* its own date heading (the
+    common "장소: OOO 일시: 9/5" order) still lands in that program's segment.
+    """
+    resolved = []
+    for m in _all_date_matches(text):
+        date_iso, _ = _resolve_date_match(m, published)
+        if date_iso:
+            resolved.append((m, date_iso))
+
+    distinct = {date_iso for _, date_iso in resolved}
+    if len(distinct) < 2:
+        return [(None, 0, len(text), next(iter(distinct), None))]
+
+    # Collapse consecutive matches that repeat the same program's date (a
+    # date mentioned twice in one program's own paragraph) into one boundary.
+    boundaries = []
+    current = None
+    for m, date_iso in resolved:
+        if date_iso != current:
+            boundaries.append((m, date_iso))
+            current = date_iso
+
+    segments = []
+    for i, (m, date_iso) in enumerate(boundaries):
+        start = 0 if i == 0 else (boundaries[i - 1][0].end() + m.start()) // 2
+        end = (len(text) if i + 1 == len(boundaries)
+               else (m.end() + boundaries[i + 1][0].start()) // 2)
+        segments.append((f"ctx{i + 1}", max(0, start), min(len(text), end), date_iso))
+    return segments
+
+
+def _select_context(segments, text: str, event_type: str | None):
+    """Which segment is the announced event, and whether that was ambiguous.
+
+    A segment "is" the event when its own span names this event_type's word
+    (밀롱가/소셜/파티/...) - the same word classify() used to call the whole
+    post this event_type in the first place. Exactly one segment matching is
+    unambiguous. Zero or more than one means the post does not clearly say
+    which program the classification was about; the caller falls back to the
+    first segment (never invents a merged value) and is told to flag it.
+    """
+    if len(segments) == 1:
+        return segments[0], False
+    words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
+    if not words:
+        return segments[0], True
+    matching = [s for s in segments if re.search(words, text[s[1]:s[2]], re.I)]
+    if len(matching) == 1:
+        return matching[0], False
+    return segments[0], True
 
 
 def _convert_hour(h: int, ap: str | None):
@@ -169,61 +280,110 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     name = name_hint or re.sub(r"\s+", " ", title).strip()
     ev = EventCandidate(name=name, event_type=event_type or "MILONGA")
 
-    date, raw, inference = _norm_date(text, published=_as_date(published))
+    published_date = _as_date(published)
+    segments = _context_segments(text, published_date)
+    (context_id, seg_start, seg_end, seg_date), ambiguous = _select_context(
+        segments, text, ev.event_type
+    )
+    # Single segment (the overwhelming majority of posts, and every post
+    # tested before this release) spans the whole text - date/time/venue/fee
+    # extraction below is then byte-for-byte the same call it always was.
+    scope = text[seg_start:seg_end]
+
+    if context_id is None:
+        date, raw, inference = _norm_date(text, published=published_date)
+    else:
+        # Already resolved while segmenting - re-running _norm_date on just
+        # this segment's text would find the same date, but the match object
+        # (and its raw text) is already in hand from segmentation.
+        date, raw, inference = seg_date, None, EXPLICIT_YEAR if seg_date else None
+        if seg_date:
+            for m in _all_date_matches(scope):
+                candidate, _ = _resolve_date_match(m, published_date)
+                if candidate == seg_date:
+                    raw = m.group(0)
+                    break
     if date:
         ev.date = date
-        ev.evidences.append(Evidence("date", date, raw, source_role=source_role, inference=inference))
+        ev.evidences.append(Evidence(
+            "date", date, raw or date, source_role=source_role,
+            inference=inference, context_id=context_id,
+        ))
     elif raw:
         # A date was written and we could not place it in a year. Say so, so
         # the missing date reads as a refusal rather than as nothing found.
-        ev.evidences.append(
-            Evidence("date", None, raw, source_role=source_role, inference=inference))
+        ev.evidences.append(Evidence(
+            "date", None, raw, source_role=source_role, inference=inference,
+            context_id=context_id,
+        ))
 
-    reading = extraction_rules.parse_time_range(text, ev.event_type)
+    reading = extraction_rules.parse_time_range(scope, ev.event_type)
     if reading:
         ev.start_time = reading.start
         ev.end_time = reading.end
         ev.end_day_offset = reading.end_day_offset
         ev.evidences.append(Evidence(
             "time", reading.as_dict(), reading.raw, source_role=source_role,
-            inference=reading.meridiem_evidence,
+            inference=reading.meridiem_evidence, context_id=context_id,
         ))
 
-    fee = extraction_rules.extract_fee(text, ev.event_type)
+    fee = extraction_rules.extract_fee(scope, ev.event_type)
     if fee:
         ev.fee = fee.amount
         ev.evidences.append(Evidence(
-            "fee", fee.amount, fee.segment, source_role=source_role, inference=fee.basis,
+            "fee", fee.amount, fee.segment, source_role=source_role,
+            inference=fee.basis, context_id=context_id,
         ))
 
-    dm = DJ_RE.search(text)
+    dm = DJ_RE.search(scope)
     if dm:
         ev.dj = dm.group(1)
-        ev.evidences.append(Evidence("dj", ev.dj, dm.group(0), source_role=source_role))
+        ev.evidences.append(Evidence(
+            "dj", ev.dj, dm.group(0), source_role=source_role, context_id=context_id,
+        ))
+
+    if ambiguous:
+        # More than one program, and no single one of them clearly matched
+        # what this post was classified as. Whatever was extracted came from
+        # the first segment only (never a merge across segments) - this is
+        # the signal admin_pages surfaces as a review warning so a person
+        # decides which program is meant, rather than the system guessing.
+        ev.evidences.append(Evidence(
+            "context", "MULTI_EVENT_CONTEXT",
+            scope[:160], source_role=source_role, context_id=context_id,
+        ))
 
     # A labelled venue is what the post actually says; the known names below
     # are a fallback for posts that name the place without labelling it.
     # Nothing here registers a venue: resolving this string against the Venue
     # Master is a separate, human-supervised step.
-    place = extraction_rules.extract_venue(text)
+    place = extraction_rules.extract_venue(scope)
     if place:
         ev.venue = place.name
         ev.evidences.append(Evidence(
             "venue", {"name": place.name, "alias_candidates": place.alias_candidates},
             place.raw, source_role=source_role, inference=f"LABEL:{place.label}",
+            context_id=context_id,
         ))
         return ev
 
-    up = text.upper()
+    up = scope.upper()
     if "PISTA" in up:
         ev.venue = "PISTA"
-        ev.evidences.append(Evidence("venue", "PISTA", "PISTA", source_role=source_role))
+        ev.evidences.append(Evidence(
+            "venue", "PISTA", "PISTA", source_role=source_role, context_id=context_id,
+        ))
     elif "OCHO" in up:
         ev.venue = "OCHO"
-        ev.evidences.append(Evidence("venue", "OCHO", "OCHO", source_role=source_role))
-    elif "O NADA" in up or "오나다" in text:
+        ev.evidences.append(Evidence(
+            "venue", "OCHO", "OCHO", source_role=source_role, context_id=context_id,
+        ))
+    elif "O NADA" in up or "오나다" in scope:
         ev.venue = "Tango O Nada"
-        ev.evidences.append(Evidence("venue", "Tango O Nada", "O Nada/오나다", source_role=source_role))
+        ev.evidences.append(Evidence(
+            "venue", "Tango O Nada", "O Nada/오나다", source_role=source_role,
+            context_id=context_id,
+        ))
     return ev
 
 

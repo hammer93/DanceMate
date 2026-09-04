@@ -425,6 +425,10 @@ _EVENT_WORDS = {
     "SOCIAL": r"소셜|social|파티|party",
     "SOCIAL_WITH_CLASS": r"소셜|social|파티|party",
 }
+# Public alias: extractor.py's context segmentation (v0.81.2) needs the same
+# "what is this event actually called" words to decide which program in a
+# multi-program post the classification was about.
+EVENT_WORDS = _EVENT_WORDS
 # Priced separately from the event and easy to mistake for it.
 _OTHER_PROGRAMME = re.compile(r"특강|수업|레슨|클래스|워크샵|워크숍|세미나|class|lesson|workshop", re.I)
 

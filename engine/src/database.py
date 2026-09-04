@@ -41,8 +41,22 @@ CREATE TABLE IF NOT EXISTS event_candidates(
 CREATE TABLE IF NOT EXISTS evidences(
  evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
  field TEXT, value TEXT, raw_text TEXT, evidence_type TEXT, source_role TEXT, inference TEXT,
+ -- Which text segment this value came from, when the post had more than one
+ -- (a multi-program post) - NULL for a single-segment post, unchanged from
+ -- before v0.81.2. See extractor.py's context segmentation.
+ context_id TEXT,
  FOREIGN KEY(candidate_id) REFERENCES event_candidates(candidate_id)
 );
+-- v0.81.2: runtime/candidates.py's review queue now filters and sorts
+-- event_candidates/raw_posts/evidences directly in SQL instead of reading up
+-- to 300 rows and cutting them in Python - these are the indexes that query
+-- needs to not just move the cost from Python to an unindexed full scan.
+CREATE INDEX IF NOT EXISTS idx_event_candidates_post ON event_candidates(post_id);
+CREATE INDEX IF NOT EXISTS idx_event_candidates_status_date
+    ON event_candidates(status, event_date);
+CREATE INDEX IF NOT EXISTS idx_event_candidates_date ON event_candidates(event_date);
+CREATE INDEX IF NOT EXISTS idx_raw_posts_collected ON raw_posts(collected_at);
+CREATE INDEX IF NOT EXISTS idx_evidences_candidate_field ON evidences(candidate_id, field);
 CREATE TABLE IF NOT EXISTS collector_runs(
  run_id INTEGER PRIMARY KEY AUTOINCREMENT,
  collector TEXT NOT NULL,
@@ -2808,8 +2822,22 @@ def init_db(path: Path):
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    _add_column_if_missing(con, "evidences", "context_id", "TEXT")
     con.commit()
     return con
+
+
+def _add_column_if_missing(con, table: str, column: str, sql_type: str) -> None:
+    """`CREATE TABLE IF NOT EXISTS` never adds a column to an already-existing
+    table, and this file's own deployed SQLite predates `context_id`
+    (v0.81.2, Event Context Safety - which evidence came from which segment
+    of a multi-program post). SQLite has no `ADD COLUMN IF NOT EXISTS`, so
+    check first; a fresh database already has the column from SCHEMA above and
+    this is a no-op for it.
+    """
+    existing = {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
 def reset_runtime_tables(con):
     con.execute("DELETE FROM acquired_media")
@@ -2845,8 +2873,8 @@ def persist_events(con, post_id, events):
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (post_id, ev.name, ev.event_type, ev.date, ev.start_time, ev.end_time, ev.end_day_offset, ev.fee, ev.venue, ev.dj, ev.status, int(ev.core_complete)))
         cid = cur.lastrowid
         for e in ev.evidences:
-            con.execute("INSERT INTO evidences(candidate_id,field,value,raw_text,evidence_type,source_role,inference) VALUES(?,?,?,?,?,?,?)",
-                        (cid,e.field,json.dumps(e.value, ensure_ascii=False) if isinstance(e.value,(dict,list)) else str(e.value),e.raw_text,e.evidence_type,e.source_role,e.inference))
+            con.execute("INSERT INTO evidences(candidate_id,field,value,raw_text,evidence_type,source_role,inference,context_id) VALUES(?,?,?,?,?,?,?,?)",
+                        (cid,e.field,json.dumps(e.value, ensure_ascii=False) if isinstance(e.value,(dict,list)) else str(e.value),e.raw_text,e.evidence_type,e.source_role,e.inference,e.context_id))
 
 def persist_raw_post(con, post):
     now = datetime.now(timezone.utc).isoformat()

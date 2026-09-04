@@ -9,6 +9,11 @@ class Evidence:
     evidence_type: str = "TEXT"
     source_role: str = "SECONDARY"
     inference: Optional[str] = None
+    # Which text segment this came from, when extract_single() split the post
+    # into more than one (a multi-program post) - None for a single segment,
+    # meaning "the whole post", exactly as every Evidence behaved before
+    # v0.81.2. See extractor.py's _context_segments().
+    context_id: Optional[str] = None
 
 @dataclass
 class EventCandidate:
