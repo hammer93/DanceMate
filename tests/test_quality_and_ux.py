@@ -274,3 +274,44 @@ def test_freshness_counts_what_was_checked_in_the_last_day(pg, unique):
     found = quality.freshness(pg)
     assert found["upcoming"] >= 1
     assert found["checked_24h"] <= found["upcoming"]
+
+
+# --- regions can be registered at all ---------------------------------------
+
+def test_a_region_can_be_created_from_the_console(pg, unique):
+    """Seoul was seeded by a migration and nothing else could be added, so a
+    Busan venue had to be filed under the country-level row."""
+    from runtime import master_data
+
+    created = master_data.create_region(
+        pg, code=f"KR-T{unique}", country="South Korea", city=f"City{unique}",
+        name=f"City{unique}",
+    )
+    assert created["region_id"] is not None
+    assert created["code"] == f"KR-T{unique}"
+    assert created["region_id"] in [r["region_id"] for r in master_data.list_regions(pg)]
+
+
+def test_two_cities_do_not_bleed_into_each_others_filter(pg, unique):
+    """A Seoul event in the Busan filter is worse than no filter at all."""
+    from runtime import master_data
+
+    seoul = next(r for r in master_data.list_regions(pg) if r["code"] == "KR-SEOUL")
+    other = master_data.create_region(
+        pg, code=f"KR-B{unique}", country="South Korea", city=f"Busan{unique}",
+        name=f"Busan{unique}",
+    )
+    here = _live(pg, unique, "1")
+    there = _live(pg, unique, "2", venue=f"부산홀 {unique}")
+    with pg.cursor() as cur:
+        cur.execute("UPDATE events SET region_id = %s WHERE event_id = %s",
+                    (seoul["region_id"], here["event_id"]))
+        cur.execute("UPDATE events SET region_id = %s WHERE event_id = %s",
+                    (other["region_id"], there["event_id"]))
+
+    in_seoul = [e["id"] for e in events_api.search(
+        pg, region="Seoul", limit=events_api.MAX_LIMIT)["events"]]
+    in_other = [e["id"] for e in events_api.search(
+        pg, region=f"Busan{unique}", limit=events_api.MAX_LIMIT)["events"]]
+    assert here["event_id"] in in_seoul and here["event_id"] not in in_other
+    assert there["event_id"] in in_other and there["event_id"] not in in_seoul

@@ -1002,12 +1002,59 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
 one still have to resolve.</p></form></details>"""
         + _table(["Code", "Name", "State", "Actions"], genre_rows, empty="no genre")
         + "<h2>Regions</h2>"
+        + """<details><summary>Add Region</summary>
+<form method="post" action="/admin/regions"><div class="grid">
+<div><label>Code</label><input name="code" required placeholder="KR-BUSAN">
+<div class="note">한 번 정하면 바꿀 수 없습니다 — Source와 filter가 이 값을 씁니다</div></div>
+<div><label>Country</label><input name="country" required value="South Korea"></div>
+<div><label>City</label><input name="city" placeholder="Busan"></div>
+<div><label>District</label><input name="district" placeholder=""></div>
+<div><label>Display name</label><input name="name" required placeholder="Busan"></div>
+</div><div class="actions"><button class="primary">Add Region</button></div>
+<p class="note">실제로 행사가 확인된 지역만 추가하세요. 비어 있는 지역은 사용자에게
+필터로 보이면서 아무것도 돌려주지 않습니다.</p></form></details>"""
         + '<p class="note">지역도 삭제하지 않고 Disable 합니다. code는 Source와 '
           "Region filter가 사용하므로 수정할 수 없습니다.</p>"
         + _table(["Code", "Name", "Country", "City", "State", "Actions"], region_rows,
                  empty="no region")
     )
     return HTMLResponse(_page("Genres & Regions", "/admin/master", body, flash=_flash(request)))
+
+
+@router.post("/admin/regions")
+def admin_create_region(
+    code: str = Form(...),
+    country: str = Form(...),
+    name: str = Form(...),
+    city: str = Form(""),
+    district: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    """Register a region. There was no way to do this from the console at all.
+
+    Seoul was seeded by a migration and nothing else could be added, so a venue
+    in Busan had to be filed under the country-level row and the region filter
+    could not tell the two cities apart.
+    """
+    from . import master_edit
+
+    try:
+        with _connection() as con:
+            created = master_data.create_region(
+                con, code=code.strip().upper(), country=country.strip(),
+                name=name.strip(), city=city.strip() or None,
+                district=district.strip() or None,
+            )
+            master_edit.record(
+                con, entity_type=master_edit.REGION, entity_id=created["region_id"],
+                action=master_edit.EDIT, reviewer=reviewer, entity_name=created["name"],
+                after={"code": created["code"], "name": created["name"],
+                       "city": created.get("city")},
+                detail="region created",
+            )
+    except Exception as exc:
+        return _back("/admin/master", f"could not add region: {exc}", "bad")
+    return _back("/admin/master", f"added region {created['code']}")
 
 
 @router.post("/admin/genres")
