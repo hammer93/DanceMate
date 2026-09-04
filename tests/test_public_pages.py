@@ -267,8 +267,8 @@ def test_the_representative_source_is_the_events_own_registered_source(pg, uniqu
     source = sources.create_source(
         pg, source_key=f"SRC-W-{unique}", name=f"K-TANGO {unique}",
         platform="WEB", source_role="ORGANIZER",
-        url="http://www.k-tango.net/", queries=[],
-        config={"board_urls": ["http://www.k-tango.net/cnf/festival02/index.jsp"]},
+        url=f"http://www.k-tango.net/test-{unique}/", queries=[],
+        config={"board_urls": [f"http://www.k-tango.net/test-{unique}/index.jsp"]},
     )
     url = f"http://www.k-tango.net/cnf/festival02/read.jsp?no={unique}"
     intake.store_item(

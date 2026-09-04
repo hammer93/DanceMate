@@ -208,9 +208,10 @@ def test_apply_preserves_the_event_venue_relation_across_an_update(pg, unique, s
     })
     assert normalized["venue_id"] == venue["venue_id"]
 
-    result = venue_csv.preview(
-        pg, _rows({"id": str(venue["venue_id"]), "notes": "CSV로 갱신됨"})
-    )
+    result = venue_csv.preview(pg, _rows({
+        "id": str(venue["venue_id"]), "name": f"관계 보존 {unique}",
+        "notes": "CSV로 갱신됨",
+    }))
     venue_csv.apply_import(pg, result["rows"], reviewer="t", filename="x.csv")
 
     with pg.cursor() as cur:

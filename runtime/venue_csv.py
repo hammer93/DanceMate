@@ -208,10 +208,17 @@ def preview(con, raw_rows: list[dict[str, str]]) -> dict[str, Any]:
         candidates = venue_resolution.similar_venues(con, name=name, address=address)
         exact = [c for c in candidates if "same name" in c["match_reasons"]
                  and "same address" in c["match_reasons"]]
-        alias_hit = [c for c in candidates
-                     if any(r.startswith("registered alias") for r in c["match_reasons"])]
         name_only = [c for c in candidates if "same name" in c["match_reasons"]
                      and "same address" not in c["match_reasons"]]
+        # A venue's own name is always registered as its own alias too
+        # (master_data.create_venue), so a same-name/different-address
+        # candidate always also carries a "registered alias" reason for
+        # itself. That self-alias must not smuggle a DUPLICATE case into
+        # UPDATE - alias_hit is only the genuine tier-3 case: matched by an
+        # alias while the CSV row's name does NOT equal the venue's own name.
+        alias_hit = [c for c in candidates
+                     if "same name" not in c["match_reasons"]
+                     and any(r.startswith("registered alias") for r in c["match_reasons"])]
 
         if exact:
             entry["matched_venue_id"] = exact[0]["venue_id"]
