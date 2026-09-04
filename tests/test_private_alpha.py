@@ -372,3 +372,69 @@ def test_decision_route_is_not_swallowed_by_the_source_action_catch_all():
                        "/admin/sources/{source_id}/{action}")
     ]
     assert [r.endpoint.__name__ for r in matching][0] == "admin_source_decision"
+
+
+# --- the five human actions, end to end, on nothing real --------------------
+
+def test_every_review_action_records_and_settles_a_synthetic_candidate(pg, unique):
+    """APPROVE, EDIT, REJECT, DUPLICATE and CONFIRM on candidates nobody posted.
+
+    Deliberately driven through review.record on the rolled-back fixture rather
+    than through the HTTP route: the route opens its own connection and would
+    commit, which is how test rows once reached the staging database. The five
+    actions are the thing under test, not the transport.
+    """
+    from runtime import review
+
+    base = int(unique[-6:]) * 100
+    before = {
+        "event_name": "합성 밀롱가", "event_date": "2026-12-31",
+        "start_time": "20:00", "venue": "합성홀", "fee": 15000,
+    }
+
+    approved = review.record(pg, candidate_id=base + 1, action=review.APPROVE,
+                             before=before)
+    assert approved["action"] == review.APPROVE
+    assert review.state(pg, base + 1)["review_state"] == \
+        review.STATE_BY_ACTION[review.APPROVE]
+
+    review.record(pg, candidate_id=base + 2, action=review.EDIT, before=before,
+                  after={"start_time": "21:00"})
+    edited = review.state(pg, base + 2)
+    assert edited["corrected_json"]["start_time"] == "21:00"
+    # The engine's own reading is not overwritten, only overlaid.
+    assert review.apply_corrections(dict(before), edited)["start_time"] == "21:00"
+
+    review.record(pg, candidate_id=base + 3, action=review.REJECT, before=before,
+                  reason="행사가 아님")
+    assert review.state(pg, base + 3)["review_state"] == \
+        review.STATE_BY_ACTION[review.REJECT]
+
+    review.record(pg, candidate_id=base + 4, action=review.DUPLICATE,
+                  before=before, duplicate_of_candidate_id=base + 1)
+    assert review.state(pg, base + 4)["duplicate_of_candidate_id"] == base + 1
+
+    review.record(pg, candidate_id=base + 5, action=review.CONFIRM, before=before)
+    assert review.state(pg, base + 5)["review_state"] == \
+        review.STATE_BY_ACTION[review.CONFIRM]
+
+
+def test_the_review_actions_that_must_refuse(pg, unique):
+    """Each guard, so a mis-click cannot record a decision that means nothing."""
+    from runtime import review
+
+    base = int(unique[-6:]) * 100 + 50
+    before = {"event_name": "합성 밀롱가", "start_time": "20:00"}
+
+    with pytest.raises(review.ReviewError):
+        review.record(pg, candidate_id=base, action="MAYBE", before=before)
+    with pytest.raises(review.ReviewError):
+        review.record(pg, candidate_id=base, action=review.DUPLICATE, before=before)
+    with pytest.raises(review.ReviewError):
+        review.record(pg, candidate_id=base, action=review.DUPLICATE, before=before,
+                      duplicate_of_candidate_id=base)
+    with pytest.raises(review.ReviewError):
+        review.record(pg, candidate_id=base, action=review.EDIT, before=before)
+    with pytest.raises(review.ReviewError):
+        review.record(pg, candidate_id=base, action=review.EDIT, before=before,
+                      after={"start_time": "20:00"})

@@ -125,6 +125,10 @@ li.event { background:var(--card); border:1px solid var(--line); border-radius:1
 li.event a { display:block; padding:.9rem 1rem; text-decoration:none; }
 .when { font-variant-numeric: tabular-nums; font-weight:600; }
 .name { margin:.15rem 0; }
+/* A source falls back to its raw URL when the post has no title, and a URL
+   has nowhere to wrap. Everything else here is Korean, which breaks per
+   character; this is for the one string that does not. */
+li.event a, .name { overflow-wrap: anywhere; }
 .meta { color:var(--muted); font-size:.875rem; display:flex; gap:.6rem; flex-wrap:wrap; }
 .unknown { color:var(--muted); font-style:italic; }
 .tag { font-size:.7rem; letter-spacing:.04em; text-transform:uppercase;
