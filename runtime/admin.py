@@ -799,6 +799,34 @@ def admin_create_source(
     return _back("/admin/sources", f"added {created['source_key']} (disabled)")
 
 
+@router.post("/admin/sources/{source_id}/decision")
+def admin_source_decision(
+    source_id: int,
+    decision: str = Form(...),
+    reason: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    """Record an operator's decision about a source. Collection is unchanged.
+
+    Writing down "replace this" and actually stopping collection are two steps
+    on purpose: an operator often wants the note before the action, and a
+    blocked community that fixes its settings next week should not have been
+    dropped this week.
+    """
+    try:
+        with _connection() as con:
+            updated = source_ops.set_decision(
+                con, source_id, decision.strip().upper(), reviewer=reviewer,
+                reason=reason,
+            )
+    except Exception as exc:
+        return _back("/admin/sources", f"could not record decision: {exc}", "bad")
+    if updated is None:
+        return _back("/admin/sources", f"no source {source_id}", "bad")
+    return _back("/admin/sources",
+                 f"{updated['source_key']}: {decision.strip().upper()} 기록됨")
+
+
 @router.post("/admin/sources/{source_id}/{action}")
 def admin_source_action(
     source_id: int, action: str, _: str = Depends(require_admin)
@@ -1188,34 +1216,6 @@ one still have to resolve.</p></form></details>"""
                  empty="no region")
     )
     return HTMLResponse(_page("Genres & Regions", "/admin/master", body, flash=_flash(request)))
-
-
-@router.post("/admin/sources/{source_id}/decision")
-def admin_source_decision(
-    source_id: int,
-    decision: str = Form(...),
-    reason: str = Form(""),
-    reviewer: str = Depends(require_admin),
-) -> RedirectResponse:
-    """Record an operator's decision about a source. Collection is unchanged.
-
-    Writing down "replace this" and actually stopping collection are two steps
-    on purpose: an operator often wants the note before the action, and a
-    blocked community that fixes its settings next week should not have been
-    dropped this week.
-    """
-    try:
-        with _connection() as con:
-            updated = source_ops.set_decision(
-                con, source_id, decision.strip().upper(), reviewer=reviewer,
-                reason=reason,
-            )
-    except Exception as exc:
-        return _back("/admin/sources", f"could not record decision: {exc}", "bad")
-    if updated is None:
-        return _back("/admin/sources", f"no source {source_id}", "bad")
-    return _back("/admin/sources",
-                 f"{updated['source_key']}: {decision.strip().upper()} 기록됨")
 
 
 @router.post("/admin/regions")

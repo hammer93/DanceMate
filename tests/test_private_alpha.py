@@ -354,3 +354,21 @@ def test_detail_status_row_does_not_repeat_the_kind_of_event():
     assert "소셜 (강습 포함)" in public._status_line(event)
     assert "소셜 (강습 포함)" not in public._status_line(event, with_type=False)
     assert "확인 필요" in public._status_line(event, with_type=False)
+
+
+def test_decision_route_is_not_swallowed_by_the_source_action_catch_all():
+    """/admin/sources/{id}/decision must reach admin_source_decision.
+
+    /admin/sources/{source_id}/{action} matches the same path. Starlette
+    resolves in registration order, so the specific route has to come first --
+    otherwise every recorded decision is a 404 from the catch-all.
+    """
+    from runtime import admin
+
+    matching = [
+        r for r in admin.router.routes
+        if "POST" in (getattr(r, "methods", None) or set())
+        and r.path in ("/admin/sources/{source_id}/decision",
+                       "/admin/sources/{source_id}/{action}")
+    ]
+    assert [r.endpoint.__name__ for r in matching][0] == "admin_source_decision"
