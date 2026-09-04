@@ -183,7 +183,17 @@ def snapshot(con) -> dict[str, Any]:
 
 
 def upcoming_buckets(con) -> dict[str, int]:
-    """How many listed events fall in each window a reader actually asks for."""
+    """How many listed events fall in each window a reader actually asks for.
+
+    Excludes CANCELLED the same way events_api.search()'s default does - a
+    cancelled event dated today is still LISTED (that stays true so a reader
+    holding the link is told it is off, not 404'd) but is not "a place to
+    dance tonight", so it must not appear in a count meant to answer that
+    question either. Before this, a bucket counting CANCELLED-but-LISTED rows
+    could exceed what search() actually served for the same window - not
+    noise, a real predicate mismatch, visible only once a real event on the
+    live board was ever marked CANCELLED for a listed today/tomorrow date.
+    """
     with con.cursor() as cur:
         cur.execute(
             "SELECT "
@@ -193,7 +203,7 @@ def upcoming_buckets(con) -> dict[str, int]:
             "                     AND current_date + 7) AS this_week, "
             "  count(*) FILTER (WHERE event_date >= current_date) AS upcoming, "
             "  count(*) FILTER (WHERE event_date < current_date) AS past "
-            f"FROM events WHERE {LISTED}"
+            f"FROM events WHERE {LISTED} AND engine_status <> 'CANCELLED'"
         )
         return _row(cur)
 
