@@ -300,6 +300,8 @@ def _status_line(event: dict[str, Any]) -> str:
     it means the evidence gate passed.
     """
     parts = []
+    if event.get("event_type_label"):
+        parts.append(f'<span class="status">{E(event["event_type_label"])}</span>')
     if event.get("cancelled"):
         parts.append('<span class="status">취소</span>')
     elif event.get("status_label"):
@@ -437,6 +439,8 @@ def event_page(event_id: int) -> HTMLResponse:
         ("주소", E(venue.get("address")) if venue.get("address")
                  else '<span class="unknown">주소 미확인</span>'),
         ("요금", _fee_line(event)),
+        ("종류", E(event.get("event_type_label") or "")
+                 or '<span class="unknown">-</span>'),
         ("장르", E(event.get("genre") or "") or '<span class="unknown">-</span>'),
         ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
         ("상태", _status_line(event) or '<span class="unknown">-</span>'),

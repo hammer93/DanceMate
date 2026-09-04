@@ -9,7 +9,7 @@ def test_engine_is_importable_from_the_repository(settings):
     report = engine_adapter.inspect(settings)
     assert report["checks"]["importable"] is True, report["checks"]["import_detail"]
     assert report["checks"]["package_present"] is True
-    assert report["version"] == "0.74"
+    assert report["version"] == "0.75"
 
 
 def test_adapter_targets_the_filename_the_engine_actually_uses():
