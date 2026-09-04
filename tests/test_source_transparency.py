@@ -195,11 +195,34 @@ def client(env, monkeypatch):
     return TestClient(app_module.app, raise_server_exceptions=False)
 
 
+def _make_source_via_client(client, unique, suffix="1"):
+    """Create a source through the app's own admin API, not the `pg` fixture.
+
+    `pg` opens its own, never-committed connection (rolled back at teardown
+    so a shared staging DB is never polluted) - a row inserted there is
+    invisible to `client`'s requests, which each open a fresh, real
+    connection. Proven directly: a diagnostic insert-then-read-from-a-second-
+    connection check during v0.82's board test run showed VISIBLE_COUNT=0.
+    Anything a test needs `client` itself to see has to be written through
+    `client`, whose admin API commits for real.
+    """
+    response = client.post(
+        "/api/admin/sources", auth=CREDENTIALS,
+        json={
+            "source_key": f"SRC-HEALTH-{unique}-{suffix}", "name": f"health test {unique}",
+            "platform": "WEB", "source_role": "COMMUNITY",
+            "url": f"https://example.test/board-{unique}-{suffix}", "enabled": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_source_detail_page_shows_target_and_recent_items(client, pg, unique):
-    source = _make_source(pg, unique)
+    source = _make_source_via_client(client, unique)
     response = client.get(f"/admin/sources/{source['source_id']}", auth=CREDENTIALS)
     assert response.status_code == 200
-    assert "example.test/board" in response.text
+    assert f"example.test/board-{unique}-1" in response.text
     assert "Recent Items" in response.text
     assert "Raw config" in response.text
 
@@ -210,19 +233,23 @@ def test_source_detail_page_404s_for_an_unknown_id(client, pg):
 
 
 def test_sources_list_page_shows_the_target_column(client, pg, unique):
-    _make_source(pg, unique)
+    _make_source_via_client(client, unique)
     response = client.get("/admin/sources", auth=CREDENTIALS)
     assert response.status_code == 200
     assert "Target" in response.text
-    assert "example.test/board" in response.text
+    assert f"example.test/board-{unique}-1" in response.text
 
 
 def test_no_secret_appears_on_the_sources_list_or_detail_page(client, pg, unique, monkeypatch):
     monkeypatch.setenv("KAKAO_REST_API_KEY", "super-secret-key-value")
     monkeypatch.setenv("NAVER_CLIENT_SECRET", "another-secret-value")
-    source = _make_source(pg, unique)
+    source = _make_source_via_client(client, unique)
     list_body = client.get("/admin/sources", auth=CREDENTIALS).text
     detail_body = client.get(f"/admin/sources/{source['source_id']}", auth=CREDENTIALS).text
+    # Prove these are the real, populated pages - not a false pass off a 404
+    # or an empty list, which would also happen to contain no secret.
+    assert f"example.test/board-{unique}-1" in list_body
+    assert f"example.test/board-{unique}-1" in detail_body
     for secret in ("super-secret-key-value", "another-secret-value"):
         assert secret not in list_body
         assert secret not in detail_body

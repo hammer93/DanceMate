@@ -33,7 +33,8 @@ def _genre_id(pg, code: str) -> int:
 def _make_source(pg, unique, *, genre_code: str, suffix: str):
     return sources.create_source(
         pg, source_key=f"SRC-GENRE-{unique}-{suffix}", name=f"genre test {unique} {suffix}",
-        platform="WEB", source_role="COMMUNITY", url="https://example.test/board",
+        platform="WEB", source_role="COMMUNITY",
+        url=f"https://example.test/board-{unique}-{suffix}",
         genre_id=_genre_id(pg, genre_code), enabled=True,
     )
 
@@ -68,14 +69,36 @@ def client(env, monkeypatch):
     return TestClient(app_module.app, raise_server_exceptions=False)
 
 
+def _make_source_via_client(client, pg, unique, *, genre_code: str, suffix: str):
+    """Through the app's own admin API, not the `pg` fixture directly.
+
+    `pg` opens its own, never-committed connection (rolled back at teardown
+    so a shared staging DB is never polluted) - a row inserted there is
+    invisible to `client`'s requests, which each open a fresh, real
+    connection. Anything a route test needs the running app to actually see
+    (not just "does not crash") has to be written through `client` itself.
+    """
+    response = client.post(
+        "/api/admin/sources", auth=CREDENTIALS,
+        json={
+            "source_key": f"SRC-GENRE-{unique}-{suffix}", "name": f"genre test {unique} {suffix}",
+            "platform": "WEB", "source_role": "COMMUNITY",
+            "url": f"https://example.test/genre-board-{unique}-{suffix}",
+            "genre_id": _genre_id(pg, genre_code), "enabled": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_review_page_accepts_a_genre_filter_without_erroring(client, pg, unique):
-    _make_source(pg, unique, genre_code="TANGO", suffix="tango")
+    _make_source_via_client(client, pg, unique, genre_code="TANGO", suffix="tango")
     response = client.get("/admin/review?filter=upcoming&genre=TANGO", auth=CREDENTIALS)
     assert response.status_code == 200
 
 
 def test_review_page_filter_bar_preserves_the_genre_across_tabs(client, pg, unique):
-    _make_source(pg, unique, genre_code="TANGO", suffix="tango")
+    _make_source_via_client(client, pg, unique, genre_code="TANGO", suffix="tango")
     response = client.get("/admin/review?filter=upcoming&genre=TANGO", auth=CREDENTIALS)
     assert "genre=TANGO" in response.text
 

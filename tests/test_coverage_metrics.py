@@ -64,6 +64,10 @@ def test_genre_code_narrows_to_one_genre(pg, unique):
 # --- quality.genre_region_windows --------------------------------------------
 
 def test_genre_region_windows_places_todays_event_in_the_today_column(pg, unique):
+    """KR-SEOUL's `name` is asserted by lookup, not hardcoded as "Seoul" - an
+    operator can rename a region's display name from the console (Master
+    Data), and this real staging DB has one renamed to "서울"; the code under
+    test is genuinely region-name-agnostic, so the test should be too."""
     from runtime import master_data
 
     seoul = next(r for r in master_data.list_regions(pg) if r["code"] == "KR-SEOUL")
@@ -74,7 +78,7 @@ def test_genre_region_windows_places_todays_event_in_the_today_column(pg, unique
 
     matrix = quality.genre_region_windows(pg, "TANGO")
     assert matrix["genre"] == "TANGO"
-    assert matrix["grid"]["Seoul"]["today"] >= 1
+    assert matrix["grid"][seoul["name"]]["today"] >= 1
 
 
 def test_genre_region_windows_never_leaks_another_genre_in(pg, unique):
@@ -101,14 +105,26 @@ def client(env, monkeypatch):
 
 
 def test_dashboard_shows_tango_coverage_when_tango_sources_exist(client, pg, unique):
-    from runtime import master_data, sources
+    """Created through the app's own admin API, not the `pg` fixture: `pg`'s
+    writes live in a connection that is rolled back at teardown and never
+    committed, so `client`'s requests (each a fresh, real connection) would
+    never see a row inserted only via `pg` - proven directly during v0.82's
+    board test run (a diagnostic insert-then-cross-connection-read came back
+    VISIBLE_COUNT=0)."""
+    from runtime import master_data
 
     tango = next(g for g in master_data.list_genres(pg) if g["code"] == "TANGO")
-    sources.create_source(
-        pg, source_key=f"SRC-COV-{unique}", name=f"coverage test {unique}",
-        platform="WEB", source_role="COMMUNITY", url="https://example.test/board",
-        genre_id=tango["genre_id"], enabled=True,
+    response = client.post(
+        "/api/admin/sources", auth=CREDENTIALS,
+        json={
+            "source_key": f"SRC-COV-{unique}", "name": f"coverage test {unique}",
+            "platform": "WEB", "source_role": "COMMUNITY",
+            "url": f"https://example.test/coverage-board-{unique}",
+            "genre_id": tango["genre_id"], "enabled": True,
+        },
     )
+    assert response.status_code == 200, response.text
+
     response = client.get("/admin", auth=CREDENTIALS)
     assert response.status_code == 200
     assert "Tango Coverage" in response.text
