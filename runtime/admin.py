@@ -144,6 +144,13 @@ border-radius:8px;padding:10px 14px;background:var(--bg)}
 .callout{background:var(--card);border:1px solid var(--warn);border-left-width:4px;
 border-radius:8px;padding:12px 16px;margin-bottom:14px}
 .callout h3{margin:0 0 6px;font-size:14px}
+details.editrow{margin:0;padding:0;border:none;background:none}
+details.editrow>summary{display:inline-block;padding:4px 10px;border:1px solid var(--accent);
+color:var(--accent);background:var(--card);border-radius:6px;font-weight:600}
+details.editrow>summary:hover{background:var(--accent);color:#fff}
+details.editrow[open]{display:block;width:100%;border:1px solid var(--line);
+border-radius:8px;padding:12px 14px;background:var(--bg);margin-top:6px}
+details.editrow input[disabled]{background:var(--bg);color:var(--muted)}
 """
 
 NAV = (
@@ -362,6 +369,8 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
 
 @router.get("/admin/sources", response_class=HTMLResponse)
 def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import master_admin, master_edit
+
     settings = _settings()
     with _connection() as con:
         rows = sources.list_sources(con)
@@ -374,12 +383,49 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         enabled = source["enabled"]
         toggle = "disable" if enabled else "enable"
         actions = (
-            f'<form class="inline" method="post" '
+            '<div class="actionbar">'
+            + master_admin.edit_form(
+                master_edit.SOURCE, source["source_id"],
+                [
+                    master_admin.field("source_key", "Source key", source["source_key"],
+                                       kind="readonly",
+                                       note="엔진 config와 맞추는 키라 수정할 수 없습니다"),
+                    master_admin.field("name", "Name", source["name"]),
+                    master_admin.field("platform", "Platform", kind="select",
+                                       options=master_admin._choices(
+                                           sources.PLATFORMS, source["platform"])),
+                    master_admin.field("source_role", "Role", kind="select",
+                                       options=master_admin._choices(
+                                           sources.SOURCE_ROLES, source["source_role"])),
+                    master_admin.field("authority_level", "Authority", kind="select",
+                                       options=master_admin._choices(
+                                           sources.AUTHORITY_LEVELS,
+                                           source["authority_level"])),
+                    master_admin.field("url", "URL", source.get("url")),
+                    master_admin.field("genre_id", "Genre", kind="select",
+                                       options=master_admin._options(
+                                           genres, id_key="genre_id", label_key="code",
+                                           selected=source.get("genre_id"))),
+                    master_admin.field("region_id", "Region", kind="select",
+                                       options=master_admin._options(
+                                           regions, id_key="region_id", label_key="name",
+                                           selected=source.get("region_id"))),
+                    master_admin.field(
+                        "collection_interval_minutes", "Interval (minutes)",
+                        source["collection_interval_minutes"], kind="number",
+                        note=f"최소 {sources.MIN_INTERVAL_MINUTES}분; 저장 즉시 "
+                             "다음 수집 시점 계산에 반영됩니다"),
+                    master_admin.field("notes", "Notes", source.get("notes")),
+                ],
+                note="API Key와 Secret은 .env에만 있고 이 화면에 표시되지 않습니다. "
+                     "검색어와 수집기 설정은 Test/Enable 흐름에서 관리합니다.",
+            )
+            + f'<form class="inline" method="post" '
             f'action="/admin/sources/{source["source_id"]}/{toggle}">'
-            f"<button>{toggle.title()}</button></form> "
-            f'<form class="inline" method="post" '
+            f"<button>{toggle.title()}</button></form>"
+            + f'<form class="inline" method="post" '
             f'action="/admin/sources/{source["source_id"]}/test">'
-            "<button>Test</button></form>"
+            "<button>Test</button></form></div>"
         )
         table_rows.append([
             f'<code>{E(source["source_key"])}</code><br>{E(source["name"])}',
@@ -506,6 +552,30 @@ def admin_source_action(
 
 # --- venues -----------------------------------------------------------------
 
+def _venue_edit(venue: dict[str, Any], regions: list[dict[str, Any]],
+                aliases: list[dict[str, Any]], usage: dict[int, int]) -> str:
+    """The venue's own record, opened where it is listed and already filled in."""
+    from . import master_admin, master_edit
+
+    return master_admin.edit_form(
+        master_edit.VENUE, venue["venue_id"],
+        [
+            master_admin.field("name", "Name", venue["name"]),
+            master_admin.field(
+                "region_id", "Region", kind="select",
+                options=master_admin._options(
+                    regions, id_key="region_id", label_key="name",
+                    selected=venue.get("region_id"),
+                ),
+            ),
+            master_admin.field("address", "Address", venue.get("address")),
+            master_admin.field("notes", "Notes", venue.get("notes")),
+        ],
+        extra=master_admin.alias_editor(venue, aliases, usage),
+        note="이름을 바꿔도 같은 장소로 남습니다 — 연결된 Event는 그대로입니다.",
+    )
+
+
 def _venue_actions(venue: dict[str, Any]) -> str:
     """Delete, unlink-and-delete or deactivate, whichever this venue allows.
 
@@ -540,7 +610,7 @@ def _venue_actions(venue: dict[str, Any]) -> str:
             '<div class="actions"><button>확인, 해제하고 삭제합니다</button></div>'
             "</form></details>"
         )
-    return f'<div class="actionbar">{toggle}{confirm}</div>'
+    return toggle + confirm
 
 
 @router.get("/admin/venues", response_class=HTMLResponse)
@@ -550,6 +620,10 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
     with _connection() as con:
         venues = venue_resolution.venues_with_usage(con)
         regions = master_data.list_regions(con)
+        alias_rows = {v["venue_id"]: master_data.venue_aliases(con, v["venue_id"])
+                      for v in venues}
+        alias_usage = {v["venue_id"]: master_data.venue_alias_usage(con, v["venue_id"])
+                       for v in venues}
 
     rows = [
         [E(v["name"]), E(str(v.get("region_name") or "-")), E(str(v.get("address") or "-")),
@@ -559,7 +633,10 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
              if v["listed_events"] else "")
           if v["events"] else '<span class="muted">0</span>'),
          _badge("ENABLED" if v["enabled"] else "DISABLED", "ok" if v["enabled"] else "muted"),
-         _venue_actions(v)]
+         '<div class="actionbar">'
+         + _venue_edit(v, regions, alias_rows.get(v["venue_id"], []),
+                       alias_usage.get(v["venue_id"], {}))
+         + _venue_actions(v) + "</div>"]
         for v in venues
     ]
     region_options = "".join(
@@ -626,10 +703,36 @@ def admin_organizers(request: Request, _: str = Depends(require_admin)) -> HTMLR
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
 
+    from . import master_admin, master_edit
+
     rows = [
         [E(o["name"]), E(str(o.get("genre_code") or "-")), E(str(o.get("region_name") or "-")),
          E(str(o.get("contact_url") or "-")),
-         _badge("ENABLED" if o["enabled"] else "DISABLED", "ok" if o["enabled"] else "muted")]
+         _badge("ENABLED" if o["enabled"] else "DISABLED", "ok" if o["enabled"] else "muted"),
+         '<div class="actionbar">'
+         + master_admin.edit_form(
+             master_edit.ORGANIZER, o["organizer_id"],
+             [
+                 master_admin.field("name", "Name", o["name"]),
+                 master_admin.field(
+                     "genre_id", "Genre", kind="select",
+                     options=master_admin._options(
+                         genres, id_key="genre_id", label_key="code",
+                         selected=o.get("genre_id")),
+                 ),
+                 master_admin.field(
+                     "region_id", "Region", kind="select",
+                     options=master_admin._options(
+                         regions, id_key="region_id", label_key="name",
+                         selected=o.get("region_id")),
+                 ),
+                 master_admin.field("contact_url", "Contact URL", o.get("contact_url")),
+                 master_admin.field("notes", "Notes", o.get("notes")),
+             ],
+             note="이름을 바꿔도 같은 주최자로 남습니다 — 연결된 Event는 그대로입니다.",
+         )
+         + master_admin.toggle_form(master_edit.ORGANIZER, o["organizer_id"], o["enabled"])
+         + "</div>"]
         for o in organizers
     ]
     genre_options = "".join(
@@ -652,8 +755,10 @@ def admin_organizers(request: Request, _: str = Depends(require_admin)) -> HTMLR
   <p class="note">Store only what operations needs. No personal contact details.</p>
 </form></details>"""
 
-    body = "<h2>Organizers</h2>" + add_form + _table(
-        ["Name", "Genre", "Region", "Contact", "State"], rows,
+    body = ("<h2>Organizers</h2>"
+            '<p class="note">주최자는 삭제하지 않고 Disable 합니다 — 이미 연결된 '
+            "Event가 계속 해석되어야 합니다.</p>" + add_form) + _table(
+        ["Name", "Genre", "Region", "Contact", "State", "Actions"], rows,
         empty="no organizer registered yet",
     )
     return HTMLResponse(_page("Organizers", "/admin/organizers", body, flash=_flash(request)))
@@ -744,18 +849,39 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
 
+    from . import master_admin, master_edit
+
+    code_note = "code는 다른 레코드가 이 행을 가리키는 이름이라 수정할 수 없습니다"
     genre_rows = [
         [f'<code>{E(g["code"])}</code>', E(g["name"]),
          _badge("ENABLED" if g["enabled"] else "DISABLED", "ok" if g["enabled"] else "muted"),
-         f'<form class="inline" method="post" '
-         f'action="/admin/genres/{g["genre_id"]}/{"disable" if g["enabled"] else "enable"}">'
-         f'<button>{"Disable" if g["enabled"] else "Enable"}</button></form>']
+         '<div class="actionbar">'
+         + master_admin.edit_form(
+             master_edit.GENRE, g["genre_id"],
+             [master_admin.field("code", "Code", g["code"], kind="readonly",
+                                 note=code_note),
+              master_admin.field("name", "Display name", g["name"])],
+         )
+         + master_admin.toggle_form(master_edit.GENRE, g["genre_id"], g["enabled"])
+         + "</div>"]
         for g in genres
     ]
     region_rows = [
         [f'<code>{E(r["code"])}</code>', E(r["name"]), E(r["country"]),
          E(str(r.get("city") or "-")),
-         _badge("ENABLED" if r["enabled"] else "DISABLED", "ok" if r["enabled"] else "muted")]
+         _badge("ENABLED" if r["enabled"] else "DISABLED", "ok" if r["enabled"] else "muted"),
+         '<div class="actionbar">'
+         + master_admin.edit_form(
+             master_edit.REGION, r["region_id"],
+             [master_admin.field("code", "Code", r["code"], kind="readonly",
+                                 note=code_note),
+              master_admin.field("name", "Display name", r["name"]),
+              master_admin.field("country", "Country", r["country"]),
+              master_admin.field("city", "City", r.get("city")),
+              master_admin.field("district", "District", r.get("district"))],
+         )
+         + master_admin.toggle_form(master_edit.REGION, r["region_id"], r["enabled"])
+         + "</div>"]
         for r in regions
     ]
 
@@ -768,9 +894,12 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
 </div><div class="actions"><button class="primary">Add Genre</button></div>
 <p class="note">Genres are disabled, never deleted - events already tagged with
 one still have to resolve.</p></form></details>"""
-        + _table(["Code", "Name", "State", ""], genre_rows, empty="no genre")
+        + _table(["Code", "Name", "State", "Actions"], genre_rows, empty="no genre")
         + "<h2>Regions</h2>"
-        + _table(["Code", "Name", "Country", "City", "State"], region_rows, empty="no region")
+        + '<p class="note">지역도 삭제하지 않고 Disable 합니다. code는 Source와 '
+          "Region filter가 사용하므로 수정할 수 없습니다.</p>"
+        + _table(["Code", "Name", "Country", "City", "State", "Actions"], region_rows,
+                 empty="no region")
     )
     return HTMLResponse(_page("Genres & Regions", "/admin/master", body, flash=_flash(request)))
 

@@ -253,3 +253,109 @@ def update_organizer(con, organizer_id: int, **fields: Any) -> dict[str, Any] | 
             (*updates.values(), organizer_id),
         )
         return _row(cur)
+
+
+# --- editing what is already registered -------------------------------------
+#
+# A code is how everything else refers to a row. TANGO is written into sources,
+# KR-SEOUL into region filters, and both travel in URLs an operator has
+# bookmarked. Renaming one silently breaks every reference, so codes are not
+# editable here and the console renders them read-only. Display names are.
+
+def update_genre(con, genre_id: int, **fields: Any) -> dict[str, Any] | None:
+    """Change a genre's display name or whether it is offered. Never its code."""
+    allowed = ("name", "enabled")
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if "name" in updates:
+        updates["name"] = (updates["name"] or "").strip()
+        if not updates["name"]:
+            raise ValueError("genre name is required")
+    if not updates:
+        return get_genre(con, genre_id)
+    assignments = ", ".join(f"{key} = %s" for key in updates)
+    with con.cursor() as cur:
+        cur.execute(
+            f"UPDATE genres SET {assignments}, updated_at = now() "
+            "WHERE genre_id = %s RETURNING *",
+            (*updates.values(), genre_id),
+        )
+        return _row(cur)
+
+
+def get_genre(con, genre_id: int) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute("SELECT * FROM genres WHERE genre_id = %s", (genre_id,))
+        return _row(cur)
+
+
+def get_region(con, region_id: int) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute("SELECT * FROM regions WHERE region_id = %s", (region_id,))
+        return _row(cur)
+
+
+def update_region(con, region_id: int, **fields: Any) -> dict[str, Any] | None:
+    """Change a region's names or whether it is offered. Never its code."""
+    allowed = ("name", "country", "city", "district", "enabled")
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    for key in ("name", "country"):
+        if key in updates:
+            updates[key] = (updates[key] or "").strip()
+            if not updates[key]:
+                raise ValueError(f"region {key} is required")
+    for key in ("city", "district"):
+        if key in updates:
+            updates[key] = (updates[key] or "").strip() or None
+    if not updates:
+        return get_region(con, region_id)
+    assignments = ", ".join(f"{key} = %s" for key in updates)
+    with con.cursor() as cur:
+        cur.execute(
+            f"UPDATE regions SET {assignments}, updated_at = now() "
+            "WHERE region_id = %s RETURNING *",
+            (*updates.values(), region_id),
+        )
+        return _row(cur)
+
+
+def get_organizer(con, organizer_id: int) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute("SELECT * FROM organizers WHERE organizer_id = %s", (organizer_id,))
+        return _row(cur)
+
+
+def venue_alias_usage(con, venue_id: int) -> dict[int, int]:
+    """How many events currently reach this venue through each of its aliases.
+
+    An alias created from a raw post string is doing work: remove it and the
+    next collection stops recognising that spelling. The console shows the
+    count so a busy alias is not deleted by accident.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT a.venue_alias_id, count(e.event_id) "
+            "FROM venue_aliases a "
+            "LEFT JOIN events e ON e.venue_id = a.venue_id "
+            "  AND lower(e.venue_text) = lower(a.alias) "
+            "WHERE a.venue_id = %s GROUP BY a.venue_alias_id",
+            (venue_id,),
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def get_venue_alias(con, venue_alias_id: int) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM venue_aliases WHERE venue_alias_id = %s", (venue_alias_id,)
+        )
+        return _row(cur)
+
+
+def remove_venue_alias(con, venue_alias_id: int) -> dict[str, Any] | None:
+    """Drop one alias. The venue and its events are untouched."""
+    with con.cursor() as cur:
+        cur.execute(
+            "DELETE FROM venue_aliases WHERE venue_alias_id = %s RETURNING *",
+            (venue_alias_id,),
+        )
+        return _row(cur)
