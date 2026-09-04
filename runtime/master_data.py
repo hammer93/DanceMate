@@ -39,14 +39,29 @@ def _row(cur) -> dict[str, Any] | None:
 
 # --- genres -----------------------------------------------------------------
 
-def list_genres(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+def list_genres(
+    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
     sql = "SELECT * FROM genres"
     if enabled_only:
         sql += " WHERE enabled"
-    sql += " ORDER BY code"
+    sql += " ORDER BY code, genre_id"
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = (limit, offset)
+    with con.cursor() as cur:
+        cur.execute(sql, params)
+        return _rows(cur)
+
+
+def count_genres(con, *, enabled_only: bool = False) -> int:
+    sql = "SELECT count(*) FROM genres"
+    if enabled_only:
+        sql += " WHERE enabled"
     with con.cursor() as cur:
         cur.execute(sql)
-        return _rows(cur)
+        return cur.fetchone()[0]
 
 
 def create_genre(con, *, code: str, name: str) -> dict[str, Any]:
@@ -74,14 +89,29 @@ def set_genre_enabled(con, genre_id: int, enabled: bool) -> dict[str, Any] | Non
 
 # --- regions ----------------------------------------------------------------
 
-def list_regions(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+def list_regions(
+    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
     sql = "SELECT * FROM regions"
     if enabled_only:
         sql += " WHERE enabled"
-    sql += " ORDER BY code"
+    sql += " ORDER BY code, region_id"
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = (limit, offset)
+    with con.cursor() as cur:
+        cur.execute(sql, params)
+        return _rows(cur)
+
+
+def count_regions(con, *, enabled_only: bool = False) -> int:
+    sql = "SELECT count(*) FROM regions"
+    if enabled_only:
+        sql += " WHERE enabled"
     with con.cursor() as cur:
         cur.execute(sql)
-        return _rows(cur)
+        return cur.fetchone()[0]
 
 
 def create_region(
@@ -102,7 +132,9 @@ def create_region(
 
 # --- venues -----------------------------------------------------------------
 
-def list_venues(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+def list_venues(
+    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
     sql = (
         "SELECT v.*, r.name AS region_name, r.code AS region_code, "
         "  COALESCE(a.aliases, ARRAY[]::text[]) AS aliases "
@@ -115,10 +147,23 @@ def list_venues(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
     )
     if enabled_only:
         sql += " WHERE v.enabled"
-    sql += " ORDER BY lower(v.name)"
+    sql += " ORDER BY lower(v.name), v.venue_id"
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = (limit, offset)
+    with con.cursor() as cur:
+        cur.execute(sql, params)
+        return _rows(cur)
+
+
+def count_venues(con, *, enabled_only: bool = False) -> int:
+    sql = "SELECT count(*) FROM venues"
+    if enabled_only:
+        sql += " WHERE enabled"
     with con.cursor() as cur:
         cur.execute(sql)
-        return _rows(cur)
+        return cur.fetchone()[0]
 
 
 def get_venue(con, venue_id: int) -> dict[str, Any] | None:
@@ -216,7 +261,9 @@ def resolve_venue(con, text: str) -> dict[str, Any] | None:
 
 # --- organizers -------------------------------------------------------------
 
-def list_organizers(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+def list_organizers(
+    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
     sql = (
         "SELECT o.*, g.code AS genre_code, r.name AS region_name "
         "FROM organizers o "
@@ -225,10 +272,23 @@ def list_organizers(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
     )
     if enabled_only:
         sql += " WHERE o.enabled"
-    sql += " ORDER BY lower(o.name)"
+    sql += " ORDER BY lower(o.name), o.organizer_id"
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = (limit, offset)
+    with con.cursor() as cur:
+        cur.execute(sql, params)
+        return _rows(cur)
+
+
+def count_organizers(con, *, enabled_only: bool = False) -> int:
+    sql = "SELECT count(*) FROM organizers"
+    if enabled_only:
+        sql += " WHERE enabled"
     with con.cursor() as cur:
         cur.execute(sql)
-        return _rows(cur)
+        return cur.fetchone()[0]
 
 
 def create_organizer(

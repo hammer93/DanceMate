@@ -106,7 +106,9 @@ def validate(
         raise SourceValidationError("; ".join(problems))
 
 
-def list_sources(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+def list_sources(
+    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
     sql = (
         "SELECT s.*, g.code AS genre_code, r.name AS region_name, "
         "  (SELECT count(*) FROM source_items i WHERE i.source_id = s.source_id) AS item_count "
@@ -117,9 +119,22 @@ def list_sources(con, *, enabled_only: bool = False) -> list[dict[str, Any]]:
     if enabled_only:
         sql += " WHERE s.enabled"
     sql += " ORDER BY s.source_key"
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s OFFSET %s"
+        params = (limit, offset)
+    with con.cursor() as cur:
+        cur.execute(sql, params)
+        return _rows(cur)
+
+
+def count_sources(con, *, enabled_only: bool = False) -> int:
+    sql = "SELECT count(*) FROM sources"
+    if enabled_only:
+        sql += " WHERE enabled"
     with con.cursor() as cur:
         cur.execute(sql)
-        return _rows(cur)
+        return cur.fetchone()[0]
 
 
 def get_source(con, source_id: int) -> dict[str, Any] | None:

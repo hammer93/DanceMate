@@ -219,11 +219,9 @@ def summary(con) -> dict[str, Any]:
     }
 
 
-def listing(
-    con, *, limit: int = 200, status: str | None = None,
-    source_id: int | None = None, today_only: bool = False,
-) -> list[dict[str, Any]]:
-    """The /admin/intake table: what was collected, and what came of it."""
+def _listing_where(
+    *, status: str | None, source_id: int | None, today_only: bool,
+) -> tuple[list[str], list[Any]]:
     where = ["TRUE"]
     params: list[Any] = []
     if status:
@@ -234,6 +232,16 @@ def listing(
         params.append(source_id)
     if today_only:
         where.append("i.collected_at::date = current_date")
+    return where, params
+
+
+def listing(
+    con, *, limit: int = 200, offset: int = 0, status: str | None = None,
+    source_id: int | None = None, today_only: bool = False,
+) -> list[dict[str, Any]]:
+    """The /admin/intake table: what was collected, and what came of it."""
+    where, params = _listing_where(
+        status=status, source_id=source_id, today_only=today_only)
 
     with con.cursor() as cur:
         cur.execute(
@@ -247,10 +255,28 @@ def listing(
             "LEFT JOIN source_collection_runs r ON r.collection_run_id = i.collection_run_id "
             "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
             f"WHERE {' AND '.join(where)} "
-            "ORDER BY i.collected_at DESC, i.source_item_id DESC LIMIT %s",
-            (acquisition.METADATA_ONLY, *params, limit),
+            "ORDER BY i.collected_at DESC, i.source_item_id DESC LIMIT %s OFFSET %s",
+            (acquisition.METADATA_ONLY, *params, limit, offset),
         )
         return _rows(cur)
+
+
+def count_listing(
+    con, *, status: str | None = None, source_id: int | None = None,
+    today_only: bool = False,
+) -> int:
+    where, params = _listing_where(
+        status=status, source_id=source_id, today_only=today_only)
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM source_items i "
+            "JOIN sources s ON s.source_id = i.source_id "
+            "LEFT JOIN source_collection_runs r ON r.collection_run_id = i.collection_run_id "
+            "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            f"WHERE {' AND '.join(where)}",
+            tuple(params),
+        )
+        return cur.fetchone()[0]
 
 
 def detail(con, source_item_id: int) -> dict[str, Any] | None:

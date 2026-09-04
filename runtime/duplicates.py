@@ -260,7 +260,7 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
             "auto_merged": merged, "flagged_for_review": flagged}
 
 
-def open_pairs(con, *, limit: int = 100) -> list[dict[str, Any]]:
+def open_pairs(con, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     """Pairs waiting on a person, with both events attached."""
     with con.cursor() as cur:
         cur.execute(
@@ -274,10 +274,16 @@ def open_pairs(con, *, limit: int = 100) -> list[dict[str, Any]]:
             "FROM event_duplicate_pairs p "
             "JOIN events a ON a.event_id = p.event_id "
             "JOIN events b ON b.event_id = p.other_event_id "
-            "WHERE p.state = 'OPEN' ORDER BY a.event_date, p.pair_id LIMIT %s",
-            (limit,),
+            "WHERE p.state = 'OPEN' ORDER BY a.event_date, p.pair_id LIMIT %s OFFSET %s",
+            (limit, offset),
         )
         return _rows(cur)
+
+
+def count_open_pairs(con) -> int:
+    with con.cursor() as cur:
+        cur.execute("SELECT count(*) FROM event_duplicate_pairs WHERE state = 'OPEN'")
+        return cur.fetchone()[0]
 
 
 def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
