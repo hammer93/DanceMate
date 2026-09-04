@@ -177,7 +177,9 @@ def _synthetic_item(pg, unique):
         return cur.fetchone()[0]
 
 
-def _outcome(status, error_code=None, text=None):
+def _outcome(status, error_code=None, text=""):
+    # text defaults to "" on the dataclass and no fetch path leaves it None;
+    # passing None here would be testing a shape production cannot produce.
     return acquisition.AcquisitionOutcome(
         status=status, error_code=error_code, text=text,
         fetched_url="https://example.invalid/x")
