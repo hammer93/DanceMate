@@ -284,7 +284,8 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
         start, end = keyword
 
     if not include_past and start is None:
-        where.append("e.event_date >= current_date")
+        where.append("e.event_date >= %s")
+        params.append(today(now))
     if not include_cancelled:
         where.append("e.engine_status <> %s")
         params.append(CANCELLED)

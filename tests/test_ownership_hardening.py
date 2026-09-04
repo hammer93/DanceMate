@@ -32,6 +32,15 @@ def _bash() -> str:
     return found
 
 
+def _require_git() -> None:
+    # The production runtime image has no `git` (nothing in it needs one) -
+    # these two tests build a throwaway repo purely to exercise
+    # verify_repo_ownership()'s own git ls-files call, so they skip there
+    # rather than fail on an environment gap unrelated to what they check.
+    if not shutil.which("git"):
+        pytest.skip("no git available to build the throwaway test repo")
+
+
 # --- static: the guard is actually wired in, and stays narrow -------------
 
 def test_start_server_runs_the_ownership_guard_before_bringing_the_stack_up():
@@ -74,6 +83,7 @@ def test_no_script_installs_test_dependencies_as_root():
 # --- behavioural: the guard passes on a normally-owned tree ----------------
 
 def test_verify_repo_ownership_passes_on_a_normally_owned_tree(tmp_path):
+    _require_git()
     bash = _bash()
     (tmp_path / "scripts").mkdir()
     shutil.copy(COMMON, tmp_path / "scripts" / "_common.sh")
@@ -101,7 +111,6 @@ def test_container_run_as_repo_owner_places_image_and_command_correctly(tmp_path
     (tmp_path / "scripts").mkdir()
     shutil.copy(COMMON, tmp_path / "scripts" / "_common.sh")
     (tmp_path / "file.txt").write_text("hi", encoding="utf-8")
-    subprocess.run([bash, "-c", "git init -q"], cwd=tmp_path, check=True, capture_output=True)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

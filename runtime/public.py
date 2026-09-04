@@ -329,7 +329,8 @@ def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
         where.append("e.event_date BETWEEN %s AND %s")
         params.extend(window)
     else:
-        where.append("e.event_date >= current_date")
+        where.append("e.event_date >= %s")
+        params.append(events_api.today())
     clause = " AND ".join(where)
 
     with con.cursor() as cur:
