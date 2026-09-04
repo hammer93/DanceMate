@@ -188,11 +188,22 @@ def test_quota_check_refuses_once_the_budget_is_spent(pg):
 
 
 def test_quota_is_per_day(pg):
+    """Recording against one day leaves every other day alone.
+
+    Measured as a change rather than a total: this runs against the staging
+    database, where the scheduler has usually spent some of the day's real
+    budget already. The absolute form passed only while the hardcoded date was
+    still in the future, and broke the morning it arrived.
+    """
     today = datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc)
     tomorrow = today + timedelta(days=1)
+    before_today = quota.usage(pg, "KAKAO", now=today)["requests"]
+    before_tomorrow = quota.usage(pg, "KAKAO", now=tomorrow)["requests"]
+
     quota.record(pg, "DAUM_CAFE", requests=10, now=today)
-    assert quota.usage(pg, "KAKAO", now=today)["requests"] == 10
-    assert quota.usage(pg, "KAKAO", now=tomorrow)["requests"] == 0
+
+    assert quota.usage(pg, "KAKAO", now=today)["requests"] == before_today + 10
+    assert quota.usage(pg, "KAKAO", now=tomorrow)["requests"] == before_tomorrow
 
 
 def test_an_unmetered_platform_is_never_blocked(pg):
