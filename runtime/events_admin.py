@@ -169,9 +169,17 @@ def _new_venue_form(entry: dict[str, Any], suggestion: dict[str, Any],
         for r in regions
     )
     aliases = ", ".join(suggestion["aliases"])
+    source = suggestion.get("address_source")
+    told = []
+    if suggestion["split_inferred"]:
+        told.append("이름과 주소는 원문 문자열에서 나눈 값입니다")
+    if source == "the post":
+        told.append("주소는 게시글 본문에서 가져왔습니다")
+    if suggestion.get("region_id"):
+        told.append("지역은 주소를 보고 선택했습니다")
     inferred = (
-        '<p class="note">이름과 주소는 원문 문자열에서 추정한 값입니다. '
-        "저장 전에 확인·수정하세요.</p>" if suggestion["split_inferred"] else ""
+        f'<p class="note">{E(", ".join(told))}. 저장 전에 확인하고, 틀렸으면 '
+        "고치거나 지우세요.</p>" if told else ""
     )
     return f"""
 <details class="newvenue"{' open' if open_form else ''}>
@@ -211,15 +219,10 @@ def admin_unresolved_venues(request: Request,
             for entry in pending
         }
         suggestions = {
-            entry["unresolved_venue_id"]: venue_resolution.suggest(
-                entry["venue_text"], list(entry.get("alias_candidates") or []),
-            )
+            entry["unresolved_venue_id"]: venue_resolution.prefill(con, entry)
             for entry in pending
         }
-        region_ids = {
-            key: venue_resolution.suggested_region_id(con, suggestion["region_hint"])
-            for key, suggestion in suggestions.items()
-        }
+        region_ids = {key: s["region_id"] for key, s in suggestions.items()}
 
     options = "".join(
         f'<option value="{v["venue_id"]}">{E(v["name"])}'
@@ -549,3 +552,77 @@ def api_search_preview(when: str = "today", _: str = Depends(require_admin)) -> 
             return admin._dump(events_api.search(con, when=when.strip()))
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+# --- removing a venue -------------------------------------------------------
+#
+# The listing lives on the v0.75 master-data page; the removal machinery is
+# venue resolution, so the routes live here beside the rest of it.
+
+@router.post("/admin/venues/{venue_id}/delete")
+def admin_delete_venue(
+    venue_id: int,
+    unlink: str = Form("0"),
+    reviewer: str = Depends(require_admin),
+) -> Any:
+    target = "/admin/venues"
+    with db.connect(admin._settings()) as con:
+        try:
+            result = venue_resolution.delete_venue(
+                con, venue_id, reviewer=reviewer, unlink=(unlink == "1"),
+            )
+            con.commit()
+        except venue_resolution.VenueInUse as in_use:
+            # Reached only if the page was stale: the button that offers a plain
+            # delete is not rendered for a venue in use.
+            return admin._back(
+                target,
+                f"이 장소는 Event {in_use.usage['events']}건에서 사용 중입니다 — "
+                "Unlink & Delete 를 사용하세요",
+                "bad",
+            )
+        except Exception as exc:
+            return admin._back(target, f"could not delete venue: {exc}", "bad")
+
+    detail = f"deleted {result['venue']['name']}"
+    if result["events_unlinked"]:
+        detail += (f"; {result['events_unlinked']} event(s) back to their raw string, "
+                   f"{result['strings_requeued']} queued for review")
+    if result["automatic_merges_released"]:
+        detail += f"; {result['automatic_merges_released']} automatic merge(s) released"
+    return admin._back(target, detail)
+
+
+@router.post("/admin/venues/{venue_id}/enabled")
+def admin_set_venue_enabled(
+    venue_id: int,
+    enabled: str = Form("1"),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    target = "/admin/venues"
+    wanted = enabled == "1"
+    with db.connect(admin._settings()) as con:
+        try:
+            result = venue_resolution.set_venue_enabled(
+                con, venue_id, wanted, reviewer=reviewer,
+            )
+            con.commit()
+        except Exception as exc:
+            return admin._back(target, f"could not update venue: {exc}", "bad")
+    return admin._back(
+        target,
+        f"{result['venue']['name']} {'reactivated' if wanted else 'deactivated'}",
+    )
+
+
+@api.get("/venues/{venue_id}/usage")
+def api_venue_usage(venue_id: int, _: str = Depends(require_admin)) -> JSONResponse:
+    """What would change if this venue were deleted."""
+    with _connection() as con:
+        return admin._dump({"venue_id": venue_id, "usage": venue_resolution.usage(con, venue_id)})
+
+
+@api.get("/venues/history")
+def api_venue_history(limit: int = 50, _: str = Depends(require_admin)) -> JSONResponse:
+    with _connection() as con:
+        return admin._dump({"actions": venue_resolution.history(con, limit=limit)})
