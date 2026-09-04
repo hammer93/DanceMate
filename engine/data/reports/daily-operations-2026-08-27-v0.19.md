@@ -1,6 +1,6 @@
 # DanceMate Daily Operations Summary — 2026-08-27
 
-- Daily Run ID: `6f312b34-1bd5-4a38-8be4-a61053ad3dd7`
+- Daily Run ID: `59fdff1f-9274-46a0-9940-1bf9671988ae`
 - Health: **YELLOW**
 - P0: **0**
 - Human Review: **2** (High 1)
@@ -268,12 +268,6 @@
 
 ## Family Generation Runtime Memory / Re-Arm Effectiveness
 - Family generation runtime outcome 없음
-
-## Family Remediation Recommendation / Conservative Effectiveness Ranking
-- Family remediation ranking 없음
-
-## Recommendation Runtime Outcome / Selection Effectiveness
-- Recommendation runtime outcome 없음
 
 ## Operator Decision
 - GREEN: 자동 운영 지속

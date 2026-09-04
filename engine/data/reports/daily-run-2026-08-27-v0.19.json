@@ -1,6 +1,6 @@
 {
   "version": "0.19",
-  "daily_run_id": "6f312b34-1bd5-4a38-8be4-a61053ad3dd7",
+  "daily_run_id": "59fdff1f-9274-46a0-9940-1bf9671988ae",
   "run_date": "2026-08-27",
   "summary": {
     "steps": [
@@ -23,8 +23,8 @@
             }
           ],
           "lineages": [
-            "23d8b481-623d-4922-b63b-79381b0c0884",
-            "112ef518-da5b-4eb9-ad41-e93b3daa2004"
+            "b7a5fe81-20cb-4868-a469-e6ccb6e31659",
+            "68d295ec-d1e5-4390-8f8a-d0d02c6a904e"
           ]
         }
       },
@@ -42,7 +42,7 @@
               "poster_candidates": 1,
               "error_code": null,
               "upgraded": true,
-              "lineage_id": "23d8b481-623d-4922-b63b-79381b0c0884",
+              "lineage_id": "b7a5fe81-20cb-4868-a469-e6ccb6e31659",
               "observation_id": 3
             },
             {
@@ -56,7 +56,7 @@
               "poster_candidates": 0,
               "error_code": "BODY_UNAVAILABLE",
               "upgraded": false,
-              "lineage_id": "23d8b481-623d-4922-b63b-79381b0c0884",
+              "lineage_id": "b7a5fe81-20cb-4868-a469-e6ccb6e31659",
               "observation_id": 4
             },
             {
@@ -70,7 +70,7 @@
               "poster_candidates": 0,
               "error_code": null,
               "upgraded": true,
-              "lineage_id": "112ef518-da5b-4eb9-ad41-e93b3daa2004",
+              "lineage_id": "68d295ec-d1e5-4390-8f8a-d0d02c6a904e",
               "observation_id": 5
             }
           ]
@@ -221,7 +221,7 @@
       "access_failures": 1,
       "primary_recovery_attempts": 0,
       "primary_recovery_success": 0,
-      "generated_at": "2026-09-04T03:40:53.486544+00:00",
+      "generated_at": "2026-09-03T00:22:49.621313+00:00",
       "field_coverage_rate": 1.0,
       "known_field_rate": 1.0,
       "expected_to_verified_promotion_rate": null,
@@ -808,7 +808,7 @@
             "shadow_recommended_text_threshold": 0.86,
             "threshold_delta": 0.0,
             "recommendation_status": "INSUFFICIENT_EVIDENCE",
-            "created_at": "2026-09-04T03:40:53.499940+00:00",
+            "created_at": "2026-09-03T00:22:49.643423+00:00",
             "reasons": [
               "need >= 5 decisive human reviews; have 0"
             ]
@@ -843,7 +843,7 @@
         "origin_threshold_restriction_scopes": [],
         "origin_threshold_scope_routes": [],
         "origin_threshold_scope_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "active_scopes": [],
           "global_restrictions": [],
           "scoped_restrictions": [],
@@ -853,7 +853,7 @@
         "origin_threshold_scope_reintegration_evaluations": [],
         "origin_threshold_scope_reintegration_canaries": [],
         "origin_threshold_scope_reintegration_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "evidence": [],
           "evaluations": [],
           "canaries": []
@@ -862,27 +862,27 @@
         "origin_threshold_post_reintegration_evaluations": [],
         "origin_threshold_post_reintegration_reisolations": [],
         "origin_threshold_post_reintegration_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "scopes": [],
           "re_isolations": []
         },
         "origin_threshold_post_reintegration_root_causes": [],
         "origin_threshold_post_reintegration_remediation_routes": [],
         "origin_threshold_post_reintegration_root_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "root_causes": [],
           "routes": []
         },
         "origin_threshold_architecture_plans": [],
         "origin_threshold_architecture_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "plans": []
         },
         "origin_threshold_architecture_runtime_outcomes": [],
         "origin_threshold_architecture_effectiveness_profiles": [],
         "origin_threshold_architecture_recommendations": [],
         "origin_threshold_architecture_memory_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "runtime_outcomes": [],
           "effectiveness_profiles": [],
           "recommendations": []
@@ -890,7 +890,7 @@
         "origin_threshold_architecture_comparative_scores": [],
         "origin_threshold_architecture_context_recommendations": [],
         "origin_threshold_architecture_ranking_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "scores": [],
           "recommendations": []
         },
@@ -898,7 +898,7 @@
         "origin_threshold_architecture_challenge_runtime_results": [],
         "origin_threshold_architecture_recommendation_quality_profiles": [],
         "origin_threshold_architecture_challenge_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "challenges": [],
           "runtime_results": [],
           "quality_profiles": []
@@ -908,7 +908,7 @@
         "origin_threshold_recommendation_policy_assignments": [],
         "origin_threshold_recommendation_policy_events": [],
         "origin_threshold_recommendation_policy_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "states": [],
           "candidates": [],
           "assignments": [],
@@ -916,14 +916,14 @@
         },
         "origin_threshold_recommendation_recovery_cases": [],
         "origin_threshold_recommendation_recovery_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "cases": []
         },
         "origin_threshold_recommendation_algorithm_versions": [],
         "origin_threshold_recommendation_algorithm_lineage": [],
         "origin_threshold_recommendation_recovery_version_links": [],
         "origin_threshold_recommendation_algorithm_versioning_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "versions": [],
           "lineage": [],
           "recovery_version_links": [],
@@ -933,7 +933,7 @@
         "origin_threshold_recommendation_algorithm_version_profiles": [],
         "origin_threshold_recommendation_algorithm_version_evaluations": [],
         "origin_threshold_recommendation_algorithm_version_cohort_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "cohorts": [],
           "profiles": [],
           "evaluations": []
@@ -943,7 +943,7 @@
         "origin_threshold_recommendation_version_promotion_reviews": [],
         "origin_threshold_recommendation_version_promotion_events": [],
         "origin_threshold_recommendation_version_promotion_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "gates": [],
           "comparisons": [],
           "reviews": [],
@@ -953,7 +953,7 @@
         "origin_threshold_recommendation_version_fallbacks": [],
         "origin_threshold_recommendation_supersede_guard_events": [],
         "origin_threshold_recommendation_supersede_guard_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "evaluations": [],
           "fallbacks": [],
           "events": []
@@ -963,7 +963,7 @@
         "origin_threshold_recommendation_fallback_pair_profiles": [],
         "origin_threshold_recommendation_fallback_verification_events": [],
         "origin_threshold_recommendation_fallback_verification_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "generations": [],
           "observations": [],
           "pair_profiles": [],
@@ -973,7 +973,7 @@
         "origin_threshold_recommendation_fallback_family_reviews": [],
         "origin_threshold_recommendation_fallback_family_events": [],
         "origin_threshold_recommendation_fallback_family_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "profiles": [],
           "reviews": [],
           "events": []
@@ -985,7 +985,7 @@
         "origin_threshold_recommendation_fallback_family_recovery_reviews": [],
         "origin_threshold_recommendation_fallback_family_recovery_events": [],
         "origin_threshold_recommendation_fallback_family_recovery_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "cases": [],
           "remediations": [],
           "evidence": [],
@@ -997,27 +997,7 @@
         "origin_threshold_recommendation_fallback_family_effectiveness_profiles": [],
         "origin_threshold_recommendation_fallback_family_generation_events": [],
         "origin_threshold_recommendation_fallback_family_memory_status": {
-          "policy_version": "v0.73",
-          "outcomes": [],
-          "effectiveness_profiles": [],
-          "events": []
-        },
-        "origin_threshold_recommendation_fallback_family_remediation_rankings": [],
-        "origin_threshold_recommendation_fallback_family_remediation_recommendations": [],
-        "origin_threshold_recommendation_fallback_family_remediation_selection_reviews": [],
-        "origin_threshold_recommendation_fallback_family_remediation_ranking_events": [],
-        "origin_threshold_recommendation_fallback_family_ranking_status": {
-          "policy_version": "v0.73",
-          "rankings": [],
-          "recommendations": [],
-          "selection_reviews": [],
-          "events": []
-        },
-        "origin_threshold_recommendation_fallback_family_recommendation_outcomes": [],
-        "origin_threshold_recommendation_fallback_family_recommendation_effectiveness_profiles": [],
-        "origin_threshold_recommendation_fallback_family_recommendation_outcome_events": [],
-        "origin_threshold_recommendation_fallback_family_recommendation_outcome_status": {
-          "policy_version": "v0.73",
+          "policy_version": "v0.71",
           "outcomes": [],
           "effectiveness_profiles": [],
           "events": []
