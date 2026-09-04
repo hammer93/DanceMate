@@ -307,6 +307,7 @@ def _today_panel(settings: Settings) -> str:
         '<a href="/admin/review?filter=tomorrow">내일 검토</a>'
         '<a href="/admin/review?filter=unknown_time">시간 미확인</a>'
         '<a href="/admin/review?filter=unknown_venue">장소 미확인</a>'
+        '<a href="/admin/review?filter=upcoming&genre=TANGO">탱고 검토</a>'
         '<a href="/admin/venues/unresolved">장소 연결</a>'
         "</div>"
     )
@@ -370,6 +371,48 @@ def _coverage_panel(settings: Settings) -> str:
         '<p class="note">0인 칸이 다음에 채울 곳입니다. 실제 공개 소스가 없으면 '
         "억지로 채우지 않습니다.</p>"
     )
+
+
+def _genre_coverage_panel(settings: Settings, genre_code: str, label: str) -> str:
+    """Sources / Upcoming / Today / Tomorrow / This Week for one genre, plus
+    a region x window matrix (v0.82 Coverage Metrics, Section 27-30) - a
+    single-genre expansion release is judged on whether ITS coverage grew,
+    which the all-genre _today_panel/_coverage_panel above cannot show.
+    """
+    from . import quality
+
+    try:
+        with _connection() as con:
+            source_keys = sources.source_keys_for_genre(con, genre_code)
+            buckets = quality.upcoming_buckets(con, genre_code=genre_code)
+            matrix = quality.genre_region_windows(con, genre_code)
+    except db.DatabaseUnavailable:
+        return ""
+    if not source_keys:
+        return ""
+
+    cards = _cards([
+        (f"{label} Sources", len(source_keys), "registered"),
+        (f"{label} Upcoming", buckets["upcoming"], "listed, not cancelled"),
+        (f"{label} Today", buckets["today"], "listed for today"),
+        (f"{label} Tomorrow", buckets["tomorrow"], "listed for tomorrow"),
+        (f"{label} This Week", buckets["this_week"], "today through +7 days"),
+    ])
+
+    rows = "".join(
+        f"<tr><td>{E(region)}</td>"
+        f'<td class="num">{matrix["grid"][region]["today"]}</td>'
+        f'<td class="num">{matrix["grid"][region]["tomorrow"]}</td>'
+        f'<td class="num">{matrix["grid"][region]["this_week"]}</td></tr>'
+        for region in matrix["regions"]
+    )
+    table = (
+        '<div class="tablewrap"><table><thead><tr><th>Region</th>'
+        "<th>Today</th><th>Tomorrow</th><th>This Week</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></div>"
+        if rows else '<p class="note">no region data yet</p>'
+    )
+    return f"<h2>{E(label)} Coverage</h2>" + cards + table
 
 
 def _quality_panel(settings: Settings) -> str:
@@ -490,6 +533,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
     today_panel = _today_panel(settings)
     quality_panel = _quality_panel(settings)
     coverage_panel = _coverage_panel(settings)
+    tango_coverage_panel = _genre_coverage_panel(settings, "TANGO", "Tango")
     alpha_panel = _alpha_panel(settings)
 
     cards = _cards([
@@ -525,6 +569,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         today_panel
         + quality_panel
         + coverage_panel
+        + tango_coverage_panel
         + alpha_panel
         + "<h2>Collection</h2>"
         + cards

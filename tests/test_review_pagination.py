@@ -192,3 +192,99 @@ def test_raw_page_always_returns_a_positive_int(raw):
 ])
 def test_resolve_page_clamps_into_the_real_range(raw, expected):
     assert pagination.resolve_page(raw, TOTAL_ROWS) == expected
+
+
+# --- source_keys (v0.82 genre filter) ----------------------------------------
+#
+# Engine raw_posts.source_id is a TEXT source_key (e.g. "SRC-W-004"), not the
+# Postgres integer source_id - candidates.query(source_keys=...) is the SQL
+# side of the genre filter; runtime.sources.source_keys_for_genre() resolves
+# a Postgres genre code to this list, tested separately against real Postgres.
+
+def _seed_mixed_sources(settings) -> None:
+    """Three rows each on two different source_keys, all otherwise identical
+    to _seed()'s shape so the existing ORDER BY tiers stay equal."""
+    path = candidates.engine_db_path(settings)
+    con = sqlite3.connect(str(path))
+    try:
+        con.executescript("""
+            CREATE TABLE raw_posts(
+                post_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id TEXT, source_url TEXT, title TEXT NOT NULL,
+                cafe_name TEXT, collected_at TEXT NOT NULL
+            );
+            CREATE TABLE event_candidates(
+                candidate_id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL,
+                name TEXT, event_type TEXT, event_date TEXT, start_time TEXT, end_time TEXT,
+                fee INTEGER, venue TEXT, status TEXT
+            );
+        """)
+        rows = [
+            (1, "SRC-W-004"), (2, "SRC-W-004"), (3, "SRC-W-004"),
+            (4, "SRC-D-001"), (5, "SRC-D-001"), (6, "SRC-N-001"),
+        ]
+        for i, source_key in rows:
+            con.execute(
+                "INSERT INTO raw_posts(post_id, source_id, source_url, title, "
+                "cafe_name, collected_at) VALUES (?, ?, ?, ?, 'synthetic', ?)",
+                (i, source_key, f"https://example.test/{i}", f"post {i}",
+                 f"2026-01-01T00:00:{i % 60:02d}"),
+            )
+            con.execute(
+                "INSERT INTO event_candidates(candidate_id, post_id, name, event_type, "
+                "event_date, start_time, end_time, fee, venue, status) "
+                "VALUES (?, ?, ?, 'MILONGA', date(?, ?), '20:00', '23:00', 13000, "
+                "'Synthetic Studio', 'POSSIBLE')",
+                (i, i, f"Synthetic Event {i}", BASE_DATE, f"+{i + 1} day"),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+@pytest.fixture
+def seeded_mixed_sources(settings):
+    _seed_mixed_sources(settings)
+    return settings
+
+
+def test_source_keys_none_means_no_filter(seeded_mixed_sources):
+    result = candidates.query(seeded_mixed_sources, filter_key="upcoming", reviewed_ids=set(),
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE)
+    assert result["total"] == 6
+
+
+def test_source_keys_narrows_to_the_matching_sources(seeded_mixed_sources):
+    result = candidates.query(seeded_mixed_sources, filter_key="upcoming", reviewed_ids=set(),
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE,
+                               source_keys=["SRC-W-004"])
+    assert result["total"] == 3
+    assert {r["source_id"] for r in result["rows"]} == {"SRC-W-004"}
+
+
+def test_source_keys_can_span_more_than_one_source(seeded_mixed_sources):
+    result = candidates.query(seeded_mixed_sources, filter_key="upcoming", reviewed_ids=set(),
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE,
+                               source_keys=["SRC-D-001", "SRC-N-001"])
+    assert result["total"] == 3
+    assert {r["source_id"] for r in result["rows"]} == {"SRC-D-001", "SRC-N-001"}
+
+
+def test_source_keys_empty_list_means_the_genre_has_no_sources(seeded_mixed_sources):
+    """An empty list is a real answer ("this genre has zero sources registered"),
+    not "no filter" - the same NOT IN (NULL) trap `pending`/`reviewed` already
+    had to guard against above."""
+    result = candidates.query(seeded_mixed_sources, filter_key="upcoming", reviewed_ids=set(),
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE,
+                               source_keys=[])
+    assert result["total"] == 0
+    assert result["rows"] == []
+
+
+def test_source_keys_combines_with_the_chosen_filter_key(seeded_mixed_sources):
+    result = candidates.query(seeded_mixed_sources, filter_key="pending", reviewed_ids={4, 5},
+                               page=1, page_size=pagination.PAGE_SIZE, today=BASE_DATE,
+                               source_keys=["SRC-D-001", "SRC-N-001"])
+    # SRC-D-001/SRC-N-001 together have 3 rows (4, 5, 6); 4 and 5 are reviewed.
+    assert result["total"] == 1
+    assert result["rows"][0]["candidate_id"] == 6
