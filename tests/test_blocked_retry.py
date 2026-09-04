@@ -156,3 +156,93 @@ def test_the_schedule_says_what_the_release_notes_say():
     assert schedule == (timedelta(hours=24), timedelta(hours=72), timedelta(days=7))
     # And the first delay is still reachable where callers expect it.
     assert acquisition.RETRY_BACKOFF["BLOCKED"] == timedelta(hours=24)
+
+
+# --- 32.9, 32.10, 45: through the real queue --------------------------------
+
+def _synthetic_item(pg, unique):
+    """A source item nobody collected, so no live source is touched."""
+    from runtime import sources
+
+    source = sources.create_source(
+        pg, source_key=f"SRC-RETRY-{unique}", name=f"retry probe {unique}",
+        platform="WEB", source_role="COMMUNITY",
+        url=f"https://example.invalid/{unique}", enabled=False)
+    with pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO source_items (source_id, external_id, url, title, content_hash) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING source_item_id",
+            (source["source_id"], f"ext-{unique}",
+             f"https://example.invalid/{unique}/1", "retry probe", f"hash-{unique}"))
+        return cur.fetchone()[0]
+
+
+def _outcome(status, error_code=None, text=None):
+    return acquisition.AcquisitionOutcome(
+        status=status, error_code=error_code, text=text,
+        fetched_url="https://example.invalid/x")
+
+
+def test_a_blocked_item_leaves_the_queue_then_comes_back_to_it(pg, unique):
+    """blocked -> not due -> due -> success -> settled, on the real tables."""
+    from runtime import content_store
+
+    item_id = _synthetic_item(pg, unique)
+    content_store.ensure_row(pg, item_id)
+
+    def queued(now=None):
+        due = content_store.due_for_acquisition(pg, limit=1000)
+        return any(row["source_item_id"] == item_id for row in due)
+
+    assert queued(), "a fresh item should be waiting to be fetched"
+
+    # It refuses its body.
+    stored = content_store.record_outcome(
+        pg, item_id, _outcome(acquisition.FETCH_BLOCKED, "BODY_UNAVAILABLE"),
+        now=NOW)
+    assert stored["acquisition_status"] == acquisition.FETCH_BLOCKED
+    assert stored["next_attempt_at"] is not None, "blocked must be scheduled, not dropped"
+    assert stored["next_attempt_at"] >= NOW + timedelta(hours=24)
+    assert stored["last_attempt_at"] is not None
+    assert stored["fetched_at"] is None, "we asked, we did not receive"
+    assert not queued(), "and it must not come round again on the next tick"
+
+    # A day later it is due again.
+    with pg.cursor() as cur:
+        cur.execute(
+            "UPDATE source_item_content SET next_attempt_at = now() - interval '1 minute' "
+            "WHERE source_item_id = %s", (item_id,))
+    assert queued(), "after its wait, a blocked item is asked again"
+
+    # This time the page answers.
+    recovered = content_store.record_outcome(
+        pg, item_id,
+        _outcome(acquisition.FETCHED_FULL, None, text="본문" * 100), now=NOW)
+    assert recovered["acquisition_status"] == acquisition.FETCHED_FULL
+    assert recovered["next_attempt_at"] is None, "a settled item needs no retry"
+    assert recovered["fetched_at"] is not None
+    assert not queued()
+
+
+def test_an_item_not_yet_due_is_left_alone(pg, unique):
+    from runtime import content_store
+
+    item_id = _synthetic_item(pg, unique)
+    content_store.ensure_row(pg, item_id)
+    content_store.record_outcome(
+        pg, item_id, _outcome(acquisition.FETCH_BLOCKED, "BODY_UNAVAILABLE"))
+
+    due = content_store.due_for_acquisition(pg, limit=1000)
+    assert item_id not in {row["source_item_id"] for row in due}
+
+
+def test_a_login_wall_never_returns_to_the_queue(pg, unique):
+    from runtime import content_store
+
+    item_id = _synthetic_item(pg, unique)
+    content_store.ensure_row(pg, item_id)
+    stored = content_store.record_outcome(
+        pg, item_id, _outcome(acquisition.LOGIN_REQUIRED, "BLOCKED"))
+    assert stored["next_attempt_at"] is None
+    due = content_store.due_for_acquisition(pg, limit=1000)
+    assert item_id not in {row["source_item_id"] for row in due}
