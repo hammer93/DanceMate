@@ -21,7 +21,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import alpha_metrics, db, events_api
+from . import alpha_metrics, db, events_api, venue_resolution
 from .config import Settings
 
 router = APIRouter(tags=["events"])
@@ -352,8 +352,46 @@ def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
             tuple(params),
         )
         regions = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
+
+    unresolved = _unresolved_region_counts(con, clause, params)
+    by_label = {row["label"]: row for row in regions}
+    for label, extra in unresolved.items():
+        if label in by_label:
+            by_label[label]["events"] += extra
+        else:
+            row = {"value": label, "label": label, "events": extra}
+            regions.append(row)
+            by_label[label] = row
+    regions.sort(key=lambda r: -(r["events"] or 0))
+
     return {"genres": genres, "regions": regions,
             "region_options": _region_options(con, regions)}
+
+
+def _unresolved_region_counts(con, clause: str, params: list) -> dict[str, int]:
+    """Regions an unresolved venue's raw text would still earn, per
+    venue_resolution.guess_region_label() - Section 22 of the v0.82.4 task:
+    a filter chip's count is a promise, and "청주: 0" while real Cheongju
+    milongas sit unresolved would be the same small lie the genre docstring
+    above already refuses to tell.
+    """
+    counts: dict[str, int] = {}
+    labels = sorted({label for label in venue_resolution.CURATED_CITY_HINTS.values()})
+    with con.cursor() as cur:
+        for label in labels:
+            terms = venue_resolution.terms_for_label(label)
+            if not terms:
+                continue
+            ors = " OR ".join(["e.venue_text ILIKE %s"] * len(terms))
+            cur.execute(
+                f"SELECT count(*) FROM events e WHERE {clause} "
+                f"AND e.region_id IS NULL AND ({ors})",
+                tuple(params) + tuple(f"%{t}%" for t in terms),
+            )
+            n = cur.fetchone()[0]
+            if n:
+                counts[label] = counts.get(label, 0) + n
+    return counts
 
 
 def _genre_query(selected: list[str], options: list[dict[str, str]]) -> dict[str, str]:
@@ -483,15 +521,30 @@ def _when_line(event: dict[str, Any]) -> str:
     return f'<span class="when">{E(label)} {clock}</span>'
 
 
+def _region_line(event: dict[str, Any]) -> str:
+    """지역 미확인 rather than a blank field - Section 18 of the v0.82.4
+    task. A region read off the raw venue string rather than a resolved
+    venue (region_confirmed is False) is tagged the same way an unresolved
+    venue name already is, so a reader can tell the two apart."""
+    region = event.get("region")
+    if not region:
+        return '<span class="unknown">지역 미확인</span>'
+    if not event.get("region_confirmed"):
+        return f'{E(region)} <span class="tag">미확인</span>'
+    return E(region)
+
+
 def _venue_line(event: dict[str, Any]) -> str:
     venue = event.get("venue") or {}
     name = venue.get("name")
+    region = event.get("region")
+    suffix = f" · {E(region)}" if region else " · 지역 미확인"
     if not name:
-        return '<span class="unknown">장소 미확인</span>'
+        return '<span class="unknown">장소 미확인</span>' + suffix
     if venue.get("status") == "UNRESOLVED":
         # We read this string off the post and have not confirmed the place.
-        return f'{E(name)} <span class="tag">미확인</span>'
-    return E(name)
+        return f'{E(name)} <span class="tag">미확인</span>' + suffix
+    return E(name) + suffix
 
 
 def _fee_line(event: dict[str, Any]) -> str:
@@ -524,11 +577,17 @@ def _status_line(event: dict[str, Any], *, with_type: bool = True) -> str:
     return "".join(parts)
 
 
-def _checked_line(event: dict[str, Any]) -> str:
+def _checked_line(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
     """When we last read the post behind this.
 
     Not a freshness score. The timestamp, and a nudge when an event is close
     and what we know about it is not.
+
+    ``now`` lets a test fix "the current moment" - real wall-clock time in
+    two independent places (here and in events_api.today()) can otherwise
+    disagree right at the Seoul midnight boundary a "N시간 전" timestamp
+    happens to straddle, for a reason that has nothing to do with what this
+    function actually computes.
     """
     from datetime import datetime, timezone
 
@@ -541,9 +600,10 @@ def _checked_line(event: dict[str, Any]) -> str:
         return ""
     if seen.tzinfo is None:
         seen = seen.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
     local = seen.astimezone(events_api.SEOUL)
-    today = events_api.today()
-    age = (datetime.now(timezone.utc) - seen).total_seconds()
+    today = events_api.today(now)
+    age = (now - seen).total_seconds()
     # "2시간 전" reads faster than a timestamp for anything recent; a date is
     # clearer once it is no longer today.
     if age < 3600:
@@ -725,7 +785,7 @@ def event_page(event_id: int) -> HTMLResponse:
                  or '<span class="unknown">-</span>'),
         ("장르", E(event.get("genre_label") or "")
                  or '<span class="unknown">-</span>'),
-        ("지역", E(event.get("region") or "") or '<span class="unknown">-</span>'),
+        ("지역", _region_line(event)),
         ("상태", _status_line(event, with_type=False)
                  or '<span class="unknown">-</span>'),
         ("최근 확인", _checked_line(event) or '<span class="unknown">-</span>'),

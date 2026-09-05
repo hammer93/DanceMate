@@ -110,6 +110,46 @@ def _config(source: dict[str, Any]) -> dict[str, Any]:
     return json.loads(config) if isinstance(config, str) else config
 
 
+# v0.82.3's Next Recommendation, done: an operator reading /admin/sources has
+# no way to tell why a source never shows fetch activity - the answer was
+# already decided by settle_full_body() and NON_HTML_API_PARSERS, just never
+# surfaced. Derived from config.parser rather than a new stored field: the
+# real code path is the only thing that can never drift from what an
+# operator is told, since there is nothing here for it to drift from.
+CONTENT_MODE_DISCOVERY_FULL = "Discovery Full"
+CONTENT_MODE_NON_HTML_API = "Non-HTML API"
+CONTENT_MODE_DETAIL_FETCH = "Detail Fetch"
+CONTENT_MODE_GENERIC_FETCH = "Generic Fetch"
+CONTENT_MODE_SEARCH_API = "Search API"
+
+
+def content_mode(source: dict[str, Any]) -> str:
+    """How this source's body actually reaches source_item_content.
+
+    WEB_PARSER_TANGONOW/WEB_PARSER_TANGOCALENDAR: their source_url is a JSON
+    API endpoint that never serves HTML (acquisition.NON_HTML_API_PARSERS,
+    v0.82.3) - Non-HTML API. WEB_PARSER_MILTANG: a real HTML detail page,
+    already fetched once during discovery and settled there (v0.82.2) -
+    Discovery Full. WEB_PARSER_DANCEINFO: title-only at list stage, a real
+    detail page still to be fetched generically - Detail Fetch. Any other
+    WEB parser (the "board" default): the traditional list-then-generic-
+    fetch path - Generic Fetch. A non-WEB platform collects through a
+    provider search API rather than reading a page at all - Search API.
+    """
+    from . import acquisition  # local: acquisition never imports collectors
+
+    if source.get("platform") != "WEB":
+        return CONTENT_MODE_SEARCH_API
+    parser = _config(source).get("parser") or WEB_PARSER_BOARD
+    if parser in acquisition.NON_HTML_API_PARSERS:
+        return CONTENT_MODE_NON_HTML_API
+    if parser == WEB_PARSER_MILTANG:
+        return CONTENT_MODE_DISCOVERY_FULL
+    if parser == WEB_PARSER_DANCEINFO:
+        return CONTENT_MODE_DETAIL_FETCH
+    return CONTENT_MODE_GENERIC_FETCH
+
+
 def _to_engine_source(source: dict[str, Any]) -> dict[str, Any]:
     """Shape a Source Master row the way the engine's collectors expect."""
     config = _config(source)

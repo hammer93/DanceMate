@@ -26,6 +26,8 @@ from collections.abc import Sequence
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import venue_resolution
+
 SEOUL = ZoneInfo("Asia/Seoul")
 
 WHEN_TODAY = "today"
@@ -163,8 +165,15 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         # label is what a page shows a reader. Both, rather than a choice.
         "genre": row.get("genre_code"),
         "genre_label": row.get("genre_name") or row.get("genre_code"),
-        "region": row.get("region_name"),
+        # A resolved venue's own region always wins. Otherwise a best-effort,
+        # non-authoritative label read straight off the raw venue string
+        # (venue_resolution.guess_region_label()'s own docstring has the
+        # full v0.82.4 reasoning) - never None just because nobody has
+        # resolved the venue yet, so a reader is not shown a blank region.
+        "region": row.get("region_name") or venue_resolution.guess_region_label(
+            row.get("venue_text")),
         "region_code": row.get("region_code"),
+        "region_confirmed": row.get("region_name") is not None,
         "status": row.get("engine_status"),
         "status_label": STATUS_LABELS.get(
             (row.get("engine_status") or "").upper(), "확인 필요"),
@@ -309,8 +318,23 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
         else:
             where.append("false")
     if region:
-        where.append("(r.code = %s OR r.name ILIKE %s)")
-        params.extend([region.strip().upper(), region.strip()])
+        region_value = region.strip()
+        # An unresolved event (region_id NULL) matches too, by the same raw
+        # substring guess_region_label() itself uses for display - so
+        # selecting "청주" actually returns the real Cheongju milongas, not
+        # just the (currently zero) ones with a resolved venue.
+        guess_terms = venue_resolution.terms_for_label(region_value)
+        if guess_terms:
+            placeholders = " OR ".join(["e.venue_text ILIKE %s"] * len(guess_terms))
+            where.append(
+                f"(r.code = %s OR r.name ILIKE %s "
+                f"OR (e.region_id IS NULL AND ({placeholders})))"
+            )
+            params.extend([region_value.upper(), region_value])
+            params.extend(f"%{term}%" for term in guess_terms)
+        else:
+            where.append("(r.code = %s OR r.name ILIKE %s)")
+            params.extend([region_value.upper(), region_value])
     if status:
         where.append("e.engine_status = %s")
         params.append(status.strip().upper())
