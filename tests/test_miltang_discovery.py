@@ -144,7 +144,11 @@ def test_event_json_ld_is_parsed_first():
     post = md.parse_detail(page, "https://miltang.com/milongas/731")
     assert post["title"] == "The PISTA Milonga"
     assert "2026년 9월 5일" in post["body"]
-    assert "장소: PISTA 피스타 (서울 월드컵북로6길 49 지하1층)" in post["body"]
+    # Rendered as "brand (Korean name)", not the site's own space-joined
+    # "PISTA 피스타" - see _split_bilingual_venue_name()'s own docstring:
+    # a real dedup test against the existing (separately-registered) venue
+    # aliases failed on the un-split form.
+    assert "장소: PISTA (피스타) (서울 월드컵북로6길 49 지하1층)" in post["body"]
     assert "주최: PISTA" in post["body"]
 
 
@@ -164,7 +168,7 @@ def test_notice_json_ld_is_parsed_including_a_date_range():
     assert post["title"] == "BUSAN TANGO FESTIVAL"
     # The JSON-LD startDate (21st) wins, not the DATE row's own text.
     assert "2026년 10월 21일" in post["body"]
-    assert "장소: Detango 데땅고 (부산광역시 부산진구 서면로68번길 41)" in post["body"]
+    assert "장소: Detango (데땅고) (부산광역시 부산진구 서면로68번길 41)" in post["body"]
     assert "DE TANGO 17th Anniversary" in post["body"]
     # No ORG row on this notice - must not appear as an empty "주최:" line.
     assert "주최:" not in post["body"]
@@ -256,7 +260,19 @@ def test_no_json_ld_falls_back_to_the_dl_rows():
     post = md.parse_detail(page, "https://miltang.com/milongas/731")
     assert post["title"] == "The PISTA Milonga"
     assert "2026년 9월 5일" in post["body"]
-    assert "장소: PISTA 피스타 (서울 월드컵북로6길 49 지하1층)" in post["body"]
+    assert "장소: PISTA (피스타) (서울 월드컵북로6길 49 지하1층)" in post["body"]
+
+
+def test_bilingual_venue_names_are_split_for_the_existing_alias_table():
+    assert md._split_bilingual_venue_name("PISTA 피스타") == "PISTA (피스타)"
+    assert md._split_bilingual_venue_name("Detango 데땅고") == "Detango (데땅고)"
+    # A purely Korean or purely Latin name has nothing to split - unchanged.
+    assert md._split_bilingual_venue_name("엔빠스") == "엔빠스"
+    assert md._split_bilingual_venue_name("OCHO") == "OCHO"
+    # Korean-then-digits, not Latin-then-Korean - the pattern this venue
+    # naming convention actually uses does not match, so left unchanged
+    # rather than mis-split.
+    assert md._split_bilingual_venue_name("스튜디오 242") == "스튜디오 242"
 
 
 def test_malformed_json_ld_is_not_fatal():
@@ -285,11 +301,12 @@ def test_published_at_is_always_none():
     assert post["published_at"] is None
 
 
-@pytest.mark.parametrize("region_name,venue,address", [
-    ("서울", "PISTA 피스타", "서울 월드컵북로6길 49 지하1층"),
-    ("부산", "Detango 데땅고", "부산광역시 부산진구 서면로68번길 41"),
+@pytest.mark.parametrize("region_name,brand,korean_name,address", [
+    ("서울", "PISTA", "피스타", "서울 월드컵북로6길 49 지하1층"),
+    ("부산", "Detango", "데땅고", "부산광역시 부산진구 서면로68번길 41"),
 ])
-def test_seoul_and_busan_samples_both_parse_cleanly(region_name, venue, address):
+def test_seoul_and_busan_samples_both_parse_cleanly(region_name, brand, korean_name, address):
+    venue = f"{brand} {korean_name}"
     ld = (
         '{"@context":"https://schema.org","@type":"Event","name":"샘플",'
         f'"startDate":"2026-09-05","location":{{"@type":"Place","name":"{venue}",'
@@ -297,7 +314,11 @@ def test_seoul_and_busan_samples_both_parse_cleanly(region_name, venue, address)
     )
     page = _detail_page(ld_json=ld, title="샘플")
     post = md.parse_detail(page, f"https://miltang.com/milongas/{region_name}")
-    assert venue in post["body"]
+    # The bilingual brand/Korean-name split (Section 5's own dedup finding):
+    # both spellings must survive, each resolvable on its own against the
+    # existing (separately-registered) venue aliases.
+    assert brand in post["body"]
+    assert korean_name in post["body"]
     assert address in post["body"]
 
 

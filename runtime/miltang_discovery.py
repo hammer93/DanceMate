@@ -257,6 +257,32 @@ def _dt_dd_segment(raw_html_text: str, label: str) -> str | None:
     return match.group(1) if match else None
 
 
+_LATIN_KOREAN_VENUE_RE = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9 .'&-]*?)\s+([가-힣][가-힣\s]*)$"
+)
+
+
+def _split_bilingual_venue_name(name: str) -> str:
+    """Miltang's own venue-name convention pairs a Latin brand with its
+    Korean name in one space-joined string (confirmed live: `"PISTA 피스타"`,
+    `"Detango 데땅고"`) - unlike this project's existing venue alias seed
+    (migration 022), which always registers the two spellings as SEPARATE
+    strings (`"PISTA"`, `"피스타"`). Rendering the Korean half in
+    parentheses instead (`"PISTA (피스타)"`) lets the engine's own
+    `extract_venue()` - which already splits out a parenthesised group as
+    its own alias candidate, precisely for cases like this - resolve either
+    spelling through the EXISTING alias table. No shared extraction/
+    resolution code is touched; this is a body-synthesis choice local to
+    this one source, found necessary only after a real dedup test (which
+    reads the venue through the actual engine `extract_venue()`, not a
+    hand-typed expectation) failed to resolve `"PISTA 피스타"` at all."""
+    match = _LATIN_KOREAN_VENUE_RE.match(name.strip())
+    if not match:
+        return name
+    brand, korean = match.groups()
+    return f"{brand.strip()} ({korean.strip()})"
+
+
 def _place_name_and_address(segment: str) -> tuple[str | None, str | None]:
     name_match = re.search(r'<p class="font-bold">(.*?)</p>', segment, re.S)
     addr_match = re.search(r'<p class="text-fg3 text-xs[^"]*">(.*?)</p>', segment, re.S)
@@ -352,6 +378,8 @@ def parse_detail(raw_html_text: str, detail_url: str) -> dict[str, Any] | None:
         html_venue, html_address = _place_name_and_address(place_segment)
         venue = venue or html_venue
         address = address or html_address
+    if venue:
+        venue = _split_bilingual_venue_name(venue)
 
     organizer = None
     if isinstance(ld.get("organizer"), dict):
