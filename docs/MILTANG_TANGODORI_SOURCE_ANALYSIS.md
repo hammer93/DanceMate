@@ -318,7 +318,10 @@ This is a provenance graph, not proof of a contractual feed. The public evidence
 - **Tangodori**: 구현하지 않음(11절 참조, 이 조사의 3/4/8절 결론 그대로 유지).
 - **원문 LINK 승격 금지**: Miltang 상세의 LINK(카카오톡 오픈채팅/페이스북/인스타그램/다음카페 등)는 본문에 그대로 보존하되, `source_url`은 항상 이 소스 자체의 Miltang 상세 URL이다 — 원문이 profile/root 링크뿐인 경우에도 마찬가지다.
 - **테스트**: fixture 기반 단위 테스트(`tests/test_tangonow_discovery.py`의 bundle 절, `tests/test_miltang_discovery.py`) 및 실제 PostgreSQL을 쓰는 통합 테스트(`tests/test_miltang_source_migration.py`, KTNow/Miltang dedup·기존 SRC-W-001~004 회귀 포함) 전체 통과 확인(격리된 clone에서 실행, 운영 DB에는 commit하지 않음).
-- **Production 변경**: 이번 구현에서도 실제 수집 실행, scheduler 활성화, main 배포·병합은 하지 않았다(아래 최종 보고서 참조).
+
+### Live Acceptance (2026-09-05)
+
+이후 별도 세션에서 실제 board staging DB에 migration 023을 적용하고, SRC-W-005만 대상으로 controlled one-shot collection을 1회 수행했다(scheduler 미활성화, enabled는 계속 FALSE). 결과 요약(전체 수치는 `docs/TANGO_SOURCE_IMPLEMENTATION.md`의 "Live Acceptance" 표 참조): 108건 발견·108건 신규, 최종 50건 리스트업, venue resolve 52%(26/50), 기존 alias 그대로 재사용(신규 venue 생성 0), KTNow(SRC-W-002)와의 자동 중복 병합 3건 + 사람 검토 대기 3건, Wrong Date/Time/Venue = 0, False VERIFIED = 0, Human review 개입 0건. 실측 결과에 따른 최종 enable 여부와 릴리스 여부는 해당 세션의 최종 보고서에 기록한다.
 
 ## 11. Tangodori — 미구현 사유 (요약)
 

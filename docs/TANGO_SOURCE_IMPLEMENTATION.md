@@ -117,6 +117,24 @@ operator edit SRC-W-002's `config.parser` to `"tangonow_bundle"` and its
 | Dedup | No new dedup module (Section 5) — the *existing* `venue_aliases` + `duplicates.classify()` pipeline collapses a KTNow/Miltang pair once both resolve to the same `venue_id`; `duplicates.completeness()`'s existing tie-break (not a new authority-ordering rule) decides which survives as canonical when they merge. |
 | Enabled by default | **No.** Registered disabled (migration `023_miltang_source.sql`) — an operator Tests it, then explicitly enables it. |
 
+### Live Acceptance (2026-09-05, one-shot, ROCKPro64 staging clone against the real board DB)
+
+One controlled `collect_source()` call (14-day `/milongas` window + `/notices`, no scheduler activation): 108 discovered, 108 new, 0 duplicate. After `engine-ingest`/`event-normalization`: 50 listed Tango events.
+
+| Metric | Result |
+|---|---|
+| Venue-bearing events | 50/50 |
+| Venue resolved | 26/50 (52%) — PISTA/Amigo/EN PAZ/Detango/Andante/OCHO/O Nada all confirmed resolving through the *existing* migration-022 aliases; the rest are genuinely new venues (Daejeon/Ulsan/Jinju/Cheongju/Changwon/Jeju) migration 022 never covered |
+| Duplicate venue created | 0 (`venues` count unchanged at 9) |
+| Cross-source duplicates (KTNow/SRC-W-002) | 3 auto-merged via the *existing* `duplicates.classify()` (`canonical_event_id` set, no new rows); 3 more pairs left `OPEN` for human review (`event_duplicate_pairs`), correctly not auto-decided |
+| Unique vs duplicate | 47 unique / 3 duplicate (6%) by strict auto-merge count |
+| Wrong Date / Wrong Time / Wrong Venue | 0 / 0 / 0 across the full sample reviewed |
+| False `VERIFIED` | 0 (`engine_status` stayed `POSSIBLE` for every Miltang-sourced event) |
+| Human review actions taken by Claude | 0 (`human_review_actions` has no rows referencing a Miltang event; all sit `review_state = PENDING`) |
+| Region split | Seoul 21, Busan 5, unresolved/other 24 (the "other" bucket is where the new-city coverage above lives — real, just not yet region-attributed since its venues aren't in the Master) |
+
+**Known risk found live, not fixed in this task (shared, pre-existing, not Miltang-specific)**: `scheduler/acquisition_job.py`'s generic content-acquisition queue does not know `raw.acquisition_quality` is already `FETCHED_FULL` for a source that (like Miltang, TangoNOW and Tango Calendar Korea) synthesizes its own complete body at discovery time. Once any item enters that shared queue, a routine re-fetch through `runtime/acquisition.py`'s generic extractor (which has no Miltang-specific marker) can overwrite the already-correct body with the site's own generic `og:description` tagline before `engine_ingest.ingest_pending()` reads it. Observed live: 2 of 108 items lost their real content this way and produced no candidate (a silent coverage gap, not a wrong-data defect — no incorrect date/time/venue was ever produced). This condition already exists for the two sources already live in production; fixing it is a shared-pipeline change and out of scope for this task.
+
 ## Tangodori — not implemented
 
 Per `docs/MILTANG_TANGODORI_SOURCE_ANALYSIS.md` Section 4/7/8: Tangodori's
