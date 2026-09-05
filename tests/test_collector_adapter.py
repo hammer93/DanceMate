@@ -258,6 +258,94 @@ def test_web_collection_without_board_urls_is_refused(settings):
         collectors.collect(settings, _web_source(config={}), mode=collectors.MODE_LIVE)
 
 
+def test_config_days_ahead_is_passed_only_to_the_danceinfo_parser(settings, monkeypatch):
+    """v0.82.1: a source can self-widen a single date-less board_url instead
+    of storing dated URLs that go stale - but only the danceinfo parser
+    understands `days_ahead`, so it must never reach `web_discovery.discover`
+    (which would raise TypeError on an unexpected keyword)."""
+    from runtime import danceinfo_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(danceinfo_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "danceinfo_json",
+        "board_urls": ["https://danceinfo.net/lessons?genre=all"],
+        "days_ahead": 7,
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {"days_ahead": 7}
+
+
+def test_config_days_ahead_is_also_passed_to_the_miltang_parser(settings, monkeypatch):
+    """v0.83: Miltang's own `/milongas` list is day-scoped exactly like
+    DanceInfo's - the same days_ahead gate must forward to it too."""
+    from runtime import miltang_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(miltang_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "miltang_ssr",
+        "board_urls": ["https://miltang.com/milongas"],
+        "days_ahead": 13,
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {"days_ahead": 13}
+
+
+def test_miltang_parser_dispatches_to_its_own_discovery_module(settings, monkeypatch):
+    from runtime import miltang_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://miltang.com/milongas/731",
+            "title": "The PISTA Milonga", "body": "2026년 9월 5일 장소: PISTA",
+            "published_at": None, "acquisition_quality": "FETCHED_FULL",
+        }]
+
+    monkeypatch.setattr(miltang_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "miltang_ssr",
+        "board_urls": ["https://miltang.com/milongas"],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert calls == ["https://miltang.com/milongas"]
+    assert len(result.items) == 1
+
+
+def test_days_ahead_is_not_sent_to_the_board_parser(settings, monkeypatch):
+    from runtime import web_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(web_discovery, "discover", fake_discover)
+    # A plain board-parser source that happens to carry a stray `days_ahead`
+    # key must not forward it - only danceinfo_json understands it.
+    source = _web_source(config={"board_urls": ["http://x/"], "days_ahead": 7})
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {}
+
+
 def test_web_collection_deduplicates_across_configured_boards(settings, monkeypatch):
     from runtime import web_discovery
 
@@ -280,6 +368,63 @@ def test_web_collection_deduplicates_across_configured_boards(settings, monkeypa
         ]
     })
     result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert len(result.items) == 1
+
+
+def test_a_web_source_configured_for_tangonow_uses_that_discovery(settings, monkeypatch):
+    from runtime import tangonow_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://firestore.googleapis.com/v1/.../events/abc",
+            "title": "밀빠쏘", "body": "장소: PISTA",
+            "published_at": None, "acquisition_quality": "FETCHED_FULL",
+        }]
+
+    monkeypatch.setattr(tangonow_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "tangonow_firestore",
+        "board_urls": [
+            "https://firestore.googleapis.com/v1/projects/ktangoguide/databases/"
+            "(default)/documents/events?pageSize=300",
+        ],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert len(calls) == 1
+    assert len(result.items) == 1
+
+
+def test_a_web_source_configured_for_tangocalendar_uses_that_discovery(settings, monkeypatch):
+    from runtime import tangocalendar_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://tangocalendar.kr/api/events/uuid-1",
+            "title": "Alonga", "body": "장소: 탱고 안단테",
+            "published_at": None, "acquisition_quality": "FETCHED_FULL",
+        }]
+
+    monkeypatch.setattr(tangocalendar_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "tangocalendar_json",
+        "board_urls": ["https://tangocalendar.kr/api/events"],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert len(calls) == 1
     assert len(result.items) == 1
 
 

@@ -1,5 +1,72 @@
 # DanceMate Release Notes
 
+## v0.82.1 Miltang Live Source Acceptance + Venue Alias Compatibility
+
+Status:
+Live-accepted against the ROCKPro64 board's real staging database, 2026-09-05.
+
+Version split:
+
+- Product Runtime: 0.82.1
+- Information Engine: unchanged (see the deployed image's own `/status` for
+  the exact version) - no engine code changed in this release.
+
+### SRC-W-005 - Miltang
+
+A new SECONDARY/DIRECTORY source, `runtime/miltang_discovery.py`, reading
+`https://miltang.com/milongas` (day-scoped, 14-day window) and
+`https://miltang.com/notices` (unpaged). JSON-LD is read first; TIME, the
+original LINK list and the recurrence label always come from the page's own
+`<dl>` rows, since JSON-LD never carries a time-of-day. `source_url` is
+always Miltang's own detail page - never one of the Facebook/Instagram/Kakao/
+Daum Cafe links a record's LINK row carries, even when that is the only link
+present.
+
+Registered disabled by default (migration `023_miltang_source.sql`); see
+`docs/TANGO_SOURCE_IMPLEMENTATION.md`'s own "SRC-W-005" and "Live Acceptance"
+sections for the full field mapping and the one controlled one-shot
+collection's measured numbers (108 discovered, 50 listed events, 52% venue
+resolve rate, 3 auto-merged KTNow duplicates out of 50, zero wrong date/time/
+venue, zero false `VERIFIED`, zero Claude-made review decisions).
+
+**Venue alias compatibility fix**: Miltang names a venue as one space-joined
+`"Brand 한글이름"` string (`"PISTA 피스타"`) where the existing venue alias
+seed (migration 022) always registered the two spellings separately - found
+by a dedup test that reads the venue through the real engine `extract_venue()`
+rather than a hand-typed expectation. Rendered as `"Brand (한글이름)"`
+instead, which the engine's own existing parenthetical-splitting already
+resolves through the unmodified alias table - no new venue was created, no
+shared extraction/resolution code was touched.
+
+**Known limitation carried forward, not fixed in this release**: Miltang
+exposes no structured cancellation flag (`eventStatus` was always
+`EventScheduled` on every sampled record). A cancelled milonga is not
+detected as such; this stays `UNKNOWN` rather than being guessed at from free
+text. Separately, a shared, pre-existing scheduler behaviour (the generic
+content-acquisition queue re-fetching an already-fully-synthesized body and
+occasionally replacing it with the site's own generic tagline before engine
+ingest) can silently drop a small fraction of items - a coverage gap, never a
+wrong-data one - and already exists for the sources live before this release.
+
+### TangoNOW (SRC-W-002) - unchanged
+
+Still `config.parser = tangonow_firestore`. The site's own `eventsBundle`
+Cloud Function was investigated live (one request replaces many paginated
+Firestore calls) but is not wired into `collectors.py`'s dispatch table this
+release: a live sample showed real schema heterogeneity - three different
+date-field conventions mixed in one response array, `normalizedTime` null on
+every sampled record, and roughly 80% of records with no usable source link
+at all - that a source already live in production should not be switched
+onto without a monitoring period first. `parse_bundle()`/`discover_bundle()`
+exist and are tested, ready to wire in later.
+
+### Tangodori - not implemented
+
+Its own Terms (updated 2026-06-27) prohibit "scrape or abuse the APIs". No
+collector, no Source row, no reverse-engineering of its route payload shape
+was attempted, regardless of what robots.txt or technical accessibility might
+suggest.
+
 ## v0.81.0 Real Source Data Pipeline - Alpha
 
 Status:

@@ -325,8 +325,8 @@ def test_no_body_means_no_snippet_rather_than_a_guess():
 
 # --- end to end -------------------------------------------------------------
 
-def test_resolution_reaches_the_user_surface_and_the_region_filter(pg, unique, seoul_id):
-    """/admin action -> normalized event -> /events/{id} and ?region=Seoul."""
+def test_resolution_reaches_the_user_surface_and_the_region_filter(pg, unique, seoul_id, seoul_name):
+    """/admin action -> normalized event -> /events/{id} and ?region=<Seoul's current name>."""
     venue_text = f"테스트홀 {unique}"
     stored = normalization.normalize_candidate(pg, _candidate(unique))
 
@@ -334,7 +334,7 @@ def test_resolution_reaches_the_user_surface_and_the_region_filter(pg, unique, s
     assert before["venue"]["status"] == normalization.VENUE_UNRESOLVED
     assert before["region"] is None
     assert not [e for e in events_api.search(
-        pg, on="2026-09-05", region="Seoul", limit=100)["events"] if e["id"] == stored["event_id"]]
+        pg, on="2026-09-05", region=seoul_name, limit=100)["events"] if e["id"] == stored["event_id"]]
 
     entry = _queued(pg, venue_text)
     venue_resolution.create_and_link(
@@ -347,9 +347,9 @@ def test_resolution_reaches_the_user_surface_and_the_region_filter(pg, unique, s
     assert after["venue"]["status"] == normalization.VENUE_RESOLVED
     assert after["venue"]["name"] == f"테스트홀 {unique}"
     assert after["venue"]["address"] == "서울 마포구 테스트로 1"
-    assert after["region"] == "Seoul"
+    assert after["region"] == seoul_name
     assert [e for e in events_api.search(
-        pg, on="2026-09-05", region="Seoul", limit=100)["events"] if e["id"] == stored["event_id"]]
+        pg, on="2026-09-05", region=seoul_name, limit=100)["events"] if e["id"] == stored["event_id"]]
 
 
 def test_a_region_hint_only_selects_a_region_it_actually_matches(pg, seoul_id):
@@ -646,7 +646,7 @@ def test_deleting_a_venue_keeps_the_event_and_its_provenance(pg, unique, seoul_i
     assert survived["fee"] == stored["fee"]
 
 
-def test_the_user_surface_and_the_region_filter_follow_the_deletion(pg, unique, seoul_id):
+def test_the_user_surface_and_the_region_filter_follow_the_deletion(pg, unique, seoul_id, seoul_name):
     venue_text = f"테스트홀 {unique}"
     stored = normalization.normalize_candidate(pg, _candidate(unique))
     entry = _queued(pg, venue_text)
@@ -654,7 +654,7 @@ def test_the_user_surface_and_the_region_filter_follow_the_deletion(pg, unique, 
         pg, unresolved_venue_id=entry["unresolved_venue_id"],
         name=f"오등록 홀 {unique}", region_id=seoul_id, reviewer="tester",
     )
-    assert events_api.get_event(pg, stored["event_id"])["region"] == "Seoul"
+    assert events_api.get_event(pg, stored["event_id"])["region"] == seoul_name
 
     venue_resolution.delete_venue(
         pg, created["venue"]["venue_id"], reviewer="tester", unlink=True,
@@ -665,7 +665,7 @@ def test_the_user_surface_and_the_region_filter_follow_the_deletion(pg, unique, 
     assert after["region"] is None
     # A stale region filter would keep offering it as a Seoul event.
     assert not [e for e in events_api.search(
-        pg, on="2026-09-05", region="Seoul", limit=100)["events"]
+        pg, on="2026-09-05", region=seoul_name, limit=100)["events"]
         if e["id"] == stored["event_id"]]
 
 

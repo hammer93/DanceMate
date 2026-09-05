@@ -103,9 +103,9 @@ def test_preview_flags_an_unregistered_region(pg, unique):
     assert "INVALID_REGION" in result["rows"][0]["errors"][0]
 
 
-def test_preview_accepts_a_region_by_code_or_by_name(pg, unique, seoul_id):
+def test_preview_accepts_a_region_by_code_or_by_name(pg, unique, seoul_id, seoul_name):
     by_code = venue_csv.preview(pg, _rows({"name": f"코드매칭 {unique}", "region": "KR-SEOUL"}))
-    by_name = venue_csv.preview(pg, _rows({"name": f"이름매칭 {unique}", "region": "Seoul"}))
+    by_name = venue_csv.preview(pg, _rows({"name": f"이름매칭 {unique}", "region": seoul_name}))
     assert by_code["rows"][0]["region_id"] == seoul_id
     assert by_name["rows"][0]["region_id"] == seoul_id
 

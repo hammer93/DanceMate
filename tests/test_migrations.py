@@ -30,8 +30,11 @@ def test_migrations_are_discovered_in_order():
         "018_venue_csv_import_action",
         "019_image_ocr",
         "020_source_csv_import_action",
+        "021_tango_source_expansion_sources",
+        "022_tango_venue_aliases",
+        "023_miltang_source",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():

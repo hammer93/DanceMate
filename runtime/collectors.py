@@ -316,6 +316,9 @@ def _collect_live(
 # registered before this module existed keeps behaving exactly as before.
 WEB_PARSER_BOARD = "board"
 WEB_PARSER_DANCEINFO = "danceinfo_json"
+WEB_PARSER_TANGONOW = "tangonow_firestore"
+WEB_PARSER_TANGOCALENDAR = "tangocalendar_json"
+WEB_PARSER_MILTANG = "miltang_ssr"
 
 
 def _web_discovery_module(parser: str):
@@ -323,6 +326,18 @@ def _web_discovery_module(parser: str):
         from . import danceinfo_discovery  # noqa: PLC0415
 
         return danceinfo_discovery
+    if parser == WEB_PARSER_TANGONOW:
+        from . import tangonow_discovery  # noqa: PLC0415
+
+        return tangonow_discovery
+    if parser == WEB_PARSER_TANGOCALENDAR:
+        from . import tangocalendar_discovery  # noqa: PLC0415
+
+        return tangocalendar_discovery
+    if parser == WEB_PARSER_MILTANG:
+        from . import miltang_discovery  # noqa: PLC0415
+
+        return miltang_discovery
     from . import web_discovery  # noqa: PLC0415
 
     return web_discovery
@@ -340,13 +355,26 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
         raise CollectorUnavailable(
             "WEB source has no config.board_urls to collect from"
         )
-    discovery = _web_discovery_module(config.get("parser") or WEB_PARSER_BOARD)
+    parser = config.get("parser") or WEB_PARSER_BOARD
+    discovery = _web_discovery_module(parser)
+
+    # v0.82.1: a source using the DanceInfo parser may set `config.days_ahead`
+    # to self-widen a single date-less board_url into "today + N days",
+    # computed fresh every cycle, instead of registering N static dated URLs
+    # that go stale as the calendar moves past them. Only these two parsers
+    # know this keyword; nothing else is passed it. Miltang's own
+    # `discover()` applies it only to a `/milongas` board_url and ignores it
+    # for a `/notices` one - a single source can register both URLs and this
+    # stays a no-op for the one that does not need it.
+    extra_kwargs: dict[str, Any] = {}
+    if parser in (WEB_PARSER_DANCEINFO, WEB_PARSER_MILTANG) and "days_ahead" in config:
+        extra_kwargs["days_ahead"] = config["days_ahead"]
 
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for board_url in board_urls:
         for record in discovery.discover(
-            board_url, source_id=engine_source["source_id"]
+            board_url, source_id=engine_source["source_id"], **extra_kwargs
         ):
             url = record.get("source_url")
             if url and url in seen:
