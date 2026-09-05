@@ -97,11 +97,44 @@ def _format_date_kr(value: datetime | None) -> str | None:
 
 # --- record shaping -----------------------------------------------------------
 
+def _combine_date_and_time(base_value: Any, occurrence_date: Any) -> str | None:
+    """v0.82.1, confirmed against a live response: an override's own
+    `startDate`/`endDate` is only present for 76 of 151 sampled override
+    entries. The other 75 carry only `occurrenceDate` - the real hour/minute
+    for that occurrence is the base event's own, applied to the override's
+    date. Without this, every such override silently inherited the BASE
+    event's date instead of its own (found live: the first sampled weekly
+    series' 7 earlier occurrences all collapsed onto its most recent date).
+    """
+    base_dt = _parse_iso(base_value)
+    occ_dt = _parse_iso(occurrence_date)
+    if base_dt is None or occ_dt is None:
+        return None
+    return base_dt.replace(year=occ_dt.year, month=occ_dt.month, day=occ_dt.day).isoformat()
+
+
 def _merge_override(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Override fields win over the base event's own fields wherever the
     override actually supplies a value (Section 3: "override에 값이 있으면
     base event보다 우선한다") - a `None`/absent override field leaves the
-    base's value in place rather than blanking it."""
+    base's value in place rather than blanking it.
+
+    An override naming only `occurrenceDate` (its own `startDate`/`endDate`
+    left null) gets the base's time-of-day combined with that date first -
+    see `_combine_date_and_time()` - so the merge below still only ever
+    prefers a value the override actually supplied, not a fabricated one.
+    """
+    override = dict(override)
+    occurrence_date = override.get("occurrenceDate")
+    if occurrence_date and override.get("startDate") is None:
+        combined = _combine_date_and_time(base.get("startDate"), occurrence_date)
+        if combined:
+            override["startDate"] = combined
+    if occurrence_date and override.get("endDate") is None:
+        combined = _combine_date_and_time(base.get("endDate"), occurrence_date)
+        if combined:
+            override["endDate"] = combined
+
     merged = dict(base)
     for key, value in override.items():
         if value is not None:
@@ -176,7 +209,14 @@ def _synthesize_body(record: dict[str, Any], start: datetime | None, end: dateti
     if dj:
         parts.append(f"DJ: {dj}")
 
-    organizer = record.get("organizer") or record.get("organizerName")
+    # v0.82.1, confirmed against a live response: there is no single
+    # "organizer name" field - only contact channels (organizerFacebook/
+    # organizerKakaoId/organizerOther/organizerPhone). None of extract_single()'s
+    # rules read a "주최:" label anyway (only date/time/venue/fee/DJ), so this
+    # is informational only; organizerOther is the one free-text field among
+    # them and is used when present rather than guessing at a name field that
+    # does not exist.
+    organizer = record.get("organizerOther")
     if organizer:
         parts.append(f"주최: {organizer}")
 

@@ -27,7 +27,7 @@ def _event(**overrides) -> dict:
         "entranceFee": 13000,
         "venue": "탱고 안단테",
         "djName": None,
-        "organizer": None,
+        "organizerOther": None,
         "createdAt": "2026-09-02T06:06:40Z",
         "updatedAt": "2026-09-02T06:06:40Z",
         "rrule": None,
@@ -96,6 +96,54 @@ def test_a_list_of_overrides_is_handled_not_only_a_single_dict():
         [_event(occurrenceOverrides=[{"venue": "다른 장소"}])], LIST_URL, today=TODAY,
     )
     assert "장소: 다른 장소" in posts[0]["body"]
+
+
+def test_organizer_reads_organizerOther_not_a_nonexistent_name_field():
+    """v0.82.1, confirmed against a live response: there is no single
+    "organizer name" field, only organizerFacebook/organizerKakaoId/
+    organizerOther/organizerPhone contact channels - organizerOther is the
+    one free-text field among them."""
+    posts = tc.parse_events(
+        [_event(organizerOther="탱고 안단테 운영팀")], LIST_URL, today=TODAY,
+    )
+    assert "주최: 탱고 안단테 운영팀" in posts[0]["body"]
+
+
+def test_an_override_naming_only_occurrence_date_gets_the_bases_time_of_day():
+    """v0.82.1, confirmed against a live response: 75 of 151 sampled override
+    entries carry only `occurrenceDate`, with their own `startDate`/`endDate`
+    left null - the real hour/minute for that occurrence is the base
+    event's own, applied to the override's date. Before this was fixed,
+    every such override silently collapsed onto the BASE event's own date
+    instead of its own - found live in a real weekly series whose seven
+    earlier occurrences all resolved to the series' most recent date."""
+    posts = tc.parse_events(
+        [_event(occurrenceOverrides={
+            "occurrenceDate": "2026-09-13T05:00:00.000Z", "startDate": None, "endDate": None,
+        })],
+        LIST_URL, today=TODAY,
+    )
+    assert len(posts) == 1
+    # The date must be the OVERRIDE's own (Sep 13), not the base's (Sep 6).
+    assert "2026년 9월 13일" in posts[0]["body"]
+    # But the time-of-day must still be the base's own (14:00-18:00 KST).
+    assert "2:00 pm to 6:00 pm" in posts[0]["body"]
+
+
+def test_an_override_with_its_own_start_date_is_not_recombined_with_the_base():
+    """When the override DOES supply its own startDate/endDate (76 of 151
+    sampled entries), that value must win outright - _combine_date_and_time
+    must never override an override that already knows its own time."""
+    posts = tc.parse_events(
+        [_event(occurrenceOverrides={
+            "occurrenceDate": "2026-09-13T09:00:00.000Z",
+            "startDate": "2026-09-13T09:00:00.000Z",  # 18:00 KST - a real time change
+            "endDate": "2026-09-13T13:00:00.000Z",     # 22:00 KST
+        })],
+        LIST_URL, today=TODAY,
+    )
+    assert "2026년 9월 13일" in posts[0]["body"]
+    assert "6:00 pm to 10:00 pm" in posts[0]["body"]
 
 
 # --- cutoff -----------------------------------------------------------------
