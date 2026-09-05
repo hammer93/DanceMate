@@ -283,6 +283,63 @@ def test_web_collection_deduplicates_across_configured_boards(settings, monkeypa
     assert len(result.items) == 1
 
 
+def test_a_web_source_configured_for_tangonow_uses_that_discovery(settings, monkeypatch):
+    from runtime import tangonow_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://firestore.googleapis.com/v1/.../events/abc",
+            "title": "밀빠쏘", "body": "장소: PISTA",
+            "published_at": None, "acquisition_quality": "FETCHED_FULL",
+        }]
+
+    monkeypatch.setattr(tangonow_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "tangonow_firestore",
+        "board_urls": [
+            "https://firestore.googleapis.com/v1/projects/ktangoguide/databases/"
+            "(default)/documents/events?pageSize=300",
+        ],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert len(calls) == 1
+    assert len(result.items) == 1
+
+
+def test_a_web_source_configured_for_tangocalendar_uses_that_discovery(settings, monkeypatch):
+    from runtime import tangocalendar_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://tangocalendar.kr/api/events/uuid-1",
+            "title": "Alonga", "body": "장소: 탱고 안단테",
+            "published_at": None, "acquisition_quality": "FETCHED_FULL",
+        }]
+
+    monkeypatch.setattr(tangocalendar_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "tangocalendar_json",
+        "board_urls": ["https://tangocalendar.kr/api/events"],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert len(calls) == 1
+    assert len(result.items) == 1
+
+
 def test_test_source_never_writes_anything(engine_settings):
     """The [Test] button must be safe to press on a production source."""
     import inspect

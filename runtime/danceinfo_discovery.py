@@ -89,7 +89,22 @@ def parse_list(
     except json.JSONDecodeError as exc:
         raise DiscoveryError(f"__NEXT_DATA__ on {list_url} is not valid JSON: {exc}") from exc
 
-    days = ((data.get("props") or {}).get("pageProps") or {}).get("initialDays") or []
+    # Required-key validation, not `.get(...) or {}` silent fallbacks: a page
+    # with a genuinely empty day (no lessons at all, a legitimate zero-result
+    # day) must still have this shape. A missing key means the site's own
+    # JSON structure changed underneath us, which must surface as a parser
+    # error - a silently empty list here would read as "no Tango today"
+    # instead of "this collector is broken", and nobody would notice either.
+    if "props" not in data:
+        raise DiscoveryError(f"__NEXT_DATA__ on {list_url} has no 'props' key - schema changed")
+    if "pageProps" not in data["props"]:
+        raise DiscoveryError(f"props on {list_url} has no 'pageProps' key - schema changed")
+    page_props = data["props"]["pageProps"]
+    if "initialDays" not in page_props:
+        raise DiscoveryError(
+            f"pageProps on {list_url} has no 'initialDays' key - schema changed"
+        )
+    days = page_props["initialDays"] or []
     posts: list[dict[str, Any]] = []
     seen_ids: set[Any] = set()
     for day in days:

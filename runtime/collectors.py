@@ -316,6 +316,8 @@ def _collect_live(
 # registered before this module existed keeps behaving exactly as before.
 WEB_PARSER_BOARD = "board"
 WEB_PARSER_DANCEINFO = "danceinfo_json"
+WEB_PARSER_TANGONOW = "tangonow_firestore"
+WEB_PARSER_TANGOCALENDAR = "tangocalendar_json"
 
 
 def _web_discovery_module(parser: str):
@@ -323,6 +325,14 @@ def _web_discovery_module(parser: str):
         from . import danceinfo_discovery  # noqa: PLC0415
 
         return danceinfo_discovery
+    if parser == WEB_PARSER_TANGONOW:
+        from . import tangonow_discovery  # noqa: PLC0415
+
+        return tangonow_discovery
+    if parser == WEB_PARSER_TANGOCALENDAR:
+        from . import tangocalendar_discovery  # noqa: PLC0415
+
+        return tangocalendar_discovery
     from . import web_discovery  # noqa: PLC0415
 
     return web_discovery

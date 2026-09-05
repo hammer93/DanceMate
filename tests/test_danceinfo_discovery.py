@@ -95,6 +95,30 @@ def test_malformed_next_data_json_raises_discovery_error():
         di.parse_list(broken, LIST_URL)
 
 
+@pytest.mark.parametrize("mutate", [
+    lambda d: d.pop("props"),
+    lambda d: d["props"].pop("pageProps"),
+    lambda d: d["props"]["pageProps"].pop("initialDays"),
+])
+def test_a_restructured_page_raises_a_schema_error_not_an_empty_success(mutate):
+    """A missing key is the site's own JSON shape changing underneath us, not
+    a legitimately empty day - it must surface as a parser error so nobody
+    mistakes 'this collector broke' for 'no Tango today'."""
+    import copy
+
+    payload = copy.deepcopy(_NEXT_DATA)
+    mutate(payload)
+    with pytest.raises(di.DiscoveryError):
+        di.parse_list(_page(payload), LIST_URL)
+
+
+def test_a_day_with_zero_lessons_is_a_legitimate_empty_result_not_an_error():
+    empty_day = {"props": {"pageProps": {"initialDays": [
+        {"date": "2026-09-12", "lessons": []},
+    ]}}}
+    assert di.parse_list(_page(empty_day), LIST_URL) == []
+
+
 def test_duplicate_content_ids_are_deduplicated():
     dupe = {
         "props": {"pageProps": {"initialDays": [
