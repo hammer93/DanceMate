@@ -183,9 +183,15 @@ def _parse_iso(value: Any) -> datetime | None:
 # --- body synthesis -----------------------------------------------------------
 
 def _first(fields: dict[str, Any], *names: str) -> Any:
-    """The first present, non-empty field among several possible names - the
-    report could not confirm exact field names ("가능한 범위에서 매핑"), so
-    each logical value tries its likely spellings rather than assuming one."""
+    """The first present, non-empty field among several possible names.
+
+    v0.82.1: confirmed directly against a live Firestore response (300
+    documents), replacing the earlier "가능한 범위에서 매핑" guesses. Every
+    name below is a field this project's own request actually returned;
+    none is a spelling nobody has seen. `region`/`regionLarge`/`regionSmall`
+    genuinely all three exist on real documents (city/subregion breakdown),
+    which is why that one field alone keeps a multi-name fallback.
+    """
     for name in names:
         value = fields.get(name)
         if value not in (None, ""):
@@ -199,15 +205,15 @@ def _synthesize_body(fields: dict[str, Any]) -> str:
     (colon-labelled venue, `입장료 N원`, `DJ: X`, explicit am/pm time)."""
     parts: list[str] = []
 
-    event_date = _format_date_kr(_first(fields, "date", "eventDate"))
+    event_date = _format_date_kr(_first(fields, "date"))
     if event_date:
         parts.append(event_date)
 
-    time_expr = format_time_range(_first(fields, "time", "eventTime"))
+    time_expr = format_time_range(_first(fields, "time"))
     if time_expr:
         parts.append(f"시간: {time_expr}")
 
-    venue = _first(fields, "venue", "place", "location")
+    venue = _first(fields, "place")
     if venue:
         parts.append(f"장소: {venue}")
 
@@ -215,15 +221,15 @@ def _synthesize_body(fields: dict[str, Any]) -> str:
     if region:
         parts.append(f"지역: {region}")
 
-    dj = _first(fields, "dj", "DJ")
+    dj = _first(fields, "dj")
     if dj:
         parts.append(f"DJ: {dj}")
 
-    organizer = _first(fields, "organizer", "org")
+    organizer = _first(fields, "org")
     if organizer:
         parts.append(f"주최: {organizer}")
 
-    price = _first(fields, "price", "fee")
+    price = _first(fields, "price")
     if price not in (None, ""):
         try:
             amount = int(price)
@@ -353,14 +359,14 @@ def parse_documents(
         status = str(_first(fields, "status") or "").strip().lower()
         if status in _ARCHIVED_STATUSES:
             continue
-        if bool(fields.get("isArchived")) or bool(fields.get("cancelled")):
+        if bool(fields.get("archived")) or bool(fields.get("cancelled")):
             continue
 
-        raw_date = _first(fields, "date", "eventDate")
+        raw_date = _first(fields, "date")
         if not raw_date or not _format_date_kr(raw_date):
             continue
 
-        title = str(_first(fields, "title", "name") or "").strip()
+        title = str(_first(fields, "title") or "").strip()
         if not title:
             continue
 

@@ -42,7 +42,7 @@ def test_typed_values_convert_to_plain_python():
         "fields": {
             "title": {"stringValue": "밀빠쏘"},
             "price": {"integerValue": "13000"},
-            "isArchived": {"booleanValue": False},
+            "archived": {"booleanValue": False},
             "createdAt": {"timestampValue": "2026-08-26T23:51:03Z"},
             "imageUrls": {"arrayValue": {"values": [{"stringValue": "https://x/1.jpg"}]}},
             "meta": {"mapValue": {"fields": {"venueId": {"stringValue": "v1"}}}},
@@ -52,7 +52,7 @@ def test_typed_values_convert_to_plain_python():
     fields = tn.document_fields(document)
     assert fields["title"] == "밀빠쏘"
     assert fields["price"] == 13000
-    assert fields["isArchived"] is False
+    assert fields["archived"] is False
     assert fields["createdAt"] == "2026-08-26T23:51:03Z"
     assert fields["imageUrls"] == ["https://x/1.jpg"]
     assert fields["meta"] == {"venueId": "v1"}
@@ -73,7 +73,18 @@ def test_archived_records_are_excluded():
 
 
 def test_a_boolean_archived_flag_also_excludes():
-    docs = [_doc("a4", {"title": "숨김", "date": "2026-09-06", "isArchived": True})]
+    """`archived` (not `isArchived`) - confirmed against a live response;
+    v0.82.1 fixed this exact field-name mismatch after finding it live."""
+    docs = [_doc("a4", {"title": "숨김", "date": "2026-09-06", "archived": True})]
+    assert tn.parse_documents(docs, LIST_URL) == []
+
+
+def test_status_archived_and_boolean_archived_are_independent_signals():
+    """Both were observed live to agree in every sampled case, but each is
+    checked on its own - a record could in principle have one without the
+    other, and either alone must still exclude it."""
+    docs = [_doc("a4b", {"title": "숨김2", "date": "2026-09-06",
+                          "status": "active", "archived": True})]
     assert tn.parse_documents(docs, LIST_URL) == []
 
 
