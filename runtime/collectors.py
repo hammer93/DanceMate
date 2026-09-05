@@ -350,13 +350,23 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
         raise CollectorUnavailable(
             "WEB source has no config.board_urls to collect from"
         )
-    discovery = _web_discovery_module(config.get("parser") or WEB_PARSER_BOARD)
+    parser = config.get("parser") or WEB_PARSER_BOARD
+    discovery = _web_discovery_module(parser)
+
+    # v0.82.1: a source using the DanceInfo parser may set `config.days_ahead`
+    # to self-widen a single date-less board_url into "today + N days",
+    # computed fresh every cycle, instead of registering N static dated URLs
+    # that go stale as the calendar moves past them. Only that one parser
+    # knows this keyword; nothing else is passed it.
+    extra_kwargs: dict[str, Any] = {}
+    if parser == WEB_PARSER_DANCEINFO and "days_ahead" in config:
+        extra_kwargs["days_ahead"] = config["days_ahead"]
 
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for board_url in board_urls:
         for record in discovery.discover(
-            board_url, source_id=engine_source["source_id"]
+            board_url, source_id=engine_source["source_id"], **extra_kwargs
         ):
             url = record.get("source_url")
             if url and url in seen:

@@ -171,3 +171,67 @@ def test_discover_honours_robots_disallow(monkeypatch):
     monkeypatch.setattr(di.acquisition, "robots_allows", lambda url, **kw: False)
     with pytest.raises(di.DiscoveryError):
         di.discover(LIST_URL, source_id=42, opener=lambda *a, **kw: _Resp(_page(_NEXT_DATA)))
+
+
+# --- days_ahead: self-widening a single date-less URL (v0.82.1) -------------
+#
+# A source's board_urls needing periodic manual refresh (v0.82's own known
+# limitation) is solved here without any new scraping framework: a date-less
+# request already gets "today" computed server-side by danceinfo.net itself
+# (confirmed live), so this collector only has to compute "today + N" fresh
+# on every call rather than store N dated URLs that go stale.
+
+DATELESS_URL = "https://danceinfo.net/lessons?genre=all&category=all&location=all"
+
+
+def test_days_ahead_zero_requests_only_the_given_url(monkeypatch):
+    monkeypatch.setattr(di.acquisition, "robots_allows", lambda url, **kw: True)
+    calls = []
+
+    def opener(request, timeout=None):
+        calls.append(request.full_url)
+        return _Resp(_page(_NEXT_DATA))
+
+    di.discover(DATELESS_URL, source_id=1, opener=opener)
+    assert calls == [DATELESS_URL]
+
+
+def test_days_ahead_n_requests_today_plus_n_dated_pages(monkeypatch):
+    monkeypatch.setattr(di.acquisition, "robots_allows", lambda url, **kw: True)
+    calls = []
+
+    def opener(request, timeout=None):
+        calls.append(request.full_url)
+        return _Resp(_page({"props": {"pageProps": {"initialDays": []}}}))
+
+    di.discover(DATELESS_URL, source_id=1, opener=opener, days_ahead=3)
+    assert len(calls) == 4  # the date-less URL itself, plus +1/+2/+3 days
+    assert calls[0] == DATELESS_URL
+    from datetime import timedelta
+
+    today = di._seoul_today()
+    for offset, call in enumerate(calls[1:], start=1):
+        assert f"date={(today + timedelta(days=offset)).isoformat()}" in call
+
+
+def test_days_ahead_results_from_every_page_are_combined(monkeypatch):
+    monkeypatch.setattr(di.acquisition, "robots_allows", lambda url, **kw: True)
+    pages = [_NEXT_DATA, {
+        "props": {"pageProps": {"initialDays": [{
+            "date": "2099-01-02", "lessons": [
+                {"contentIdx": 5001, "genreName": "탱고", "title": "내일 밀롱가",
+                 "date": "2099-01-02"},
+            ],
+        }]}}
+    }]
+    calls = {"n": 0}
+
+    def opener(request, timeout=None):
+        page = pages[min(calls["n"], len(pages) - 1)]
+        calls["n"] += 1
+        return _Resp(_page(page))
+
+    posts = di.discover(DATELESS_URL, source_id=1, opener=opener, days_ahead=1)
+    titles = {p["title"] for p in posts}
+    assert "러블리밀롱가 7주년 파티안내" in titles  # from the date-less page
+    assert "내일 밀롱가" in titles                    # from the +1 day page

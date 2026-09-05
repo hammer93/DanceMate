@@ -258,6 +258,46 @@ def test_web_collection_without_board_urls_is_refused(settings):
         collectors.collect(settings, _web_source(config={}), mode=collectors.MODE_LIVE)
 
 
+def test_config_days_ahead_is_passed_only_to_the_danceinfo_parser(settings, monkeypatch):
+    """v0.82.1: a source can self-widen a single date-less board_url instead
+    of storing dated URLs that go stale - but only the danceinfo parser
+    understands `days_ahead`, so it must never reach `web_discovery.discover`
+    (which would raise TypeError on an unexpected keyword)."""
+    from runtime import danceinfo_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(danceinfo_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "danceinfo_json",
+        "board_urls": ["https://danceinfo.net/lessons?genre=all"],
+        "days_ahead": 7,
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {"days_ahead": 7}
+
+
+def test_days_ahead_is_not_sent_to_the_board_parser(settings, monkeypatch):
+    from runtime import web_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(web_discovery, "discover", fake_discover)
+    # A plain board-parser source that happens to carry a stray `days_ahead`
+    # key must not forward it - only danceinfo_json understands it.
+    source = _web_source(config={"board_urls": ["http://x/"], "days_ahead": 7})
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {}
+
+
 def test_web_collection_deduplicates_across_configured_boards(settings, monkeypatch):
     from runtime import web_discovery
 

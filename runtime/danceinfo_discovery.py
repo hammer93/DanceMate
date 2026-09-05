@@ -129,17 +129,54 @@ def parse_list(
     return posts
 
 
+def _seoul_today():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+def _dated_url(base_url: str, day) -> str:
+    """`base_url` with its `date` query param replaced (or added)."""
+    parsed = urllib.parse.urlparse(base_url)
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    query["date"] = day.isoformat()
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
 def discover(
     list_url: str, *, source_id: str, platform: str = "WEB",
     genre_name: str = TANGO_GENRE_NAME, timeout: int = DEFAULT_TIMEOUT, opener=None,
+    days_ahead: int = 0,
 ) -> list[dict[str, Any]]:
     """Rows on one danceinfo.net date-list page, tagged for a Source Master
-    row. One date's page only, deliberately, the same "add pagination when a
-    source actually needs it" rule `web_discovery.discover()` follows -
-    the source's own `config.board_urls` names each date page to poll.
+    row.
+
+    ``days_ahead`` (v0.82.1): a date page shows only one day's lessons -
+    confirmed directly, so widening the window means naming more pages, not
+    a different parser. Rather than storing N static dated URLs that go
+    stale as the calendar moves past them (this release's own known
+    limitation from v0.82), a source can instead set ``config.days_ahead``
+    and register a *single*, date-less ``board_urls`` entry - danceinfo.net
+    itself computes "today" server-side for a date-less request (verified:
+    its own `ssrDateKey` matched the real current date), so this collector
+    then asks for "today" plus that many days ahead, computed fresh every
+    collection cycle. 0 (the default) keeps the exact one-page-per-call
+    behaviour every existing caller (including a source with static dated
+    ``board_urls`` already registered) already relies on.
     """
-    raw_html = _fetch_html(list_url, timeout=timeout, opener=opener)
-    posts = parse_list(raw_html, list_url, genre_name=genre_name)
+    urls = [list_url]
+    if days_ahead > 0:
+        today = _seoul_today()
+        from datetime import timedelta
+
+        urls += [_dated_url(list_url, today + timedelta(days=n))
+                 for n in range(1, days_ahead + 1)]
+
+    posts: list[dict[str, Any]] = []
+    for url in urls:
+        raw_html = _fetch_html(url, timeout=timeout, opener=opener)
+        posts.extend(parse_list(raw_html, url, genre_name=genre_name))
     for post in posts:
         post["source_id"] = source_id
         post["platform"] = platform
