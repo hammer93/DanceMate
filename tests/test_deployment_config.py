@@ -224,7 +224,19 @@ def test_env_is_git_ignored_but_the_template_is_not():
 
 
 def test_version_file_tracks_the_product_runtime_not_the_engine():
-    assert (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() == "0.82"
+    """VERSION is read by lookup, never hardcoded to one release's own
+    snapshot of it - a test asserting a frozen literal here breaks on every
+    version bump for a reason that has nothing to do with what this test
+    actually guards: that VERSION holds the Product Runtime's own version,
+    tracked independently of the Information Engine's (`DEFAULT_ENGINE_
+    VERSION` in runtime/config.py)."""
+    from runtime.config import DEFAULT_ENGINE_VERSION
+
+    version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"\d+\.\d+(\.\d+)?", version), (
+        f"VERSION does not look like a product runtime version: {version!r}"
+    )
+    assert version != DEFAULT_ENGINE_VERSION
 
 
 # --- listen address vs published address ------------------------------------

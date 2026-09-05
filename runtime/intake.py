@@ -101,6 +101,24 @@ def record_error(
         )
 
 
+def _settle_if_fetched_full(con, source_item_id: int, item: RawItem) -> None:
+    """A discovery module that already synthesizes the complete body itself
+    (`raw.acquisition_quality == "FETCHED_FULL"` - TangoNOW/Tango Calendar
+    Korea/Miltang, none of which do a separate HTML detail fetch) gets that
+    body recorded as already-settled content immediately, closing the gap
+    that let the generic acquisition queue re-fetch and degrade it later.
+    See `content_store.settle_full_body()`'s own docstring for the full
+    root-cause account. A no-op for every other source: nothing here
+    changes DanceInfo's title-only-then-detail-fetch flow, or any
+    credential-backed collector's snippet-then-acquire flow.
+    """
+    if item.raw.get("acquisition_quality") != "FETCHED_FULL":
+        return
+    from . import content_store  # local import: avoids a module-load cycle
+
+    content_store.settle_full_body(con, source_item_id, body=item.body)
+
+
 def store_item(
     con, source_id: int, item: RawItem, *, collection_run_id: int | None = None
 ) -> str:
@@ -118,15 +136,24 @@ def store_item(
             cur.execute(
                 "INSERT INTO source_items (source_id, collection_run_id, external_id, "
                 "  url, title, body, published_at, content_hash, raw) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb) "
+                "RETURNING source_item_id",
                 (source_id, collection_run_id, item.external_id, item.url, item.title,
                  item.body, item.published_at, digest,
                  json.dumps(item.raw, ensure_ascii=False, default=str)),
             )
+            source_item_id = cur.fetchone()[0]
+            _settle_if_fetched_full(con, source_item_id, item)
             return "NEW"
 
         source_item_id, previous_hash = existing
         if previous_hash == digest:
+            # Same content the engine has already seen - but if a shared
+            # acquisition/reprocess cycle degraded this item's settled
+            # content in the meantime (Section 46's "self-healing" case),
+            # a routine re-collection is exactly the moment to restore it:
+            # settle_full_body() is a no-op when nothing actually changed.
+            _settle_if_fetched_full(con, source_item_id, item)
             return "DUPLICATE"
 
         # Upstream edited the post: keep the row, refresh it, re-queue for the engine.
@@ -139,6 +166,7 @@ def store_item(
              digest, json.dumps(item.raw, ensure_ascii=False, default=str),
              INGEST_PENDING, source_item_id),
         )
+        _settle_if_fetched_full(con, source_item_id, item)
         return "REVISED"
 
 

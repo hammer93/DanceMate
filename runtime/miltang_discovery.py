@@ -344,10 +344,26 @@ _DESCRIPTION_RE = re.compile(
 )
 
 
-def parse_detail(raw_html_text: str, detail_url: str) -> dict[str, Any] | None:
+def parse_detail(
+    raw_html_text: str, detail_url: str, *, today: date | None = None,
+) -> dict[str, Any] | None:
     """One `/milongas/{id}` or `/notices/{id}` detail page -> a
     RawPostRecord-shaped dict, or None if it has no usable title/date at all
-    (never guessed - Section 4, items 7-9)."""
+    (never guessed - Section 4, items 7-9).
+
+    `today`, when given, drops an already-past record - the same cutoff
+    `tangocalendar_discovery.parse_events(..., today=...)` already applies.
+    `/milongas` cannot actually surface a past date (`discover()`'s own
+    day-scoped window only ever requests today..today+N), but `/notices` is
+    unpaged and not date-scoped at all - confirmed live, a festival notice
+    for a date already gone (2026-08-21, requested on 2026-09-05) sat there
+    unfiltered. The past record's own `source_items` row is not deleted
+    (Section 27: "historical source_item 자체를 삭제하지 않아도 됨") - this
+    only narrows what a *fresh* discovery hands upcoming-candidate creation,
+    exactly like every other cutoff in this project. `today` defaults to
+    `None` (no cutoff) so a direct caller/test not passing it keeps this
+    function's existing behaviour unchanged.
+    """
     ld = _extract_json_ld(raw_html_text) or {}
 
     title = str(ld.get("name") or "").strip()
@@ -364,6 +380,14 @@ def parse_detail(raw_html_text: str, detail_url: str) -> dict[str, Any] | None:
     event_date = _format_date_kr(raw_date)
     if not event_date:
         return None
+
+    if today is not None:
+        try:
+            parsed_date = date.fromisoformat(str(raw_date)[:10])
+        except ValueError:
+            parsed_date = None
+        if parsed_date is not None and parsed_date < today:
+            return None
 
     time_segment = _dt_dd_segment(raw_html_text, "TIME")
     time_expr = format_time_range(_visible(time_segment)) if time_segment else None
@@ -489,6 +513,7 @@ def discover(
 
     detail_urls: list[str] = []
     seen: set[str] = set()
+    today = _seoul_today()
 
     if prefix == "notices":
         raw = _fetch_html(list_url, timeout=timeout, opener=opener)
@@ -498,7 +523,6 @@ def discover(
                 detail_urls.append(url)
     else:
         span = max(0, min(days_ahead, MAX_DAYS_AHEAD))
-        today = _seoul_today()
         for offset in range(span + 1):
             day = today + timedelta(days=offset)
             dated_url = _dated_milonga_url(list_url, day)
@@ -522,7 +546,7 @@ def discover(
     posts: list[dict[str, Any]] = []
     for detail_url in detail_urls:
         raw_detail = _fetch_html(detail_url, timeout=timeout, opener=opener)
-        post = parse_detail(raw_detail, detail_url)
+        post = parse_detail(raw_detail, detail_url, today=today)
         if post is not None:
             posts.append(post)
 

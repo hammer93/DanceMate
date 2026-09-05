@@ -1,5 +1,53 @@
 # DanceMate Release Notes
 
+## v0.82.2 FETCHED_FULL Content Settlement + Reprocess Safety
+
+Status:
+Fix, scoped board recovery and re-observation completed against the
+ROCKPro64 board's real production database, 2026-09-05.
+
+Version split:
+
+- Product Runtime: 0.82.2
+- Information Engine: unchanged (0.79) - no engine code changed in this
+  release; the full Engine test suite was still run for integration
+  regression coverage.
+
+### Root cause
+
+A source whose discovery module already synthesizes a complete event body at
+discovery time (TangoNOW, Tango Calendar Korea, Miltang — not DanceInfo,
+which is title-only at list stage) never marked `source_item_content` as
+settled. The generic content-acquisition queue then read "no content row
+yet" as "needs fetching," queued the item, and a routine re-fetch through
+`runtime/acquisition.py`'s generic extractor (no source-specific rule) could
+silently replace the already-correct body with the site's own generic
+`og:description` tagline. `engine_reprocess` read that date-less tagline as a
+genuine revision, re-extracted nothing useful from it, and its own
+"replace this post's candidates with whatever the extractor now makes of the
+body" rule then deleted the previously-correct event. Confirmed live: within
+about 90 minutes of enabling, Miltang's listed events fell from 50 to 8, and
+by the time this release's recovery began, to 0.
+
+### Fix
+
+`runtime/content_store.settle_full_body()`, called from
+`runtime/intake.store_item()`, settles `source_item_content` as
+`FETCHED_FULL`/`discovery_synthesized` immediately whenever discovery already
+hands the item a usable `FETCHED_FULL` body — before it can ever reach the
+generic acquisition queue. One generic code path, no per-source branch;
+confirmed to correctly leave DanceInfo's title-only list stage alone (it
+still gets a real detail fetch) and to never settle an empty, blank or
+too-short body. Miltang's `/notices` endpoint separately gained the same
+optional historical-cutoff parameter `tangocalendar_discovery` already uses,
+narrowing only new candidate creation. See
+`docs/TANGO_SOURCE_IMPLEMENTATION.md`'s "v0.82.2 fix" section for the full
+mechanism, the scoped board recovery (Miltang: 0 → 57 listed events, 56
+upcoming; SRC-W-002/003/004 confirmed undamaged and unchanged throughout),
+and the re-observation numbers across four post-recovery cycles (zero
+erosion, venue resolve rate 54% vs the original 52%, false `VERIFIED` = 0,
+Human Review non-interference confirmed).
+
 ## v0.82.1 Miltang Live Source Acceptance + Venue Alias Compatibility
 
 Status:

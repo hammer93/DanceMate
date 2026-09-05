@@ -231,6 +231,12 @@ METHOD_DANCEINFO = "danceinfo_region"
 METHOD_OG_DESCRIPTION = "og_description"
 METHOD_VISIBLE_TEXT = "visible_text"
 METHOD_NONE = "none"
+# A discovery module that already synthesizes the complete article body
+# itself (TangoNOW/Tango Calendar Korea/Miltang: no separate HTML detail
+# fetch happens for these) - `content_store.settle_full_body()` records it
+# under this method so an operator reading /admin/intake can tell it apart
+# from a page this module actually fetched and parsed.
+METHOD_DISCOVERY_SYNTHESIZED = "discovery_synthesized"
 
 
 def visible_text(raw_html: str) -> str:

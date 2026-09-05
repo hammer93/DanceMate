@@ -135,6 +135,69 @@ One controlled `collect_source()` call (14-day `/milongas` window + `/notices`, 
 
 **Known risk found live, not fixed in this task (shared, pre-existing, not Miltang-specific)**: `scheduler/acquisition_job.py`'s generic content-acquisition queue does not know `raw.acquisition_quality` is already `FETCHED_FULL` for a source that (like Miltang, TangoNOW and Tango Calendar Korea) synthesizes its own complete body at discovery time. Once any item enters that shared queue, a routine re-fetch through `runtime/acquisition.py`'s generic extractor (which has no Miltang-specific marker) can overwrite the already-correct body with the site's own generic `og:description` tagline before `engine_ingest.ingest_pending()` reads it. Observed live: 2 of 108 items lost their real content this way and produced no candidate (a silent coverage gap, not a wrong-data defect — no incorrect date/time/venue was ever produced). This condition already exists for the two sources already live in production; fixing it is a shared-pipeline change and out of scope for this task.
 
+### v0.82.2 fix: FETCHED_FULL content settlement + Miltang recovery
+
+The risk flagged just above turned out to erode much further once Miltang ran
+live for real: within about 90 minutes the same generic-queue re-fetch had
+degraded 108/108 Miltang items to the site's own `og:description` tagline (a
+23-character generic string, no date), and `engine_reprocess`'s own "replace
+this post's candidates with whatever the extractor now makes of the body"
+rule then correctly read the date-less tagline as "no longer an event" and
+deleted the previously-correct events for it — listed Tango events for
+Miltang fell from 50 to 8 before this was caught and the source was disabled
+again.
+
+**Fix** (`runtime/content_store.settle_full_body()`, called from
+`runtime/intake.store_item()`): when discovery already hands `store_item()` a
+body with `acquisition_quality == FETCHED_FULL`, `source_item_content` is
+settled `FETCHED_FULL`/`discovery_synthesized` immediately, before the item
+can ever reach the generic queue — `mark_pending()` only promotes a row
+sitting at `METADATA_ONLY`, and `due_for_acquisition()` only selects
+`FETCH_PENDING`/`FETCH_FAILED`/`FETCH_BLOCKED`, so a row inserted already
+`FETCHED_FULL` structurally never matches either query. No source-specific
+branch: the same call runs for every intake outcome (new/duplicate/revised)
+and every source. Confirmed to correctly no-op for DanceInfo (SRC-W-004),
+whose list stage is title-only `METADATA_ONLY` and still needs — and still
+gets — its real per-item detail fetch. A too-short/blank body is never
+settled, matching the existing thin-body threshold. Miltang's `/notices`
+endpoint was also found to carry no historical cutoff at all (a
+2026-08-21 festival notice still appeared unfiltered on 2026-09-05);
+`parse_detail()` gained the same optional `today` cutoff parameter
+`tangocalendar_discovery` already uses, applied only to new candidate
+creation — no existing `source_items` row is touched by it.
+
+**Board recovery** (scoped to Miltang only — a read-only baseline query first
+confirmed SRC-W-002/003/004 had no comparable damage: SRC-W-002/003 sat at
+the harmless `UNSUPPORTED` status the generic fetcher already leaves alone
+for a non-HTML response, which `engine_ingest._to_raw_post()` never reads
+over the correct discovery body anyway, and SRC-W-004's `FETCHED_FULL` rows
+are real per-item detail fetches, exactly as designed — none of the three
+needed touching). All 108 Miltang `source_item_content` rows still had their
+correct body intact in `source_items.body`; each was re-settled via
+`settle_full_body()`, then a scoped (Miltang-only, empirically confirmed to
+be the *entire* set of rows due for reprocessing at the time — nothing else
+in the database qualified) `engine_reprocess`/`event_normalization` pass
+regenerated correct candidates from the correct body. Result: Miltang
+recovered from 0 listed events to 57 (56 upcoming); SRC-W-002/003/004 were
+read before and after every recovery step and never changed (32/5/1 events,
+unchanged throughout).
+
+**Re-observation with the fix active** (real production Postgres + Engine
+SQLite, real scheduler container stopped for the window to avoid a race with
+the still-unpatched production image, feature-branch code run manually in
+its place): one forced fresh `/milongas` + `/notices` collection (103
+discovered, 0 new, 0 revised, 103 duplicate — all re-settled cleanly, 0
+re-entered the fetch queue) followed by four full
+ingest/reprocess/normalize cycles (one after the forced collection, three
+idle). Miltang held steady at 108 `source_item_content` rows / 108
+`FETCHED_FULL` / 0 `FETCH_PENDING` / 57 events / 56 upcoming across every
+cycle — zero erosion. SRC-W-002/003/004 were re-checked after every cycle
+and never moved (32/5/1 events throughout). Venue resolve rate for the
+recovered Miltang events: 31/57 (54%), not a regression against the original
+52% Live Acceptance figure above. `engine_status` stayed `POSSIBLE` for every
+Miltang event (false `VERIFIED` = 0) and `human_review_actions` stayed empty
+throughout (Human Review non-interference).
+
 ## Tangodori — not implemented
 
 Per `docs/MILTANG_TANGODORI_SOURCE_ANALYSIS.md` Section 4/7/8: Tangodori's
