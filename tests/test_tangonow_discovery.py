@@ -156,7 +156,7 @@ def test_synthesized_time_is_read_as_explicit_by_the_engine():
     from engine.src import extraction_rules
 
     docs = [_doc("b1", {
-        "title": "밀빠쏘", "date": "2026-09-06", "time": "14:00-18:00", "venue": "PISTA",
+        "title": "밀빠쏘", "date": "2026-09-06", "time": "14:00-18:00", "place": "PISTA",
     })]
     body = tn.parse_documents(docs, LIST_URL)[0]["body"]
     reading = extraction_rules.parse_time_range(body)
@@ -167,7 +167,7 @@ def test_synthesized_time_is_read_as_explicit_by_the_engine():
 def test_synthesized_venue_is_read_by_the_engine():
     from engine.src import extraction_rules
 
-    docs = [_doc("b2", {"title": "누베르", "date": "2026-09-06", "venue": "탱고 엔빠스 스튜디오"})]
+    docs = [_doc("b2", {"title": "누베르", "date": "2026-09-06", "place": "탱고 엔빠스 스튜디오"})]
     body = tn.parse_documents(docs, LIST_URL)[0]["body"]
     reading = extraction_rules.extract_venue(body)
     assert reading.name == "탱고 엔빠스 스튜디오"
