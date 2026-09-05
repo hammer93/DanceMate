@@ -372,3 +372,268 @@ def test_miltang_output_settles_at_intake(pg, source):
     settled = content_store.get(pg, item_id)
     assert settled is not None and settled["acquisition_status"] == "FETCHED_FULL"
     assert "PISTA" in settled["extracted_text"]
+
+
+# --- v0.82.3: non-HTML API acquisition bypass --------------------------------
+#
+# Even after v0.82.2's settlement fix, a TangoNOW/Tango Calendar Korea record
+# whose discovery body happened to be too short to settle (settle_full_body()
+# only settles a body >= MINIMUM_USEFUL_TEXT) still fell back to the ordinary
+# METADATA_ONLY path - and from there, straight into the generic
+# content-acquisition queue. Their `source_url` is a JSON API endpoint (a
+# Firestore document, a `/api/events/{id}` reference) that never serves HTML,
+# so that fetch is not "waiting for content", it is structurally guaranteed to
+# return UNSUPPORTED_CONTENT_TYPE - wasted requests and permanent noise rows.
+# This section guards `content_store.newly_collected()`'s independent,
+# content-agnostic exclusion of `acquisition.NON_HTML_API_PARSERS` sources
+# (`runtime.collectors.WEB_PARSER_TANGONOW`/`WEB_PARSER_TANGOCALENDAR`) from
+# ever entering that queue at all - regardless of whether the item ever
+# settled. Miltang (`WEB_PARSER_MILTANG`) and DanceInfo (`WEB_PARSER_DANCEINFO`)
+# are deliberately NOT in that set: Miltang's own detail pages are real HTML
+# (already fetched once during discovery), and DanceInfo's title-only list
+# stage still needs a real detail fetch - both must keep behaving exactly as
+# before.
+
+def test_non_html_api_parsers_matches_the_actual_parser_registry():
+    """The two sets must never silently drift apart - `acquisition.py` keeps
+    its own copy of these two strings rather than importing the much heavier
+    `collectors` module, so this is what actually enforces they stay equal."""
+    from runtime import acquisition, collectors
+
+    assert acquisition.NON_HTML_API_PARSERS == {
+        collectors.WEB_PARSER_TANGONOW, collectors.WEB_PARSER_TANGOCALENDAR,
+    }
+
+
+def _web_source(pg, unique_suffix: str, *, parser: str) -> dict:
+    return sources.create_source(
+        pg, source_key=f"SRC-X-{unique_suffix}", name=f"Test {parser}",
+        platform="WEB", source_role="AGGREGATOR", config={"parser": parser},
+    )
+
+
+def test_tangonow_source_item_is_never_queued_even_without_content(pg, unique):
+    """The content-agnostic backstop: no content row at all (the settle-failed
+    edge case), yet still must never reach the generic acquisition queue."""
+    from runtime import collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_TANGONOW)
+    item = _full_item(
+        external_id="https://firestore.googleapis.com/v1/x/tn1",
+        url="https://firestore.googleapis.com/v1/x/tn1",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    assert content_store.get(pg, item_id) is None
+
+    assert item_id not in content_store.newly_collected(pg)
+
+
+def test_tangocalendar_source_item_is_never_queued_even_without_content(pg, unique):
+    from runtime import collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_TANGOCALENDAR)
+    item = _full_item(
+        external_id="https://tangocalendar.kr/api/events/tc1",
+        url="https://tangocalendar.kr/api/events/tc1",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    assert content_store.get(pg, item_id) is None
+
+    assert item_id not in content_store.newly_collected(pg)
+
+
+def test_miltang_parser_is_not_in_the_non_html_bypass_set(pg, unique):
+    """Miltang's detail pages are real HTML - it stays out of the bypass, and
+    a settled Miltang item is excluded from the queue by settlement alone,
+    the same mechanism as any other source."""
+    from runtime import acquisition, collectors
+
+    assert collectors.WEB_PARSER_MILTANG not in acquisition.NON_HTML_API_PARSERS
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_MILTANG)
+    item = _full_item(
+        external_id="https://miltang.com/milongas/900",
+        url="https://miltang.com/milongas/900",
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    assert content_store.get(pg, item_id)["acquisition_status"] == "FETCHED_FULL"
+    assert item_id not in content_store.newly_collected(pg)
+
+
+def test_danceinfo_metadata_only_item_is_still_queued(pg, unique):
+    """The regression this whole release must never cause: DanceInfo's
+    title-only list stage must keep reaching a real detail fetch."""
+    from runtime import collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_DANCEINFO)
+    item = _full_item(
+        external_id="https://danceinfo.net/lessons/9001",
+        url="https://danceinfo.net/lessons/9001",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    assert content_store.get(pg, item_id) is None
+
+    newly = content_store.newly_collected(pg)
+    assert item_id in newly
+
+    for source_item_id in newly:
+        content_store.ensure_row(pg, source_item_id)
+    queued = content_store.mark_pending(pg, newly)
+    assert queued >= 1
+    assert content_store.get(pg, item_id)["acquisition_status"] == "FETCH_PENDING"
+
+    due = [d["source_item_id"] for d in content_store.due_for_acquisition(pg, limit=1000)]
+    assert item_id in due
+
+
+def test_danceinfo_detail_fetch_still_produces_a_full_body(pg, unique):
+    """Once fetched for real, DanceInfo's outcome settles exactly as before -
+    the bypass touches only the queue, never `acquisition.fetch()`'s own
+    result handling."""
+    from runtime import acquisition, collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_DANCEINFO)
+    item = _full_item(
+        external_id="https://danceinfo.net/lessons/9002",
+        url="https://danceinfo.net/lessons/9002",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    content_store.ensure_row(pg, item_id)
+    content_store.mark_pending(pg, [item_id])
+
+    outcome = acquisition.AcquisitionOutcome(
+        status=acquisition.FETCHED_FULL, method="danceinfo_region",
+        text="탱고 수업 안내: 매주 화요일 저녁 8시, 홍대 스튜디오",
+        content_length=27,
+    )
+    content_store.record_outcome(pg, item_id, outcome)
+    settled = content_store.get(pg, item_id)
+    assert settled["acquisition_status"] == "FETCHED_FULL"
+    assert settled["acquisition_method"] == "danceinfo_region"
+
+
+def test_fetched_partial_generic_source_stays_out_of_retryable_queue(pg, unique):
+    """Unrelated to this bypass: PARTIAL is already settled by the existing
+    rule (`acquisition.SETTLED`), unaffected by the new parser-based filter."""
+    from runtime import acquisition, collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_BOARD)
+    item = _full_item(
+        external_id="https://example.test/board/1",
+        url="https://example.test/board/1",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    content_store.ensure_row(pg, item_id)
+    content_store.mark_pending(pg, [item_id])
+    content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+        status=acquisition.FETCHED_PARTIAL, method="visible_text",
+        text="일부만 노출된 짧은 본문", content_length=13,
+    ))
+    due = [d["source_item_id"] for d in content_store.due_for_acquisition(pg, limit=1000)]
+    assert item_id not in due
+
+
+def test_empty_generic_html_source_item_remains_eligible(pg, unique):
+    """A plain WEB "board" source (not DISCOVERY_COMPLETE, not an API
+    parser) must keep queuing normally - the new exclusion is scoped to
+    NON_HTML_API_PARSERS only, nothing broader."""
+    from runtime import collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_BOARD)
+    item = _full_item(
+        external_id="https://example.test/board/2",
+        url="https://example.test/board/2",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    assert item_id in content_store.newly_collected(pg)
+
+
+def test_a_revised_tangonow_item_still_updates_settled_content_and_stays_bypassed(pg, unique):
+    from runtime import collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_TANGONOW)
+    item = _full_item(
+        external_id="https://firestore.googleapis.com/v1/x/tn2",
+        url="https://firestore.googleapis.com/v1/x/tn2",
+    )
+    intake.store_item(pg, src["source_id"], item)
+    intake.mark_ingested(
+        pg, intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    )
+    new_body = "2026년 9월 19일 시간: 19:00~23:00 장소: PISTA (피스타)"
+    revised = _full_item(
+        external_id="https://firestore.googleapis.com/v1/x/tn2",
+        url="https://firestore.googleapis.com/v1/x/tn2", body=new_body,
+    )
+    assert intake.store_item(pg, src["source_id"], revised) == "REVISED"
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    assert content_store.get(pg, item_id)["extracted_text"] == new_body
+    assert item_id not in content_store.newly_collected(pg)
+
+
+def test_storing_the_same_tangonow_item_twice_is_idempotent_and_bypassed(pg, unique):
+    from runtime import collectors
+
+    src = _web_source(pg, unique, parser=collectors.WEB_PARSER_TANGONOW)
+    item = _full_item(
+        external_id="https://firestore.googleapis.com/v1/x/tn3",
+        url="https://firestore.googleapis.com/v1/x/tn3",
+    )
+    intake.store_item(pg, src["source_id"], item)
+    intake.store_item(pg, src["source_id"], item)
+    item_id = intake.recent_items(pg, source_id=src["source_id"])[0]["source_item_id"]
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM source_item_content WHERE source_item_id = %s", (item_id,)
+        )
+        assert cur.fetchone()[0] == 1
+    assert item_id not in content_store.newly_collected(pg)
+
+
+def test_queue_counts_only_include_the_generically_fetchable_item(pg, unique):
+    """A TangoNOW item and a DanceInfo item collected in the same tick: only
+    the DanceInfo one may ever be counted as queued."""
+    from runtime import collectors
+
+    tangonow_src = _web_source(pg, unique, parser=collectors.WEB_PARSER_TANGONOW)
+    danceinfo_src = _web_source(pg, unique + "-di", parser=collectors.WEB_PARSER_DANCEINFO)
+
+    tangonow_item = _full_item(
+        external_id="https://firestore.googleapis.com/v1/x/tn4",
+        url="https://firestore.googleapis.com/v1/x/tn4",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    danceinfo_item = _full_item(
+        external_id="https://danceinfo.net/lessons/9003",
+        url="https://danceinfo.net/lessons/9003",
+        body="", raw={"acquisition_quality": "METADATA_ONLY"},
+    )
+    intake.store_item(pg, tangonow_src["source_id"], tangonow_item)
+    intake.store_item(pg, danceinfo_src["source_id"], danceinfo_item)
+    tangonow_id = intake.recent_items(pg, source_id=tangonow_src["source_id"])[0]["source_item_id"]
+    danceinfo_id = intake.recent_items(pg, source_id=danceinfo_src["source_id"])[0]["source_item_id"]
+
+    newly = content_store.newly_collected(pg)
+    assert tangonow_id not in newly
+    assert danceinfo_id in newly
+
+    for source_item_id in newly:
+        content_store.ensure_row(pg, source_item_id)
+    before = {tangonow_id, danceinfo_id} & set(newly)
+    queued = content_store.mark_pending(pg, list(before))
+    assert queued == 1
+    assert content_store.get(pg, danceinfo_id)["acquisition_status"] == "FETCH_PENDING"
+    assert content_store.get(pg, tangonow_id) is None

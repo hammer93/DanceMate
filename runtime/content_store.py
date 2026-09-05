@@ -125,6 +125,33 @@ def get(con, source_item_id: int) -> dict[str, Any] | None:
         return _row(cur)
 
 
+def newly_collected(con) -> list[int]:
+    """Items with a URL that have never been considered for acquisition at
+    all, or that are still sitting at `METADATA_ONLY` - `acquisition_job.run()`'s
+    own first step, "anything collected but never queued becomes queued".
+
+    A `NON_HTML_API_PARSERS` source (TangoNOW, Tango Calendar Korea) is
+    excluded here regardless of its content state: its `source_url` is a
+    JSON API endpoint that will never serve HTML, so this is not "waiting to
+    be queued" - it must never be queued at all. v0.82.2's
+    `settle_full_body()` already keeps a normal item off this list by giving
+    it a `FETCHED_FULL` content row at intake; this exclusion is the
+    content-agnostic backstop for the rare case discovery's own body was too
+    short to settle.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT i.source_item_id FROM source_items i "
+            "JOIN sources s ON s.source_id = i.source_id "
+            "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            "WHERE i.url IS NOT NULL "
+            "  AND (c.source_item_id IS NULL OR c.acquisition_status = %s) "
+            "  AND NOT (COALESCE(s.config->>'parser', '') = ANY(%s))",
+            (acquisition.METADATA_ONLY, list(acquisition.NON_HTML_API_PARSERS)),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 def mark_pending(con, source_item_ids: list[int]) -> int:
     """Queue items for acquisition. Never re-queues a settled item."""
     if not source_item_ids:
@@ -140,7 +167,15 @@ def mark_pending(con, source_item_ids: list[int]) -> int:
 
 
 def due_for_acquisition(con, *, limit: int = 10) -> list[dict[str, Any]]:
-    """Items whose fetch is due: queued or retryable, and past their backoff."""
+    """Items whose fetch is due: queued or retryable, and past their backoff.
+
+    A row belonging to a `NON_HTML_API_PARSERS` source is excluded here too,
+    independent of the exclusion already applied where such a row would
+    normally get queued (`scheduler.acquisition_job.run()`'s own selection).
+    This is deliberate defense in depth: a historical row already sitting at
+    `FETCH_PENDING`/`FETCH_FAILED`/`FETCH_BLOCKED` from before this release
+    must not be fetched either, even though no new one can be created.
+    """
     with con.cursor() as cur:
         cur.execute(
             "SELECT c.*, i.url, i.title AS item_title, i.source_id, s.source_key, s.platform "
@@ -150,9 +185,10 @@ def due_for_acquisition(con, *, limit: int = 10) -> list[dict[str, Any]]:
             "WHERE c.acquisition_status = ANY(%s) "
             "  AND i.url IS NOT NULL "
             "  AND (c.next_attempt_at IS NULL OR c.next_attempt_at <= now()) "
+            "  AND NOT (COALESCE(s.config->>'parser', '') = ANY(%s)) "
             "ORDER BY c.next_attempt_at NULLS FIRST, c.source_item_id "
             "LIMIT %s",
-            (list(acquisition.RETRYABLE), limit),
+            (list(acquisition.RETRYABLE), list(acquisition.NON_HTML_API_PARSERS), limit),
         )
         return _rows(cur)
 

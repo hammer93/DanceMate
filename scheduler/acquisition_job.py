@@ -36,16 +36,11 @@ def run(settings: Settings, *, max_fetches: int = MAX_FETCHES_PER_TICK,
     total_chars = 0
 
     with db.connect(settings, autocommit=True) as con:
-        # Anything collected but never queued becomes queued.
-        with con.cursor() as cur:
-            cur.execute(
-                "SELECT i.source_item_id FROM source_items i "
-                "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
-                "WHERE i.url IS NOT NULL "
-                "  AND (c.source_item_id IS NULL OR c.acquisition_status = %s)",
-                (acquisition.METADATA_ONLY,),
-            )
-            newly = [row[0] for row in cur.fetchall()]
+        # Anything collected but never queued becomes queued - see
+        # content_store.newly_collected()'s own docstring for why a
+        # NON_HTML_API_PARSERS source is excluded from that regardless of
+        # its content state.
+        newly = content_store.newly_collected(con)
         for source_item_id in newly:
             content_store.ensure_row(con, source_item_id)
         queued = content_store.mark_pending(con, newly)
