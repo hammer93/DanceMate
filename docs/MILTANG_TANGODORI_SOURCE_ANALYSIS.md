@@ -306,7 +306,23 @@ This is a provenance graph, not proof of a contractual feed. The public evidence
 - `https://firestore.googleapis.com/v1/projects/ktangoguide/databases/(default)/documents/events?pageSize=1`
 - `https://firestore.googleapis.com/v1/projects/ktangoguide/databases/(default)/documents/milongas?pageSize=1`
 
-이번 작업에서는 collector, DB, Source registration, scheduler, deployment, production configuration을 변경하지 않았다.
+이번 조사(위 1-9절) 자체는 collector, DB, Source registration, scheduler, deployment, production configuration을 변경하지 않았다. 아래 10절은 그 이후 실제로 구현된 상태를 기록한다(2026-09-05, v0.83 Source Application).
+
+## 10. Implementation Update (v0.83)
+
+구현 세부사항은 `docs/TANGO_SOURCE_IMPLEMENTATION.md`의 "SRC-W-002 eventsBundle" 및 "SRC-W-005 — Miltang" 절을 최종 기준으로 한다. 이 절은 조사 결론이 실제로 어떻게 반영됐는지만 요약한다.
+
+- **TangoNOW(SRC-W-002)**: 기존 Firestore 경로를 그대로 유지·안정화했다. `eventsBundle`은 실제 요청으로 재확인한 결과 요청 수/과거 데이터량 측면에서 유리하지만, 하나의 배열 안에 날짜 필드 표기가 세 가지(`date`, `start_date`/`end_date`, `startDate`/`endDate`)로 섞여 있는 등 조사 문서가 포착하지 못한 스키마 이질성이 실제로 확인됐다. `parse_bundle()`/`discover_bundle()`는 구현·테스트했지만 `collectors.py` dispatch에는 연결하지 않았다 — 이미 운영 중인 소스를 모니터링 기간 없이 바꾸지 않는다는 판단이다.
+- **Miltang(신규 SRC-W-005)**: SECONDARY/DIRECTORY, 기본 비활성으로 등록(migration 023). `/milongas`(요일별, `week=`+`date=` 둘 다 필요 — `date=` 단독 요청은 현재 주로 조용히 되돌아가는 것을 실제 요청으로 확인, 그래서 매 페이지의 실제 표시 날짜를 요청한 날짜와 대조해 어긋나면 즉시 오류로 처리한다)와 `/notices`(날짜 없음)를 읽는다. 상세 페이지는 JSON-LD를 우선 사용하고 TIME/LINK/반복 라벨은 `<dl>`에서 보완한다.
+- **KTNow 중복 처리**: 별도 dedup 코드를 추가하지 않고 기존 `venue_aliases` + `duplicates.classify()`를 그대로 사용한다. 다만 Miltang이 장소명을 `"PISTA 피스타"`처럼 영문+한글을 공백으로 합쳐 표기한다는 사실이 실제 dedup 테스트(수기로 만든 기대값이 아니라 진짜 `extract_venue()`를 호출하는 테스트)에서 드러나, 이 조사 문서가 예상하지 못했던 문제였다 — 마이그레이션 022가 두 표기를 항상 "따로" 등록해 두었기 때문에 합쳐진 문자열은 그대로는 해석되지 않았다. `"PISTA (피스타)"`처럼 괄호로 다시 표기해 기존 alias 테이블로 그대로 해석되도록 했다(코드/문서 근거는 위 구현 문서 참조).
+- **Tangodori**: 구현하지 않음(11절 참조, 이 조사의 3/4/8절 결론 그대로 유지).
+- **원문 LINK 승격 금지**: Miltang 상세의 LINK(카카오톡 오픈채팅/페이스북/인스타그램/다음카페 등)는 본문에 그대로 보존하되, `source_url`은 항상 이 소스 자체의 Miltang 상세 URL이다 — 원문이 profile/root 링크뿐인 경우에도 마찬가지다.
+- **테스트**: fixture 기반 단위 테스트(`tests/test_tangonow_discovery.py`의 bundle 절, `tests/test_miltang_discovery.py`) 및 실제 PostgreSQL을 쓰는 통합 테스트(`tests/test_miltang_source_migration.py`, KTNow/Miltang dedup·기존 SRC-W-001~004 회귀 포함) 전체 통과 확인(격리된 clone에서 실행, 운영 DB에는 commit하지 않음).
+- **Production 변경**: 이번 구현에서도 실제 수집 실행, scheduler 활성화, main 배포·병합은 하지 않았다(아래 최종 보고서 참조).
+
+## 11. Tangodori — 미구현 사유 (요약)
+
+3/4/8절의 결론을 그대로 따른다: Tangodori의 이용약관(2026-06-27 갱신)이 "scrape or abuse the APIs"를 명시적으로 금지한다. robots.txt나 `_payload.json` route의 기술적 접근성과 무관하게, 운영자의 서면 허가 또는 공식 feed 제공 전까지는 구현하지 않는다.
 
 MILTANG TANGODORI KTNow SOURCE ANALYSIS COMPLETE
 
