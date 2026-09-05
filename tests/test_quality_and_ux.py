@@ -310,7 +310,7 @@ def test_two_cities_do_not_bleed_into_each_others_filter(pg, unique):
                     (other["region_id"], there["event_id"]))
 
     in_seoul = [e["id"] for e in events_api.search(
-        pg, region="Seoul", limit=events_api.MAX_LIMIT)["events"]]
+        pg, region=seoul["name"], limit=events_api.MAX_LIMIT)["events"]]
     in_other = [e["id"] for e in events_api.search(
         pg, region=f"Busan{unique}", limit=events_api.MAX_LIMIT)["events"]]
     assert here["event_id"] in in_seoul and here["event_id"] not in in_other

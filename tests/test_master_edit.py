@@ -139,7 +139,7 @@ def test_editing_a_venue_reaches_the_user_surface(pg, unique, seoul_id):
     assert shown["venue"]["address"] == "서울 마포구 잔다리로 48, 2층"
 
 
-def test_moving_a_venue_to_another_region_moves_its_events(pg, unique, seoul_id):
+def test_moving_a_venue_to_another_region_moves_its_events(pg, unique, seoul_id, seoul_name):
     """The region filter has to follow, or it keeps offering a city the venue
     has left."""
     stored, venue = _linked_venue(pg, unique, seoul_id)
@@ -147,7 +147,7 @@ def test_moving_a_venue_to_another_region_moves_its_events(pg, unique, seoul_id)
         pg, code=f"KR-TEST{unique}", country="South Korea",
         city=f"TestCity{unique}", name=f"TestCity{unique}",
     )
-    assert events_api.get_event(pg, stored["event_id"])["region"] == "Seoul"
+    assert events_api.get_event(pg, stored["event_id"])["region"] == seoul_name
 
     master_edit.apply_edit(
         pg, master_edit.VENUE, venue["venue_id"], {"region_id": other["region_id"]},

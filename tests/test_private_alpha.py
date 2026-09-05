@@ -262,12 +262,12 @@ def test_the_dashboard_buckets_match_what_the_search_returns(pg, unique):
         assert bucket_delta == served_delta == 1, key
 
 
-def test_the_coverage_matrix_shows_the_gaps(pg, unique):
+def test_the_coverage_matrix_shows_the_gaps(pg, unique, seoul_name):
     """'Salsa in Busan: 0' is a coverage gap no total can show."""
     _live(pg, unique, "1")
     matrix = quality.coverage_matrix(pg)
     assert matrix["genres"]
-    assert "Seoul" in matrix["regions"]
+    assert seoul_name in matrix["regions"]
     for genre in matrix["genres"]:
         for region in matrix["regions"]:
             assert isinstance(matrix["grid"][genre].get(region, 0), int)

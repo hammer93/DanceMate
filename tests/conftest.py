@@ -145,6 +145,34 @@ def seoul_id(pg) -> int:
 
 
 @pytest.fixture
+def seoul_name(pg) -> str:
+    """The region master's current display name for KR-SEOUL.
+
+    v0.82.1: an admin renamed regions.name from "Seoul" to "서울" on the live
+    staging database. A test that hardcodes "Seoul" is asserting a global
+    value it does not own; this fixture reads whatever name is live right now,
+    so the assertion tracks the master instead of freezing a snapshot of it.
+    """
+    from runtime import master_data
+
+    for region in master_data.list_regions(pg):
+        if region["code"] == "KR-SEOUL":
+            return region["name"]
+    pytest.skip("KR-SEOUL region is not seeded; run the migrations first")
+
+
+@pytest.fixture
+def busan_name(pg) -> str:
+    """The region master's current display name for KR-BUSAN (see seoul_name)."""
+    from runtime import master_data
+
+    for region in master_data.list_regions(pg):
+        if region["code"] == "KR-BUSAN":
+            return region["name"]
+    pytest.skip("KR-BUSAN region is not seeded; run the migrations first")
+
+
+@pytest.fixture
 def committed_sources():
     """source_ids created through a real, committing connection (e.g. a
     TestClient POST to the admin API), deleted for real at teardown.
