@@ -281,6 +281,54 @@ def test_config_days_ahead_is_passed_only_to_the_danceinfo_parser(settings, monk
     assert seen_kwargs == {"days_ahead": 7}
 
 
+def test_config_days_ahead_is_also_passed_to_the_miltang_parser(settings, monkeypatch):
+    """v0.83: Miltang's own `/milongas` list is day-scoped exactly like
+    DanceInfo's - the same days_ahead gate must forward to it too."""
+    from runtime import miltang_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(miltang_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "miltang_ssr",
+        "board_urls": ["https://miltang.com/milongas"],
+        "days_ahead": 13,
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {"days_ahead": 13}
+
+
+def test_miltang_parser_dispatches_to_its_own_discovery_module(settings, monkeypatch):
+    from runtime import miltang_discovery, web_discovery
+
+    monkeypatch.setattr(
+        web_discovery, "discover",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("wrong discovery module")),
+    )
+    calls = []
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        calls.append(list_url)
+        return [{
+            "source_url": "https://miltang.com/milongas/731",
+            "title": "The PISTA Milonga", "body": "2026년 9월 5일 장소: PISTA",
+            "published_at": None, "acquisition_quality": "FETCHED_FULL",
+        }]
+
+    monkeypatch.setattr(miltang_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "miltang_ssr",
+        "board_urls": ["https://miltang.com/milongas"],
+    })
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert calls == ["https://miltang.com/milongas"]
+    assert len(result.items) == 1
+
+
 def test_days_ahead_is_not_sent_to_the_board_parser(settings, monkeypatch):
     from runtime import web_discovery
 

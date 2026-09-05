@@ -443,3 +443,184 @@ def discover(
         post["source_id"] = source_id
         post["platform"] = platform
     return posts
+
+
+# --- eventsBundle (v0.83: prepared, not activated) ---------------------------
+#
+# ktnow.kr's current live frontend does not read Firestore directly - it
+# calls this Cloud Function, which reshapes the same Firestore-backed data
+# into one flat JSON response (no per-page round trip, no typed-value
+# unwrapping). Confirmed directly against a live response before writing
+# this (Section 3: "eventsBundle이 요청 수와 과거 데이터량을 줄이는 데 실제로
+# 유리한지 확인한다"):
+#
+#   - One request returns everything the frontend needs (345 `main` + 28
+#     `archived` + 83 `brands`, ~560 KB) where the existing Firestore path
+#     may walk many separate `documents.list` pages to reach the same `main`
+#     set, most of it already-archived history first (a live Firestore
+#     sample was ~94% archived).
+#   - The response is server-cached (`Cache-Control: public, max-age=300,
+#     s-maxage=600`), so a repeat request inside that window costs the
+#     origin nothing extra.
+#
+# But a live sample also showed real schema heterogeneity the discovery
+# report's own clean field list did not surface: `main` mixes at least
+# three different date-field conventions across records (`date` alone on
+# ~97% of records, `start_date`/`end_date` on a multi-day-festival minority,
+# and a third, differently-cased `startDate`/`endDate` pair on a smaller
+# minority still), and `normalizedTime` - listed as an observed field - was
+# null on every one of the 345 sampled records, never populated.
+# `source_url` provenance is also weaker than Firestore's: only ~20% of
+# records carry any `link`/`sourceLink` value at all.
+#
+# Given SRC-W-002 is already live on real board data (this task's own #1
+# priority is stabilising it, not migrating it), an internal,
+# non-contractual Cloud Function endpoint with this much internal
+# heterogeneity is not something to switch a stable source onto without a
+# monitoring period first. So this section stops short of wiring
+# `parse_bundle()`/`discover_bundle()` into `collectors.py`'s dispatch
+# table - the registered SRC-W-002 row's `config.parser` stays
+# `tangonow_firestore`, unchanged. These two functions exist, are tested
+# against a fixture shaped like the real response, and are ready to be
+# wired in later (see docs/TANGO_SOURCE_IMPLEMENTATION.md for the exact
+# small addition that would take).
+
+BUNDLE_URL = "https://asia-northeast3-ktangoguide.cloudfunctions.net/eventsBundle?days=14"
+
+
+def _bundle_date(record: dict[str, Any]) -> Any:
+    """The first explicit date this record actually carries, honouring all
+    three conventions observed live - `date` (the vast majority), then
+    `start_date`/`startDate` (the multi-day-festival minorities). Never
+    invents one: a record with none of these is skipped by the caller."""
+    for name in ("date", "start_date", "startDate"):
+        value = record.get(name)
+        if value:
+            return value
+    return None
+
+
+def _synthesize_bundle_body(record: dict[str, Any]) -> str:
+    """Same Korean-labelled convention as `_synthesize_body()` (Firestore
+    path), adapted for the bundle's flat, already-plain-JSON record shape -
+    no Firestore typed-value unwrapping needed here."""
+    parts: list[str] = []
+
+    event_date = _format_date_kr(_bundle_date(record))
+    if event_date:
+        parts.append(event_date)
+
+    time_expr = format_time_range(record.get("time"))
+    if time_expr:
+        parts.append(f"시간: {time_expr}")
+
+    venue = record.get("place")
+    if venue:
+        parts.append(f"장소: {venue}")
+
+    region = record.get("region") or record.get("regionLarge") or record.get("regionSmall")
+    if region:
+        parts.append(f"지역: {region}")
+
+    dj = record.get("dj")
+    if dj:
+        parts.append(f"DJ: {dj}")
+
+    organizer = record.get("org") or record.get("host")
+    if organizer:
+        parts.append(f"주최: {organizer}")
+
+    price = record.get("price")
+    if price not in (None, ""):
+        try:
+            amount = int(price)
+            parts.append(f"입장료 {amount}원")
+        except (TypeError, ValueError):
+            parts.append(f"입장료: {price}")
+
+    description = record.get("description")
+    if description:
+        parts.append(str(description))
+
+    return " ".join(parts)
+
+
+def _parse_bundle_payload(payload: Any, bundle_url: str) -> list[dict[str, Any]]:
+    """`main` records -> RawPostRecord-shaped dicts. `archived` is never
+    read: those records are already excluded by the bundle's own backend,
+    the same "archived/cancelled record는 upcoming candidate에서 제외"
+    outcome the Firestore path enforces itself by checking `status`."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("main"), list):
+        raise DiscoveryError(
+            f"{bundle_url} has no 'main' array - bundle schema changed"
+        )
+
+    posts: list[dict[str, Any]] = []
+    for record in payload["main"]:
+        if not isinstance(record, dict):
+            continue
+        status = str(record.get("status") or "").strip().lower()
+        if status in _ARCHIVED_STATUSES:
+            continue
+
+        title = str(record.get("title") or "").strip()
+        if not title:
+            continue
+
+        raw_date = _bundle_date(record)
+        if not raw_date or not _format_date_kr(raw_date):
+            continue
+
+        source_url = record.get("sourceLink") or record.get("link")
+        if not source_url:
+            # ~80% of sampled records carry neither field - a real,
+            # documented gap in this endpoint's own provenance, not
+            # something to paper over with a link that would resolve to
+            # nothing (Section 6/7's own KTNow finding: a generic
+            # `/?mode=event` route cannot recover one specific document).
+            record_id = record.get("id")
+            source_url = f"{bundle_url}#{record_id}" if record_id else bundle_url
+
+        published = _parse_iso(record.get("updatedAt") or record.get("createdAt"))
+        posts.append({
+            "source_url": source_url,
+            "title": title,
+            "body": _synthesize_bundle_body(record),
+            "published_at": published.isoformat() if published else None,
+            "acquisition_quality": "FETCHED_FULL",
+        })
+    return posts
+
+
+def parse_bundle(raw_text: str, bundle_url: str = BUNDLE_URL) -> list[dict[str, Any]]:
+    """`collectors._collect_snapshot()`'s generic WEB entry point for the
+    bundle shape, mirroring `parse_list()`'s role for the Firestore path.
+
+    Schema-drift guard: `main` must actually be present and be a list - a
+    response that has lost that shape must surface as a `DiscoveryError`,
+    not silently parse to zero events.
+    """
+    import json as _json
+
+    try:
+        payload = _json.loads(raw_text)
+    except _json.JSONDecodeError as exc:
+        raise DiscoveryError(f"{bundle_url} is not valid JSON: {exc}") from exc
+    return _parse_bundle_payload(payload, bundle_url)
+
+
+def discover_bundle(
+    bundle_url: str = BUNDLE_URL, *, source_id: str, platform: str = "WEB",
+    timeout: int = DEFAULT_TIMEOUT, opener=None,
+) -> list[dict[str, Any]]:
+    """One `eventsBundle` request -> RawPostRecord-shaped dicts.
+
+    Not wired into `collectors.py`'s dispatch table yet - see this module's
+    own "eventsBundle" section docstring above for why.
+    """
+    payload = _fetch_json(bundle_url, timeout=timeout, opener=opener)
+    posts = _parse_bundle_payload(payload, bundle_url)
+    for post in posts:
+        post["source_id"] = source_id
+        post["platform"] = platform
+    return posts

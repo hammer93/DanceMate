@@ -351,3 +351,147 @@ def test_parse_list_reads_a_recorded_firestore_page_text():
 def test_parse_list_raises_on_invalid_json():
     with pytest.raises(tn.DiscoveryError):
         tn.parse_list("{not json}", LIST_URL)
+
+
+# --- eventsBundle: prepared, not activated (Section 3) -----------------------
+#
+# Fixtures below are shaped like the real `eventsBundle?days=14` response
+# (confirmed directly against a live request before writing this module's
+# bundle section), trimmed to the fields this parser reads.
+
+BUNDLE_URL = tn.BUNDLE_URL
+
+
+def _bundle_record(**overrides) -> dict:
+    base = {
+        "id": "0SB1vX8MbJ7I6l1dePUx",
+        "title": "밀빠쏘",
+        "date": "2026-09-06",
+        "time": "14:00-18:00",
+        "place": "PISTA",
+        "region": "서울",
+        "org": "PISTA",
+        "dj": None,
+        "price": 13000,
+        "description": None,
+        "status": "active",
+        "link": None,
+        "sourceLink": None,
+        "createdAt": "2026-08-26T23:51:03Z",
+        "updatedAt": "2026-08-26T23:51:03Z",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_bundle_main_record_parses_title_date_time_place_org():
+    payload = json.dumps({"main": [_bundle_record()], "archived": [], "brands": []})
+    posts = tn.parse_bundle(payload, BUNDLE_URL)
+    assert len(posts) == 1
+    post = posts[0]
+    assert post["title"] == "밀빠쏘"
+    assert "2026년 9월 6일" in post["body"]
+    assert "시간: 14:00~18:00" in post["body"]
+    assert "장소: PISTA" in post["body"]
+    assert "주최: PISTA" in post["body"]
+    assert "입장료 13000원" in post["body"]
+
+
+def test_bundle_archived_status_is_excluded():
+    payload = json.dumps({"main": [_bundle_record(status="archived")]})
+    assert tn.parse_bundle(payload, BUNDLE_URL) == []
+
+
+def test_bundle_canceled_status_is_excluded():
+    """The bundle's own spelling, confirmed live: "canceled" (one L), not
+    "cancelled" - already covered by the shared `_ARCHIVED_STATUSES` set."""
+    payload = json.dumps({"main": [_bundle_record(status="canceled")]})
+    assert tn.parse_bundle(payload, BUNDLE_URL) == []
+
+
+def test_bundle_record_with_no_explicit_date_is_dropped():
+    payload = json.dumps({"main": [_bundle_record(date=None)]})
+    assert tn.parse_bundle(payload, BUNDLE_URL) == []
+
+
+@pytest.mark.parametrize("date_field", ["date", "start_date", "startDate"])
+def test_bundle_honours_all_three_observed_date_field_names(date_field):
+    """Confirmed live: `main` mixes `date` (the vast majority), `start_date`
+    (a multi-day-festival minority) and `startDate` (a differently-cased
+    minority still) - none may be assumed absent."""
+    record = _bundle_record(date=None)
+    record[date_field] = "2026-09-06"
+    payload = json.dumps({"main": [record]})
+    posts = tn.parse_bundle(payload, BUNDLE_URL)
+    assert len(posts) == 1
+    assert "2026년 9월 6일" in posts[0]["body"]
+
+
+def test_bundle_source_url_prefers_sourcelink_then_link():
+    payload = json.dumps({"main": [_bundle_record(
+        link="https://www.facebook.com/eltangomilonga",
+        sourceLink="https://www.facebook.com/share/p/1ANKLmedXp/",
+    )]})
+    post = tn.parse_bundle(payload, BUNDLE_URL)[0]
+    assert post["source_url"] == "https://www.facebook.com/share/p/1ANKLmedXp/"
+
+
+def test_bundle_falls_back_to_a_record_identified_url_when_neither_link_exists():
+    """~80% of sampled records carried neither `link` nor `sourceLink` -
+    confirmed live. A missing provenance link must not become a guessed one
+    (Section 6/7: a generic KTNow route cannot recover one specific
+    document), so this falls back to something that at least identifies
+    which record it was, not a bare, indistinguishable bundle URL."""
+    payload = json.dumps({"main": [_bundle_record(link=None, sourceLink=None, id="rec-1")]})
+    post = tn.parse_bundle(payload, BUNDLE_URL)[0]
+    assert post["source_url"] == f"{BUNDLE_URL}#rec-1"
+
+
+def test_bundle_overnight_time_folds_the_same_way_as_firestore():
+    payload = json.dumps({"main": [_bundle_record(time="20:00~24:30")]})
+    post = tn.parse_bundle(payload, BUNDLE_URL)[0]
+    assert "시간: 20:00~00:30" in post["body"]
+
+
+def test_bundle_malformed_json_raises_discovery_error():
+    with pytest.raises(tn.DiscoveryError):
+        tn.parse_bundle("{not json}", BUNDLE_URL)
+
+
+def test_bundle_missing_main_key_raises_discovery_error_not_empty_result():
+    """Schema drift must surface loudly - a response that lost its `main`
+    array reads as "this parser is broken", not "no events today"."""
+    with pytest.raises(tn.DiscoveryError):
+        tn.parse_bundle(json.dumps({"archived": [], "brands": []}), BUNDLE_URL)
+
+
+def test_bundle_main_of_the_wrong_type_raises_discovery_error():
+    with pytest.raises(tn.DiscoveryError):
+        tn.parse_bundle(json.dumps({"main": "not a list"}), BUNDLE_URL)
+
+
+def test_discover_bundle_fetches_one_url_and_tags_source_and_platform(monkeypatch):
+    monkeypatch.setattr(tn.acquisition, "robots_allows", lambda url, **kw: True)
+    opener = lambda request, timeout=None: _Resp({"main": [_bundle_record()]})
+    posts = tn.discover_bundle(BUNDLE_URL, source_id="SRC-W-002", opener=opener)
+    assert len(posts) == 1
+    assert posts[0]["source_id"] == "SRC-W-002"
+    assert posts[0]["platform"] == "WEB"
+
+
+def test_discover_bundle_honours_robots_disallow(monkeypatch):
+    monkeypatch.setattr(tn.acquisition, "robots_allows", lambda url, **kw: False)
+    with pytest.raises(tn.DiscoveryError):
+        tn.discover_bundle(BUNDLE_URL, source_id="SRC-W-002", opener=lambda *a, **kw: _Resp({}))
+
+
+def test_bundle_support_does_not_change_the_firestore_path():
+    """Section 3's own fallback: bundle support is prepared, not activated -
+    `discover()` (Firestore) must remain byte-for-byte the same function it
+    always was, unaffected by `discover_bundle()` existing alongside it."""
+    docs_payload = json.dumps({
+        "documents": [_doc("reg1", {"title": "회귀확인", "date": "2026-09-06"})],
+    })
+    assert tn.parse_list(docs_payload, LIST_URL)[0]["title"] == "회귀확인"
+    assert tn.discover is not tn.discover_bundle
+    assert tn.BUNDLE_URL != LIST_URL
