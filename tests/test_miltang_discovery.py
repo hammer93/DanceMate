@@ -293,6 +293,73 @@ def test_a_record_with_no_title_anywhere_is_dropped():
     assert md.parse_detail(page, "https://miltang.com/milongas/1") is None
 
 
+# --- historical cutoff (Section 27/28): /notices has no date scoping --------
+
+def test_a_past_notice_is_dropped_when_today_is_given():
+    """/notices is unpaged and not date-scoped at all (confirmed live: a
+    2026-08-21 festival notice sat there unfiltered on 2026-09-05) - the
+    same cutoff every other source already applies."""
+    ld = (
+        '{"@type":"Event","name":"지난 페스티벌","startDate":"2026-08-21"}'
+    )
+    page = _detail_page(ld_json=ld, title="지난 페스티벌", time_row=None, org_row=None,
+                         link_row=None, date_row="2026. 8. 21(금)")
+    post = md.parse_detail(page, "https://miltang.com/notices/4", today=md.date(2026, 9, 5))
+    assert post is None
+
+
+def test_todays_notice_survives_the_cutoff():
+    ld = '{"@type":"Event","name":"오늘 페스티벌","startDate":"2026-09-05"}'
+    page = _detail_page(ld_json=ld, title="오늘 페스티벌", time_row=None, org_row=None,
+                         link_row=None, date_row="2026. 9. 5(토)")
+    post = md.parse_detail(page, "https://miltang.com/notices/5", today=md.date(2026, 9, 5))
+    assert post is not None
+
+
+def test_an_upcoming_notice_survives_the_cutoff():
+    ld = '{"@type":"Event","name":"다가오는 페스티벌","startDate":"2026-10-22"}'
+    page = _detail_page(ld_json=ld, title="다가오는 페스티벌", time_row=None, org_row=None,
+                         link_row=None, date_row="2026. 10. 22(목)")
+    post = md.parse_detail(page, "https://miltang.com/notices/16", today=md.date(2026, 9, 5))
+    assert post is not None
+
+
+def test_no_cutoff_is_applied_when_today_is_not_given():
+    """Backward compatible default - an existing direct caller not passing
+    `today` keeps seeing every dated record, past or not."""
+    ld = '{"@type":"Event","name":"지난 페스티벌","startDate":"2026-08-21"}'
+    page = _detail_page(ld_json=ld, title="지난 페스티벌", time_row=None, org_row=None,
+                         link_row=None, date_row="2026. 8. 21(금)")
+    post = md.parse_detail(page, "https://miltang.com/notices/4")
+    assert post is not None
+
+
+def test_notices_discovery_excludes_a_past_notice_from_upcoming_candidates(monkeypatch):
+    """End to end through discover(): the past notice's detail is still
+    fetched (its source_item provenance is not lost - Section 27), but it
+    never becomes a returned, candidate-eligible post."""
+    monkeypatch.setattr(md.acquisition, "robots_allows", lambda url, **kw: True)
+    monkeypatch.setattr(md, "_seoul_today", lambda: md.date(2026, 9, 5))
+
+    past_ld = '{"@type":"Event","name":"지난 페스티벌","startDate":"2026-08-21"}'
+    upcoming_ld = '{"@type":"Event","name":"다가오는 페스티벌","startDate":"2026-10-22"}'
+
+    def opener(request, timeout=None):
+        url = request.full_url
+        if url.endswith("/notices/4"):
+            return _Resp(_detail_page(ld_json=past_ld, title="지난 페스티벌", time_row=None,
+                                       org_row=None, link_row=None))
+        if url.endswith("/notices/16"):
+            return _Resp(_detail_page(ld_json=upcoming_ld, title="다가오는 페스티벌",
+                                       time_row=None, org_row=None, link_row=None))
+        return _Resp('<html><body><a href="/notices/4">a</a><a href="/notices/16">b</a>'
+                      '</body></html>')
+
+    posts = md.discover(NOTICES_URL, source_id="SRC-W-005", opener=opener)
+    titles = {p["title"] for p in posts}
+    assert titles == {"다가오는 페스티벌"}
+
+
 def test_published_at_is_always_none():
     """Neither created_at nor updated_at is present on a detail page
     (confirmed live) - never guessed from the sitemap's own lastmod."""
