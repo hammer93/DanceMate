@@ -198,6 +198,50 @@ recovered Miltang events: 31/57 (54%), not a regression against the original
 Miltang event (false `VERIFIED` = 0) and `human_review_actions` stayed empty
 throughout (Human Review non-interference).
 
+### v0.82.3 fix: non-HTML API acquisition bypass
+
+v0.82.2's `settle_full_body()` keeps a normal TangoNOW/Tango Calendar Korea
+item out of the generic content-acquisition queue, but that guarantee is
+tied to content quality — a body under `MINIMUM_USEFUL_TEXT` is never
+settled, and falls back to the ordinary `METADATA_ONLY` path straight into
+the queue. Both sources' `source_url` is a JSON API endpoint (a Firestore
+document for TangoNOW, a `/api/events/{id}` reference for Tango Calendar
+Korea) that never serves HTML — confirmed live via `content_fetch_log`: 64
+and 27 historical fetches respectively, every one landing on
+`UNSUPPORTED_CONTENT_TYPE`, all from before this fix.
+
+**Fix**: `runtime.acquisition.NON_HTML_API_PARSERS`, a frozenset of the two
+`runtime.collectors` parser codes (`WEB_PARSER_TANGONOW`,
+`WEB_PARSER_TANGOCALENDAR`) — not a `source_id` check. Applied in two
+places for defense in depth: `content_store.newly_collected()` (extracted
+from `scheduler/acquisition_job.py`'s own inline "anything collected but
+never queued becomes queued" query, now directly testable) excludes a
+matching item before it can ever be queued, and
+`content_store.due_for_acquisition()` excludes it again so a historical row
+already sitting at `FETCH_PENDING`/`FAILED`/`BLOCKED` is never fetched
+either. Miltang (`WEB_PARSER_MILTANG`) and DanceInfo
+(`WEB_PARSER_DANCEINFO`) are deliberately excluded from this set — Miltang's
+detail pages are real HTML (already fetched once during discovery), and
+DanceInfo's title-only list stage still needs a real detail fetch. A
+dedicated test asserts `NON_HTML_API_PARSERS` can never silently drift from
+`runtime.collectors`' own registry.
+
+**Board validation**: a controlled one-shot live collection of all four
+sources (TangoNOW 64 discovered/all duplicate, Tango Calendar Korea 27/all
+duplicate, DanceInfo 12/1 new, Miltang 103/all duplicate) showed
+`newly_collected()` returning exactly one eligible item — DanceInfo's new
+one — confirming TangoNOW and Tango Calendar Korea items are excluded from
+the queue even under a real live re-collection, while DanceInfo's new item
+correctly went through the full fetch → `FETCHED_FULL` → ingest →
+normalize cascade. No new `UNSUPPORTED` row was created for either
+non-HTML source; `content_fetch_log`'s two host counts (64, 27) stayed
+exactly where they were before this release. Two further idle scheduler
+cycles showed the same stable candidate/event counts (222 candidates, 196
+normalized) with zero drift. Events for all four sources were unchanged or
+grew exactly as expected (SRC-W-004: 2 → 2, since the one new item did not
+independently resolve to a listed event — ordinary engine extraction
+behaviour, unrelated to this fix).
+
 ## Tangodori — not implemented
 
 Per `docs/MILTANG_TANGODORI_SOURCE_ANALYSIS.md` Section 4/7/8: Tangodori's
