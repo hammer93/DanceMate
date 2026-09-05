@@ -238,6 +238,27 @@ METHOD_NONE = "none"
 # from a page this module actually fetched and parsed.
 METHOD_DISCOVERY_SYNTHESIZED = "discovery_synthesized"
 
+# v0.82.3: `runtime.collectors` parser codes (`WEB_PARSER_TANGONOW`,
+# `WEB_PARSER_TANGOCALENDAR`) whose discovery reads the source's
+# authoritative API response directly. A record's `source_url` for one of
+# these is a JSON API endpoint - a Firestore document, a
+# `/api/events/{id}` reference - that will never serve HTML, unlike
+# Miltang's own SSR detail pages (real HTML, simply already fetched once
+# during discovery - deliberately NOT included here) or DanceInfo's
+# title-only list stage (a real detail page still waiting to be fetched -
+# also not included). v0.82.2's `settle_full_body()` already keeps a normal
+# `FETCHED_FULL` record out of the generic queue, but that guarantee is tied
+# to content quality (a body under `MINIMUM_USEFUL_TEXT` is never settled).
+# This set is the independent, content-agnostic backstop: a record from one
+# of these parsers must never enter the generic content-acquisition queue at
+# all, because doing so is not "waiting for content" - it is a fetch
+# structurally guaranteed to return `UNSUPPORTED_CONTENT_TYPE`. Values are
+# plain string literals rather than an import of `runtime.collectors` (a
+# much heavier module) to avoid widening this leaf module's dependency
+# surface; `tests/test_collectors.py` asserts these two sets can never
+# silently drift apart.
+NON_HTML_API_PARSERS = frozenset({"tangonow_firestore", "tangocalendar_json"})
+
 
 def visible_text(raw_html: str) -> str:
     stripped = _SCRIPT_OR_STYLE.sub(" ", raw_html)

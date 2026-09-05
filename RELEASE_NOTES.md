@@ -1,5 +1,48 @@
 # DanceMate Release Notes
 
+## v0.82.3 Non-HTML Source Acquisition Bypass + Source Pipeline Hardening
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-05.
+
+Version split:
+
+- Product Runtime: 0.82.3
+- Information Engine: unchanged (0.79) - no engine code changed in this
+  release; the full Engine test suite was still run for integration
+  regression coverage.
+
+### What this closes
+
+v0.82.2 fixed the data-loss bug (a discovery-synthesized body silently
+degraded by the generic acquisition queue), but left a smaller structural
+gap: its `settle_full_body()` guarantee is tied to content quality, so a
+TangoNOW/Tango Calendar Korea item whose body was too short to settle still
+fell back to the ordinary queue - and their `source_url` is a JSON API
+endpoint that will never serve HTML, so that fetch was never "waiting for
+content," it was a wasted request structurally guaranteed to end in
+`UNSUPPORTED_CONTENT_TYPE`. Confirmed via `content_fetch_log`: 64 such
+wasted fetches against TangoNOW's Firestore endpoint, 27 against Tango
+Calendar Korea's API, all pre-dating this release.
+
+### Fix
+
+`runtime.acquisition.NON_HTML_API_PARSERS`, keyed on the source's own
+`config.parser` (no `source_id` branching), excludes a matching item from
+the generic acquisition queue in two places: `content_store
+.newly_collected()` (a new function, extracted from
+`scheduler/acquisition_job.py`'s own inline query so it is directly
+testable) so it is never queued in the first place, and `content_store
+.due_for_acquisition()` so a historical queued row is never fetched either.
+Miltang and DanceInfo are deliberately not in this set - Miltang's own
+detail pages are real HTML, and DanceInfo's title-only list stage still
+needs its real detail fetch, both confirmed unaffected. See
+`docs/TANGO_SOURCE_IMPLEMENTATION.md`'s "v0.82.3 fix" section for the full
+mechanism and the board validation numbers (a live four-source controlled
+collection showed zero new queue entries for TangoNOW/Tango Calendar Korea
+and DanceInfo's detail fetch working exactly as before).
+
 ## v0.82.2 FETCHED_FULL Content Settlement + Reprocess Safety
 
 Status:

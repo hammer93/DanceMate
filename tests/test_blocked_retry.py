@@ -201,13 +201,18 @@ def test_a_blocked_item_leaves_the_queue_then_comes_back_to_it(pg, unique):
 
     assert queued(), "a queued item should be waiting to be fetched"
 
-    # It refuses its body.
+    # It refuses its body. Real wall-clock time here, not the module's frozen
+    # NOW (2026-09-04, used by every pure test above): due_for_acquisition()'s
+    # SQL compares next_attempt_at against the database's own now(), so a
+    # scheduling decision made against a stale frozen clock would eventually
+    # fall behind it and this assertion would start failing for a reason that
+    # has nothing to do with what this test actually guards.
+    before = datetime.now(timezone.utc)
     stored = content_store.record_outcome(
-        pg, item_id, _outcome(acquisition.FETCH_BLOCKED, "BODY_UNAVAILABLE"),
-        now=NOW)
+        pg, item_id, _outcome(acquisition.FETCH_BLOCKED, "BODY_UNAVAILABLE"))
     assert stored["acquisition_status"] == acquisition.FETCH_BLOCKED
     assert stored["next_attempt_at"] is not None, "blocked must be scheduled, not dropped"
-    assert stored["next_attempt_at"] >= NOW + timedelta(hours=24)
+    assert stored["next_attempt_at"] >= before + timedelta(hours=24)
     assert stored["last_attempt_at"] is not None
     assert stored["fetched_at"] is None, "we asked, we did not receive"
     assert not queued(), "and it must not come round again on the next tick"
@@ -222,7 +227,7 @@ def test_a_blocked_item_leaves_the_queue_then_comes_back_to_it(pg, unique):
     # This time the page answers.
     recovered = content_store.record_outcome(
         pg, item_id,
-        _outcome(acquisition.FETCHED_FULL, None, text="본문" * 100), now=NOW)
+        _outcome(acquisition.FETCHED_FULL, None, text="본문" * 100))
     assert recovered["acquisition_status"] == acquisition.FETCHED_FULL
     assert recovered["next_attempt_at"] is None, "a settled item needs no retry"
     assert recovered["fetched_at"] is not None
