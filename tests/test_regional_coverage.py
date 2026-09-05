@@ -117,7 +117,7 @@ def test_an_unresolved_cheongju_event_is_findable_by_region_filter(pg, unique):
     assert stored["venue_status"] == "UNRESOLVED"
     assert stored["region_id"] is None
 
-    result = events_api.search(pg, on="2026-09-05", region="청주", limit=200)
+    result = events_api.search(pg, on="2026-09-05", region="청주", limit=100)
     names = {e["name"] for e in result["events"]}
     assert f"청주 테스트 밀롱가 {unique}" in names
 
@@ -136,7 +136,7 @@ def test_a_region_filter_that_matches_nothing_excludes_the_event(pg, unique):
         "venue": f"StudioAura {unique} (청주시 서원구 사창동 474-3, 3F)",
         "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
     })
-    result = events_api.search(pg, on="2026-09-05", region="진주", limit=200)
+    result = events_api.search(pg, on="2026-09-05", region="진주", limit=100)
     names = {e["name"] for e in result["events"]}
     assert f"청주 배제 테스트 {unique}" not in names
 

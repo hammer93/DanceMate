@@ -353,10 +353,16 @@ def test_resolution_reaches_the_user_surface_and_the_region_filter(pg, unique, s
 
 
 def test_a_region_hint_only_selects_a_region_it_actually_matches(pg, seoul_id):
-    """Defaulting everything to Seoul would file a Busan milonga under Seoul."""
+    """Defaulting everything to Seoul would file a Busan milonga under Seoul.
+
+    전남 (Jeonnam) rather than 제주: v0.82.4's migration 024 registered 제주
+    (a real, currently-collected Miltang event names it) - 전남 is a
+    recognised _REGION_BY_ADMIN prefix this project has no real source
+    evidence for yet, so it stays the genuinely-unregistered case this test
+    means to check."""
     assert venue_resolution.suggested_region_id(pg, "서울") == seoul_id
     assert venue_resolution.suggested_region_id(pg, None) is None
-    assert venue_resolution.suggested_region_id(pg, "제주") is None
+    assert venue_resolution.suggested_region_id(pg, "전남") is None
 
 
 # --- failure handling -------------------------------------------------------
