@@ -169,6 +169,59 @@ def suggested_region_id(con, region_hint: str | None) -> int | None:
     return None
 
 
+# v0.82.4: curated city names confirmed, during that release's investigation,
+# to appear directly in a real Miltang venue string with no enclosing
+# province name at all - "청주시 서원구...", "진주시 평거로...", not
+# "충청북도 청주시..." or "경상남도 진주시...". _REGION_BY_ADMIN /
+# _ADMIN_HEAD_RE only ever match a *leading* province name, so these would
+# stay unresolvable through suggested_region_id() even with their province
+# registered. Every entry here was checked against a real, currently-
+# collected source item - not a guess at what might exist elsewhere.
+CURATED_CITY_HINTS: dict[str, str] = {
+    "청주": "청주", "진주": "진주", "창원": "창원", "포항": "포항",
+    "울산": "울산", "대구": "대구", "제주": "제주",
+    "분당": "경기", "성남": "경기",
+}
+
+
+def guess_region_label(raw_text: str | None) -> str | None:
+    """A best-effort, read-only region label for a raw venue string whose
+    venue is not yet resolved into the master (so `events.region_id` is
+    NULL) - so a reader is not shown a blank region while an operator has
+    not yet resolved the venue. Never authoritative and never persisted
+    anywhere: once a venue is genuinely resolved, its own region_id's name
+    always wins over this (events_api.present() only calls this as a
+    fallback). Nothing here promotes a string to a resolved venue - that
+    judgement still belongs to an operator, unchanged from this module's own
+    rule.
+
+    Curated cities first (Section 19 of the v0.82.4 task: a reader finds
+    "청주" more useful than its enclosing province "충북"), then the same
+    province-name table the admin's own New Venue suggestion form already
+    uses, since a raw string that does carry a full province name (e.g.
+    "제주특별자치도 서귀포시...") deserves at least that label.
+    """
+    text = raw_text or ""
+    for city, label in CURATED_CITY_HINTS.items():
+        if city in text:
+            return label
+    for admin in _REGION_BY_ADMIN:
+        if admin in text:
+            return admin
+    return None
+
+
+def terms_for_label(label: str) -> list[str]:
+    """The raw substrings that would make `guess_region_label()` return
+    `label` - the reverse of the table above, for a caller (the region
+    filter) that needs to match an unresolved event by the same rule a
+    resolved one is already matched by name."""
+    terms = [city for city, mapped in CURATED_CITY_HINTS.items() if mapped == label]
+    if label in _REGION_BY_ADMIN:
+        terms.append(label)
+    return terms
+
+
 def _normalized_address(value: str | None) -> str:
     folded = unicodedata.normalize("NFKC", value or "").strip().lower()
     return re.sub(r"[\s,.\-]+", "", folded)

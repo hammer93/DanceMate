@@ -884,10 +884,20 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
             "<button>Test</button></form></div>"
         )
         health = _source_health(source, outcomes.get(source["source_id"], {}))
+        # A source with no region_id is not "unknown location" the way a
+        # venue is - an AGGREGATOR/DIRECTORY (TangoNOW, Tango Calendar
+        # Korea, Miltang) genuinely covers many regions at once, and its own
+        # region_id is deliberately left unset rather than pinned to one
+        # (Section 27 of the v0.82.4 task: a source's region must never be
+        # used to overwrite an event's own). "전국" says that plainly
+        # instead of a blank badge that reads as a gap.
+        region_label = region_by_id.get(source.get("region_id"))
+        if not region_label and source.get("source_role") in ("AGGREGATOR", "DIRECTORY"):
+            region_label = "전국"
         genre_region = " ".join(
             f'<span class="badge muted">{E(v)}</span>' for v in (
                 genre_by_id.get(source.get("genre_id")),
-                region_by_id.get(source.get("region_id")),
+                region_label,
             ) if v
         ) or '<span class="badge muted">-</span>'
         table_rows.append([
@@ -896,6 +906,7 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
             E(source["platform"]) + "<br>" + f'<span class="badge muted">{E(source["source_role"])}</span>'
             + "<br>" + genre_region,
             _source_target(source),
+            f'<span class="badge muted">{E(collectors.content_mode(source))}</span>',
             _badge(health, _HEALTH_TONE.get(health, "muted")),
             f'<span class="num">{source["collection_interval_minutes"]}m</span>',
             "Success: " + _last_success_text(last_success.get(source["source_id"]))
@@ -951,8 +962,9 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
     body = (
         "<h2>Sources</h2>" + add_form + csv_bar
         + _table(
-            ["Source", "Platform / Genre / Region", "Target", "Health", "Interval",
-             "Last Success / Error", "Items / readable", "Decision", "Collector", "Actions"],
+            ["Source", "Platform / Genre / Region", "Target", "Content Mode", "Health",
+             "Interval", "Last Success / Error", "Items / readable", "Decision",
+             "Collector", "Actions"],
             table_rows,
             empty="no source registered yet",
         )
@@ -1181,8 +1193,15 @@ def admin_source_detail(
             ["Role", E(source["source_role"])],
             ["Authority", E(source["authority_level"])],
             ["Genre", E(genre_by_id.get(source.get("genre_id")) or "-")],
-            ["Region", E(region_by_id.get(source.get("region_id")) or "-")],
+            ["Region", E(
+                region_by_id.get(source.get("region_id"))
+                or ("전국" if source.get("source_role") in ("AGGREGATOR", "DIRECTORY") else "-")
+            )],
             ["Target", _source_target(source)],
+            ["Parser", f'<code>{E(collectors._config(source).get("parser") or "board")}</code>'
+             if source["platform"] == "WEB" else '<span class="badge muted">-</span>'],
+            ["Content Mode",
+             f'<span class="badge muted">{E(collectors.content_mode(source))}</span>'],
             ["Collection interval", f'{source["collection_interval_minutes"]} minutes'],
             ["Enabled", _badge("ENABLED" if source["enabled"] else "DISABLED",
                                "ok" if source["enabled"] else "muted")],

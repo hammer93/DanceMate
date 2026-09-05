@@ -57,8 +57,13 @@ def test_an_unresolved_venue_is_shown_but_flagged():
 
 
 def test_a_resolved_venue_carries_no_caveat():
-    rendered = public._venue_line({"venue": {"name": "아미고스튜디오", "status": "RESOLVED"}})
-    assert rendered == "아미고스튜디오"
+    """v0.82.4: the venue line always carries a region too (Section 17 -
+    "PISTA · 서울"), so this checks the venue half specifically rather than
+    the whole rendered string."""
+    rendered = public._venue_line(
+        {"venue": {"name": "아미고스튜디오", "status": "RESOLVED"}, "region": "부산"}
+    )
+    assert rendered == "아미고스튜디오 · 부산"
 
 
 def test_a_missing_venue_says_so():

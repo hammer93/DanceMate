@@ -455,4 +455,31 @@ TangoNOW/Tango Calendar와 다른 공급 경로이며 경기·대전·전남까�
 - Official venues frequently publish only on social platforms or login-protected cafes, leaving 부산·광주·대구 official-source gaps.
 - Mixed dance directories can create Salsa/Bachata false positives; accept only an explicit Argentine Tango/Tango genre or verified milonga semantics.
 
+## 17. v0.82.4 Status Update — what this research actually became
+
+Sections 1-16 above are the original research snapshot and are left
+unchanged. This section records what the DB, the region master and the
+collector code actually did with it, per source (`docs/
+tango_source_application.csv` carries the same mapping in machine-readable
+form).
+
+| Candidate (this doc) | Decision | Current state |
+|---|---|---|
+| TangoNOW | ADD_NOW | **REGISTERED** - `SRC-W-002`, enabled |
+| Tango Calendar Korea | ADD_NOW | **REGISTERED** - `SRC-W-003`, enabled |
+| DanceInfo | ADD_NOW | **REGISTERED** - `SRC-W-004`, enabled |
+| Miltang | ADD_NOW | **REGISTERED** - `SRC-W-005`, enabled |
+| Tangodori (all 7 city variants + Jeju) | ADD_NOW / MONITOR | **REJECTED** - Section 12/36 of the v0.82.4 task: `docs/tango_aggregator_analysis.csv`'s own finding is unchanged, its Terms (updated 2026-06-27) explicitly prohibit "scrape or abuse the APIs" regardless of data quality or robots.txt. No collector, no Source row. |
+| 2026 Chuncheon International Tango Festival (KCCTF) | ADD_NOW | **VALIDATED, NOT REGISTERED** - re-checked live 2026-09-06: robots `Allow: /`, Terms (a participant payment/refund policy, not a data-use restriction) has no scraping prohibition, the 10/3-10/5 program schedule is real and current. Not implemented this release: the visible SSR HTML only carries Day 1's program panel - Day 2/3 are present only inside the page's Next.js App Router RSC streaming payload (`self.__next_f.push(...)`), a materially more fragile format than the single `__NEXT_DATA__` blob `danceinfo_discovery.py` already parses. Building and trusting a parser for that format was judged out of scope for one annual, three-day event within this release - a wrong date/time for a real festival is a worse outcome than no coverage. Left as a documented candidate for a future release, not force-implemented to hit a source count. |
+| Everything else in Section 7-9 (ADD_LATER/MONITOR/REJECT) | as scored | **NOT REGISTERED** - re-confirmed nothing here changed the original research's own reasoning (login walls, stale content, mixed-genre noise, or a Facebook-mirror provenance the project's own rules already exclude as a primary source) |
+
+Regional coverage (Section 13 above) also moved, via the *existing* Miltang
+source's own real data rather than any new source: 청주, 진주, 창원, 포항,
+울산, 대구, 제주, and a 성남/분당 (경기) event are now real, currently-
+collected items (see `docs/TANGO_SOURCE_IMPLEMENTATION.md`'s "v0.82.4"
+section for the exact per-city evidence and root-cause diagnosis). Pohang's
+and Daegu's own Miltang items exist but currently produce zero engine
+candidates - a separate, out-of-scope extraction gap, not a region-master or
+source problem.
+
 TANGO SOURCE DISCOVERY COMPLETE

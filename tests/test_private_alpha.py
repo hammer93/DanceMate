@@ -154,10 +154,17 @@ def test_recording_a_decision_does_not_stop_collection(pg, unique):
 # --- what a reader is told ---------------------------------------------------
 
 def test_freshness_reads_as_time_ago_while_it_is_recent():
+    """A fixed, midday-Seoul `now` rather than the real wall clock: 2 real
+    hours before whatever moment the suite happens to run at can land on the
+    previous Seoul calendar day if that moment is within two hours of local
+    midnight, which would make "2시간 전" correctly read as a date instead -
+    a real, working `_checked_line()` behaviour that has nothing to do with
+    what this test means to check."""
+    noon_kst = datetime(2026, 9, 5, 12, 0, tzinfo=events_api.SEOUL)
     rendered = public._checked_line({
-        "last_checked": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
-        "date": (events_api.today() + timedelta(days=3)).isoformat(),
-    })
+        "last_checked": (noon_kst - timedelta(hours=2)).isoformat(),
+        "date": (events_api.today(noon_kst) + timedelta(days=3)).isoformat(),
+    }, now=noon_kst)
     assert "2시간 전 확인" in rendered
 
 
