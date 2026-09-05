@@ -22,6 +22,16 @@
 -- about the merge behaviour needs it. A human can assign a region later
 -- through the existing Venue Master edit screen.
 
+-- `venues_region_name_key` (002_master_data.sql) is `UNIQUE (region_id, lower(name))`
+-- - standard SQL unique-constraint semantics treat every NULL as distinct
+-- from every other NULL, so that index (and an `ON CONFLICT` naming it)
+-- can NEVER actually detect a duplicate among region_id-less rows; verified
+-- directly (two inserts of the same NULL-region name both succeeded, giving
+-- two venue_ids). A partial unique index scoped to `region_id IS NULL` gives
+-- these rows a real conflict target without touching the existing schema.
+CREATE UNIQUE INDEX IF NOT EXISTS venues_null_region_name_key
+    ON venues (lower(name)) WHERE region_id IS NULL;
+
 INSERT INTO venues (name, region_id, notes) VALUES
     ('PISTA', NULL, 'v0.82 seed: known cross-source venue alias group'),
     ('EN PAZ Tango Studio', NULL, 'v0.82 seed: known cross-source venue alias group'),
@@ -31,7 +41,7 @@ INSERT INTO venues (name, region_id, notes) VALUES
     ('La Ventana', NULL, 'v0.82 seed: known cross-source venue alias group'),
     ('Amigo Studio', NULL, 'v0.82 seed: known cross-source venue alias group'),
     ('Cafe de Tango', NULL, 'v0.82 seed: known cross-source venue alias group')
-ON CONFLICT (region_id, lower(name)) DO NOTHING;
+ON CONFLICT (lower(name)) WHERE region_id IS NULL DO NOTHING;
 
 -- Aliases: each venue's own canonical name is included as an alias too
 -- (matching master_data.create_venue()'s own convention - "the venue's own
