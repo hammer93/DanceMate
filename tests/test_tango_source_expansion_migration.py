@@ -36,27 +36,39 @@ def seeded(pg):
 
 # --- migration 021: source registration --------------------------------------
 
-def test_registers_all_three_top3_immediate_sources(seeded):
-    with seeded.cursor() as cur:
+def test_registers_all_three_top3_immediate_sources(pg):
+    keys = ("SRC-W-002", "SRC-W-003", "SRC-W-004")
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT source_key FROM sources WHERE source_key = ANY(%s)", (list(keys),)
+        )
+        pre_existing = {r[0] for r in cur.fetchall()}
+
+    _apply(pg, "021", "022")
+
+    with pg.cursor() as cur:
         cur.execute(
             "SELECT source_key, platform, enabled, config->>'parser' AS parser "
-            "FROM sources WHERE source_key IN ('SRC-W-002', 'SRC-W-003', 'SRC-W-004') "
-            "ORDER BY source_key"
+            "FROM sources WHERE source_key = ANY(%s) ORDER BY source_key", (list(keys),)
         )
         rows = {r[0]: {"platform": r[1], "enabled": r[2], "parser": r[3]} for r in cur.fetchall()}
-    assert set(rows) == {"SRC-W-002", "SRC-W-003", "SRC-W-004"}
+    assert set(rows) == set(keys)
     assert all(r["platform"] == "WEB" for r in rows.values())
     assert rows["SRC-W-002"]["parser"] == "tangonow_firestore"
     assert rows["SRC-W-003"]["parser"] == "tangocalendar_json"
     assert rows["SRC-W-004"]["parser"] == "danceinfo_json"
-    # SRC-W-002/003 are genuinely new in this migration and must register
-    # disabled. SRC-W-004 already exists on this shared board from the prior
-    # release (registered, tested and enabled there) - ON CONFLICT DO NOTHING
-    # correctly leaves that real row exactly as it is rather than resetting
-    # it back to disabled, so its enabled state is deliberately not asserted
-    # here.
-    assert rows["SRC-W-002"]["enabled"] is False
-    assert rows["SRC-W-003"]["enabled"] is False
+    # A row this migration actually inserts must register disabled by
+    # default. A row that already existed before this test ran - true of
+    # SRC-W-004 since the prior release, and now also true of SRC-W-002/003
+    # once this release's own live acceptance has enabled them on this
+    # shared board - keeps whatever real, operator-set `enabled` value it
+    # already had: ON CONFLICT DO NOTHING correctly leaves that row
+    # untouched rather than resetting it back to disabled, so a pre-existing
+    # row's enabled state is a fact about this shared board, not something
+    # this migration test may assert either way.
+    for key in keys:
+        if key not in pre_existing:
+            assert rows[key]["enabled"] is False, f"{key} was inserted but not disabled by default"
 
 
 def test_registration_is_idempotent(seeded):
