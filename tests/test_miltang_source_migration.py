@@ -120,6 +120,32 @@ def test_existing_top3_sources_are_preserved(seeded):
 # venue_id and merge with zero new code - exactly like migration 022's own
 # TangoNOW/Tango Calendar Korea dedup test, one source later.
 
+def _miltang_pista_body() -> str:
+    """The real body parse_detail() produces for a PISTA milonga - built by
+    actually calling the discovery module on a minimal detail-page fixture,
+    not hand-typed, so this cannot drift from what body synthesis (the
+    bilingual brand/Korean-name split included - see
+    miltang_discovery._split_bilingual_venue_name()'s own docstring) really
+    does."""
+    from runtime import miltang_discovery
+
+    page = (
+        '<html><body>'
+        '<script type="application/ld+json">'
+        '{"@type":"Event","name":"테스트 밀롱가","startDate":"2026-09-06",'
+        '"location":{"@type":"Place","name":"PISTA 피스타",'
+        '"address":{"@type":"PostalAddress",'
+        '"streetAddress":"서울 월드컵북로6길 49 지하1층"}}}'
+        '</script>'
+        '<h2 class="text-2xl font-bold text-fg1">테스트 밀롱가</h2>'
+        '<dl><div><dt>TIME</dt><dd>14:00~18:00</dd></div></dl>'
+        '</body></html>'
+    )
+    post = miltang_discovery.parse_detail(page, "https://miltang.com/milongas/test")
+    assert post is not None
+    return post["body"]
+
+
 def _candidate(unique, **overrides):
     payload = {
         "candidate_id": int(f"{unique[-6:]}1"),
@@ -142,14 +168,8 @@ def test_tangonow_and_miltang_naming_the_same_venue_differently_share_one_venue_
     seeded, unique,
 ):
     from engine.src import extraction_rules
-    from runtime import miltang_discovery
 
-    # The exact body shape parse_detail() actually produces for a PISTA
-    # milonga - venue text is read through the SAME extract_venue() the real
-    # engine pipeline uses, not hand-typed, so this cannot drift from what
-    # discovery really synthesizes.
-    body = "2026년 9월 6일 시간: 14:00~18:00 장소: PISTA 피스타 (서울 월드컵북로6길 49 지하1층)"
-    reading = extraction_rules.extract_venue(body)
+    reading = extraction_rules.extract_venue(_miltang_pista_body())
     assert reading is not None
 
     tangonow = normalization.normalize_candidate(seeded, _candidate(unique, venue="PISTA"))
@@ -174,8 +194,7 @@ def test_the_existing_duplicate_scan_auto_merges_tangonow_and_miltang(seeded, un
 
     from engine.src import extraction_rules
 
-    body = "2026년 9월 6일 장소: PISTA 피스타 (서울 월드컵북로6길 49 지하1층)"
-    reading = extraction_rules.extract_venue(body)
+    reading = extraction_rules.extract_venue(_miltang_pista_body())
 
     first = normalization.normalize_candidate(seeded, _candidate(unique, venue="PISTA"))
     second = normalization.normalize_candidate(
@@ -216,8 +235,7 @@ def test_a_more_complete_row_is_not_overwritten_by_a_thinner_lower_authority_one
 
     from engine.src import extraction_rules
 
-    body = "2026년 9월 6일 장소: PISTA 피스타 (서울 월드컵북로6길 49 지하1층)"
-    reading = extraction_rules.extract_venue(body)
+    reading = extraction_rules.extract_venue(_miltang_pista_body())
 
     complete = normalization.normalize_candidate(
         seeded, _candidate(unique, venue="PISTA", fee=13000, start_time="14:00", end_time="18:00"),
