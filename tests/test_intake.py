@@ -513,7 +513,6 @@ def test_danceinfo_detail_fetch_still_produces_a_full_body(pg, unique):
     outcome = acquisition.AcquisitionOutcome(
         status=acquisition.FETCHED_FULL, method="danceinfo_region",
         text="탱고 수업 안내: 매주 화요일 저녁 8시, 홍대 스튜디오",
-        content_length=27,
     )
     content_store.record_outcome(pg, item_id, outcome)
     settled = content_store.get(pg, item_id)
@@ -538,7 +537,7 @@ def test_fetched_partial_generic_source_stays_out_of_retryable_queue(pg, unique)
     content_store.mark_pending(pg, [item_id])
     content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
         status=acquisition.FETCHED_PARTIAL, method="visible_text",
-        text="일부만 노출된 짧은 본문", content_length=13,
+        text="일부만 노출된 짧은 본문",
     ))
     due = [d["source_item_id"] for d in content_store.due_for_acquisition(pg, limit=1000)]
     assert item_id not in due
