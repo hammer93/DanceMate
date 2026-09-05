@@ -52,7 +52,7 @@ def test_utc_start_time_is_rendered_in_seoul_local_time():
     """05:00Z is 14:00 KST - the body must read the Korean local hour, not
     the API's own UTC value."""
     posts = tc.parse_events([_event()], LIST_URL, today=TODAY)
-    assert "2:00 pm to 6:00 pm" in posts[0]["body"]
+    assert "14:00~18:00" in posts[0]["body"]
 
 
 def test_entrance_fee_is_preserved_losslessly_even_as_text():
@@ -127,7 +127,7 @@ def test_an_override_naming_only_occurrence_date_gets_the_bases_time_of_day():
     # The date must be the OVERRIDE's own (Sep 13), not the base's (Sep 6).
     assert "2026년 9월 13일" in posts[0]["body"]
     # But the time-of-day must still be the base's own (14:00-18:00 KST).
-    assert "2:00 pm to 6:00 pm" in posts[0]["body"]
+    assert "14:00~18:00" in posts[0]["body"]
 
 
 def test_an_override_with_its_own_start_date_is_not_recombined_with_the_base():
@@ -143,7 +143,7 @@ def test_an_override_with_its_own_start_date_is_not_recombined_with_the_base():
         LIST_URL, today=TODAY,
     )
     assert "2026년 9월 13일" in posts[0]["body"]
-    assert "6:00 pm to 10:00 pm" in posts[0]["body"]
+    assert "18:00~22:00" in posts[0]["body"]
 
 
 # --- cutoff -----------------------------------------------------------------
@@ -201,13 +201,32 @@ def test_published_at_comes_from_updated_or_created_at():
 
 # --- body synthesis feeds the engine's own extraction rules ------------------
 
-def test_synthesized_body_is_read_as_explicit_time_by_the_engine():
+def test_an_unambiguous_24_hour_time_is_read_cleanly_by_the_engine():
     from engine.src import extraction_rules
 
     posts = tc.parse_events([_event()], LIST_URL, today=TODAY)
     reading = extraction_rules.parse_time_range(posts[0]["body"])
     assert (reading.start, reading.end) == ("14:00", "18:00")
-    assert reading.meridiem_evidence == extraction_rules.EVIDENCE_EXPLICIT
+    assert reading.ambiguous is False
+
+
+def test_a_genuinely_ambiguous_start_hour_is_left_for_a_person_not_guessed():
+    """v0.82.1, found live: an earlier version rendered every time as an
+    explicit am/pm marker, which invents certainty the API never actually
+    gave - a real TangoNOW record's own "09:00~26:00" got flagged as
+    WRONG_TIME_SQL (start before noon, evidence EXPLICIT) precisely because
+    of that. The fix applies here too (same format_time_range() design):
+    a start hour in 1-12 with no other evidence must stay ambiguous."""
+    from engine.src import extraction_rules
+
+    posts = tc.parse_events(
+        [_event(startDate="2026-09-06T00:00:00Z",   # 09:00 KST
+                endDate="2026-09-06T17:00:00Z")],    # 02:00 KST next day
+        LIST_URL, today=TODAY,
+    )
+    reading = extraction_rules.parse_time_range(posts[0]["body"])
+    assert reading.ambiguous is True
+    assert reading.meridiem_evidence == extraction_rules.EVIDENCE_ABSENT
 
 
 def test_synthesized_venue_is_read_by_the_engine():

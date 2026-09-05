@@ -67,26 +67,27 @@ def _to_seoul(value: Any) -> datetime | None:
     return parsed.astimezone(SEOUL) if parsed else None
 
 
-def _to_12h(hour: int, minute: int) -> tuple[int, int, str]:
-    hour = hour % 24
-    ap = "am" if hour < 12 else "pm"
-    hour12 = hour % 12
-    if hour12 == 0:
-        hour12 = 12
-    return hour12, minute, ap
-
-
 def format_time_range(start: datetime | None, end: datetime | None) -> str | None:
-    """Two Seoul-local datetimes -> the one time expression
-    `extraction_rules.parse_time_range()` reads as EVIDENCE_EXPLICIT
-    regardless of which side crosses noon or midnight (matches its own
-    `"09:00 pm to 02:00 am"` test case) - the real hour is already known
-    exactly from the API, so this renders a fact rather than guessing one."""
+    """Two Seoul-local datetimes -> a plain 24-hour `"HH:MM~HH:MM"` - the
+    engine's own `parse_time_range()` already reads a bare 24-hour range
+    correctly with no marker at all (unambiguous exactly when the start
+    hour is NOT in 1-12).
+
+    v0.82.1, found live: rendering this as an explicit "H:MM am/pm to H:MM
+    am/pm" invents certainty this project does not actually have - a real
+    TangoNOW record's own `"09:00~26:00"` is honestly ambiguous (is the
+    event's start really 09:00, or a data-entry quirk?), and forcing an
+    explicit AM/PM marker onto it got flagged by WRONG_TIME_SQL (start
+    before noon, evidence EXPLICIT) - a real detection working correctly
+    against a real, over-confident rendering (see tangonow_discovery.py's
+    identical fix for the full account). Passing the true 24-hour value
+    straight through lets the engine's own honesty rule decide: unambiguous
+    ranges still resolve cleanly, and genuinely ambiguous ones stay
+    EVIDENCE_ABSENT/ambiguous=True for a person to confirm.
+    """
     if start is None or end is None:
         return None
-    h1, m1, ap1 = _to_12h(start.hour, start.minute)
-    h2, m2, ap2 = _to_12h(end.hour, end.minute)
-    return f"{h1}:{m1:02d} {ap1} to {h2}:{m2:02d} {ap2}"
+    return f"{start.hour % 24:02d}:{start.minute:02d}~{end.hour % 24:02d}:{end.minute:02d}"
 
 
 def _format_date_kr(value: datetime | None) -> str | None:

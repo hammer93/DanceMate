@@ -22,11 +22,17 @@ these modules already avoid (see danceinfo_discovery.py's own docstring).
 Body synthesis: because this source hands over structured fields directly
 (not free text), `_synthesize_body()` renders them as a plain Korean-labelled
 paragraph the engine's *existing* extraction rules already know how to read
-(`장소: X`, `입장료 N원`, `DJ: X`, explicit `H:MM am to H:MM am` time markers)
+(`장소: X`, `입장료 N원`, `DJ: X`, a plain 24-hour `HH:MM~HH:MM` time range)
 rather than inventing a second, structured ingestion path around
 `engine_ingest.py`'s single `extract_single(title, body, ...)` entry point.
 This is the same choice DanceInfo's OCR fallback made in v0.81.3: feed the
 one text pipeline that already exists, don't build a parallel one.
+
+v0.82.1: the time range is rendered as a bare 24-hour value, not an
+explicit am/pm marker - see `format_time_range()`'s own docstring for why
+an explicit marker turned out to invent certainty a real record did not
+have (found live, and confirmed to be exactly what flagged a genuine
+WRONG_TIME_SQL case).
 """
 
 from __future__ import annotations
@@ -111,17 +117,6 @@ def document_fields(document: dict[str, Any]) -> dict[str, Any]:
 
 # --- time normalisation ------------------------------------------------------
 
-def _to_12h(hour: int, minute: int) -> tuple[int, int, str]:
-    """A 24h (possibly >=24, for an overnight `28:30`-style hour) hour/minute
-    pair, folded to a 0-23 clock and rendered as (hour12, minute, am/pm)."""
-    hour = hour % 24
-    ap = "am" if hour < 12 else "pm"
-    hour12 = hour % 12
-    if hour12 == 0:
-        hour12 = 12
-    return hour12, minute, ap
-
-
 def _parse_clock(text: str) -> tuple[int, int] | None:
     text = text.strip()
     if ":" not in text:
@@ -135,12 +130,26 @@ def _parse_clock(text: str) -> tuple[int, int] | None:
 
 def format_time_range(raw_time: str | None) -> str | None:
     """TangoNOW's own `"14:00-18:00"` / `"21:00-03:00"` / `"20:30-28:30"`
-    (overnight, hour >= 24) into the one time expression the engine's
-    `parse_time_range()` is proven to read as EVIDENCE_EXPLICIT regardless of
-    which side crosses noon or midnight: `"H:MM am to H:MM am"` (matching
-    `extraction_rules`'s own `"09:00 pm to 02:00 am"` test case) - because the
-    real hour is already known exactly, this is a faithful rendering of a
-    fact, not a guessed marker.
+    (overnight, hour >= 24) folded to a plain 24-hour `"HH:MM~HH:MM"` - the
+    engine's own `parse_time_range()` already reads a bare 24-hour range
+    correctly with no marker at all (its `_readings()` calls a range
+    unambiguous exactly when the start hour is NOT in 1-12, the same rule
+    covering "23:30 – 04:30" and "20:00 ~ 00:30" with zero markers).
+
+    v0.82.1, found live: an earlier version of this function rendered every
+    range as an explicit "H:MM am/pm to H:MM am/pm" - which is *inventing*
+    certainty the source never gave. A real TangoNOW record's own
+    `"09:00~26:00"` is honestly ambiguous (is the event's start really
+    09:00, or is that a data-entry quirk for what should read as evening?);
+    forcing "9:00 am" onto it got the record flagged as WRONG_TIME_SQL
+    (start before noon, evidence EXPLICIT) - a real detection working
+    correctly against a real, over-confident rendering. Passing the raw
+    24-hour value straight through - true to what the source actually
+    said, no more - lets the engine's own honesty rule decide: an
+    unambiguous 24-hour range (e.g. 14:00-18:00) still resolves cleanly,
+    and a genuinely ambiguous one is left EVIDENCE_ABSENT/ambiguous=True for
+    a person to confirm, exactly the "missing over wrong" this project
+    already commits to everywhere else.
     """
     if not raw_time or not isinstance(raw_time, str):
         return None
@@ -154,9 +163,9 @@ def format_time_range(raw_time: str | None) -> str | None:
     end = _parse_clock(end_raw)
     if start is None or end is None:
         return None
-    h1, m1, ap1 = _to_12h(*start)
-    h2, m2, ap2 = _to_12h(*end)
-    return f"{h1}:{m1:02d} {ap1} to {h2}:{m2:02d} {ap2}"
+    h1, m1 = start
+    h2, m2 = end
+    return f"{h1 % 24:02d}:{m1:02d}~{h2 % 24:02d}:{m2:02d}"
 
 
 def _format_date_kr(raw_date: str | None) -> str | None:
@@ -202,7 +211,7 @@ def _first(fields: dict[str, Any], *names: str) -> Any:
 def _synthesize_body(fields: dict[str, Any]) -> str:
     """A plain Korean-labelled paragraph from TangoNOW's structured fields,
     in the label shapes `engine.extraction_rules`/`extractor` already read
-    (colon-labelled venue, `입장료 N원`, `DJ: X`, explicit am/pm time)."""
+    (colon-labelled venue, `입장료 N원`, `DJ: X`, a plain 24-hour time range)."""
     parts: list[str] = []
 
     event_date = _format_date_kr(_first(fields, "date"))

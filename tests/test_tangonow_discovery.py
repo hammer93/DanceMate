@@ -136,12 +136,15 @@ def test_the_detail_url_is_built_from_the_document_name():
 # --- overnight time handling --------------------------------------------------
 
 @pytest.mark.parametrize("raw_time,expected", [
-    ("14:00-18:00", "2:00 pm to 6:00 pm"),
-    ("21:00-03:00", "9:00 pm to 3:00 am"),
-    ("20:30-28:30", "8:30 pm to 4:30 am"),  # 28:30 is next-day 04:30
-    ("09:00~12:00", "9:00 am to 12:00 pm"),
+    ("14:00-18:00", "14:00~18:00"),
+    ("21:00-03:00", "21:00~03:00"),
+    ("20:30-28:30", "20:30~04:30"),  # 28:30 is next-day 04:30
+    ("09:00~12:00", "09:00~12:00"),
 ])
-def test_overnight_and_ordinary_times_render_as_explicit_am_pm(raw_time, expected):
+def test_overnight_and_ordinary_times_fold_to_a_plain_24_hour_range(raw_time, expected):
+    """v0.82.1: no longer forced into an explicit am/pm marker - see
+    format_time_range()'s own docstring for why an explicit marker invented
+    certainty a real record did not actually have."""
     assert tn.format_time_range(raw_time) == expected
 
 
@@ -152,7 +155,7 @@ def test_an_unparsable_time_string_is_left_out_rather_than_guessed():
 
 # --- body synthesis feeds the engine's own extraction rules ------------------
 
-def test_synthesized_time_is_read_as_explicit_by_the_engine():
+def test_an_unambiguous_24_hour_time_is_read_cleanly_by_the_engine():
     from engine.src import extraction_rules
 
     docs = [_doc("b1", {
@@ -161,7 +164,27 @@ def test_synthesized_time_is_read_as_explicit_by_the_engine():
     body = tn.parse_documents(docs, LIST_URL)[0]["body"]
     reading = extraction_rules.parse_time_range(body)
     assert (reading.start, reading.end) == ("14:00", "18:00")
-    assert reading.meridiem_evidence == extraction_rules.EVIDENCE_EXPLICIT
+    assert reading.ambiguous is False
+
+
+def test_a_genuinely_ambiguous_start_hour_is_left_for_a_person_not_guessed():
+    """v0.82.1, found live: TangoNOW's own "09:00~26:00" (fed through as
+    "09:00~02:00") must NOT be rendered as an explicit "9:00 am" - the
+    engine correctly flagged that as WRONG_TIME_SQL (start before noon,
+    evidence EXPLICIT) when an earlier version of this module did exactly
+    that. Passed through as a plain 24-hour range instead, the engine's own
+    ambiguity rule (start hour in 1-12, no marker) takes over: ambiguous,
+    not wrong."""
+    from engine.src import extraction_rules
+
+    docs = [_doc("b1x", {
+        "title": "탱고대회 & 그랜드 밀롱가", "date": "2026-09-26",
+        "time": "09:00~26:00", "place": "PISTA",
+    })]
+    body = tn.parse_documents(docs, LIST_URL)[0]["body"]
+    reading = extraction_rules.parse_time_range(body)
+    assert reading.ambiguous is True
+    assert reading.meridiem_evidence == extraction_rules.EVIDENCE_ABSENT
 
 
 def test_synthesized_venue_is_read_by_the_engine():
