@@ -1,5 +1,81 @@
 # DanceMate Release Notes
 
+## v0.82.4 Regional Coverage + Source CSV Application + Tango Coverage Expansion
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-06.
+
+Version split:
+
+- Product Runtime: 0.82.4
+- Information Engine: unchanged (0.79) - no engine code changed in this
+  release.
+
+### Regional coverage
+
+Root cause: `events.region_id` comes only from a resolved venue's own
+`region_id` - there is no other path. Real Miltang milongas in Cheongju,
+Jinju, Changwon, Pohang, Ulsan, Daegu, Jeju and Seongnam/Bundang sat at
+`region_id` NULL (an unresolved venue - nobody has resolved it into the
+master yet, unrelated to this fix) and showed no region at all, for two
+compounding reasons confirmed against the real data, not assumed: the
+region master had only ever seeded Seoul/Busan/Daejeon even though
+`runtime/venue_resolution.py`'s own address-parsing table already maps
+every Korean province/metro name to a code (migration 024 registers the
+seven this project has real evidence for), and four cities' real addresses
+never carry their enclosing province name in the first place ("청주시
+서원구...", not "충청북도 청주시...") - migration 024 also registers
+Cheongju/Jinju/Changwon/Pohang as their own city-level regions, since a
+reader finds "청주" more useful than "충북" anyway.
+
+`venue_resolution.guess_region_label()` is the read-only, non-authoritative
+display/filter fallback for the gap that remains until an operator resolves
+a venue for real - never writes to `venues` or `events`, and never promotes
+a raw string to a resolved venue (unchanged from this module's own existing
+rule). Wired into the event card and detail page ("PISTA · 서울", "지역
+미확인" rather than a blank field) and the region filter/facets, so
+selecting "청주" now returns the two real Cheongju milongas instead of
+zero. Measured on the real board: Tango upcoming events with no region
+under the old region_id-only join: 41/87 (47%); with this release's
+fallback: 29/87 (33%), and Cheongju/Jinju/Changwon/Ulsan/Gyeonggi are
+visible and independently filterable for the first time. Pohang's and
+Daegu's own real Miltang items exist but currently produce zero engine
+candidates at all - a separate, out-of-scope extraction gap, not a region
+problem; both are honestly reported as such rather than force-fit into a
+region-only diagnosis.
+
+Also, v0.82.3's own Next Recommendation: `runtime.collectors.content_mode()`
+(derived from `config.parser`, no new stored field) now shows Discovery
+Full / Non-HTML API / Detail Fetch / Generic Fetch / Search API on
+`/admin/sources` and its detail page, alongside a source's own region/
+coverage ("전국" for a null-region AGGREGATOR/DIRECTORY rather than a blank
+badge - a source's own region never overwrites an event's own, unchanged).
+
+### Source CSV application
+
+`docs/tango_source_candidates.csv` (41 rows) and `docs/
+tango_aggregator_analysis.csv` (Codex Source Discovery research) were
+compared against the current Source Master. All four already-registered
+Tango sources match a CSV `ADD_NOW` row. The seven Tangodori variants (also
+`ADD_NOW`/`MONITOR`) are confirmed rejected on Terms grounds - unchanged
+finding, `docs/tango_aggregator_analysis.csv`'s own analysis already found
+its 2026-06-27 Terms update prohibits "scrape or abuse the APIs" regardless
+of data quality. The one remaining `ADD_NOW` candidate,
+2026 Chuncheon International Tango Festival (kcctf.org), was re-verified
+live: robots `Allow: /`, Terms carry no scraping prohibition, and its
+10/3-10/5 program is real and current - but its Day 2/3 schedule exists
+only inside the page's Next.js App Router RSC streaming payload
+(`self.__next_f.push(...)`), a materially more fragile format than the
+single `__NEXT_DATA__` blob `danceinfo_discovery.py` already parses.
+Building a collector for one annual, three-day event on that format was
+judged out of scope for this release - a wrong date/time for a real
+festival is a worse outcome than no coverage - so it is registered nowhere,
+tracked instead as a documented, re-verified candidate in `docs/
+tango_source_application.csv` and `docs/TANGO_SOURCE_DISCOVERY.md`'s new
+status-update section. No new source was added this release; zero is an
+honest count, not a shortfall against a target.
+
 ## v0.82.3 Non-HTML Source Acquisition Bypass + Source Pipeline Hardening
 
 Status:
