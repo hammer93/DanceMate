@@ -1,5 +1,90 @@
 # DanceMate Release Notes
 
+## v0.83.1 Human Venue Review Pilot + Venue Master Expansion
+
+Status:
+Human-approved review pass executed against the ROCKPro64 board's real
+production database, 2026-09-06. Engine code unchanged (0.80).
+
+Version split:
+
+- Product Runtime: 0.83.1
+- Information Engine: unchanged (0.80) - confirmed via `git diff` against
+  the prior merge commit showing no changes under `engine/`.
+
+### Goal
+
+Not a smarter algorithm: an operator-priority queue over the 27 OPEN
+Unresolved Venues rows, and a genuine Venue Master expansion carried out
+with the minimum human judgment actually required. No automatic Link or
+Create decision was made by Claude; every write below was executed only
+after the user answered three explicit questions.
+
+### What was asked, and what was decided
+
+1. **"El Tango (엘땅고)" / "EL TANGO" vs 데땅고 (부산)** - system suggestion
+   was only MEDIUM/LOW on name similarity alone, with region and address
+   both conflicting. User decision: **keep separate** - the two rows were
+   folded into the CREATE NEW batch instead, as their own new venue (서울
+   서초구 주흥길 12 환희빌딩 2층).
+2. **"스튜디오 오초" vs OCHO (서울 마포)** - LOW score is a known
+   short-token-containment scorer limitation (documented in v0.83.0, not
+   corrected here - Section 15/27 forbid a threshold change on a single
+   case). User decision: **defer** - left OPEN, no write.
+3. **13 named CREATE NEW candidates** (clear name + real address + region,
+   no Master match) - User decision: **approve all**.
+
+### What was executed (all after approval, all transactional)
+
+15 new venues created via `venue_resolution.create_and_link()`, each with
+its raw text seeded as an alias so the exact same string resolves
+automatically on the next collection. Two of the fifteen (이데알 탱고
+까페, El Tango) had a second raw-text variant grouped onto the same
+decision via `link_existing(add_alias=True)`, applied inside the same
+transaction as the create so the pair lands together or not at all.
+
+**Disclosed discrepancy**: the approved list named 13 candidates; Azucar
+(대전, 아수까) was not in the enumerated list the user was shown, but was
+built into the batch by the same objective criteria (name + real address +
+region, no Master conflict) as the other 12 - a drafting gap when the
+question was condensed, not a substitution of Claude's judgment for the
+user's. Flagged here rather than left silent; happy to revert it (deactivate
++ reopen the unresolved row) if the user does not consider it approved.
+
+### A real bug found and fixed along the way
+
+`normalization.link_unresolved_venue()`'s alias-conflict handling caught the
+Python-level exception on a duplicate alias but never rolled back to a
+savepoint, so Postgres stayed in an aborted-transaction state and the very
+next statement (marking the row LINKED) failed too. This is a pre-existing
+defect in code shipped with v0.83.0's `link_existing()` - also reachable
+from the plain Admin "link existing" action whenever the raw string already
+happens to be one of the target venue's aliases - and it only surfaced now
+because this release was the first time two rows for one new venue were
+resolved together in one transaction (이데알 탱고 까페, El Tango). Fixed by
+running the alias insert through `ignore_conflict=True` inside its own
+savepoint; the 0.82 grouping-similarity threshold was untouched.
+
+`venue_resolution.group_unresolved()` also only compared two rows' own
+core-name similarity when *both* lacked a confident Venue Master
+suggestion. "El Tango (엘땅고)" and "EL TANGO" - identical after
+case-folding - had landed in different groups because only one of them had
+enough context to reach a MEDIUM suggestion. Fixed without changing the
+0.82 threshold: a row's own unrelated suggestion outcome no longer blocks
+an already-confident match between the raw strings themselves.
+
+### Result
+
+- Venue Master: 9 -> 24 (+15)
+- Unresolved Venues OPEN: 27 -> 10 (-17 rows: 15 primary + 2 grouped
+  secondaries)
+- events.venue_status UNRESOLVED: 59 -> 17, confirmed stable (not
+  regrowing) across 2 live scheduler cycles post-write
+- 포항/대구/청주/진주 region search counts unchanged at 2/2/2/2, now
+  `region_confirmed=True` instead of a guess
+- 광주 (Mi Vida tango studio) created with `region_id=None` - the region
+  master has no Gwangju row yet; a real, disclosed gap, not a guess
+
 ## v0.83.0 Venue Resolution Operations + Human Review Acceleration
 
 Status:

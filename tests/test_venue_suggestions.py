@@ -210,6 +210,23 @@ def test_entries_sharing_a_confident_suggestion_are_grouped():
     assert sorted(groups[0]) == [10, 11]
 
 
+def test_the_same_raw_text_groups_even_when_only_one_side_has_a_confident_suggestion():
+    """Found live (v0.83.1): "El Tango (엘땅고)" and "EL TANGO" are the same
+    text after case-folding, but one queue row had enough context to reach a
+    MEDIUM suggestion against 데땅고 and the other did not - own_match must
+    not require both sides to be equally unmatched."""
+    pending = [
+        {"unresolved_venue_id": 30, "venue_text": "El Tango (엘땅고)"},
+        {"unresolved_venue_id": 31, "venue_text": "EL TANGO"},
+    ]
+    suggestions = {
+        30: [{"venue_id": 185, "confidence": venue_resolution.CONFIDENCE_LOW}],
+        31: [{"venue_id": 185, "confidence": venue_resolution.CONFIDENCE_MEDIUM}],
+    }
+    groups = venue_resolution.group_unresolved(pending, suggestions)
+    assert sorted(groups[0]) == [30, 31]
+
+
 def test_a_low_confidence_suggestion_does_not_group_entries_together():
     pending = [
         {"unresolved_venue_id": 20, "venue_text": "OCHO"},

@@ -185,6 +185,30 @@ def test_linking_records_the_string_as_an_alias_so_it_resolves_next_time(pg, uni
     assert master_data.resolve_venue(pg, venue_text)["venue_id"] == venue["venue_id"]
 
 
+def test_linking_a_raw_text_that_already_matches_a_seeded_alias_still_resolves(pg, unique, seoul_id):
+    """Found live (v0.83.1): grouping two unresolved rows for one new venue -
+    "El Tango (엘땅고)" (create_and_link, seeds the venue's own name as an
+    alias) and "EL TANGO" (link_existing right after) - normalise to the same
+    alias. The duplicate alias insert must not poison the transaction the
+    UPDATE below it runs in, or the second row never resolves."""
+    from runtime import master_data
+
+    venue_name = f"El Tango {unique}"
+    venue_text = venue_name  # normalises identically to the venue's own name
+    normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
+    venue = master_data.create_venue(pg, name=venue_name, region_id=seoul_id)
+    entry = next(v for v in normalization.unresolved_venues(pg)
+                 if v["venue_text"] == venue_text)
+
+    result = normalization.link_unresolved_venue(
+        pg, entry["unresolved_venue_id"], venue["venue_id"],
+    )
+    assert result["events_updated"] == 1
+
+    linked_entry = normalization.unresolved_venue(pg, entry["unresolved_venue_id"])
+    assert linked_entry["state"] == "LINKED"
+
+
 def test_normalizing_the_same_candidate_twice_updates_one_row(pg, unique):
     first = normalization.normalize_candidate(pg, _candidate(unique))
     second = normalization.normalize_candidate(pg, _candidate(unique, fee=15000))
