@@ -26,6 +26,7 @@ OPERATIONS_SCRIPTS = [
     "backup.sh",
     "restore.sh",
     "deploy-production.sh",
+    "board-git.sh",
 ]
 
 

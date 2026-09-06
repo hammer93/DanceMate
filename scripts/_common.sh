@@ -209,6 +209,64 @@ verify_repo_ownership() {
   fi
 }
 
+# --- board git/operator guards (v0.82.7) ------------------------------------
+#
+# v0.82.6's verify_repo_ownership caught the *symptom* of 21 tracked files
+# left root-owned - it did not stop it from happening again, because nothing
+# stopped a root SSH session from running `git fetch`/`git merge` directly.
+# git and Docker both happily let root touch a hammer-owned checkout; what
+# gets written is then owned by root, exactly like the incident. These
+# guards refuse that at the door instead of relying on a cleanup script
+# running afterward.
+
+# The repository directory's own owner - whatever user legitimately owns
+# the checkout is correct by definition, on the board or anywhere else
+# (same principle verify_repo_ownership already uses for the uid check).
+repo_owner() {
+  stat -c '%U' "$REPO_ROOT"
+}
+
+# Refuses to let a repository-touching script run as root. Root remains free
+# to do OS/service-level work (installing packages, managing sshd, editing
+# /etc/fstab) - anything that reads or writes *this checkout* must run as
+# its own owner, or whatever it writes ends up owned by root the moment
+# `sudo`/root SSH is used instead of the repository's own user.
+guard_not_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    local owner script
+    owner="$(repo_owner)"
+    script="${1:-$0}"
+    die "$(cat <<EOF
+refusing to run as root: $script touches $REPO_ROOT, owned by '$owner'.
+Re-run as that user instead:
+  sudo -u $owner $script
+(or scripts/board-git.sh for a bare git command). Root SSH sessions may
+still do OS/service-level work - just not this.
+EOF
+)"
+  fi
+}
+
+# A deploy builds and ships whatever is actually checked out - an uncommitted
+# local edit would go into the image invisibly, and a non-main branch is
+# never what this project's release process expects to be running in
+# production. Branch mismatch only warns (a deliberate hotfix branch is a
+# real thing); an unclean tree dies outright.
+guard_git_clean_and_branch() {
+  local dirty branch
+  dirty="$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=no 2>/dev/null || true)"
+  if [[ -n "$dirty" ]]; then
+    warn "working tree has uncommitted changes to tracked files:"
+    printf '%s\n' "$dirty" | sed 's/^/  /' >&2
+    die "refusing to deploy an uncommitted working tree - commit, stash, or discard first"
+  fi
+  branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(unknown)')"
+  if [[ "$branch" != "main" ]]; then
+    warn "deploying from branch '$branch', not 'main' - confirm this is intentional"
+  fi
+  log "git: clean, branch=$branch"
+}
+
 # --- production deployment guards (v0.82.6) ---------------------------------
 #
 # v0.82.5 was deployed correctly, then a raw `docker compose up -d` - typed

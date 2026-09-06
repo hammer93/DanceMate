@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DanceMate - production deploy (v0.82.6, "Deployment Guard").
+# DanceMate - production deploy (v0.82.7, "Board Git Ownership Guard").
 #
 # THE ONLY SUPPORTED WAY to bring up or update the ROCKPro64's production
-# stack. Never run `docker compose up -d` directly on the board.
+# stack. Never run `docker compose up -d` directly on the board, and never
+# run this script itself as root (see the root guard below).
 #
 # Incident, v0.82.5: a raw `docker compose up -d`, typed with no `-f`, picked
 # this repository's bundled-PostgreSQL docker-compose.yml instead of
@@ -12,19 +13,28 @@ set -euo pipefail
 # database silently took over the runtime/scheduler containers for a few
 # minutes before anyone noticed - no data was lost (the real, bind-mounted
 # postgres container was never touched), but nothing blocked the command from
-# running. This script is the fix: the compose file, the project name and
-# every guard below are fixed in code, not left to whatever the invoking
-# shell's cwd or muscle memory happens to produce.
+# running. v0.82.6 fixed that: the compose file, the project name and every
+# guard below are fixed in code, not left to whatever the invoking shell's
+# cwd or muscle memory happens to produce.
+#
+# Incident, ongoing habit: v0.82.6's own board sync (`git fetch`/`git merge`)
+# was typed over a root SSH session, same as every prior release - it left 21
+# tracked files owned by root instead of the repository's own user, `hammer`.
+# git and Docker both happily let root touch a hammer-owned checkout; this
+# script now refuses to run as root at all (see guard_not_root), and
+# scripts/board-git.sh is the canonical way to run git against this checkout
+# regardless of which user is logged in.
 #
 # Usage:
 #   scripts/deploy-production.sh            full deploy
 #   scripts/deploy-production.sh --check    preflight only - no build, no
 #                                            backup, no container touched
 #
-# Deploy order: preflight -> backup -> build -> verify image -> controlled
-# recreate -> health gate -> post-deploy guards. A step never runs if the one
-# before it failed; in particular the running stack is never touched until a
-# new image has actually built successfully (spec item 28).
+# Deploy order: preflight (root/ownership -> git -> version -> compose -> DB
+# identity) -> backup -> build -> verify image -> controlled recreate ->
+# health gate -> post-deploy guards. A step never runs if the one before it
+# failed; in particular the running stack is never touched until a new image
+# has actually built successfully (spec item 28).
 #
 # This script never removes a volume or prunes one - no destructive compose
 # flag, no direct volume command - see stop-server.sh for the same rule. A
@@ -52,7 +62,11 @@ log "project      : $COMPOSE_PROJECT"
 log ""
 log "=== preflight ==="
 
+guard_not_root "$0"
+log "operator: $(id -un) (repository owner: $(repo_owner))"
 require_docker
+verify_repo_ownership
+guard_git_clean_and_branch
 if ! validate_env; then
   die ".env validation failed - fix the warnings above before deploying"
 fi
@@ -63,7 +77,6 @@ guard_production_compose_shape
 guard_db_identity
 guard_no_duplicate_scheduler
 warn_stray_default_network
-verify_repo_ownership
 
 EXPECTED_VERSION="$(cat "$REPO_ROOT/VERSION")"
 EXPECTED_IMAGE="dancemate/runtime:${EXPECTED_VERSION}"
