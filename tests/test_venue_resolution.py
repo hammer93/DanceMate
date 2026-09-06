@@ -421,6 +421,8 @@ def test_every_venue_route_requires_authentication(client):
         ("post", "/admin/venues/unresolved/1/create"),
         ("post", "/admin/venues/unresolved/1/link"),
         ("post", "/admin/venues/unresolved/1/dismiss"),
+        ("post", "/admin/venues/unresolved/group-link/preview"),
+        ("post", "/admin/venues/unresolved/group-link/confirm"),
     ):
         response = getattr(client, method)(path)
         assert response.status_code in (401, 503), f"{method} {path}"

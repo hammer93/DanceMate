@@ -216,6 +216,66 @@ def _new_venue_form(entry: dict[str, Any], suggestion: dict[str, Any],
 </details>"""
 
 
+def _confidence_badge(confidence: str) -> str:
+    tone = {"HIGH": "ok", "MEDIUM": "warn", "LOW": "muted"}.get(confidence, "muted")
+    return admin._badge(confidence, tone)
+
+
+def _link_suggestions_block(key: int, ranked: list[dict[str, Any]]) -> str:
+    """Up to 3 ranked existing-venue candidates, each its own one-click Link
+    Existing - never pre-selected, never submitted without the operator
+    pressing the button themselves. Confidence and *why* travel together:
+    a bare score is exactly the "warning nobody can check" this project
+    already decided not to ship (venue_resolution.similar_venues())."""
+    if not ranked:
+        return ""
+    rows = []
+    for candidate in ranked:
+        reasons = ", ".join(candidate.get("match_reasons") or ["registered alias/name/address"])
+        rows.append(
+            '<li>'
+            f'{_confidence_badge(candidate["confidence"])} '
+            f'<strong>{E(candidate["name"])}</strong>'
+            + (f' &middot; {E(candidate["region_name"])}' if candidate.get("region_name") else "")
+            + (f' &middot; {E(candidate["address"])}' if candidate.get("address") else "")
+            + f' <span class="muted">{E(reasons)}</span> '
+            f'<form class="inline" method="post" '
+            f'action="/admin/venues/unresolved/{key}/link">'
+            f'<input type="hidden" name="venue_id" value="{candidate["venue_id"]}">'
+            '<button class="primary">Link Existing</button></form></li>'
+        )
+    return (
+        '<div class="suggestions"><p class="note">추천 (자동 연결 아님, 확인 후 클릭):</p>'
+        f'<ul class="sources">{"".join(rows)}</ul></div>'
+    )
+
+
+def _group_apply_block(key: int, group_ids: list[int], ranked: list[dict[str, Any]]) -> str:
+    """Offered only when this entry is not alone in its group and the group's
+    own top suggestion is confident enough to pre-fill - the operator still
+    picks the venue and still presses Preview before anything is applied
+    (spec item 10: preview 후 적용)."""
+    others = [i for i in group_ids if i != key]
+    if not others:
+        return ""
+    hidden = "".join(
+        f'<input type="hidden" name="unresolved_venue_id" value="{i}">' for i in group_ids
+    )
+    prefill_venue_id = ""
+    if ranked and ranked[0]["confidence"] != venue_resolution.CONFIDENCE_LOW:
+        prefill_venue_id = str(ranked[0]["venue_id"])
+    return f"""
+<details>
+  <summary>같은 장소로 보이는 대기열 {len(group_ids)}건 함께 처리</summary>
+  <form method="post" action="/admin/venues/unresolved/group-link/preview">
+    {hidden}
+    <div><label>연결할 장소 (Venue ID)</label>
+      <input name="venue_id" value="{E(prefill_venue_id)}" placeholder="venue id" required></div>
+    <div class="actions"><button class="primary">Preview</button></div>
+  </form>
+</details>"""
+
+
 @router.get("/admin/venues/unresolved", response_class=HTMLResponse)
 def admin_unresolved_venues(request: Request,
                             _: str = Depends(require_admin)) -> HTMLResponse:
@@ -232,6 +292,16 @@ def admin_unresolved_venues(request: Request,
             for entry in pending
         }
         region_ids = {key: s["region_id"] for key, s in suggestions.items()}
+        link_suggestions = {
+            entry["unresolved_venue_id"]: venue_resolution.suggest_venue_links(
+                con, name=suggestions[entry["unresolved_venue_id"]]["name"],
+                address=suggestions[entry["unresolved_venue_id"]]["address"],
+                raw_venue=entry["venue_text"], region_id=region_ids[entry["unresolved_venue_id"]],
+            )
+            for entry in pending
+        }
+        groups = venue_resolution.group_unresolved(pending, link_suggestions)
+        group_of = {uid: group for group in groups for uid in group}
 
     options = "".join(
         f'<option value="{v["venue_id"]}">{E(v["name"])}'
@@ -247,6 +317,25 @@ def admin_unresolved_venues(request: Request,
         "Event가 정리됩니다. Venues 화면으로 옮겨갈 필요가 없습니다.</p></div>"
     )
 
+    # Review order (spec item 15): upcoming events first, then how many are
+    # waiting, then whether any of them are live at all - the existing SQL
+    # ordering already covers most of this (live_event_count, event_count,
+    # last_seen_at); "has an upcoming date" is the one signal only the fetched
+    # context rows can answer, so it is layered on here rather than adding a
+    # second query per entry.
+    from datetime import date as _date
+
+    today = _date.today()
+
+    def _has_upcoming(key: int) -> bool:
+        return any(
+            (row.get("event_date") or today) >= today for row in contexts.get(key) or []
+        )
+
+    pending = sorted(
+        pending, key=lambda e: _has_upcoming(e["unresolved_venue_id"]), reverse=True,
+    )
+
     items = []
     for entry in pending:
         key = entry["unresolved_venue_id"]
@@ -257,7 +346,9 @@ def admin_unresolved_venues(request: Request,
                 f'<form class="inline" method="post" '
                 f'action="/admin/venues/unresolved/{key}/link">'
                 f'<select name="venue_id" required>'
-                f'<option value="">기존 장소 선택…</option>{options}</select>'
+                f'<option value="">기존 장소 선택…</option>{options}</select> '
+                f'<label class="muted"><input type="checkbox" name="add_alias" '
+                'value="1" checked> alias로 등록</label> '
                 '<button class="primary">Link Existing</button></form>'
             )
         else:
@@ -292,11 +383,13 @@ def admin_unresolved_venues(request: Request,
     {f'<span>Also tried: {also}</span>' if also else ''}
   </div>
   {_source_context(entry, contexts[key])}
+  {_link_suggestions_block(key, link_suggestions[key])}
   <div class="actionbar">
     {link_form}
     {_new_venue_form(entry, suggestions[key], regions, region_ids[key])}
     {dismiss_form}
   </div>
+  {_group_apply_block(key, group_of[key], link_suggestions[key])}
 </section>""")
 
     note = (
@@ -396,6 +489,7 @@ def admin_create_and_link_venue(
 def admin_link_existing_venue(
     unresolved_venue_id: int,
     venue_id: str = Form(""),
+    add_alias: str = Form(""),
     reviewer: str = Depends(require_admin),
 ) -> RedirectResponse:
     target = "/admin/venues/unresolved"
@@ -406,6 +500,7 @@ def admin_link_existing_venue(
             result = venue_resolution.link_existing(
                 con, unresolved_venue_id=unresolved_venue_id,
                 venue_id=int(venue_id), reviewer=reviewer,
+                add_alias=(add_alias == "1"),
             )
             con.commit()
         except Exception as exc:
@@ -413,6 +508,91 @@ def admin_link_existing_venue(
     return admin._back(
         target,
         f"linked to {result['venue']['name']}; "
+        f"{result['events_updated']} event(s) resolved",
+    )
+
+
+@router.post("/admin/venues/unresolved/group-link/preview", response_class=HTMLResponse)
+def admin_group_link_preview(
+    unresolved_venue_id: list[int] = Form(...),
+    venue_id: str = Form(...),
+    _: str = Depends(require_admin),
+) -> HTMLResponse:
+    """Show exactly what Group Apply is about to do before it does it (spec
+    item 10) - every string, its own pending-event count, and the one target
+    venue - nothing is written here."""
+    with _connection() as con:
+        venue = master_data.get_venue(con, int(venue_id)) if venue_id.isdigit() else None
+        if venue is None:
+            return HTMLResponse(
+                admin._page("Unresolved Venues", "/admin/venues",
+                            f'<p class="note">venue id {E(venue_id)} 를 찾을 수 없습니다.</p>'
+                            '<p><a href="/admin/venues/unresolved">← 대기열로 돌아가기</a></p>'),
+                status_code=404,
+            )
+        rows = []
+        for uid in unresolved_venue_id:
+            entry = normalization.unresolved_venue(con, uid)
+            if entry is None or entry["state"] != "OPEN":
+                continue
+            rows.append(entry)
+
+    if not rows:
+        return admin._back("/admin/venues/unresolved", "미리 볼 대기열 항목이 없습니다", "bad")
+
+    hidden = "".join(
+        f'<input type="hidden" name="unresolved_venue_id" value="{r["unresolved_venue_id"]}">'
+        for r in rows
+    )
+    items = "".join(
+        f'<li><code>{E(r["venue_text"])}</code> &middot; '
+        f'대기 중 Event {r.get("event_count") or 0}건</li>'
+        for r in rows
+    )
+    body = (
+        "<h2>Unresolved Venues</h2>"
+        '<div class="callout"><h3>Group Apply 미리보기</h3>'
+        f'<p>아래 {len(rows)}건을 <strong>{E(venue["name"])}</strong>'
+        + (f' &middot; {E(venue["region_name"])}' if venue.get("region_name") else "")
+        + f'에 연결합니다.</p><ul class="sources">{items}</ul>'
+        '<form method="post" action="/admin/venues/unresolved/group-link/confirm">'
+        f'{hidden}<input type="hidden" name="venue_id" value="{venue["venue_id"]}">'
+        '<label><input type="checkbox" name="add_alias" value="1" checked> '
+        '각 원문 문자열을 alias로 등록</label>'
+        '<div class="actions"><button class="primary">Confirm &amp; Apply</button> '
+        '<a href="/admin/venues/unresolved"><button type="button">Cancel</button></a></div>'
+        "</form></div>"
+    )
+    return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body))
+
+
+@router.post("/admin/venues/unresolved/group-link/confirm")
+def admin_group_link_confirm(
+    unresolved_venue_id: list[int] = Form(...),
+    venue_id: str = Form(...),
+    add_alias: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    target = "/admin/venues/unresolved"
+    with db.connect(admin._settings()) as con:
+        try:
+            result = venue_resolution.group_link_existing(
+                con, unresolved_venue_ids=unresolved_venue_id, venue_id=int(venue_id),
+                reviewer=reviewer, add_alias=(add_alias == "1"),
+            )
+            con.commit()
+        except Exception as exc:
+            return admin._back(target, f"could not apply: {exc}", "bad")
+    if result["errors"]:
+        return admin._back(
+            target,
+            f"linked {result['linked_count']}, {len(result['errors'])} failed "
+            f"(already resolved by someone else?)", "bad",
+        )
+    return admin._back(
+        target,
+        f"linked {result['linked_count']} string(s) to "
+        f"{result['venue']['name'] if result['venue'] else venue_id}; "
         f"{result['events_updated']} event(s) resolved",
     )
 

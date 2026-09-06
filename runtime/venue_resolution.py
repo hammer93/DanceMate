@@ -421,8 +421,15 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
 
 
 def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
-                  reviewer: str = "admin") -> dict[str, Any]:
-    """A person says this string is that venue. Same transaction discipline."""
+                  reviewer: str = "admin", add_alias: bool = True) -> dict[str, Any]:
+    """A person says this string is that venue. Same transaction discipline.
+
+    ``add_alias`` (v0.83.0): the raw string is registered as an alias by
+    default, exactly as before -- an operator who already knows this reading
+    is ambiguous (it also matches a different venue closely enough to worry
+    about) can say no instead, linking these events without teaching the
+    reading to future collections.
+    """
     entry = normalization.unresolved_venue(con, unresolved_venue_id)
     if entry is None:
         raise LookupError(f"no unresolved venue {unresolved_venue_id}")
@@ -432,7 +439,7 @@ def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
 
     with con.transaction():
         linked = normalization.link_unresolved_venue(
-            con, unresolved_venue_id, venue_id, reviewer=reviewer,
+            con, unresolved_venue_id, venue_id, reviewer=reviewer, add_alias=add_alias,
         )
         recorded = record_action(
             con, action=LINK_EXISTING, raw_venue=entry["venue_text"], reviewer=reviewer,
@@ -595,6 +602,210 @@ def prefill(con, entry: dict[str, Any]) -> dict[str, Any]:
     suggestion["address_source"] = address_source
     suggestion["region_id"] = suggested_region_id(con, suggestion["region_hint"])
     return suggestion
+
+
+# --- ranked suggestions (v0.83.0) --------------------------------------------
+#
+# similar_venues() stayed exact-match on purpose: "a warning an operator
+# cannot check is a warning they learn to click past." That principle is still
+# the constraint here, not something this section overrides -- the fix for a
+# fuzzy match is not to hide the fuzziness, it is to always show which field
+# matched and how closely, and to never let a fuzzy match reach the same
+# HIGH confidence an exact one earns. HIGH stays reserved for similar_venues()
+# itself; nothing fuzzy is ever labelled HIGH, and nothing here writes
+# anything -- these are suggestions for the existing Link Existing action to
+# pre-fill, never a fourth way to resolve a venue on their own.
+#
+# Two situations turn a plausible name match into a wrong one: the same brand
+# operating in two different cities ("스튜디오 오초" could be any city's own
+# 오초), and an address that actively names a different place. Both cap the
+# result at LOW rather than raising it to MEDIUM -- confidence never comes
+# from name similarity alone.
+
+CONFIDENCE_HIGH = "HIGH"
+CONFIDENCE_MEDIUM = "MEDIUM"
+CONFIDENCE_LOW = "LOW"
+
+_CONFIDENCE_RANK = {CONFIDENCE_HIGH: 2, CONFIDENCE_MEDIUM: 1, CONFIDENCE_LOW: 0}
+
+# Below this, two strings sharing a few characters is coincidence, not a
+# candidate worth an operator's attention at all.
+_NAME_LOW_THRESHOLD = 0.45
+# At or above this, with no address/region conflict, the match is worth
+# highlighting even though it is still not exact.
+_NAME_MEDIUM_THRESHOLD = 0.72
+
+
+def _name_similarity(a: str | None, b: str | None) -> float:
+    """0.0-1.0, on the same normalised text similar_venues() already compares
+    exactly -- this only adds a distance underneath that same key, never a
+    second notion of what "the same text" means."""
+    from difflib import SequenceMatcher
+
+    left, right = master_data.normalize_alias(a or ""), master_data.normalize_alias(b or "")
+    if not left or not right:
+        return 0.0
+    return SequenceMatcher(None, left, right).ratio()
+
+
+def _address_conflict(a: str | None, b: str | None) -> bool:
+    """True only when BOTH sides actually name a place and those places
+    disagree -- a venue with no address on either side is not a conflict, it
+    is simply unverifiable, and stays a name-only match."""
+    left, right = _normalized_address(a), _normalized_address(b)
+    if not left or not right:
+        return False
+    return left != right and left not in right and right not in left
+
+
+def suggest_venue_links(con, *, name: str, address: str | None = None,
+                        raw_venue: str | None = None,
+                        region_id: int | None = None,
+                        limit: int = 3) -> list[dict[str, Any]]:
+    """Up to `limit` existing venues this unresolved string might already be,
+    ranked by confidence and never applied here.
+
+    The exact tier is exactly similar_venues()'s own rule, carried through
+    unchanged as CONFIDENCE_HIGH. Everything else is a fuzzy name match,
+    capped at MEDIUM even at a near-perfect score, and pushed down to LOW the
+    moment an address or region actively disagrees -- so "two studios happen
+    to share a name" reads as a warning on the suggestion itself, not as a
+    silent wrong answer with a high score attached.
+    """
+    exact = similar_venues(con, name=name, address=address, raw_venue=raw_venue)
+    exact_ids = {v["venue_id"] for v in exact}
+    ranked: list[dict[str, Any]] = []
+    for venue in exact:
+        reasons = venue.get("match_reasons") or []
+        # An exact name/alias match still names a *different* venue if the
+        # region actively disagrees and nothing address-level backs it up --
+        # a franchise's own Busan branch matching a Seoul search by name
+        # alone is exactly spec item 12's "same name, different region",
+        # not a settled duplicate. A matching address makes the mismatch
+        # moot (or a data error), so that reason stays HIGH regardless.
+        region_mismatch = bool(
+            region_id and venue.get("region_id") and region_id != venue["region_id"]
+        )
+        if region_mismatch and "same address" not in reasons:
+            ranked.append({**venue, "confidence": CONFIDENCE_LOW, "score": 1.0,
+                          "match_reasons": [*reasons, "different region"]})
+        else:
+            ranked.append({**venue, "confidence": CONFIDENCE_HIGH, "score": 1.0})
+
+    probe_texts = [t for t in (name, raw_venue) if t]
+    for venue in master_data.list_venues(con):
+        if venue["venue_id"] in exact_ids:
+            continue
+        best_score, best_against = 0.0, None
+        for probe in probe_texts:
+            for other in [venue["name"], *(venue.get("aliases") or [])]:
+                score = _name_similarity(probe, other)
+                if score > best_score:
+                    best_score, best_against = score, other
+        if best_score < _NAME_LOW_THRESHOLD:
+            continue
+
+        conflict = _address_conflict(address, venue.get("address"))
+        region_mismatch = bool(
+            region_id and venue.get("region_id") and region_id != venue["region_id"]
+        )
+        if best_score >= _NAME_MEDIUM_THRESHOLD and not conflict and not region_mismatch:
+            confidence = CONFIDENCE_MEDIUM
+        else:
+            confidence = CONFIDENCE_LOW
+
+        reasons = [f"name similar to {best_against!r} ({best_score:.2f})"]
+        if conflict:
+            reasons.append("address conflict")
+        if region_mismatch:
+            reasons.append("different region")
+        ranked.append({**venue, "confidence": confidence, "score": round(best_score, 3),
+                       "match_reasons": reasons})
+
+    ranked.sort(key=lambda e: (_CONFIDENCE_RANK[e["confidence"]], e["score"]), reverse=True)
+    return ranked[:limit]
+
+
+def group_unresolved(pending: list[dict[str, Any]],
+                     suggestions: dict[int, list[dict[str, Any]]]) -> list[list[int]]:
+    """Cluster queue entries an operator would otherwise review one at a time
+    for what looks like the same real place.
+
+    Two rules, both deliberately conservative: entries whose top suggestion
+    (at MEDIUM confidence or better) names the same existing venue belong
+    together; entries with no confident existing match at all belong together
+    only when their own raw strings are very close to each other (0.82+ --
+    well above the MEDIUM threshold used against the Venue Master, because
+    two unresolved strings with no master venue backing either of them have
+    nothing else vouching for the match). Grouping only ever changes review
+    order and offers Group Apply -- it never changes what Link/Create/Dismiss
+    does to any single row, and a LOW-confidence suggestion never joins a
+    group by itself.
+    """
+    by_id = {e["unresolved_venue_id"]: e for e in pending}
+    ids = list(by_id)
+    # The core name only, address/alias parenthetical stripped by suggest()'s
+    # own bracket-parsing - comparing full raw strings directly penalises the
+    # exact real case this exists for ("이데알 탱고 까페" next to the same name
+    # plus a full street address is a long, low-ratio diff by length alone).
+    core_name = {uid: suggest(entry["venue_text"])["name"] for uid, entry in by_id.items()}
+
+    def top_venue(uid: int) -> int | None:
+        top = suggestions.get(uid) or []
+        if top and top[0]["confidence"] != CONFIDENCE_LOW:
+            return top[0]["venue_id"]
+        return None
+
+    visited: set[int] = set()
+    groups: list[list[int]] = []
+    for seed in ids:
+        if seed in visited:
+            continue
+        visited.add(seed)
+        group = [seed]
+        seed_venue = top_venue(seed)
+        for other in ids:
+            if other in visited:
+                continue
+            other_venue = top_venue(other)
+            same_suggestion = seed_venue is not None and seed_venue == other_venue
+            both_unmatched = seed_venue is None and other_venue is None
+            if same_suggestion or (
+                both_unmatched
+                and _name_similarity(core_name[seed], core_name[other]) >= 0.82
+            ):
+                group.append(other)
+                visited.add(other)
+        groups.append(group)
+    return groups
+
+
+def group_link_existing(con, *, unresolved_venue_ids: list[int], venue_id: int,
+                        reviewer: str = "admin", add_alias: bool = True) -> dict[str, Any]:
+    """Apply one Link Existing decision to every row in a group.
+
+    Each row still goes through link_existing() individually -- same audit
+    row per string, same per-string alias registration -- Group Apply changes
+    how many clicks this takes, never what gets recorded. Not wrapped in a
+    single all-or-nothing transaction: one row already resolved by someone
+    else since the page loaded should not sour the rest of the group.
+    """
+    results = []
+    errors = []
+    for unresolved_venue_id in unresolved_venue_ids:
+        try:
+            results.append(link_existing(
+                con, unresolved_venue_id=unresolved_venue_id, venue_id=venue_id,
+                reviewer=reviewer, add_alias=add_alias,
+            ))
+        except Exception as exc:
+            errors.append({"unresolved_venue_id": unresolved_venue_id, "error": str(exc)})
+    return {
+        "venue": results[0]["venue"] if results else None,
+        "events_updated": sum(r["events_updated"] for r in results),
+        "linked_count": len(results),
+        "errors": errors,
+    }
 
 
 # --- removing a venue -------------------------------------------------------
