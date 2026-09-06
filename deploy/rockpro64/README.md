@@ -175,18 +175,40 @@ No separate systemd unit is needed for DanceMate.
 ## Canonical board workflow
 
 The repository at `/opt/dancemate/app/DanceMate` is owned by `hammer`, who
-is also in the `docker` group - repository work (git, deploy, backup,
-restore) should happen as `hammer`, never as `root`. Root SSH access exists
-for OS/service-level work (packages, `sshd`, `systemctl`) and remains
-enabled; it must not be used to touch this checkout.
+is also in the `docker` and `sudo` groups and has a public key of their own
+in `~hammer/.ssh/authorized_keys` (v0.82.8) - repository work (git, deploy,
+backup, restore) happens as `hammer` **by direct login**, never via a root
+session:
 
 ```bash
-ssh hammer@192.168.1.100                          # preferred
+ssh hammer@192.168.1.100                          # THE default login
 cd /opt/dancemate/app/DanceMate
 scripts/board-git.sh fetch --tags origin
 scripts/board-git.sh merge --ff-only origin/main
 scripts/deploy-production.sh                      # --check for a dry run
 ```
+
+### SSH policy
+
+Root SSH remains enabled for OS/service-level emergency work (packages,
+`sshd` itself, `systemctl`) but, since v0.82.8, only with its own key -
+`PermitRootLogin prohibit-password` in
+`/etc/ssh/sshd_config.d/90-dancemate-operator.conf` (a drop-in, never a hand
+edit of the distro's own `/etc/ssh/sshd_config` - tracked reference copy at
+`deploy/rockpro64/sshd-operator.conf`, whose own header spells out the
+verify-before-copying order). Root password login is
+refused; a root session must present the key already in
+`/root/.ssh/authorized_keys`. This was applied only after two independent,
+freshly-connected `hammer` SSH logins confirmed git, Docker, `scripts/
+deploy-production.sh --check` and `sudo` all worked - see
+`scripts/setup-board-operator.sh` for how a *new* operator's public key
+gets added to `hammer`'s `authorized_keys` (public key only; it never
+generates or handles a private key, and never touches `sshd_config` itself).
+
+`PasswordAuthentication` stays enabled at the sshd level (untouched) because
+console/local-access recovery was not verified as part of this change -
+disabling it globally is a separate, larger decision than tightening root
+specifically.
 
 If only a root session is available, `scripts/board-git.sh` and `scripts/
 deploy-production.sh` both refuse to run as root and tell you to

@@ -126,16 +126,24 @@ def test_fix_ownership_only_chowns_the_repo_root():
 def test_no_operations_script_chowns_outside_the_repository():
     """Only an actual `chown` invocation matters here - a prose mention
     inside a warn/die message (e.g. "see fix-ownership.sh for the approved
-    narrow chown fallback") is not a command and must not trip this."""
+    narrow chown fallback") is not a command and must not trip this.
+
+    scripts/setup-board-operator.sh (v0.82.8) is the one legitimate second
+    scope: it provisions a *different* user's own `~/.ssh`, never this
+    repository, so its chown targets that user's home instead of REPO_ROOT.
+    """
+    HOME_SCOPED = {"setup-board-operator.sh": ("SSH_DIR", "AUTH_KEYS", "OPERATOR_USER")}
     for script in SCRIPTS.glob("*.sh"):
         text = script.read_text(encoding="utf-8")
+        allowed_extra = HOME_SCOPED.get(script.name, ())
         for line in text.splitlines():
             stripped = line.strip()
             if not stripped.startswith("chown"):
                 continue
-            assert "REPO_ROOT" in line or "repo_owner" in line or "owner_uid" in line, (
-                f"{script.name}: chown line not scoped to the repository: {line!r}"
-            )
+            assert (
+                "REPO_ROOT" in line or "repo_owner" in line or "owner_uid" in line
+                or any(token in line for token in allowed_extra)
+            ), f"{script.name}: chown line not scoped to the repository: {line!r}"
 
 
 # --- 8: no broad permission grants -------------------------------------------
