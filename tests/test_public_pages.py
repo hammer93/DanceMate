@@ -345,3 +345,149 @@ def test_a_time_the_post_marked_carries_no_caveat():
                                   "end_time": "23:30", "ends_next_day": False,
                                   "time_confirmed": True})
     assert "미확인" not in rendered
+
+
+# --- v0.84.0: Private Alpha Readiness ----------------------------------------
+
+def test_a_free_event_reads_as_free_not_zero_won():
+    """Section 24: a real fee of 0 means free, not a typo."""
+    assert public._fee_line({"fee": 0}) == "무료"
+
+
+def test_conflict_gets_a_visibly_different_tone_than_possible():
+    """Section 14/43: the text already says 정보 충돌 - the colour is an
+    additional signal, never the only one, but it must still be there and it
+    must not be the same class VERIFIED or plain POSSIBLE get."""
+    conflict = public._status_line({"status": "CONFLICT", "status_label": "정보 충돌"},
+                                   with_type=False)
+    possible = public._status_line({"status": "POSSIBLE", "status_label": "확인 필요"},
+                                   with_type=False)
+    verified = public._status_line({"status": "VERIFIED", "status_label": "확인됨"},
+                                   with_type=False)
+    assert "warn" in conflict
+    assert "warn" not in possible and "warn" not in verified
+    assert "정보 충돌" in conflict
+
+
+def test_verified_carries_a_plain_language_explanation():
+    """Section 12: the meaning lives in a title attribute, not a paragraph."""
+    from runtime import events_api
+
+    rendered = public._status_line({"status": "VERIFIED", "status_label": "확인됨"},
+                                   with_type=False)
+    assert events_api.VERIFIED_EXPLANATION in rendered
+    assert "확인됨" in rendered
+
+
+def test_updated_is_labelled_distinctly_from_verified():
+    """Section 11: UPDATED ('changed since we last checked') must not share
+    VERIFIED's own label - conflating the two would let a changed fee read
+    as confirmed."""
+    from runtime import events_api
+
+    assert events_api.STATUS_LABELS["UPDATED"] == "변경됨"
+    assert events_api.STATUS_LABELS["UPDATED"] != events_api.STATUS_LABELS["VERIFIED"]
+
+
+def test_completed_has_its_own_label_not_possibles():
+    from runtime import events_api
+
+    assert events_api.STATUS_LABELS["COMPLETED"] not in ("확인 필요", "")
+
+
+def test_an_event_currently_underway_is_marked_in_progress():
+    """Section 23: only when the post gave real start AND end times, and only
+    while the current moment genuinely falls between them."""
+    from datetime import datetime
+
+    now = datetime.fromisoformat("2026-09-05T20:00:00+09:00")
+    ongoing = {"date": "2026-09-05", "start_time": "19:00", "end_time": "23:00",
+              "ends_next_day": False, "status_label": "확인 필요"}
+    rendered = public._status_line(ongoing, with_type=False, now=now)
+    assert "진행 중" in rendered
+
+
+def test_an_event_not_yet_started_is_not_marked_in_progress():
+    from datetime import datetime
+
+    now = datetime.fromisoformat("2026-09-05T10:00:00+09:00")
+    later = {"date": "2026-09-05", "start_time": "19:00", "end_time": "23:00",
+             "ends_next_day": False, "status_label": "확인 필요"}
+    assert "진행 중" not in public._status_line(later, with_type=False, now=now)
+
+
+def test_in_progress_is_never_guessed_without_both_times():
+    from datetime import datetime
+
+    now = datetime.fromisoformat("2026-09-05T20:00:00+09:00")
+    only_start = {"date": "2026-09-05", "start_time": "19:00", "end_time": None,
+                  "ends_next_day": False, "status_label": "확인 필요"}
+    assert "진행 중" not in public._status_line(only_start, with_type=False, now=now)
+
+
+def test_a_late_night_event_in_progress_after_midnight_is_recognised():
+    """20:00-00:30, checked at 00:15 the next calendar moment - ends_next_day
+    has to be honoured or this reads as already over."""
+    from datetime import datetime
+
+    now = datetime.fromisoformat("2026-09-06T00:15:00+09:00")
+    late = {"date": "2026-09-05", "start_time": "20:00", "end_time": "00:30",
+           "ends_next_day": True, "status_label": "확인 필요"}
+    assert "진행 중" in public._status_line(late, with_type=False, now=now)
+
+
+def test_freshness_is_shown_on_the_card_not_only_the_detail_page():
+    """Section 8/9: freshness belongs on the card."""
+    from datetime import datetime
+
+    now = datetime.fromisoformat("2026-09-05T20:00:00+09:00")
+    seen = "2026-09-05T09:00:00+00:00"  # 2 hours before `now` (11:00 UTC)
+    rendered = public._event_item({
+        "id": 1, "name": "이벤트", "date": "2026-09-05",
+        "start_time": None, "end_time": None, "ends_next_day": False,
+        "venue": {"name": None, "status": "ABSENT"}, "fee": None,
+        "source_link": {"url": None, "label": None},
+        "last_checked": seen,
+    }, now=now)
+    assert "2시간 전 확인" in rendered
+
+
+def test_an_event_missing_time_venue_and_fee_is_flagged_as_thin():
+    """Section 28: a card must not look as confirmed as one a poster actually
+    filled in when almost nothing is known beyond the date."""
+    rendered = public._event_item({
+        "id": 1, "name": "이벤트", "date": "2026-09-05",
+        "start_time": None, "end_time": None, "ends_next_day": False,
+        "venue": {"name": None, "status": "ABSENT"}, "fee": None,
+        "source_link": {"url": None, "label": None},
+    })
+    assert "정보 적음" in rendered
+
+
+def test_an_event_with_just_one_unknown_field_is_not_flagged_as_thin():
+    rendered = public._event_item({
+        "id": 1, "name": "이벤트", "date": "2026-09-05",
+        "start_time": "19:30", "end_time": "23:30", "ends_next_day": False,
+        "venue": {"name": "라 벤따나", "status": "RESOLVED"}, "fee": None,
+        "source_link": {"url": None, "label": None},
+    })
+    assert "정보 적음" not in rendered
+
+
+def test_empty_state_offers_a_next_action_not_just_a_dead_end():
+    """Section 27: never just '행사가 없습니다' - always at least one place
+    to look next."""
+    rendered = public._next_actions(when="today", region=None, genre_query={})
+    assert "내일 보기" in rendered
+    assert "이번 주 보기" in rendered
+
+
+def test_empty_state_next_actions_never_link_back_to_the_current_view():
+    rendered = public._next_actions(when="this_week", region=None, genre_query={})
+    assert "이번 주 보기" not in rendered
+    assert "내일 보기" in rendered
+
+
+def test_empty_state_offers_to_clear_the_region_when_one_is_set():
+    rendered = public._next_actions(when="today", region="청주", genre_query={})
+    assert "지역 전체 보기" in rendered

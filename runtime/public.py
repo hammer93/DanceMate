@@ -72,6 +72,7 @@ def list_events(
     offset: int = 0,
     include_past: bool = False,
     include_cancelled: bool = False,
+    include_completed: bool = False,
 ) -> JSONResponse:
     try:
         # Validated before a connection is opened, so a bad query is a 400 even
@@ -83,6 +84,7 @@ def list_events(
                 genre=genre, genres=_split_genres(genres), region=region,
                 status=status, limit=limit, offset=offset,
                 include_past=include_past, include_cancelled=include_cancelled,
+                include_completed=include_completed,
             ))
     except events_api.SearchError as exc:
         return _json({"detail": str(exc)}, status_code=400)
@@ -164,6 +166,8 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .status { font-size:.7rem; border:1px solid var(--line); border-radius:4px;
           padding:.05rem .35rem; color:var(--muted); }
 .status.ok { border-color:var(--accent); color:var(--accent); }
+.status.warn { border-color:#c0392b; color:#c0392b; font-weight:600; }
+@media (prefers-color-scheme: dark) { .status.warn { border-color:#ff6b5e; color:#ff6b5e; } }
 .status + .status { margin-left:.3rem; }
 .checked { color:var(--muted); font-size:.75rem; }
 .cancelled { text-decoration: line-through; }
@@ -174,6 +178,9 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .source a:hover { text-decoration:underline; }
 .banner { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
           border-radius:8px; padding:.8rem 1rem; margin-bottom:1rem; font-size:.875rem; }
+.empty-actions { margin:.75rem 0 0; display:flex; gap:.5rem; flex-wrap:wrap; padding:0; list-style:none; }
+.empty-actions a { border:1px solid var(--line); border-radius:999px; padding:.3rem .85rem;
+                   text-decoration:none; font-size:.85rem; background:var(--card); color:var(--accent); }
 @media (max-width: 30rem) {
   main { padding: 1rem .75rem 3rem; }
   h1 { font-size: 1.2rem; }
@@ -213,6 +220,33 @@ BASELINE_GENRES = (("TANGO", "Tango"), ("SALSA", "Salsa"), ("SWING", "Swing"))
 # quietly re-ticking something to make the page look fuller.
 EMPTY_FILTERED = "선택한 조건에 해당하는 행사가 없습니다."
 EMPTY_TODAY = "오늘 확인된 행사가 없습니다. 수집된 글에서 확인된 것만 보여드립니다."
+
+
+def _next_actions(*, when: str | None, region: str | None,
+                  genre_query: dict[str, str]) -> str:
+    """What to try next when a list comes back empty (Section 27).
+
+    "행사가 없습니다" alone leaves a reader to guess what else to try; this
+    is always at least one real place to look next, built from the same
+    filters already carrying through the rest of the page - widening the
+    dates or the region, never silently dropping what the reader picked.
+    """
+    from urllib.parse import urlencode
+
+    links = []
+    for candidate, label in (("tomorrow", "내일 보기"), ("this_week", "이번 주 보기")):
+        if candidate == when:
+            continue
+        params = {"when": candidate, **genre_query}
+        if region:
+            params["region"] = region
+        links.append(f'<a href="/events?{urlencode(params)}">{label}</a>')
+    if region:
+        params = {"when": when or events_api.WHEN_TODAY, **genre_query}
+        links.append(f'<a href="/events?{urlencode(params)}">지역 전체 보기</a>')
+    if not links:
+        return ""
+    return '<ul class="empty-actions">' + "".join(f"<li>{link}</li>" for link in links) + "</ul>"
 
 
 def _is_narrowed(options: list[dict[str, str]], selected: list[str]) -> bool:
@@ -551,15 +585,55 @@ def _fee_line(event: dict[str, Any]) -> str:
     fee = event.get("fee")
     if fee is None:
         return '<span class="unknown">요금 미확인</span>'
+    if fee == 0:
+        # A post that names a fee of 0 said so on purpose - rendering "0원"
+        # would read as a typo rather than what a dancer actually wants to
+        # know: this one costs nothing.
+        return "무료"
     return f"{fee:,}원"
 
 
-def _status_line(event: dict[str, Any], *, with_type: bool = True) -> str:
+def _in_progress(event: dict[str, Any], *, now: "datetime | None" = None) -> bool:
+    """True only when the post gave us a real start AND end time and the
+    current moment (Asia/Seoul) genuinely falls between them.
+
+    Section 23: shown only when we can say so from real evidence - a bare
+    start time with no end is exactly the case events_api already refuses to
+    qualify (``time_confirmed``), and guessing an end here would be the same
+    mistake in a new place.
+    """
+    from datetime import date as date_type, datetime as datetime_type, time as time_type
+    from datetime import timedelta
+
+    day = event.get("date")
+    start, end = event.get("start_time"), event.get("end_time")
+    if not day or not start or not end:
+        return False
+    moment = now or datetime_type.now(events_api.SEOUL)
+    event_date = date_type.fromisoformat(day)
+    start_at = datetime_type.combine(event_date, time_type.fromisoformat(start),
+                                     tzinfo=events_api.SEOUL)
+    end_date = event_date + timedelta(days=1) if event.get("ends_next_day") else event_date
+    end_at = datetime_type.combine(end_date, time_type.fromisoformat(end),
+                                   tzinfo=events_api.SEOUL)
+    return start_at <= moment <= end_at
+
+
+def _status_line(event: dict[str, Any], *, with_type: bool = True,
+                 now: "datetime | None" = None) -> str:
     """What we know about this event, in words a reader owes nobody to decode.
 
-    The engine says VERIFIED or POSSIBLE. Neither belongs on a page someone
-    reads on the way out the door, and VERIFIED does not mean "true" anyway --
-    it means the evidence gate passed.
+    The engine says VERIFIED, POSSIBLE, or (not yet seen live, but supported)
+    CONFLICT/UPDATED/COMPLETED/EXPECTED/UNKNOWN. None of them belong on a page
+    someone reads on the way out the door as-is, and VERIFIED does not mean
+    "true" anyway -- it means the evidence gate passed (spelled out in its
+    ``title`` attribute, Section 12, rather than a paragraph nobody asked for).
+
+    CONFLICT gets its own tone rather than sharing POSSIBLE's plain badge --
+    Section 14 asks that a reader recognise it at a glance, and a colour alone
+    would fail anyone who cannot see it (Section 43), so the text itself
+    ("정보 충돌") already carries the meaning and the colour is additional,
+    not the only signal.
 
     ``with_type`` drops the kind-of-event badge for callers that already show
     it in a field of its own; repeating it reads as two different facts.
@@ -567,11 +641,16 @@ def _status_line(event: dict[str, Any], *, with_type: bool = True) -> str:
     parts = []
     if with_type and event.get("event_type_label"):
         parts.append(f'<span class="status">{E(event["event_type_label"])}</span>')
+    if not event.get("cancelled") and _in_progress(event, now=now):
+        parts.append('<span class="status ok">진행 중</span>')
     if event.get("cancelled"):
         parts.append('<span class="status">취소</span>')
     elif event.get("status_label"):
-        tone = " ok" if event.get("status") == "VERIFIED" else ""
-        parts.append(f'<span class="status{tone}">{E(event["status_label"])}</span>')
+        status = event.get("status")
+        tone = " ok" if status == "VERIFIED" else " warn" if status == "CONFLICT" else ""
+        title = (f' title="{E(events_api.VERIFIED_EXPLANATION)}"'
+                  if status == "VERIFIED" else "")
+        parts.append(f'<span class="status{tone}"{title}>{E(event["status_label"])}</span>')
     if event.get("human_reviewed"):
         parts.append('<span class="status">관리자 확인</span>')
     return "".join(parts)
@@ -618,8 +697,10 @@ def _checked_line(event: dict[str, Any], *, now: "datetime | None" = None) -> st
     return f'<span class="checked">{E(when)} 확인{E(tail)}</span>'
 
 
-def _source_line(event: dict[str, Any]) -> str:
-    """Where this listing came from, with a link to check it.
+def _source_line(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+    """Where this listing came from, with a link to check it, and when we
+    last checked it (Section 8/9: freshness belongs on the card, not only
+    the detail page).
 
     A sibling of the card's <a>, not nested inside it - two links in one
     anchor is invalid HTML and browsers resolve it unpredictably. Only a real
@@ -629,25 +710,42 @@ def _source_line(event: dict[str, Any]) -> str:
     link = event.get("source_link") or {}
     url = link.get("url")
     label = link.get("label")
+    checked = _checked_line(event, now=now)
+    tail = f" · {checked}" if checked else ""
     if not url:
-        return '<div class="source"><span class="unknown">출처 미확인</span></div>'
+        return f'<div class="source"><span class="unknown">출처 미확인</span>{tail}</div>'
     prefix = f"출처: {E(label)}" if label else "출처"
     return (
         f'<div class="source">{prefix}'
-        f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">원문 보기</a></div>'
+        f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">원문 보기</a>{tail}</div>'
     )
 
 
-def _event_item(event: dict[str, Any]) -> str:
+def _is_unknown_heavy(event: dict[str, Any]) -> bool:
+    """True when time, venue, and fee are all unknown at once.
+
+    Section 28: a card that carries a real date but nothing else must not
+    read with the same weight as one a poster actually filled in - three
+    "미확인" tags already say that on their own, but a reader skimming past
+    (rather than reading each field) deserves the same warning at a glance.
+    """
+    no_time = not event.get("start_time")
+    no_venue = not (event.get("venue") or {}).get("name")
+    no_fee = event.get("fee") is None
+    return no_time and no_venue and no_fee
+
+
+def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
     cancelled = " cancelled" if event.get("cancelled") else ""
+    thin = ' <span class="tag">정보 적음</span>' if _is_unknown_heavy(event) else ""
     return (
         f'<li class="event"><a href="/events/{event["id"]}">'
         f'{_when_line(event)}'
-        f'<div class="name{cancelled}">{E(event.get("name") or "")}</div>'
+        f'<div class="name{cancelled}">{E(event.get("name") or "")}{thin}</div>'
         f'<div class="meta"><span>{_venue_line(event)}</span>'
-        f'<span>{_fee_line(event)}</span>{_status_line(event)}</div>'
+        f'<span>{_fee_line(event)}</span>{_status_line(event, now=now)}</div>'
         "</a>"
-        f"{_source_line(event)}"
+        f"{_source_line(event, now=now)}"
         "</li>"
     )
 
@@ -695,6 +793,8 @@ def home(
             message = EMPTY_TODAY
         listing = (
             f'<p class="empty">{message}</p>'
+            + _next_actions(when=events_api.WHEN_TODAY, region=region,
+                            genre_query=_genre_query(selected, options))
             + (f'<h2>다가오는 행사</h2><ul class="events">{nearest}</ul>' if nearest else "")
         )
 
@@ -736,14 +836,16 @@ def events_page(
     except db.DatabaseUnavailable:
         return _unavailable_page(when)
 
+    actions = _next_actions(when=when, region=region,
+                            genre_query=_genre_query(selected, options))
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
             _event_item(e) for e in result["events"]
         ) + "</ul>"
     elif _is_narrowed(options, selected) or region:
-        listing = f'<p class="empty">{EMPTY_FILTERED}</p>'
+        listing = f'<p class="empty">{EMPTY_FILTERED}</p>' + actions
     else:
-        listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>'
+        listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>' + actions
 
     _count(alpha_metrics.EVENT_LIST_VIEW)
     label = dict(TABS).get(when, when)
