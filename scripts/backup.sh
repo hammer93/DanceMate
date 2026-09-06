@@ -108,11 +108,26 @@ if [[ "$PG_STATUS" != ok || "$ENGINE_STATUS" != ok ]]; then
 fi
 
 # --- retention --------------------------------------------------------------
+#
+# Best-effort housekeeping: a backup that succeeded a moment ago must not be
+# reported as failed because deleting an OLD one didn't work. This happens
+# for real when a directory here is owned by someone else (root, from before
+# the board's operator-only SSH policy) - hammer can list it but cannot write
+# to it, so `rm -rf` fails partway through. That is a cleanup problem, not a
+# backup problem, and cannot be escalated from here (no root); it is surfaced
+# as a warning naming the exact directory so an operator can run
+# scripts/fix-ownership.sh (or otherwise reclaim it) in a root session, and
+# pruning moves on to whatever it CAN remove instead of aborting outright.
 mapfile -t ALL < <(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'dancemate-backup-*' -printf '%f\n' | sort -r)
 if (( ${#ALL[@]} > RETENTION )); then
   for old in "${ALL[@]:RETENTION}"; do
     log "  pruning old backup: $old"
-    rm -rf -- "${BACKUP_DIR:?}/$old"
+    prune_err="$BACKUP_DIR/.prune.err.$$"
+    if ! rm -rf -- "${BACKUP_DIR:?}/$old" 2>"$prune_err"; then
+      warn "could not fully remove $old (likely owned by another user) - left in place, run scripts/fix-ownership.sh as root"
+      cat "$prune_err" >&2 2>/dev/null || true
+    fi
+    rm -f "$prune_err" 2>/dev/null || true
   done
 fi
 

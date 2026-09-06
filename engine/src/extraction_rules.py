@@ -438,6 +438,35 @@ def extract_venue(text: str) -> VenueReading | None:
 _AMOUNT_RE = re.compile(r"(?P<amount>[0-9][0-9,]*)\s*(?P<won>원)?")
 _MIN_UNSUFFIXED_DIGITS = 4
 
+# "2만원", "1.5만원": Korean 10,000-unit notation. Kept a separate pattern
+# from _AMOUNT_RE rather than folded in, because the value needs a x10,000
+# conversion _AMOUNT_RE's plain digit matches never do - conflating the two
+# would risk misreading a plain "20,000" as "2" if the patterns overlapped.
+_MAN_AMOUNT_RE = re.compile(r"(?P<man>[0-9]+(?:\.[0-9]+)?)\s*만\s*(?P<won>원)")
+
+# A price sitting next to its own session/membership count is a package or
+# membership rate, not the fee for showing up to *this* one listing -
+# "10만원(2달, 8회)" is a two-month, eight-visit price. v0.84.1: found live
+# on a recurring practica whose post lists three such tiers (2-month,
+# 1-month, single-visit) side by side; picking any one of them - even the
+# single-visit tier - would still be guessing which of three real numbers
+# the reader meant, so the whole post is left unpriced rather than reducing
+# a genuine multi-tier price to one arbitrary number (Section 17/20).
+_PACKAGE_RE = re.compile(r"\d\s*(?:달|개월)|\d\s*회(?:\)|권|\s|$)")
+
+# "무료", "Free", "입장 무료", "참가비 없음": explicit phrases only, never a
+# bare "무료" floating in unrelated prose (a raffle prize, a free shuttle) -
+# each of these names admission itself, the same way a fee label names an
+# amount. "무료주차"/"무료 음료" structurally cannot match any of these: the
+# phrase always pairs 무료 with admission/participation, never with what
+# follows an unrelated noun.
+_FREE_RE = re.compile(
+    r"입장\s*무료|무료\s*입장|참가비\s*없음|무료\s*참가|"
+    r"(?:입장료|참가비|회비|이용료)\s*[:：]?\s*무료|"
+    r"free\s*(?:admission|entry)?\b",
+    re.I,
+)
+
 # Split on line and list boundaries. A comma between digits is a thousands
 # separator, so "38000원, 특강만" splits but "13,000" does not.
 _SEGMENT_RE = re.compile(r"[\n;]|,(?=\s)|(?<=원)\s*,|[·•▪◾]")
@@ -513,43 +542,85 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
     is_class_event = bool(re.search(_EVENT_WORDS["CLASS"], event_type or "", re.I))
     best: tuple[int, int, FeeReading] | None = None
 
+    def _tier(before: str) -> tuple[int, str] | None:
+        """LABEL if a fee label named it, EVENT_CONTEXT if the event's own
+        name did, or None if neither -- shared by every amount shape below
+        so a plain 13,000원 and a 만원-notation 1.3만원 are judged the same
+        way."""
+        if _FEE_LABEL.search(before):
+            return 1, BASIS_LABEL
+        if event_words and re.search(rf"(?:{event_words})[^0-9]{{0,8}}$", before, re.I):
+            return 2, BASIS_EVENT_CONTEXT
+        return None
+
+    def _disqualified(before: str, near: str) -> bool:
+        if _NOT_A_FEE.search(near) or _PACKAGE_RE.search(near):
+            return True
+        # A class price sitting in a milonga post is the class's price.
+        return bool(
+            event_words and not is_class_event
+            and _OTHER_PROGRAMME.search(before[-_NEAR_BEFORE:])
+        )
+
+    def _consider(order: int, segment: str, match: re.Match, amount: int,
+                  raw: str, require_won_or_label: bool = False) -> None:
+        nonlocal best
+        if amount <= 0:
+            return
+        before = segment[:match.start()]
+        # Judge each amount by the words next to *it*. Scanning the whole
+        # segment loses real fees: one post carries "입장료 13,000원" and,
+        # sentences later, "심야 밀롱가 3,000원 할인" -- the discount must
+        # disqualify itself, not the entry fee.
+        near = before[-_NEAR_BEFORE:] + segment[match.end():match.end() + _NEAR_AFTER]
+        if _disqualified(before, near):
+            return
+        labelled = bool(_FEE_LABEL.search(before))
+        if require_won_or_label:
+            # No 원 on the number itself: only a *label* makes an unsuffixed
+            # run of digits money at all (never the event's own name - "밀롱가
+            # 2026" is a year, not a fee, however many digits it has), and
+            # even then only once it reads as real money.
+            digits = re.sub(r"[^0-9]", "", raw)
+            if not labelled or len(digits) < _MIN_UNSUFFIXED_DIGITS:
+                return
+        tier = _tier(before)
+        if tier is None:
+            return
+        reading = FeeReading(
+            amount=amount,
+            raw=re.sub(r"\s+", " ", raw).strip(),
+            basis=tier[1],
+            segment=re.sub(r"\s+", " ", segment)[:120].strip(),
+        )
+        if best is None or (tier[0], order) < (best[0], best[1]):
+            best = (tier[0], order, reading)
+
     for order, segment in enumerate(_segments(text)):
         for match in _AMOUNT_RE.finditer(segment):
             amount = int(match.group("amount").replace(",", ""))
-            if amount <= 0:
-                continue
+            # A bare digit run with no 원 is accepted only when a label named
+            # it AND it reads as real money (4+ digits) - "1.3" in "1.3 정도
+            # 생각하세요" must never pass just because something calls it a fee.
+            _consider(order, segment, match, amount, match.group(0),
+                      require_won_or_label=not match.group("won"))
+        for match in _MAN_AMOUNT_RE.finditer(segment):
+            amount = int(round(float(match.group("man")) * 10000))
+            _consider(order, segment, match, amount, match.group(0))
+        for match in _FREE_RE.finditer(segment):
+            # Free admission is a real amount (0), but _consider() treats
+            # amount<=0 as "nothing found" - that guard exists to keep a
+            # stray zero out of the numeric path, so free gets its own
+            # handling here rather than reusing it.
             before = segment[:match.start()]
-            # Judge each amount by the words next to *it*. Scanning the whole
-            # segment loses real fees: one post carries "입장료 13,000원" and,
-            # sentences later, "심야 밀롱가 3,000원 할인" -- the discount must
-            # disqualify itself, not the entry fee.
             near = before[-_NEAR_BEFORE:] + segment[match.end():match.end() + _NEAR_AFTER]
-            if _NOT_A_FEE.search(near):
+            if _disqualified(before, near):
                 continue
-            # A class price sitting in a milonga post is the class's price.
-            if event_words and not is_class_event and _OTHER_PROGRAMME.search(
-                before[-_NEAR_BEFORE:]
-            ):
-                continue
-            labelled = bool(_FEE_LABEL.search(before))
-            if not match.group("won"):
-                digits = match.group("amount").replace(",", "")
-                if not labelled or len(digits) < _MIN_UNSUFFIXED_DIGITS:
-                    continue
-            if labelled:
-                tier, basis = 1, BASIS_LABEL
-            elif event_words and re.search(
-                rf"(?:{event_words})[^0-9]{{0,8}}$", before, re.I
-            ):
-                tier, basis = 2, BASIS_EVENT_CONTEXT
-            else:
-                continue
+            tier = _tier(before) or (1, BASIS_LABEL)
             reading = FeeReading(
-                amount=amount,
-                raw=re.sub(r"\s+", " ", match.group(0)).strip(),
-                basis=basis,
-                segment=re.sub(r"\s+", " ", segment)[:120].strip(),
+                amount=0, raw=re.sub(r"\s+", " ", match.group(0)).strip(),
+                basis=tier[1], segment=re.sub(r"\s+", " ", segment)[:120].strip(),
             )
-            if best is None or (tier, order) < (best[0], best[1]):
-                best = (tier, order, reading)
+            if best is None or (tier[0], order) < (best[0], best[1]):
+                best = (tier[0], order, reading)
     return best[2] if best else None
