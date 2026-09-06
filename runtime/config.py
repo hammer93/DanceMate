@@ -18,7 +18,7 @@ PRODUCT_VERSION = "0.82"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
-DEFAULT_ENGINE_VERSION = "0.79"
+DEFAULT_ENGINE_VERSION = "0.80"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

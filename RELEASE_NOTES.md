@@ -1,5 +1,89 @@
 # DanceMate Release Notes
 
+## v0.82.5 Pohang/Daegu Candidate Extraction Gap Fix
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-06.
+
+Version split:
+
+- Product Runtime: 0.82.5
+- Information Engine: 0.80 - engine code changed (see below).
+
+### Root cause
+
+Real Pohang and Daegu Miltang `/milongas` posts were structurally
+well-formed (clear date/time/venue in the body) but produced zero
+`event_candidates`. Traced end-to-end against real production data, not
+assumed:
+
+1. **EVENT_TYPE_CLASSIFICATION** (primary cause): `classifier.classify()`
+   only recognises a milonga by keyword ("milonga"/"밀롱가"/"쁘롱"/"쁘락").
+   Brand-name posts with no such word anywhere in title or body ("디디디",
+   "바모스", and 45 others found live) classify as `OTHER`, so
+   `live_pipeline.process_discovered_post()` returns zero events for them -
+   even though the post came from Miltang's own `/milongas` board, whose
+   page structure already guarantees the event type.
+2. **VENUE_EXTRACTION** (compounding, affects region display once
+   candidates exist): `extraction_rules._cut_at_boundary()` stopped at the
+   first closing parenthesis, silently dropping a real street address when
+   it appeared as a second, consecutive parenthetical group after a
+   Miltang-rendered bilingual venue name (`"PosTango (포스탱고) (포항시 남구
+   중앙로 83, 3층)"`). This is what made v0.82.4's region guess fall back to
+   "지역 미확인" for exactly this shape.
+
+### Fix
+
+`classify()` already accepted a `known_event_type` parameter (documented as
+admissible for "Source Registry / known series context") but no caller ever
+set it. `RawPostRecord` gained the same field;
+`miltang_discovery.discover()` now sets `known_event_type="MILONGA"` for
+every `/milongas` record (keyed on the page's own existing `"milongas"` vs
+`"notices"` prefix distinction - `/notices` is left unset and keeps being
+read by its own text); `process_discovered_post()` threads it through to
+`classify()`. `_cut_at_boundary()` now keeps extending across an
+immediately-adjacent parenthetical group instead of stopping at the first
+one; a group followed by anything else is still prose, unchanged. No
+source_id, city, or venue-name branching anywhere in either fix.
+
+### Before / After (real production data, scoped reprocess)
+
+A detect-only scan across all 111 Miltang `/milongas` source_items (body has
+DATE/TIME/PLACE structure, candidate count 0) found **47 affected posts**,
+not just Pohang/Daegu - confirming the fix is genuinely generic. Scoped
+reprocess (Miltang `/milongas` only, 47 explicit source_item_ids, never a
+mass reprocess) plus one `normalize_all()` pass:
+
+- Pohang: 0 -> 2 events (2026-09-11, 2026-09-18; venue/address/time all
+  correct; `events_api.search(region="포항")` returns both, genuinely
+  upcoming, dates not manipulated).
+- Daegu: 0 -> 2 events (2026-09-09, 2026-09-16; venue/address correct, no
+  time invented where the body had none; `events_api.search(region="대구")`
+  returns both).
+- All 47: exactly 1 event each, all `POSSIBLE` (never `VERIFIED` -
+  Miltang/SECONDARY stays non-authoritative), all `review_state=PENDING`
+  (Human Review untouched). Re-running the gap scan after the fix: 0
+  affected.
+- Total upcoming events: 87 -> 125. Region-unknown-upcoming: 29 -> 31
+  (absolute count barely moved despite +38 genuinely new events; the ratio
+  improved, 33%->25%) - the increase is explained by new events in cities
+  `guess_region_label()`'s curated list does not cover, not by this fix
+  degrading anything.
+
+### Tests
+
+16 new Engine tests (`test_social_dance.py`, `test_extraction_rules.py`,
+`test_live_pipeline.py`): Pohang/Daegu candidate creation, date/time/venue
+correctness, Cheongju/Jinju/Changwon control-group regression, multi-event
+context safety and old-post year safety composed with the new hint,
+class-only/performance-only still excluded without the hint, false-VERIFIED
+impossible. Engine full suite: 745 passed (both locally and on the board).
+Runtime full suite: 1189 passed, 2 pre-existing failures reproduced
+identically on unmodified v0.82.4 against the same fresh database (real
+data seeded historically via Admin CSV import, not by migrations - not a
+v0.82.5 regression).
+
 ## v0.82.4 Regional Coverage + Source CSV Application + Tango Coverage Expansion
 
 Status:
