@@ -769,11 +769,18 @@ def group_unresolved(pending: list[dict[str, Any]],
                 continue
             other_venue = top_venue(other)
             same_suggestion = seed_venue is not None and seed_venue == other_venue
-            both_unmatched = seed_venue is None and other_venue is None
-            if same_suggestion or (
-                both_unmatched
-                and _name_similarity(core_name[seed], core_name[other]) >= 0.82
-            ):
+            # v0.83.1: checked regardless of what each side's own Venue
+            # Master suggestion came out to, not only when both are
+            # unmatched - found live: "El Tango (엘땅고)" and "EL TANGO" are
+            # the same raw text after case-folding (core-name similarity
+            # 1.0) but one had enough evidence to reach a MEDIUM suggestion
+            # and the other did not, so the two rows never joined a group
+            # even though they are obviously one review question. This adds
+            # no new threshold - 0.82 is unchanged - it only stops a row's
+            # own unrelated suggestion outcome from blocking a match this
+            # confident between the raw strings themselves.
+            own_match = _name_similarity(core_name[seed], core_name[other]) >= 0.82
+            if same_suggestion or own_match:
                 group.append(other)
                 visited.add(other)
         groups.append(group)

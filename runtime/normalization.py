@@ -379,10 +379,20 @@ def link_unresolved_venue(con, unresolved_venue_id: int, venue_id: int, *,
 
     if add_alias:
         try:
-            master_data.add_venue_alias(con, venue_id=venue_id, alias=entry["venue_text"])
+            # A plain conflict (already an alias of this venue, or of another
+            # one) is turned into a no-op by the database itself so it never
+            # reaches Postgres as an error - a caught-and-ignored exception
+            # still leaves the surrounding transaction aborted, which took
+            # the UPDATE below down with it the one time this path actually
+            # hit a duplicate (v0.83.1, grouping two raw strings for the same
+            # venue where one already matched a seeded alias).
+            with con.transaction():
+                master_data.add_venue_alias(
+                    con, venue_id=venue_id, alias=entry["venue_text"], ignore_conflict=True,
+                )
         except Exception:
-            # Already an alias of this venue, or of another one. Either way the
-            # link below is what the operator asked for.
+            # Anything else (e.g. the alias normalises to nothing): the link
+            # below is what the operator asked for either way.
             pass
 
     with con.cursor() as cur:
