@@ -172,15 +172,53 @@ sudo systemctl enable docker
 
 No separate systemd unit is needed for DanceMate.
 
+## Canonical board workflow
+
+The repository at `/opt/dancemate/app/DanceMate` is owned by `hammer`, who
+is also in the `docker` group - repository work (git, deploy, backup,
+restore) should happen as `hammer`, never as `root`. Root SSH access exists
+for OS/service-level work (packages, `sshd`, `systemctl`) and remains
+enabled; it must not be used to touch this checkout.
+
+```bash
+ssh hammer@192.168.1.100                          # preferred
+cd /opt/dancemate/app/DanceMate
+scripts/board-git.sh fetch --tags origin
+scripts/board-git.sh merge --ff-only origin/main
+scripts/deploy-production.sh                      # --check for a dry run
+```
+
+If only a root session is available, `scripts/board-git.sh` and `scripts/
+deploy-production.sh` both refuse to run as root and tell you to
+`sudo -u hammer` them instead - `hammer` is in the `sudo` group, so this
+works without a password prompt for another account:
+
+```bash
+ssh root@192.168.1.100                             # OS-level work only
+sudo -u hammer /opt/dancemate/app/DanceMate/scripts/board-git.sh fetch --tags origin
+sudo -u hammer /opt/dancemate/app/DanceMate/scripts/board-git.sh merge --ff-only origin/main
+sudo -u hammer /opt/dancemate/app/DanceMate/scripts/deploy-production.sh
+```
+
+Incident, v0.82.6: every prior release's "board sync" (`git fetch`/`git
+merge`) was typed directly over a root SSH session. git does not care who
+owns the checkout it is told to touch, so 21 tracked files ended up owned by
+root instead of `hammer` - caught after the fact by `verify_repo_ownership`,
+never before. `scripts/board-git.sh` and the root guard in `scripts/deploy-
+production.sh` are the fix: the wrong habit is now refused at the door
+instead of cleaned up afterward with `scripts/fix-ownership.sh`.
+
 ## Operations
 
-**Never run `docker compose` directly against this board.** Every operation
-below goes through a wrapper that resolves `deploy/rockpro64/docker-compose.
-external-postgres.yml` itself (from `.env`'s `DANCEMATE_COMPOSE_FILE`) - see
-"A note on `docker compose` directly" further down for why this rule exists.
+**Never run `docker compose` directly against this board, and never as
+root.** Every operation below goes through a wrapper that resolves
+`deploy/rockpro64/docker-compose.external-postgres.yml` itself (from
+`.env`'s `DANCEMATE_COMPOSE_FILE`) - see "A note on `docker compose`
+directly" further down for why this rule exists.
 
 | Task                        | Command                                             |
 |------------------------------|-----------------------------------------------------|
+| board sync (git)             | `scripts/board-git.sh fetch --tags origin` / `scripts/board-git.sh merge --ff-only origin/main` |
 | deploy a new version/release | `scripts/deploy-production.sh` (`--check` for a dry run) |
 | start (no rebuild)           | `scripts/start-server.sh`                            |
 | stop                         | `scripts/stop-server.sh` (never removes volumes)     |
@@ -188,6 +226,7 @@ external-postgres.yml` itself (from `.env`'s `DANCEMATE_COMPOSE_FILE`) - see
 | backup                       | `scripts/backup.sh`                                  |
 | list backups                 | `scripts/restore.sh --list`                          |
 | restore                      | `scripts/restore.sh <name> --yes`                    |
+| ownership check/fix          | `scripts/fix-ownership.sh` (dry run; `--yes` to apply) |
 | logs                         | `docker compose --project-directory . -f deploy/rockpro64/docker-compose.external-postgres.yml -p dancemate logs -f runtime scheduler` |
 
 `scripts/deploy-production.sh` is the only script that builds a new image and

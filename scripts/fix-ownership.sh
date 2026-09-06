@@ -13,6 +13,15 @@ set -euo pipefail
 # already-broken tree so work can continue, scoped strictly to the
 # repository path, never a broader system chown.
 #
+# v0.82.7: this is the one repository-touching script that deliberately does
+# NOT refuse to run as root (unlike scripts/deploy-production.sh's own
+# guard_not_root) - reclaiming a file that a previous mistake left root-owned
+# requires root's own chown privilege; a non-root user cannot take ownership
+# away from root. Run it as root (or `sudo`) specifically to clean up a
+# root-owned drift; scripts/board-git.sh and scripts/deploy-production.sh
+# existing is what should make root-owned drift stop recurring in the first
+# place, so this script is the fallback, not the routine.
+#
 # Usage: scripts/fix-ownership.sh [--yes]
 #   Without --yes, prints what would change and exits without touching
 #   anything.
