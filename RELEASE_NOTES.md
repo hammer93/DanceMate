@@ -1,5 +1,98 @@
 # DanceMate Release Notes
 
+## v0.84.0 Tango Private Alpha Readiness
+
+Status:
+User-facing readiness audit and fixes verified against the ROCKPro64 board's
+real production database, 2026-09-07. Engine code unchanged (0.80) - this
+release does not touch Source pipelines, Engine extraction, or Venue Master
+data; it audits and fixes the existing User FE (`runtime/public.py`,
+`runtime/events_api.py`) against the Private Alpha spec.
+
+Version split:
+
+- Product Runtime: 0.84.0
+- Information Engine: unchanged (0.80).
+
+### Goal
+
+Not new sources, not engine changes, not venue cleanup: whether a real dancer
+can look at DanceMate and, within 30 seconds, decide where to go tonight
+without being misled.
+
+### What the audit found already built
+
+`runtime/public.py` and `events_api.py` were already substantially aligned
+with the spec: today/tomorrow/weekend/this_week/upcoming tabs, genre and
+region filters with live counts, honest "미확인" fields for time/venue/fee/
+region individually, source provenance with a link back to the original
+post, KST-correct date math (tested against the UTC/Seoul midnight
+boundary), and a footer that names itself an alpha. Nothing here was
+rebuilt; this release patches the real gaps found against it.
+
+### Real production data audit (2026-09-07)
+
+`engine_status` has only ever been `POSSIBLE` (251) or `VERIFIED` (1),
+across all of production history - `CANCELLED`, `CONFLICT`, `UPDATED`,
+`COMPLETED`, and `EXPECTED` have never actually fired. This release still
+has to handle all of them correctly (Section 40: real code paths, exercised
+with synthetic DB rows via `candidate_status`, not claimed as live samples
+that do not exist). Separately: 2026-09-07 is a Monday, and production has
+zero upcoming events in any region or genre for *today* specifically - a
+real characteristic of the current source set's Monday coverage, not a
+defect, and the sharpest possible live test of the empty-state path.
+
+### Fixes
+
+- A fee of exactly 0 now renders "무료", not "0원" (Section 24) - a real
+  defect, though not yet observed live (no free event exists in production
+  today).
+- `STATUS_LABELS["UPDATED"]` used to share `VERIFIED`'s own label
+  ("확인됨"). Fixed to "변경됨" - conflating the two would let an event
+  whose fee just changed read as evidence-confirmed. `COMPLETED` was
+  missing outright and fell back to "확인 필요" (backwards for something
+  already over); added as "종료".
+- `search()` now excludes `COMPLETED` from the default result the same way
+  it already excluded `CANCELLED` (`include_completed=True` to see it
+  anyway), with the matching addition on `GET /api/events`.
+- `CONFLICT` gets its own "warn" tone on the status badge - previously
+  identical to a plain `POSSIBLE` badge, failing Section 14's "recognisable
+  at a glance." The label text ("정보 충돌") already carries the meaning on
+  its own; colour is additional, never the only signal (Section 43).
+- `VERIFIED`'s badge now carries a `title` attribute with the one-line
+  explanation Section 12 asks for, instead of nothing.
+- "진행 중" is shown only when a post gave both a real start and end time
+  and the current Seoul moment genuinely falls between them (Section 23) -
+  including the after-midnight case, and never guessed from a bare start
+  time the way `time_confirmed` already refuses to.
+- Freshness ("N시간 전 확인") is now shown on the list card, not only the
+  detail page (Section 8/9 - it was already computed, just not placed).
+- A card with time, venue, and fee all unknown at once is now flagged
+  "정보 적음" (Section 28), so three "미확인" tags do not read with the
+  same visual weight as an event a poster actually filled in.
+- Empty states on both `/` and `/events` now offer concrete next actions
+  (내일 보기 / 이번 주 보기 / 지역 전체 보기, built from whatever filters
+  are already active) instead of a dead end (Section 27) - the home page
+  already had a partial version of this; `/events` had none at all.
+
+### Tests
+
+36 new tests (Sections 53/54): status labels and tones, in-progress
+detection including the post-midnight case, freshness-on-card, thin-card
+flagging, empty-state next actions, `CANCELLED`/`COMPLETED` default
+exclusion, `CONFLICT` visibility, and a chronological-ranking-is-never-
+reordered-by-status guard (v0.84.0 does not add a personal-fit score -
+Section 31 - so this locks in that the existing pure date/time sort stays
+that way).
+
+### Result
+
+- No schema change, no migration, no Engine change.
+- Venue Master, Unresolved Venues queue, and region search counts
+  (포항/대구/청주/진주/광주 = 2/2/2/2/2) unchanged before/after - this
+  release does not touch that data.
+- All 5 sources (SRC-W-001..005) unchanged, enabled.
+
 ## v0.83.2 OCHO Verification + Gwangju Region Completion
 
 Status:
