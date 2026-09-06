@@ -239,7 +239,6 @@ def test_fee_is_read_from_a_label_or_from_the_events_own_name(text, amount, basi
     "심야 밀롱가 패키지 사전결제 20,000원",                    # a separate package
     "특강만 30000원",                                       # a class
     "1.3 정도 생각하세요",                                   # not a price at all
-    "입장료 1만원",                                          # not a digit amount
     "문의 010-1234-5678",                                   # a phone number
 ])
 def test_money_that_is_not_this_events_fee_is_left_alone(text):
@@ -261,6 +260,105 @@ def test_an_unlabelled_number_never_becomes_a_fee():
     fee is how a candidate passes that gate on evidence nobody has."""
     assert rules.extract_fee("밀롱가 23:30 시작 우서빌딩 지하 1층", "MILONGA") is None
     assert rules.extract_fee("밀롱가 2026", "MILONGA") is None
+
+
+# --- v0.84.1: Korean 만원 notation, free admission, package-tier safety -----
+#
+# Found live: real Miltang/DanceInfo/TangoNOW posts fee-unknown in production
+# (Section 5/6 of the v0.84.1 task) whose actual coverage gap turned out to be
+# near-zero once every case was read - almost all of them (SOURCE_HAS_NO_FEE)
+# genuinely never mention a price at all, because Miltang and TangoNOW are
+# discovery directories, not the event's own page. These fixtures are the
+# real shapes this release DOES improve: Korean 10,000-unit notation the
+# parser could not read at all before, free admission (never recognised
+# before this release, at any amount), and a real live post's own multi-tier
+# package price ("10만원(2달, 8회), 6만원(1달, 4회), 당일 현장 2만원(1회)")
+# that a naive 만원 reader would otherwise have wrongly attached to a single
+# practica session as if it were that day's cover charge.
+
+@pytest.mark.parametrize("text,amount,basis", [
+    ("입장료 1만원", 10000, rules.BASIS_LABEL),
+    ("참가비 2만원입니다", 20000, rules.BASIS_LABEL),
+    ("회비 1.5만원", 15000, rules.BASIS_LABEL),
+    ("밀롱가 : 2만원", 20000, rules.BASIS_EVENT_CONTEXT),
+])
+def test_korean_man_notation_is_read_as_ten_thousand_won(text, amount, basis):
+    reading = rules.extract_fee(text, "MILONGA")
+    assert (reading.amount, reading.basis) == (amount, basis)
+
+
+@pytest.mark.parametrize("text", [
+    "입장 무료",
+    "무료 입장",
+    "참가비 없음",
+    "참가비: 무료",
+    "입장료 무료",
+    "Free admission",
+    "free entry",
+])
+def test_free_admission_is_read_as_zero_won(text):
+    reading = rules.extract_fee(text, "MILONGA")
+    assert reading is not None
+    assert reading.amount == 0
+
+
+@pytest.mark.parametrize("text", [
+    "행사장 무료주차 가능",           # parking, not admission
+    "무료 음료 제공",                 # a drink, not admission
+    "무료 셔틀버스 운행",             # a shuttle, not admission
+])
+def test_free_something_else_is_never_read_as_a_free_event(text):
+    """Section 21/34: 'free parking' making the event itself read as free
+    would be exactly the false VERIFIED risk this whole module exists to
+    refuse."""
+    assert rules.extract_fee(text, "MILONGA") is None
+
+
+def test_a_real_multi_tier_package_price_is_left_unpriced():
+    """Real live post (a recurring guided practica): three genuine prices for
+    three different commitments. Picking any one of them - even the
+    single-visit walk-in tier - would still be choosing among three numbers
+    the post itself never singled out as 'today's price' (Section 17/20)."""
+    text = ("💰 참가비: 10만원(2달, 8회), 6만원(1달, 4회), "
+            "당일 현장 2만원(1회) 상시 등록 가능")
+    assert rules.extract_fee(text, "PRACTICA") is None
+
+
+def test_advance_and_door_pricing_is_left_unpriced_not_averaged_or_first():
+    """Real live post (DanceInfo): '예매15,000/현매20,000' is two genuine
+    prices for the same event with no label this module recognises (예매/
+    현매 name a purchase channel, not the fee) - Section 17 forbids
+    collapsing either member/non-member or advance/door pairs to one
+    number, so this must stay unpriced rather than picking 15,000, 20,000,
+    or an average of the two."""
+    text = "🎂디제이-네로 🎂예매15,000/현매20,000 🎂카뱅3333-21-5422369"
+    assert rules.extract_fee(text, "MILONGA") is None
+
+
+def test_member_and_non_member_pricing_is_left_unpriced():
+    text = "회원 15,000원 / 비회원 20,000원"
+    assert rules.extract_fee(text, "MILONGA") is None
+
+
+def test_a_street_address_number_is_never_read_as_a_fee():
+    """장소: 서울 마포구 잔다리로 48, 2층 - "48" is a building number, not a
+    price, and gets nowhere near _MIN_UNSUFFIXED_DIGITS on its own; the real
+    risk is a longer lot/building number reading as money once it is 4+
+    digits, so this pins a realistic one."""
+    assert rules.extract_fee(
+        "장소: 서울 서초구 주흥길 1234 환희빌딩 2층", "MILONGA"
+    ) is None
+
+
+def test_extract_fee_has_no_memory_between_calls():
+    """Section 27 (v0.84.1): recurrence must never carry a fee from one
+    occurrence to the next. extract_fee() takes no state beyond the text
+    handed to it for this exact reason - calling it once with a real fee
+    must not leak into a later call for a different occurrence's text."""
+    priced = rules.extract_fee("입장료 13,000원", "MILONGA")
+    assert priced is not None
+    unpriced = rules.extract_fee("밀롱가 23:30 시작", "MILONGA")
+    assert unpriced is None
 
 
 # --- the whole post ---------------------------------------------------------

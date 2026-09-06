@@ -18,7 +18,10 @@ PRODUCT_VERSION = "0.82"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
-DEFAULT_ENGINE_VERSION = "0.80"
+# v0.84.1 bumped it again for extract_fee(): Korean 만원 notation, free
+# admission, and a package/session-tier exclusion guard - see
+# extraction_rules.py.
+DEFAULT_ENGINE_VERSION = "0.81"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

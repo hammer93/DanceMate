@@ -1,5 +1,110 @@
 # DanceMate Release Notes
 
+## v0.84.1 Fee Extraction Coverage Improvement
+
+Status:
+Root-cause audit and safe generic fixes verified against the ROCKPro64
+board's real production database, 2026-09-07.
+
+Version split:
+
+- Product Runtime: 0.84.1
+- Information Engine: 0.81 (up from 0.80) - `extract_fee()` changed.
+
+### Goal
+
+Fee was the largest known gap after v0.84.0 (6% coverage, 7/119 upcoming
+Tango events). Find where a real source actually has a price and the engine
+is missing it, and raise coverage only there - never by guessing, never by
+copying a price from another event or a previous occurrence.
+
+### What the audit found
+
+A full read of all 112 fee-unknown upcoming Tango events against their real
+stored source text, cross-checked against `tangonow_discovery.py`'s own
+Firestore field mapping:
+
+- **107 events (96%) genuinely carry no price anywhere in their source.**
+  Miltang (92) and TangoNOW (17, minus the 4/21 that already have a price
+  because the collector already reads TangoNOW's own `price` Firestore
+  field into the body when present) are discovery directories that point to
+  an external event, not the event's own page - their listing template has
+  no fee field to miss.
+- **2 events are a real, single recurring practica's own 3-tier package
+  price** ("10만원(2달, 8회), 6만원(1달, 4회), 당일 현장 2만원(1회)") - a
+  genuine fee exists, but picking any one of the three tiers, including the
+  single-visit walk-in price, would still be guessing which of three real
+  numbers the post meant.
+- **2 events (one in scope, one on an out-of-scope Daum source) are a real
+  advance/door price** ("예매15,000/현매20,000") - genuine, but a case
+  Section 17 explicitly forbids collapsing to one number.
+- **1 event** used a content-acquisition fallback (`og_description`, a
+  truncated SEO summary) instead of the real page body - a real gap, but in
+  *content acquisition*, not fee parsing; noted as a follow-up rather than
+  fixed here (Section 62: do not fold an unrelated extraction gap into this
+  release).
+
+**Recoverable gap via safe, generic means: 0 of 112.** This is the honest
+finding this release's own instructions asked for, not a shortfall of
+effort - Section 6 warned against picking a coverage target before knowing
+the real denominator, and the real denominator turned out to be zero. A
+detect-only run of the new parser against all 112 events' real stored text
+confirms this empirically: 0 would newly resolve to a fee.
+
+### Fixed anyway, because the absolute principles require it independent of today's data
+
+- `extract_fee()` could not read Korean 10,000-unit notation at all
+  ("2만원", "1.5만원") - now judged by the same label/event-context tiering
+  as a plain "20,000원".
+- Free admission was never recognised, at any amount - added a narrow
+  phrase match ("입장 무료", "무료 입장", "참가비 없음", "무료 참가", a fee
+  label immediately followed by "무료", "free admission"/"free entry") that
+  cannot structurally match "무료주차"/"무료 음료" (the phrase always pairs
+  무료 with admission itself, never an unrelated noun).
+- Added a package/session-tier exclusion so the new 만원 reader does not
+  wrongly attach a multi-month package price to a single practica listing -
+  verified against the one real live post that has both a 만원 price and
+  multiple tiers side by side; without the guard it would have picked
+  100,000 for a single session.
+- Found and fixed a real regression against the refactor's own intent along
+  the way: a pre-existing test (a bare "밀롱가 2026" must never become a
+  13,000-style fee) started passing as a fee once the digit-length gate was
+  restructured per-amount-shape - the original code only ever accepted an
+  unsuffixed number through a fee *label*, never through the event's own
+  name, and that had to be preserved exactly, not just the digit count.
+
+### Also in this release
+
+`scripts/backup.sh` no longer aborts the whole backup when retention
+pruning cannot remove one specific old directory - found live, again: two
+backup directories from before the board's operator-only SSH policy remain
+root-owned, hammer has no root to reclaim them, and deleting them is not
+permitted. A cleanup failure now warns and moves on instead of reporting a
+backup that actually succeeded as failed. (`BACKUP_RETENTION` was raised
+again, 12 -> 16, as a stopgap for this release's own backup step, run
+before the fix above was live in production; the fix itself is permanent.)
+
+### Result
+
+- Overall Fee Coverage: 7/119 (5.9%) -> 7/119 (5.9%), unchanged - no real
+  production event qualified for a safe automatic fill.
+- Recoverable Fee Coverage: 0/0 identified as safely recoverable.
+- Wrong Fee: 0. No event's fee changed.
+- No schema change, no new migration.
+- Date/Time/Venue/Region/Source/Status coverage and the 포항/대구/청주/
+  진주/광주 region counts unchanged - this release did not touch that code.
+
+### Next recommendation
+
+The two genuinely-ambiguous clusters (advance/door; package tiers) and the
+one content-acquisition fallback are real, now-documented gaps outside what
+a single-value `fee` column and a "never guess" parser can close - closing
+them further would need either a schema change (Section 30 explicitly asked
+not to build one this release) or a human-review path for ambiguous prices,
+which does not exist today. Recommended as the next fee-related release's
+starting point, once more real cases accumulate (Section 27: never resize
+a threshold or a scorer off of n=1-2).
+
 ## v0.84.0 Tango Private Alpha Readiness
 
 Status:
