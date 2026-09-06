@@ -472,7 +472,18 @@ _FREE_RE = re.compile(
 _SEGMENT_RE = re.compile(r"[\n;]|,(?=\s)|(?<=원)\s*,|[·•▪◾]")
 
 # Money in the same breath as one of these is not the entry fee.
-_NOT_A_FEE = re.compile(r"주차|할인|적립|보증금|벌금|예금|계좌|송금|환불|후원|기부|상품권", re.I)
+#
+# "주차" alone disqualifies a nearby amount as a parking fee ("주차장 최대
+# 7,000원") - but "무료주차"/"무료 주차" (parking is free, a bare fact with
+# no amount of its own) is common enough on a real poster to land within
+# _NEAR_BEFORE of a genuine, clearly-labelled entry fee ("무료주차 가능
+# 입장료 13,000원"), which must not disqualify that fee just because the
+# word "주차" happens to be nearby (v0.84.3: found via a real K-TANGO-shaped
+# poster). The lookbehind excludes exactly that phrase and nothing else -
+# "주차비"/"주차장"/a bare "주차" next to a real number still disqualify.
+_NOT_A_FEE = re.compile(
+    r"(?<!무료)(?<!무료 )주차|할인|적립|보증금|벌금|예금|계좌|송금|환불|후원|기부|상품권", re.I
+)
 
 # Explicit fee labels.
 _FEE_LABEL = re.compile(

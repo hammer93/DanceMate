@@ -275,8 +275,23 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     # the extractor changed, so every post we hold reads differently now,
     # including the ones we only ever had a search snippet for. Those are
     # exactly where a wrong date hides, because a snippet is mostly title.
-    statuses = ([acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL]
-                if not force else None)
+    #
+    # v0.84.3: a FETCH_BLOCKED item carrying a poster candidate (an
+    # image-only post - no body text was ever served, but a real attached
+    # image was) is worth the same re-read once it has one, purely for the
+    # image-OCR fallback `engine_ingest._gather_image_texts()` already
+    # gates on field-missing + poster-present. A blocked item with no
+    # poster stays excluded - there is nothing new to give the engine.
+    where = "true" if force else (
+        "((c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL) "
+        "OR (c.acquisition_status = %(blocked)s "
+        "    AND c.poster_candidates IS NOT NULL "
+        "    AND jsonb_array_length(c.poster_candidates) > 0))"
+    )
+    params: dict[str, Any] = {} if force else {
+        "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
+        "blocked": acquisition.FETCH_BLOCKED,
+    }
     with con.cursor() as cur:
         cur.execute(
             "SELECT c.*, i.url, i.source_id, i.published_at, "
@@ -284,11 +299,9 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
-            "WHERE " + ("c.acquisition_status = ANY(%s) AND c.extracted_text IS NOT NULL"
-                        if statuses else "true")
-            + freshness +
-            " ORDER BY c.fetched_at NULLS LAST, c.source_item_id LIMIT %s",
-            ((statuses, limit) if statuses else (limit,)),
+            "WHERE " + where + freshness +
+            " ORDER BY c.fetched_at NULLS LAST, c.source_item_id LIMIT %(limit)s",
+            {**params, "limit": limit},
         )
         return _rows(cur)
 

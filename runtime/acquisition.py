@@ -358,6 +358,33 @@ def extract_images(raw_html: str, base_url: str) -> list[str]:
     return seen
 
 
+def extract_content_images(raw_html: str, base_url: str) -> list[str]:
+    """A post's own attached images, scoped the same way `extract_article()`
+    scopes its text (v0.84.3).
+
+    `extract_images()` scans the whole page - fine for a body that already
+    excludes chrome by construction (the text markers already stripped it),
+    but a page whose body came up empty (an image-only poster with no
+    caption) has no such text to lean on. Reusing the *same* raw-HTML
+    boundary the template_board detector already trusts means a poster
+    inside `.readEdit` is found while the site's own logo/nav/footer images
+    (outside that boundary, `.gnb`/`.m_menu`/`<footer>`) never are - the
+    same host-independent guarantee `extract_article()` already gives for
+    text, extended to images, not a new heuristic.
+
+    Falls back to the whole-page scan when no known boundary matches -
+    every other source's current behaviour (Daum, DanceInfo, an unknown WEB
+    board) is unchanged, since none of those mark a raw-HTML image boundary
+    today.
+    """
+    board_start = raw_html.find(_TEMPLATE_BOARD_START)
+    board_end = raw_html.find(_TEMPLATE_BOARD_END, board_start + 1 if board_start >= 0 else 0)
+    if board_start >= 0 and board_end > board_start:
+        segment = raw_html[board_start + len(_TEMPLATE_BOARD_START):board_end]
+        return extract_images(segment, base_url)
+    return extract_images(raw_html, base_url)
+
+
 def content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
@@ -512,13 +539,19 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
         text, method = extract_article(raw)
         text, redacted = redact_personal_data(text)
         duration = int((time.monotonic() - started) * 1000)
+        # Scoped the same way as the text itself (v0.84.3): a poster image
+        # inside a known content boundary is worth capturing whether or not
+        # the boundary's own text cleared any length threshold below - an
+        # image-only post has every reason to carry its poster forward for
+        # OCR fallback, and none to fall back further just because it has one.
+        images = extract_content_images(raw, final_url)
 
         if len(text) >= FULL_TEXT_THRESHOLD:
             return AcquisitionOutcome(
                 status=FETCHED_FULL, method=method, fetched_url=target,
                 canonical_url=final_url, http_status=status_code,
                 content_type=content_type, title=extract_title(raw), text=text,
-                images=extract_images(raw, final_url), redacted_spans=redacted,
+                images=images, redacted_spans=redacted,
                 duration_ms=duration,
             )
 
@@ -527,18 +560,21 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
                 status=FETCHED_PARTIAL, method=method, fetched_url=target,
                 canonical_url=final_url, http_status=status_code,
                 content_type=content_type, title=extract_title(raw), text=text,
-                images=extract_images(raw, final_url), redacted_spans=redacted,
+                images=images, redacted_spans=redacted,
                 error_code="THIN_BODY",
                 error=f"only {len(text)} characters of text",
                 duration_ms=duration,
             )
         else:
             # A page that served no article - Daum's desktop shell looks like
-            # this. Never FETCHED_FULL, whatever the HTTP status said.
+            # this. Never FETCHED_FULL, whatever the HTTP status said. A
+            # poster image is still worth keeping even when there is no text
+            # at all - the image-only K-TANGO case this branch previously
+            # discarded a real poster URL for.
             candidate = AcquisitionOutcome(
                 status=FETCH_BLOCKED, method=METHOD_NONE, fetched_url=target,
                 canonical_url=final_url, http_status=status_code,
-                content_type=content_type, error_code="BODY_UNAVAILABLE",
+                content_type=content_type, images=images, error_code="BODY_UNAVAILABLE",
                 error="page fetched but no article body was served",
                 duration_ms=duration,
             )
