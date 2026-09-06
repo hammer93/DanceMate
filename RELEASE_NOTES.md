@@ -1,5 +1,92 @@
 # DanceMate Release Notes
 
+## v0.84.2 K-TANGO Content Acquisition Repair + Source Health Recovery
+
+Status:
+Root-cause audit and generic extractor fix verified against the live
+K-TANGO site and the ROCKPro64 board's real production database, 2026-09-07.
+
+Version split:
+
+- Product Runtime: 0.84.2
+- Information Engine: 0.81 (unchanged) - no engine code touched.
+
+### Goal
+
+K-TANGO (SRC-W-001, the first WEB-platform source, registered v0.81) was
+storing its site's own navigation menu as event bodies for a majority of its
+posts. Re-collect K-TANGO's real content reliably against the site's current
+structure, and stop navigation/menu text from ever being stored as a body.
+
+### Root cause
+
+`runtime.acquisition.extract_article()` correctly locates K-TANGO's real
+`<div class="readEdit">...<div class="readBottom">` content boundary on every
+page - the site's own template has not changed since v0.81's onboarding. But
+when a post's real content is a poster image with no caption text, the
+located segment's text falls below `MINIMUM_USEFUL_TEXT`, and the function
+fell through every remaining marker check to a whole-page `visible_text()`
+fallback - which includes the site's entire nav/header/footer chrome (an
+unrelated, oddly dental-clinic-flavored leftover admin template the site was
+built on). That whole-page text was long enough to be accepted and stored as
+`FETCHED_FULL`.
+
+Confirmed in production: **6 of K-TANGO's 10 live posts (60%)** were affected
+- source_item_ids 643, 644, 646, 647, 648, 649, all via `visible_text`, all
+~720-735 characters, all starting with the same site-menu boilerplate. Two of
+these (646, 647) had already produced real `events` rows with a contaminated
+body. Discovery itself was never the problem: all 10 real live posts were
+already found and stored (`last_status='PASS'`); this was purely a content
+extraction defect, not a stale site or a missed post.
+
+### Fix
+
+`extract_article()`: once the `template_board` boundary is found, never fall
+through to the whole-page fallback - it can only ever re-grab that same
+template's own chrome. A thin or empty scoped result is still returned under
+`METHOD_TEMPLATE_BOARD`; `fetch()`'s existing FULL/PARTIAL/BLOCKED length
+thresholds classify it downstream exactly as they classify any other thin
+body (an image-only post with no caption becomes `FETCH_BLOCKED`, not a false
+`FETCHED_FULL`).
+
+Also added a generic chrome guard on the last-resort whole-page fallback
+itself (digit-free, short-token-dominated text is refused as an article body)
+so a WEB source with no known template still cannot have its own nav/menu
+accepted as a real body. No `if source_id == ...` branching anywhere; both
+changes live entirely inside the shared extraction abstraction.
+
+### Verification
+
+- **Detect-only against the real live site**, all 10 current K-TANGO posts:
+  0 False Body Gate failures. The 6 previously-contaminated posts now
+  correctly report `FETCH_BLOCKED` (their real `readEdit` content is
+  genuinely empty/image-only); the 4 real-content posts (including the one
+  with real date/venue/fee text) are unaffected.
+- robots.txt: `http://www.k-tango.net/robots.txt` returns 404 (no
+  restrictions); the registered source config already uses plain HTTP
+  (`www.k-tango.net`'s HTTPS certificate is misconfigured for an unrelated
+  domain - a real site-infrastructure issue, but not one this collector was
+  ever exposed to, since `SRC-W-001`'s config already used `http://`).
+- 15 new tests: board list parsing, detail link parsing (the site's title
+  cells use `onclick`, not `<a href>` - already handled correctly),
+  navigation/sidebar/footer exclusion, neighbouring-post isolation, Korean
+  (and non-UTF-8-declared) charset handling, menu-only rejection, a
+  short-real-post false-positive guard, duplicate-URL/pagination stability,
+  and existing-source (Daum/DanceInfo) non-regression.
+- Full Runtime suite (board staging, isolated throwaway PostgreSQL): 1316
+  passed, 2 pre-existing unrelated failures (`test_tangocalendar_discovery`,
+  confirmed identical against the unmodified v0.84.1 image before this
+  change). Engine suite: 763 passed, 0 failures, Engine unchanged.
+
+### Freshness conclusion
+
+**A. ACTIVE_AND_FIXED.** The site is live and actively serving real content;
+the collector already discovers everything real on it. The code defect is
+fixed. Any remaining thin/blocked results reflect the site's own genuinely
+image-only posts, not a bug - fee/venue OCR recovery for those posters is out
+of this release's scope (Section 23/24), matching v0.84.1's own precedent of
+not folding an unrelated extraction gap into a content-acquisition release.
+
 ## v0.84.1 Fee Extraction Coverage Improvement
 
 Status:
