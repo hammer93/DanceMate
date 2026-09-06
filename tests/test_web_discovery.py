@@ -102,6 +102,24 @@ def test_a_row_with_no_title_is_skipped():
     assert all("no=10" not in p["source_url"] for p in posts)
 
 
+def test_a_repeated_row_yields_one_post_not_two():
+    """A pinned/notice post occasionally reappears on the same list page (top
+    of the pinned section and again in date order) - the same detail URL must
+    never become two source_items."""
+    page = LIST_PAGE + """
+<tr>
+<td class="none1000">2</td>
+<td class="tit" style='cursor:pointer;' onclick="location.href='read.jsp?reqPageNo=1&no=14'">
+<p class="mw100">2025 K-TANGO CF 행사안내&등록</p>
+</td>
+<td><p>K-TANGO</p></td>
+<td>2025-03-31</td>
+</tr>"""
+    posts = web_discovery.parse_list(page, LIST_URL)
+    urls = [p["source_url"] for p in posts if "no=14" in p["source_url"]]
+    assert len(urls) == 1
+
+
 def test_the_body_is_empty_and_the_quality_is_metadata_only():
     """The list page never carries the article - only acquisition.fetch() does."""
     posts = web_discovery.parse_list(LIST_PAGE, LIST_URL)
@@ -137,3 +155,20 @@ def test_discover_fetches_with_the_shared_user_agent():
 
     web_discovery.discover(LIST_URL, source_id="SRC-W-001", opener=open_url)
     assert captured["user_agent"] == acquisition.USER_AGENT
+
+
+def test_discover_fetches_the_named_page_only_and_does_not_auto_paginate():
+    """One board_url is one fetch - a 'next page' link on the list page must
+    not be followed on its own (Section 17: no unbounded historical crawl).
+    A source that genuinely needs page two registers a second board_url."""
+    page_with_pager = LIST_PAGE.replace(
+        "</table>", '</table><a href="index.jsp?reqPageNo=2">다음</a>'
+    )
+    calls = []
+
+    def open_url(request, timeout=None):
+        calls.append(request.full_url)
+        return _Response(page_with_pager)
+
+    web_discovery.discover(LIST_URL, source_id="SRC-W-001", opener=open_url)
+    assert calls == [LIST_URL]

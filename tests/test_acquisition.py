@@ -70,11 +70,12 @@ TEMPLATE_BOARD_PAGE = """<html><head><title>K-TANGO</title></head><body>
 
 
 class _Response(io.BytesIO):
-    def __init__(self, body: str, *, status=200, url=DAUM_URL, content_type="text/html;charset=UTF-8"):
-        super().__init__(body.encode("utf-8"))
+    def __init__(self, body: str, *, status=200, url=DAUM_URL,
+                 content_type="text/html;charset=UTF-8", charset="utf-8"):
+        super().__init__(body.encode(charset))
         self.status = status
         self._url = url
-        self.headers = _Headers(content_type)
+        self.headers = _Headers(content_type, charset)
 
     def geturl(self):
         return self._url
@@ -88,14 +89,15 @@ class _Response(io.BytesIO):
 
 
 class _Headers:
-    def __init__(self, content_type: str):
+    def __init__(self, content_type: str, charset: str = "utf-8"):
         self._content_type = content_type
+        self._charset = charset
 
     def get(self, key, default=""):
         return self._content_type if key.lower() == "content-type" else default
 
     def get_content_charset(self):
-        return "utf-8"
+        return self._charset
 
 
 @pytest.fixture(autouse=True)
@@ -160,6 +162,132 @@ def test_a_template_board_post_is_read_from_its_readEdit_div():
     assert "로그인" not in text, "header nav must not be in the article"
     assert "이전글" not in text, "prev/next footer must not be in the article"
     assert "조직위원회" not in text, "page footer must not be in the article"
+
+
+# v0.84.2: reproduces the real production bug (6 of K-TANGO's 10 live posts,
+# 60%, ended up stored with this exact shape). A post whose real content is a
+# poster image with no caption text - `.readEdit` genuinely holds nothing but
+# an <img> - used to fall through every marker check and land on the
+# whole-page fallback, storing the site's own nav/sidebar/footer chrome as if
+# it were the article. Abbreviated: not a copy of the real page, just enough
+# structure (top nav, a submenu sidebar block, the empty readEdit, the
+# readBottom prev/next footer, a page footer) to exercise every exclusion.
+TEMPLATE_BOARD_IMAGE_ONLY_URL = "http://www.k-tango.net/cnf/festival02/read.jsp?reqPageNo=1&no=13"
+TEMPLATE_BOARD_IMAGE_ONLY_PAGE = """<html><head><title>K-TANGO</title></head><body>
+<header><nav class="gnb">K-TANGO 소개 조직 및 운영위원 소개 초청 아티스트 소개 후원사 소개 CONTACT PROGRAM GALLERY NOTICE 로그인 회원가입</nav></header>
+<div class="pro_m_wrap"><div class="m_menu"><ul class="subleftmenu">
+<li>관리자모드</li><li>온라인상담</li><li>전화상담</li><li>온라인예약</li><li>예약확인</li>
+<li>공지사항</li><li>갤러리</li><li>FAQ</li><li>회원가입</li><li>회원약관</li>
+<li>로그인</li><li>개인정보취급방침</li><li>회원탈퇴</li><li>로그아웃</li>
+</ul></div></div>
+<div class="programCon"><div class="programRead">
+<div class="readTop">
+<p class="imgTitle">2025 K-TANGO CF 일정표</p>
+<p class="imgTitle_sub">K-TANGO 2025-03-13 10:02</p>
+</div>
+<div class="readEdit">
+<p><img src="/upload/editor/1743398786601_79.png" style=""/><br/></p>
+</div>
+<div class="readBottom"><table>
+<tr><th>이전글</th><td><a href="read.jsp?reqPageNo=1&no=14">2025 K-TANGO CF 행사안내&등록</a></td></tr>
+<tr><th>다음글</th><td><a href="read.jsp?reqPageNo=1&no=12">2025 K-TANGO CF</a></td></tr>
+</table></div>
+</div></div>
+<footer>K-TANGO CF 조직위원회 (주)KSACN TEL. 02-571-0108</footer>
+</body></html>"""
+
+
+def test_an_image_only_post_does_not_fall_back_to_the_whole_page():
+    """The v0.84.2 bug: a known-correct but thin readEdit must never be
+    abandoned for a whole-page grab, which can only ever reintroduce this
+    same template's own chrome."""
+    text, method = acquisition.extract_article(TEMPLATE_BOARD_IMAGE_ONLY_PAGE)
+    assert method == acquisition.METHOD_TEMPLATE_BOARD
+    assert len(text) < acquisition.MINIMUM_USEFUL_TEXT
+
+
+def test_an_image_only_post_excludes_top_navigation():
+    text, _ = acquisition.extract_article(TEMPLATE_BOARD_IMAGE_ONLY_PAGE)
+    assert "PROGRAM" not in text and "GALLERY" not in text
+
+
+def test_an_image_only_post_excludes_the_sidebar_submenu():
+    text, _ = acquisition.extract_article(TEMPLATE_BOARD_IMAGE_ONLY_PAGE)
+    assert "관리자모드" not in text and "온라인상담" not in text
+
+
+def test_an_image_only_post_excludes_the_page_footer():
+    text, _ = acquisition.extract_article(TEMPLATE_BOARD_IMAGE_ONLY_PAGE)
+    assert "조직위원회" not in text and "02-571-0108" not in text
+
+
+def test_an_image_only_post_excludes_the_neighbouring_posts_own_titles():
+    """readBottom's prev/next links name two *other* posts - Section 25's
+    cross-post context isolation must hold even when this post's own body is
+    empty."""
+    text, _ = acquisition.extract_article(TEMPLATE_BOARD_IMAGE_ONLY_PAGE)
+    assert "행사안내&등록" not in text
+
+
+def test_an_image_only_post_is_fetch_blocked_not_full_or_partial():
+    """Section 12's invariant: navigation-only content must never be reported
+    as a successful fetch, full or partial - a genuinely empty post is
+    reported as blocked, exactly like any other page that served no body."""
+    opener = _opener({
+        TEMPLATE_BOARD_IMAGE_ONLY_URL: _Response(
+            TEMPLATE_BOARD_IMAGE_ONLY_PAGE, url=TEMPLATE_BOARD_IMAGE_ONLY_URL
+        )
+    })
+    outcome = acquisition.fetch(TEMPLATE_BOARD_IMAGE_ONLY_URL, opener=opener)
+    assert outcome.status not in (acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL)
+    assert outcome.status == acquisition.FETCH_BLOCKED
+    assert "관리자모드" not in (outcome.text or "")
+
+
+# A page with none of the known markers at all - no readEdit, no article
+# region, no danceinfo block - but whose entire visible text is still just
+# the site's own menu. Nothing scopes this one to a content region, so the
+# generic chrome guard (Section 13) is what has to catch it.
+MENU_ONLY_PAGE = """<html><head><title>어떤 사이트</title></head><body>
+<nav>소개 연혁 조직도 오시는길 공지사항 자유게시판 갤러리 포토앨범 동영상 자료실
+FAQ 문의하기 회원가입 로그인 아이디찾기 비밀번호찾기 이용약관 개인정보처리방침
+사이트맵 관리자모드 온라인상담 전화상담 온라인예약 예약확인 회원정보변경 회원탈퇴
+로그아웃 팝업보기 검색 전체메뉴 즐겨찾기 뉴스레터 이벤트 공모전 채용정보 후원안내
+자원봉사 협력기관 관련사이트 오픈채팅 카카오톡 페이스북 인스타그램 유튜브 블로그</nav>
+</body></html>"""
+
+
+def test_a_menu_only_page_with_no_known_marker_is_not_read_as_an_article():
+    text, method = acquisition.extract_article(MENU_ONLY_PAGE)
+    assert method == acquisition.METHOD_NONE
+    assert method != acquisition.METHOD_VISIBLE_TEXT
+
+
+def test_a_menu_only_page_is_never_fetched_full():
+    opener = _opener({DAUM_URL: _Response(MENU_ONLY_PAGE)})
+    outcome = acquisition.fetch(DAUM_URL, opener=opener)
+    assert outcome.status != acquisition.FETCHED_FULL
+
+
+def test_a_short_real_post_is_not_mistaken_for_a_menu():
+    """The chrome guard must not cost a real, if short, announcement - the
+    signal is digit-free short tokens, not merely being short."""
+    page = ("<html><body>안녕하세요. 신청은 09월 26일까지이며 참가비는 20,000원입니다. "
+            "장소는 연세대학교 대강당입니다. 문의는 홈페이지 공지사항을 참고해 주세요.</body></html>")
+    text, method = acquisition.extract_article(page)
+    assert method == acquisition.METHOD_VISIBLE_TEXT
+    assert "20,000원" in text
+
+
+def test_existing_daum_and_danceinfo_extraction_is_unaffected_by_the_chrome_guard():
+    """v0.84.2's guard only ever gates the last-resort whole-page fallback;
+    every other host's already-working extraction must be untouched."""
+    text, method = acquisition.extract_article(MOBILE_PAGE)
+    assert method == acquisition.METHOD_ARTICLE_REGION
+    assert "THE PISTA MILONGA" in text
+    text, method = acquisition.extract_article(DANCEINFO_PAGE)
+    assert method == acquisition.METHOD_DANCEINFO
+    assert "분당 실루엣" in text
 
 
 # Shaped like danceinfo.net's own lesson/event detail page: nav chrome, then
@@ -348,6 +476,20 @@ def test_korean_text_survives_the_fetch():
     outcome = acquisition.fetch(DAUM_URL, opener=opener)
     assert "밀롱가" in outcome.text
     assert not any(0xD800 <= ord(c) <= 0xDFFF for c in outcome.text)
+
+
+def test_a_non_utf8_declared_charset_is_honoured():
+    """A board declaring a legacy Korean charset (euc-kr) rather than utf-8
+    must still decode correctly - the body is read with whatever charset the
+    server actually declares, not hardcoded to one."""
+    page = TEMPLATE_BOARD_PAGE
+    response = _Response(
+        page, url=TEMPLATE_BOARD_URL,
+        content_type="text/html;charset=euc-kr", charset="euc-kr",
+    )
+    outcome = acquisition.fetch(TEMPLATE_BOARD_URL, opener=_opener({TEMPLATE_BOARD_URL: response}))
+    assert outcome.status == acquisition.FETCHED_FULL
+    assert "연세대학교" in outcome.text
 
 
 # --- content hashing and retry ---------------------------------------------
