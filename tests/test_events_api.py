@@ -228,6 +228,77 @@ def test_the_response_says_what_it_was_asked(pg, unique):
     assert result["query"]["to"] == "2026-09-05"
 
 
+# --- v0.84.0: status handling, ranking safety --------------------------------
+#
+# CANCELLED and COMPLETED have never actually been written by the engine in
+# production (it has only ever produced POSSIBLE, plus a single VERIFIED) -
+# these exercise the exclusion path against the day it does, via
+# candidate_status, which normalize_candidate stores as engine_status
+# verbatim (Section 40: real code path, not a live sample that does not exist
+# yet).
+
+def test_a_cancelled_event_is_excluded_by_default(pg, unique):
+    _live(pg, unique, "1", candidate_status="CANCELLED")
+    assert _mine(events_api.search(pg, on="2026-09-05", limit=100), unique) == []
+
+
+def test_a_cancelled_event_is_still_reachable_with_include_cancelled(pg, unique):
+    _live(pg, unique, "1", candidate_status="CANCELLED")
+    found = _mine(events_api.search(
+        pg, on="2026-09-05", limit=100, include_cancelled=True), unique)
+    assert len(found) == 1
+    assert found[0]["cancelled"] is True
+
+
+def test_a_completed_event_is_excluded_by_default(pg, unique):
+    """Section 22: COMPLETED belongs in a past-events view, not the default
+    upcoming list, the same way CANCELLED does not belong in it either."""
+    _live(pg, unique, "1", candidate_status="COMPLETED")
+    assert _mine(events_api.search(pg, on="2026-09-05", limit=100), unique) == []
+
+
+def test_a_completed_event_is_still_reachable_with_include_completed(pg, unique):
+    _live(pg, unique, "1", candidate_status="COMPLETED")
+    found = _mine(events_api.search(
+        pg, on="2026-09-05", limit=100, include_completed=True), unique)
+    assert len(found) == 1
+    assert found[0]["status"] == "COMPLETED"
+
+
+def test_a_conflict_event_is_visible_not_hidden(pg, unique):
+    """Section 30: CANCELLED is excluded, but CONFLICT is a warning to show,
+    never a reason to hide the event outright."""
+    _live(pg, unique, "1", candidate_status="CONFLICT")
+    found = _mine(events_api.search(pg, on="2026-09-05", limit=100), unique)
+    assert len(found) == 1
+    assert found[0]["status"] == "CONFLICT"
+    assert found[0]["status_label"] == "정보 충돌"
+
+
+def test_ranking_is_purely_chronological_status_never_reorders_it(pg, unique):
+    """Section 29/30: v0.84.0 does not add a fit score, so a POSSIBLE event
+    earlier in the day must never be pushed behind a VERIFIED or CONFLICT one
+    later the same day, or vice versa - order comes from date/time alone."""
+    _live(pg, unique, "1", start_time="21:00", candidate_status="VERIFIED",
+          venue=f"밤 {unique}")
+    _live(pg, unique, "2", start_time="18:00", candidate_status="CONFLICT",
+          venue=f"저녁 {unique}")
+    _live(pg, unique, "3", start_time="19:30", candidate_status="POSSIBLE",
+          venue=f"초저녁 {unique}")
+    found = _mine(events_api.search(pg, on="2026-09-05", limit=100), unique)
+    assert [e["start_time"] for e in found] == ["18:00", "19:30", "21:00"]
+
+
+def test_completed_never_reappears_when_a_wider_window_includes_its_date(pg, unique):
+    """Excluding COMPLETED is not the same as excluding its date - other real
+    events that day must still be served."""
+    _live(pg, unique, "1", candidate_status="COMPLETED", venue=f"끝난 {unique}")
+    _live(pg, unique, "2", candidate_status="POSSIBLE", venue=f"진행 {unique}")
+    found = _mine(events_api.search(pg, on="2026-09-05", limit=100), unique)
+    assert len(found) == 1
+    assert found[0]["venue"]["name"] == f"진행 {unique}"
+
+
 def test_the_api_says_whether_a_time_was_qualified_by_the_post():
     unmarked = events_api.present({
         "event_id": 1, "event_name": "밀롱가", "event_date": date(2026, 9, 12),

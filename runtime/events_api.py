@@ -230,15 +230,36 @@ CANCELLED = "CANCELLED"
 # The engine's lifecycle vocabulary is not a reader's. VERIFIED does not mean
 # "true", it means "the evidence gate passed", and neither phrase belongs on a
 # page someone reads on the way out the door.
+#
+# v0.84.0: UPDATED used to share VERIFIED's label ("확인됨"), which told a
+# reader an event whose details just changed was the same kind of settled as
+# one the evidence gate actually passed - a real Section 11 defect once
+# UPDATED starts firing (it does not yet - production has only ever written
+# POSSIBLE and VERIFIED - but the label has to be right before it does, not
+# after someone reads a changed fee as confirmed). COMPLETED was missing
+# outright and fell back to "확인 필요", which is backwards for an event
+# that has already happened.
 STATUS_LABELS = {
     "VERIFIED": "확인됨",
     "POSSIBLE": "확인 필요",
     "EXPECTED": "예정",
     "CONFLICT": "정보 충돌",
     "CANCELLED": "취소",
-    "UPDATED": "확인됨",
+    "UPDATED": "변경됨",
+    "COMPLETED": "종료",
     "UNKNOWN": "확인 필요",
 }
+
+# The one-line explanation behind the VERIFIED badge (Section 12): what the
+# evidence gate means, not how it works. Surfaced as a `title` attribute
+# rather than a paragraph - a reader who wants more can hover or long-press,
+# nobody else has to read past the badge itself.
+VERIFIED_EXPLANATION = "공식/신뢰 가능한 근거에서 날짜·시간·가격이 같은 행사 문맥으로 확인됨"
+
+# An event the engine has marked as already having happened. Section 22:
+# excluded from the default upcoming list for the same reason CANCELLED is -
+# it stays reachable by id, but it is not an answer to "where can I dance".
+COMPLETED = "COMPLETED"
 
 # What kind of night this is, in words a reader uses. The engine's taxonomy
 # distinguishes MILONGA from SOCIAL because tango names its social event and
@@ -266,13 +287,14 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
            genres: "Sequence[str] | None" = None, region: str | None = None,
            status: str | None = None, limit: int = DEFAULT_LIMIT, offset: int = 0,
            include_past: bool = False, include_cancelled: bool = False,
+           include_completed: bool = False,
            now: datetime | None = None) -> dict[str, Any]:
     """Events a dancer could go to, soonest first.
 
-    Past and cancelled events are excluded unless asked for. Both still exist,
-    both are still reachable by id, and the console can see all of them -- but
-    a list of where to dance is about tonight, and last Tuesday is not an
-    answer to it.
+    Past, cancelled, and completed events are excluded unless asked for. All
+    three still exist, all three are still reachable by id, and the console
+    can see all of them -- but a list of where to dance is about tonight, and
+    last Tuesday (or a milonga that already ended) is not an answer to it.
     """
     if limit < 1 or limit > MAX_LIMIT:
         raise SearchError(f"limit must be between 1 and {MAX_LIMIT}")
@@ -298,6 +320,9 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
     if not include_cancelled:
         where.append("e.engine_status <> %s")
         params.append(CANCELLED)
+    if not include_completed:
+        where.append("e.engine_status <> %s")
+        params.append(COMPLETED)
     if start is not None:
         where.append("e.event_date >= %s")
         params.append(start)
@@ -374,6 +399,7 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
             "offset": offset,
             "include_past": include_past,
             "include_cancelled": include_cancelled,
+            "include_completed": include_completed,
             "timezone": "Asia/Seoul",
         },
     }
