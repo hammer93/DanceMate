@@ -173,6 +173,17 @@ def busan_name(pg) -> str:
 
 
 @pytest.fixture
+def gwangju_id(pg) -> int:
+    """v0.83.2: migration 025 (see seoul_id)."""
+    from runtime import master_data
+
+    for region in master_data.list_regions(pg):
+        if region["code"] == "KR-GWANGJU":
+            return region["region_id"]
+    pytest.skip("KR-GWANGJU region is not seeded; run the migrations first")
+
+
+@pytest.fixture
 def committed_sources():
     """source_ids created through a real, committing connection (e.g. a
     TestClient POST to the admin API), deleted for real at teardown.

@@ -1,5 +1,82 @@
 # DanceMate Release Notes
 
+## v0.83.2 OCHO Verification + Gwangju Region Completion
+
+Status:
+OCHO evidence reviewed and closed by the user; Gwangju region added and
+backfilled against the ROCKPro64 board's real production database,
+2026-09-06. Engine code unchanged (0.80) - this release touches only
+`runtime/` (region resolution) and the region master; no scorer/algorithm
+logic changed, so no engine version bump applies.
+
+Version split:
+
+- Product Runtime: 0.83.2
+- Information Engine: unchanged (0.80).
+
+### OCHO ("스튜디오 오초" vs Master venue "OCHO")
+
+Evidence gathered, read-only, in priority order (source body, source URL,
+address, organizer, existing aliases, a web check): OCHO's own aliases
+already include the bare "오초" (a real prior human decision), which is the
+strongest positive signal - stronger than the fuzzy scorer's own 0.5/LOW
+verdict, a known short-token-containment gap this release deliberately does
+not fix (Sections 1/8/9: no threshold change from a single case). Against
+that, the unresolved row's actual post carries no address, only "지역:
+서울" and an event title mentioning "홍대"; a web check for the instructors
+named in the post ("헝얏 & 화이") returned an unverified claim pointing at
+a *different* real DB candidate ("린댄스연습실", a genuine Hongdae-area
+venue with its own address) with no primary-source confirmation either way.
+
+Classified **INSUFFICIENT_EVIDENCE** - not because there is no evidence, but
+because what exists points two different directions and neither is
+confirmed. Reported to the user rather than guessed; the user's decision was
+**KEEP OPEN, no write**. Recorded as calibration data
+(`test_studio_ocho_short_token_calibration_fixture`) for a future scorer
+release, not acted on now. Venue Master and OPEN queue counts are both
+unchanged by this decision.
+
+### Gwangju Metropolitan City region (KR-GWANGJU)
+
+Real evidence: Mi Vida tango studio (created during v0.83.1's Human Venue
+Review with `region_id=NULL`, since this region row did not exist yet) has
+a real, currently-collected Miltang address - "광주 동구 중앙로 162-1
+5층" - confirming a real Source/Event already needs this region, the same
+bar every prior region row in this project was added against.
+
+`_REGION_BY_ADMIN` already mapped "광주" to `KR-GWANGJU` before this
+release (added when the code was written, with nowhere to resolve to
+since). Adding the row without a guard would have immediately created a
+live collision with Gyeonggi-do's own, unrelated 광주시 (Gwangju-si, which
+has no gu-level districts at all) the next time an address starting with
+"광주시" was collected. Guarded everywhere the mapping is used - new
+`venue_resolution._safe_admin_head()` (feeds `suggest()`/`prefill()`'s
+`region_hint`), `guess_region_label()`, `terms_for_label()` - to trust only
+an explicit "광주광역시", or "광주" immediately naming one of the metro's
+own five gu (동구/서구/남구/북구/광산구). A bare "광주시 ..." or bare "광주
+<dong>..." with no gu stays unresolved rather than guessed, on either side
+of the collision.
+
+Migration 025 adds the region row. `master_data.backfill_venue_region()` (new)
+carries a venue's newly-assigned region onto its already-resolved events -
+`update_venue()` alone only touches the `venues` row, and nothing re-reads
+it later - scoped to `region_id IS NULL` events only, so an
+already-correctly-resolved event is never overwritten by a later region
+change for an unrelated reason. Applied once, by hand, to Mi Vida.
+
+### Result
+
+- Venue Master: 24 -> 24 (unchanged; OCHO stayed KEEP OPEN)
+- Unresolved Venues OPEN: 10 -> 10 (unchanged)
+- Mi Vida tango studio: `region_id` NULL -> KR-GWANGJU, its 2 resolved
+  events carried along in the same call
+- `events_api.search(region="광주")` now returns Mi Vida's events with
+  `region_confirmed=True` (previously guess-only, unreachable before this
+  region existed)
+- Existing Seoul/Busan/Cheongju/Jinju/Changwon/Pohang/Daegu/Ulsan region
+  resolution unchanged - covered by existing tests plus new tests confirming
+  a Gyeonggi-do "광주시" address is never misread as Gwangju Metro
+
 ## v0.83.1 Human Venue Review Pilot + Venue Master Expansion
 
 Status:
