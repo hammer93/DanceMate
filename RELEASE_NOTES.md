@@ -73,6 +73,26 @@ changes live entirely inside the shared extraction abstraction.
   (and non-UTF-8-declared) charset handling, menu-only rejection, a
   short-real-post false-positive guard, duplicate-URL/pagination stability,
   and existing-source (Daum/DanceInfo) non-regression.
+
+### Production repair and one-shot collection
+
+Scoped repair (allow-listed to the 6 confirmed-contaminated source_item_ids,
+guarded against running anywhere but the real production database, no
+`normalize_all()`/`ingest_pending()`/`reprocess_acquired()` call anywhere in
+the script per the v0.82.2 safety rule): re-fetched via
+`scheduler.acquisition_job.reacquire()`, the same function the admin console
+already uses. All 6 now correctly report `FETCH_BLOCKED` - their real content
+is genuinely empty, so nothing false is stored in its place. The two
+already-existing `events` built from these items (21912, 21913) were audited
+directly: `venue_text`/`fee`/`start_time`/`end_time` were `None`/`ABSENT`
+before and after - the contaminated body never actually fed a wrong field,
+only occupied storage, so no event data changed and none needed to.
+
+K-TANGO's own next scheduled collection (10-post board, `SRC-W-001`, running
+production code): **10 discovered, 0 new, 0 revised, 10 duplicate** - fully
+idempotent against the confirmed-real 10 live posts. Observed 5 consecutive
+scheduler cycles after deploy: 0 errors, stable candidate/event counts, no
+duplicate explosion, no requeue loop.
 - Full Runtime suite (board staging, isolated throwaway PostgreSQL): 1316
   passed, 2 pre-existing unrelated failures (`test_tangocalendar_discovery`,
   confirmed identical against the unmodified v0.84.1 image before this
