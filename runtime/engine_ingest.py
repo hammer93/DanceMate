@@ -144,6 +144,11 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         discovery_query=raw.get("discovery_query"),
         acquisition_quality=quality,
         raw_json=raw.get("raw_json"),
+        # v0.82.5: a discovery module sets this only when its own page/
+        # section structure already guarantees the event type (see
+        # miltang_discovery.discover()'s own comment) - process_discovered_
+        # post() reads it straight off the RawPostRecord it is handed.
+        known_event_type=raw.get("known_event_type"),
     )
 
 

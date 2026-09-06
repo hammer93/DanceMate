@@ -351,23 +351,50 @@ def _cut_at_boundary(value: str) -> str:
     Square brackets are a boundary, not a nesting level -- ``엔빠스(EnPaz Tango
     Studio) [ 테이블`` ends at the ``[``. Round brackets do nest, because the
     address in ``라 벤따나 (서울 마포구 잔다리로 48, 2층)`` belongs to the venue.
-    Once such a group closes, the name is over: whatever follows is prose.
+    Once such a group closes, the name is over -- unless another one starts
+    right where it left off (only whitespace between them): a rendered
+    bilingual name followed by its own street address reads as two adjacent
+    groups, e.g. ``PosTango (포스탱고) (포항시 남구 중앙로 83, 3층)`` -- and
+    dropping the second one silently lost the only text that names the
+    venue's actual region (v0.82.5, found live: 47 of 108 real Miltang
+    milongas classified as a non-event for an unrelated reason, but this
+    boundary rule cost every one of the ones sharing this exact rendering
+    its address regardless of classification). Whatever follows a group that
+    is not immediately another group is prose, same as before.
     """
     depth = 0
-    for index, char in enumerate(value):
+    index = 0
+    length = len(value)
+    while index < length:
+        char = value[index]
         if char in "(（":
             depth += 1
+            index += 1
             continue
         if char in ")）":
             depth -= 1
             if depth <= 0:
-                return value[:index + 1]
+                end = index + 1
+                look = end
+                while look < length and value[look] in " \t":
+                    look += 1
+                if look < length and value[look] in "(（":
+                    index = end
+                    continue
+                return value[:end]
+            index += 1
             continue
         if depth:
+            index += 1
             continue
+        matched = False
         for pattern in (_VENUE_STOP_RE, _ADDRESS_START_RE):
             if pattern.match(value, index):
-                return value[:index]
+                matched = True
+                break
+        if matched:
+            return value[:index]
+        index += 1
     return value
 
 

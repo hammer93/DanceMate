@@ -553,4 +553,14 @@ def discover(
     for post in posts:
         post["source_id"] = source_id
         post["platform"] = platform
+        if prefix == "milongas":
+            # v0.82.5: `/milongas` is Miltang's own dedicated milonga board -
+            # a brand name with no descriptive word in it ("디디디", "바모스")
+            # otherwise reads as a non-event to the engine's keyword-based
+            # classifier, even though the page it came from guarantees what
+            # it is. `/notices` carries no such guarantee (festivals,
+            # closures, general announcements all land there) and is
+            # deliberately left unset, so it keeps being classified by its
+            # own text exactly as before.
+            post["known_event_type"] = "MILONGA"
     return posts
