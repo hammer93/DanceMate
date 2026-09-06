@@ -674,10 +674,23 @@ def suggest_venue_links(con, *, name: str, address: str | None = None,
     """
     exact = similar_venues(con, name=name, address=address, raw_venue=raw_venue)
     exact_ids = {v["venue_id"] for v in exact}
-    ranked: list[dict[str, Any]] = [
-        {**venue, "confidence": CONFIDENCE_HIGH, "score": 1.0}
-        for venue in exact
-    ]
+    ranked: list[dict[str, Any]] = []
+    for venue in exact:
+        reasons = venue.get("match_reasons") or []
+        # An exact name/alias match still names a *different* venue if the
+        # region actively disagrees and nothing address-level backs it up --
+        # a franchise's own Busan branch matching a Seoul search by name
+        # alone is exactly spec item 12's "same name, different region",
+        # not a settled duplicate. A matching address makes the mismatch
+        # moot (or a data error), so that reason stays HIGH regardless.
+        region_mismatch = bool(
+            region_id and venue.get("region_id") and region_id != venue["region_id"]
+        )
+        if region_mismatch and "same address" not in reasons:
+            ranked.append({**venue, "confidence": CONFIDENCE_LOW, "score": 1.0,
+                          "match_reasons": [*reasons, "different region"]})
+        else:
+            ranked.append({**venue, "confidence": CONFIDENCE_HIGH, "score": 1.0})
 
     probe_texts = [t for t in (name, raw_venue) if t]
     for venue in master_data.list_venues(con):
