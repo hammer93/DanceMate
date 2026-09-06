@@ -107,10 +107,17 @@ def test_a_near_perfect_fuzzy_score_still_never_reaches_high(pg, unique, seoul_i
 # --- same name, different region: separated, not conflated -------------------
 
 def test_the_same_name_in_a_different_region_is_capped_at_low(pg, unique, seoul_id):
-    busan_id = next(
-        r["region_id"] for r in master_data.list_regions(pg) if r["code"] == "KR-BUSAN"
+    # A second region created here rather than assuming e.g. KR-BUSAN is
+    # pre-seeded: on a bare migrated database only KR-SEOUL is (the same
+    # reason this project's own fixtures special-case seoul_id) - any other
+    # region visible in real production got there via a later admin action,
+    # not a migration.
+    other_region = master_data.create_region(
+        pg, code=f"KR-TEST{unique}", country="KR", name=f"테스트지역 {unique}",
     )
-    venue = master_data.create_venue(pg, name=f"공용스튜디오 {unique}", region_id=busan_id)
+    venue = master_data.create_venue(
+        pg, name=f"공용스튜디오 {unique}", region_id=other_region["region_id"],
+    )
     ranked = venue_resolution.suggest_venue_links(
         pg, name=f"공용스튜디오 {unique}", region_id=seoul_id,
     )
@@ -235,8 +242,10 @@ def test_group_apply_links_every_row_in_the_group_to_one_venue(pg, unique, seoul
     assert result["events_updated"] == 2
     assert not result["errors"]
 
-    for text in (venue_text_a, venue_text_b):
-        row = _queued(pg, text)
+    # _queued() reads normalization.unresolved_venues()'s default OPEN-only
+    # listing, which now correctly excludes these - fetch by id instead.
+    for uid in (entry_a["unresolved_venue_id"], entry_b["unresolved_venue_id"]):
+        row = normalization.unresolved_venue(pg, uid)
         assert row["state"] == "LINKED"
         assert row["resolved_venue_id"] == venue["venue_id"]
 
