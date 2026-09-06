@@ -364,6 +364,7 @@ def test_group_apply_block_only_appears_when_not_alone():
     assert events_admin._group_apply_block(1, [1], []) == ""
     rendered = events_admin._group_apply_block(1, [1, 2], [])
     assert "Group Apply" not in rendered or "group-link" in rendered
+    assert "/admin/venues/unresolved/group-link/preview" in rendered
 
 
 # --- v0.83.2: "스튜디오 오초" vs "OCHO" calibration fixture ------------------
@@ -423,4 +424,3 @@ def test_relinking_the_same_raw_text_twice_does_not_duplicate_the_alias(pg, uniq
 
     aliases = [a["alias"] for a in master_data.venue_aliases(pg, venue["venue_id"])]
     assert aliases.count(venue_text) == 1
-    assert "/admin/venues/unresolved/group-link/preview" in rendered
