@@ -25,6 +25,7 @@ OPERATIONS_SCRIPTS = [
     "check-server.sh",
     "backup.sh",
     "restore.sh",
+    "deploy-production.sh",
 ]
 
 

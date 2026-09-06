@@ -174,15 +174,40 @@ No separate systemd unit is needed for DanceMate.
 
 ## Operations
 
-| Task            | Command                                             |
-|-----------------|-----------------------------------------------------|
-| start           | `scripts/start-server.sh`                            |
-| stop            | `scripts/stop-server.sh` (never removes volumes)     |
-| health          | `scripts/check-server.sh` (exit 0 / 1 / 2)           |
-| backup          | `scripts/backup.sh`                                  |
-| list backups    | `scripts/restore.sh --list`                          |
-| restore         | `scripts/restore.sh <name> --yes`                    |
-| logs            | `docker compose logs -f runtime scheduler`           |
+**Never run `docker compose` directly against this board.** Every operation
+below goes through a wrapper that resolves `deploy/rockpro64/docker-compose.
+external-postgres.yml` itself (from `.env`'s `DANCEMATE_COMPOSE_FILE`) - see
+"A note on `docker compose` directly" further down for why this rule exists.
+
+| Task                        | Command                                             |
+|------------------------------|-----------------------------------------------------|
+| deploy a new version/release | `scripts/deploy-production.sh` (`--check` for a dry run) |
+| start (no rebuild)           | `scripts/start-server.sh`                            |
+| stop                         | `scripts/stop-server.sh` (never removes volumes)     |
+| health                       | `scripts/check-server.sh` (exit 0 / 1 / 2)           |
+| backup                       | `scripts/backup.sh`                                  |
+| list backups                 | `scripts/restore.sh --list`                          |
+| restore                      | `scripts/restore.sh <name> --yes`                    |
+| logs                         | `docker compose --project-directory . -f deploy/rockpro64/docker-compose.external-postgres.yml -p dancemate logs -f runtime scheduler` |
+
+`scripts/deploy-production.sh` is the only script that builds a new image and
+recreates containers; it runs a full preflight (compose file identity, no
+embedded PostgreSQL, real-database identity check, no duplicate scheduler),
+then backup -> build -> recreate -> health gate, in that order, and never
+touches the running stack if an earlier step fails.
+
+### A note on `docker compose` directly
+
+v0.82.5 incident: a raw `docker compose up -d`, typed on the board with no
+`-f`, picked the *repository-root* `docker-compose.yml` (its own bundled
+PostgreSQL) instead of this board's real external-postgres file. A fresh,
+empty database silently took over the runtime/scheduler containers for a few
+minutes before anyone noticed - no data was lost (the real, bind-mounted
+`dancemate-postgres` container was never touched), but nothing would have
+blocked it either. `scripts/deploy-production.sh` and the other operations
+scripts above exist so that which compose file is "production" is decided
+once, in code, rather than by whichever file a bare `docker compose` finds in
+the current directory.
 
 ## Connecting the first live source
 
@@ -213,10 +238,12 @@ Never commit it, never paste it into a terminal that is being logged.
 
 ```bash
 cd /opt/dancemate/app/DanceMate
-docker compose --project-directory .   -f deploy/rockpro64/docker-compose.external-postgres.yml up -d
+scripts/start-server.sh
 ```
 
-No volume is removed by this; it recreates the two containers only.
+No volume is removed by this; it recreates the two containers only. Never
+substitute a raw `docker compose up -d` here - see "A note on `docker
+compose` directly" above.
 
 ### 4. Test before enabling
 
