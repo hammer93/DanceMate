@@ -1,5 +1,93 @@
 # DanceMate Release Notes
 
+## v0.83.0 Venue Resolution Operations + Human Review Acceleration
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-06. Engine code unchanged.
+
+Version split:
+
+- Product Runtime: 0.83.0
+- Information Engine: unchanged (0.80) - this release touches only
+  `runtime/` (Postgres-side venue resolution and its admin console); the
+  Information Engine (`engine/`, its own SQLite store, independently
+  versioned) was not modified at all, confirmed via `git diff` against
+  the prior merge commit showing no changes under `engine/`.
+
+### Goal
+
+59 events (28 distinct raw venue strings) sat in the Unresolved Venues
+queue with no ranking, no cross-string grouping, and no suggestion beyond
+an alphabetical dropdown of all 9 registered venues - an operator had to
+already know, from memory, which of 9 names a new string might be.
+
+### What already existed (kept, not rebuilt)
+
+`venue_resolution.similar_venues()` was deliberately exact-match only:
+*"a warning an operator cannot check is a warning they learn to click
+past."* This release does not reverse that - it adds a fuzzy layer
+underneath it that is held to a stricter version of the same rule: never
+auto-applied, and every suggestion always shows *why* (which field
+matched, how closely) rather than a bare score.
+
+### Fix
+
+- `suggest_venue_links()`: top-3 ranked existing-venue candidates.
+  `similar_venues()`'s own exact matches pass through unchanged as
+  CONFIDENCE_HIGH (further capped to LOW if the region actively
+  disagrees and no address backs the match - "same name, different
+  region" branches must not be conflated). Everything else is
+  `difflib.SequenceMatcher` name similarity against every registered
+  name/alias, capped at MEDIUM even at a near-perfect score - fuzzy
+  never reaches HIGH - and forced to LOW the moment an address or region
+  conflicts.
+- `group_unresolved()`: clusters queue entries that share a confident
+  suggestion, or - when neither has one - whose own core names (address
+  stripped) are near-identical, so "이데알 탱고 까페" and the same name
+  with a full street address attached are reviewed together instead of
+  twice.
+- `group_link_existing()`: applies one Link Existing decision to an
+  entire group, same per-string audit trail as doing it one at a time.
+- `link_existing()` gained `add_alias=True` (opt-out), so an operator who
+  knows a reading is ambiguous can link without teaching it to future
+  collections.
+- The Unresolved Venues admin page now shows each entry's top-3
+  suggestions inline (confidence badge + reasoning, one-click, never
+  pre-selected), a Group Apply preview/confirm flow, review order that
+  puts entries with an upcoming event first, and an alias opt-out
+  checkbox on the existing Link Existing form.
+- Nothing added here writes anything on its own: suggestions and
+  grouping are computed read-only on every page load.
+
+### Live Acceptance (real production data, read-only, nothing linked)
+
+All 27 currently-OPEN unresolved strings were run through
+`suggest_venue_links()` against the real Venue Master (9 venues). Honest
+finding: none of the 27 real unresolved strings actually duplicates an
+existing master venue, so a "Top-1/Top-3 correct-match rate" has no true
+positives to measure in this sample - what the sample does measure is
+false-suggestion avoidance: 26/27 correctly produced no suggestion at
+MEDIUM or better (16 NO_SUGGESTION, 10 correctly capped at LOW via an
+address/region conflict); one case ("EL TANGO" against 데땅고/"detango",
+0.86 similarity) reached MEDIUM on a coincidental shared "tango" root
+between two plausibly different Spanish-article names ("El" vs "데" ->
+"De") - flagged with its own reasoning, never auto-applied, and never
+reaching HIGH, but a real, documented limitation of pure string
+similarity worth refining later against a larger sample rather than
+patched now on n=1. Grouping correctly clustered the one genuine
+cross-row duplicate in the live queue ("이데알 탱고 까페" with and
+without its address). Exact-match and fuzzy-match-with-conflict
+behavior were additionally confirmed with synthetic fixtures exercising
+true-positive cases the live 9-venue master doesn't currently contain.
+
+### Tests
+
+29 new tests (`tests/test_venue_suggestions.py`) plus 2 new routes added
+to the existing venue-route auth-gate regression test. Runtime full
+suite: 1265 passed, the same 2 pre-existing failures as every release
+since v0.82.5 (confirmed unrelated).
+
 ## v0.82.8 SSH Operator Hardening + Direct Hammer Login
 
 Status:
