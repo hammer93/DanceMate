@@ -1,5 +1,71 @@
 # DanceMate Release Notes
 
+## v0.82.8 SSH Operator Hardening + Direct Hammer Login
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-06. Engine code unchanged.
+
+Version split:
+
+- Product Runtime: 0.82.8
+- Information Engine: unchanged (0.80).
+
+### Remaining risk from v0.82.7
+
+v0.82.7 made `hammer` the canonical git/deploy user and made
+`scripts/deploy-production.sh`/`scripts/board-git.sh` refuse to be the
+vector for root-owned drift - but the actual *login path* was still root
+SSH followed by `sudo -u hammer` for every command. A root session stayed
+the default habit, which is exactly what produced the root-owned-file
+incidents in the first place.
+
+### Fix
+
+- `scripts/setup-board-operator.sh`: idempotent, public-key-only helper
+  that adds a trusted key to `hammer`'s own `authorized_keys`. Never
+  generates, reads or transmits a private key; never touches
+  `sshd_config` - key provisioning and sshd policy stay two separate,
+  separately-reviewed steps.
+- `PermitRootLogin prohibit-password` applied via a drop-in
+  (`/etc/ssh/sshd_config.d/90-dancemate-operator.conf`, tracked reference
+  copy at `deploy/rockpro64/sshd-operator.conf`) - root password login is
+  refused; root retains only its own existing key for OS/service-level
+  emergency work. `PasswordAuthentication` was left untouched globally:
+  disabling it needs console/local-access recovery verified first, which
+  this release did not attempt.
+- `deploy/rockpro64/README.md`: `ssh hammer@<board>` is now documented as
+  the default login, not a fallback behind `sudo -u hammer`.
+
+### Verification (before any sshd change)
+
+Two independent, freshly-connected `hammer` SSH sessions (public key, not
+a `sudo -u hammer` shell inside an existing root session) each confirmed:
+`git status`/`log` clean with no `safe.directory` workaround needed,
+`docker ps` without `sudo`, `scripts/deploy-production.sh --check`
+preflighting clean against the real production database (read-only
+identity check), and `sudo -l` correctly prompting for hammer's own
+password (proving sudo access is configured, not merely present). Only
+then was the sshd drop-in added, syntax-checked (`sshd -t`), and applied
+with `systemctl reload` (never `restart`) - followed by a further fresh
+`hammer` login and a confirmed-refused root password login attempt.
+
+Root's own existing key (already in `/root/.ssh/authorized_keys` before
+this release) was not independently re-tested, since this session never
+held its private half - noted as an open item rather than assumed to
+work.
+
+### Tests
+
+18 new tests (`tests/test_ssh_operator_hardening.py`) plus 2 new
+parametrized cases from adding `setup-board-operator.sh` to the existing
+operations-script hygiene checks; one existing ownership-guard test
+adjusted to recognise `setup-board-operator.sh`'s legitimate
+operator-home-scoped `chown` alongside the repository-scoped one every
+other script uses. Runtime full suite: 1242 passed, the same 2
+pre-existing failures as every release since v0.82.5 (confirmed
+unrelated). Engine code unchanged this release (`engine-v0.80`).
+
 ## v0.82.7 Board Git Ownership Guard + Operator Safety
 
 Status:
