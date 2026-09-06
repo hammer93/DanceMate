@@ -266,6 +266,29 @@ def visible_text(raw_html: str) -> str:
     return _WHITESPACE.sub(" ", html.unescape(stripped)).strip()
 
 
+# A site's own nav/menu bar - unlike a real post - is a long run of short
+# section-name tokens with no digit anywhere (no date, time, fee or phone ever
+# lives on a menu) and no sentence-ending punctuation. Measured on K-TANGO's
+# own leftover admin-template menu block: 90+ tokens, average length under 6
+# characters, zero digits. This only ever gates the whole-page fallback below
+# - every other extraction method already scopes to a known content region,
+# so a real short post read through one of those is never at risk here.
+_MENU_LIKE_MIN_TOKENS = 40
+_MENU_LIKE_MAX_AVG_TOKEN_LEN = 6
+
+
+def _looks_like_navigation_chrome(text: str) -> bool:
+    tokens = text.split()
+    if len(tokens) < _MENU_LIKE_MIN_TOKENS:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    if "." in text:
+        return False
+    average_len = sum(len(t) for t in tokens) / len(tokens)
+    return average_len <= _MENU_LIKE_MAX_AVG_TOKEN_LEN
+
+
 def extract_article(raw_html: str) -> tuple[str, str]:
     """Pull the article body out of a page. Returns (text, method).
 
@@ -276,10 +299,17 @@ def extract_article(raw_html: str) -> tuple[str, str]:
     board_start = raw_html.find(_TEMPLATE_BOARD_START)
     board_end = raw_html.find(_TEMPLATE_BOARD_END, board_start + 1 if board_start >= 0 else 0)
     if board_start >= 0 and board_end > board_start:
+        # The template's own content boundary is known-correct once found -
+        # an image-only post (a poster with no caption text) yields a
+        # genuinely thin `body` here, but falling through past this point
+        # would only ever re-grab this same template's own nav/header/footer
+        # chrome via the whole-page fallback below (v0.84.2: this is exactly
+        # how K-TANGO's site menu ended up stored as an event body). A thin
+        # scoped result is still correct to return; `fetch()`'s
+        # FULL/PARTIAL/BLOCKED thresholds classify it downstream the same
+        # way they classify any other thin body.
         segment = raw_html[board_start + len(_TEMPLATE_BOARD_START):board_end]
-        body = visible_text(segment)
-        if len(body) >= MINIMUM_USEFUL_TEXT:
-            return body, METHOD_TEMPLATE_BOARD
+        return visible_text(segment), METHOD_TEMPLATE_BOARD
 
     text = visible_text(raw_html)
 
@@ -304,6 +334,12 @@ def extract_article(raw_html: str) -> tuple[str, str]:
             return body, METHOD_OG_DESCRIPTION
 
     if len(text) >= MINIMUM_USEFUL_TEXT:
+        if _looks_like_navigation_chrome(text):
+            # Not just the wrong method - the text itself must not go on to
+            # be classified by length alone. `fetch()` decides FULL/PARTIAL
+            # purely from len(text), so a long nav block returned here under
+            # METHOD_NONE would still be reported as a successful fetch.
+            return "", METHOD_NONE
         return text, METHOD_VISIBLE_TEXT
     return text, METHOD_NONE
 
