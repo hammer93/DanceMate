@@ -1,5 +1,67 @@
 # DanceMate Release Notes
 
+## v0.82.7 Board Git Ownership Guard + Operator Safety
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-06. Engine code unchanged.
+
+Version split:
+
+- Product Runtime: 0.82.7
+- Information Engine: unchanged (0.80).
+
+### Remaining risk from v0.82.6
+
+v0.82.6's own guard (`verify_repo_ownership`, `scripts/fix-ownership.sh`)
+caught the *symptom* of 21 tracked files left root-owned on the board - the
+result of `git fetch`/`git merge` typed directly over a root SSH session
+during every prior release's "board sync" step, this one included. Nothing
+stopped the habit itself: git and Docker both let root touch a
+hammer-owned checkout without complaint, and whatever gets written then
+belongs to root.
+
+### Fix
+
+- `runtime/ownership_guard.py`: pure decision logic (no filesystem access,
+  no second real Unix user needed to test) behind the ownership/root
+  checks, mirroring `deploy_guard.py`'s report-dict pattern.
+- `scripts/board-git.sh`: the canonical way to run git against the board
+  checkout from now on. Runs as its own owner directly, or silently
+  delegates to `sudo -u <owner>` when invoked as anyone else (root
+  included) - confirmed live: running it as root still leaves every
+  touched file owned by `hammer`.
+- `scripts/deploy-production.sh`: refuses outright to run as root, as the
+  very first preflight step, before docker/backup/build are ever touched.
+  Preflight order is now root/ownership -> git (clean tree, branch) ->
+  version -> compose -> DB identity.
+- `scripts/fix-ownership.sh` stays the deliberate exception: reclaiming a
+  root-owned file requires root's own chown privilege, so it is documented
+  as the cleanup/fallback path, never the routine one.
+- `deploy/rockpro64/README.md` gained a "Canonical board workflow" section:
+  SSH as `hammer` when possible; a root session may still do OS/service
+  work, but repository commands go through `scripts/board-git.sh` /
+  `sudo -u hammer scripts/deploy-production.sh`.
+
+### Isolated reproduction (no production touched)
+
+On a scratch clone (`hammer`-owned from the start, this time - the new
+workflow used on itself): `scripts/deploy-production.sh --check` run as
+root was BLOCKED before touching docker at all; the same command via
+`sudo -u hammer` preflighted clean, including a real, read-only DB identity
+check against the production database. A tracked file deliberately
+`chown`'d to root reproduced `verify_repo_ownership`'s FAIL; `scripts/fix-
+ownership.sh` (run as root, since only root can reclaim a root-owned file)
+restored it to PASS.
+
+### Tests
+
+18 new tests (`tests/test_board_ownership_guard.py` plus a new parametrized
+case from adding `board-git.sh` to the existing operations-script hygiene
+checks). Runtime full suite: 1226 passed, the same 2 pre-existing failures
+as v0.82.5/6 (confirmed unrelated). Engine code unchanged this release
+(`engine-v0.80`, confirmed via `git diff` against the prior merge commit).
+
 ## v0.82.6 Deployment Guard + Production Compose Safety
 
 Status:
