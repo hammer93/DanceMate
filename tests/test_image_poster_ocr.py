@@ -90,11 +90,14 @@ def test_a_reprocessed_blocked_item_is_not_selected_again(pg, unique):
     assert item_id not in selected
 
 
-def test_a_re_fetched_blocked_item_is_eligible_again_after_reprocessing(pg, unique):
-    """A settled/reprocessed item that gets a fresh fetch (the site added a
-    poster where there was none, or the same one again) must re-enter the
-    queue - `fetched_at` moving past `reprocessed_at` is what already gates
-    this for FETCHED_FULL/PARTIAL; the same must hold for FETCH_BLOCKED."""
+def test_a_repeated_blocked_fetch_does_not_re_enter_the_queue(pg, unique):
+    """A FETCH_BLOCKED outcome never sets `fetched_at` (it means "we got a
+    body", which a blocked fetch by definition did not) - so a second,
+    still-blocked fetch of an already-reprocessed item carries no new
+    information and correctly does not re-enter the queue. This differs
+    from FETCHED_FULL/PARTIAL, where `fetched_at` advances on every
+    successful fetch and a changed body is exactly what re-triggers reprocess;
+    a page that never gained a body has nothing new to reprocess."""
     item_id = _source_item(pg, unique)
     content_store.record_outcome(pg, item_id, _blocked_outcome(
         ["https://cdn.example.test/poster.jpg"]
@@ -104,7 +107,7 @@ def test_a_re_fetched_blocked_item_is_eligible_again_after_reprocessing(pg, uniq
         ["https://cdn.example.test/poster.jpg"]
     ))
     selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
-    assert item_id in selected
+    assert item_id not in selected
 
 
 def test_poster_candidates_are_stored_as_the_images_list(pg, unique):
