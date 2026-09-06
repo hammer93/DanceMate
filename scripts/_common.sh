@@ -37,8 +37,19 @@ compose_file() {
 COMPOSE_FILE="$(compose_file)"
 readonly COMPOSE_FILE
 
+# Pinned so every wrapper-driven invocation names containers/networks the same
+# way regardless of the invoking shell's cwd (compose's own default is the
+# project directory's basename, which is what produced the correctly-named
+# "dancemate-runtime-1" even for the v0.82.5 incident's wrong compose file -
+# pinning does not by itself catch a wrong -f, but it does mean a wrapper run
+# from a different directory can never silently start a differently-named,
+# harder-to-notice parallel stack).
+COMPOSE_PROJECT="$(env_value DANCEMATE_COMPOSE_PROJECT || true)"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-dancemate}"
+readonly COMPOSE_PROJECT
+
 compose() {
-  docker compose --project-directory "$REPO_ROOT" -f "$COMPOSE_FILE" "$@"
+  docker compose --project-directory "$REPO_ROOT" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" "$@"
 }
 
 require_docker() {
@@ -195,6 +206,123 @@ verify_repo_ownership() {
     warn "tracked files not owned by this repository's own user (uid $expected_uid):"
     printf '%s\n' "$bad" | sed 's/^/  /' >&2
     die "ownership guard failed - fix the step that wrote these as a different user (see scripts/fix-ownership.sh for the approved narrow chown fallback)"
+  fi
+}
+
+# --- production deployment guards (v0.82.6) ---------------------------------
+#
+# v0.82.5 was deployed correctly, then a raw `docker compose up -d` - typed
+# directly on the board, no `-f` - picked this repository's own bundled-
+# PostgreSQL docker-compose.yml instead of the ROCKPro64's real
+# deploy/rockpro64/docker-compose.external-postgres.yml. A brand-new, empty
+# database silently took over the runtime/scheduler containers for a few
+# minutes. No data was lost (the real, bind-mounted postgres container was
+# never touched), but nothing here would have *blocked* it. These guards are
+# scripts/deploy-production.sh's own preflight, kept in _common.sh so any
+# other production-facing script can call the same checks rather than a
+# second, drifting copy.
+
+# The compose file resolved to the exact production target - not "some file
+# that happens not to define its own postgres", the one specific path this
+# project ships for the ROCKPro64. Comparing paths after resolving both to
+# absolute avoids a false failure from a relative vs. absolute .env value.
+require_production_compose_file() {
+  local expected
+  expected="$REPO_ROOT/deploy/rockpro64/docker-compose.external-postgres.yml"
+  [[ -f "$expected" ]] || die "production compose file not found: $expected"
+  [[ "$COMPOSE_FILE" == "$expected" ]] || die "$(cat <<EOF
+production compose guard failed: this deploy targets
+  $expected
+but DANCEMATE_COMPOSE_FILE in .env currently resolves to
+  $COMPOSE_FILE
+Fix .env, or pass the right one - this script never guesses.
+EOF
+)"
+}
+
+# The resolved config (after .env interpolation, not just the raw YAML) must
+# define exactly runtime + scheduler, with no embedded postgres service. This
+# is the check that would have blocked the incident outright: the file that
+# was picked by accident defines a `postgres` service and fails this
+# immediately, before anything is ever brought up.
+guard_production_compose_shape() {
+  local services
+  services="$(compose config --services 2>/dev/null | sort)"
+  [[ -n "$services" ]] || die "production compose guard failed: 'docker compose config --services' returned nothing for $COMPOSE_FILE"
+  if grep -qx 'postgres' <<<"$services"; then
+    die "production compose guard failed: $COMPOSE_FILE defines its own 'postgres' service - production reuses the board's existing PostgreSQL, it never starts a second one"
+  fi
+  if [[ "$services" != $'runtime\nscheduler' ]]; then
+    die "production compose guard failed: expected exactly 'runtime' and 'scheduler' services, found: $(tr '\n' ' ' <<<"$services")"
+  fi
+}
+
+# Read-only: proves the PostgreSQL this deploy is about to point at is the
+# real, populated production database, not an empty one a wrong compose file
+# would have just created (that emptiness is exactly what made the incident
+# hard to notice immediately - the runtime came up "healthy" against a
+# database with no tables' worth of real data).
+#
+# Deliberately distinct from a fresh install: a brand-new ROCKPro64 setup
+# legitimately has an empty `sources` table on its very first deploy, so this
+# guard is for scripts/deploy-production.sh's upgrade path only - a first
+# install follows deploy/rockpro64/README.md's own procedure
+# (scripts/install-rockpro64.sh), which never calls this.
+guard_db_identity() {
+  local pg_db pg_user count
+  pg_db="$(env_value POSTGRES_DB || echo dancemate)"
+  pg_user="$(env_value POSTGRES_USER || echo dancemate)"
+  if ! count="$(pg_run psql -U "$pg_user" -d "$pg_db" -tAc 'SELECT count(*) FROM sources' 2>/dev/null)"; then
+    die "DB identity guard failed: could not query 'sources' on database '$pg_db' - is POSTGRES_HOST/DANCEMATE_POSTGRES_CONTAINER pointed at the real production PostgreSQL?"
+  fi
+  count="$(tr -d '[:space:]' <<<"$count")"
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    die "DB identity guard failed: database '$pg_db' has 0 rows in 'sources' - this looks like a fresh/empty database, not production's. If this genuinely is a first install, use scripts/install-rockpro64.sh instead of scripts/deploy-production.sh."
+  fi
+  log "DB identity: database='$pg_db' sources=$count row(s) - looks like the real production database"
+}
+
+# At most one of each. A second scheduler is the specific failure mode
+# Section 22 calls out: two workers ticking the same jobs against the same
+# database. Counts by container *command*, not by name, so it also catches a
+# stray container from a different compose project/name.
+guard_no_duplicate_scheduler() {
+  local count
+  count="$(docker ps --format '{{.Command}}' | grep -c 'python -m scheduler' || true)"
+  if (( count > 1 )); then
+    warn "more than one scheduler container is running:"
+    docker ps --format '  {{.Names}}\t{{.Image}}\t{{.Command}}\t{{.Status}}' \
+      | grep 'python -m scheduler' >&2 || true
+    die "duplicate scheduler guard failed: $count containers are running 'python -m scheduler' (expected at most 1)"
+  fi
+}
+
+# Exactly one of each *for this project*, checked right after a deploy. Catches
+# the incident's own aftermath shape: a leftover container with the same name
+# under a different project, or compose having started more replicas than
+# expected.
+guard_single_runtime_and_scheduler() {
+  local runtime_count scheduler_count
+  runtime_count="$(compose ps -q runtime 2>/dev/null | wc -l)"
+  scheduler_count="$(compose ps -q scheduler 2>/dev/null | wc -l)"
+  [[ "$runtime_count" -eq 1 ]] || die "expected exactly 1 runtime container under project '$COMPOSE_PROJECT', found $runtime_count"
+  [[ "$scheduler_count" -eq 1 ]] || die "expected exactly 1 scheduler container under project '$COMPOSE_PROJECT', found $scheduler_count"
+  guard_no_duplicate_scheduler
+}
+
+# A compose file with no `external: true` network creates its own default
+# network named "<project>_default" - seeing one exist is a signal that some
+# earlier run (by mistake, exactly like the incident) brought up the bundled
+# stack under this project name. Warns rather than removing anything: an
+# unexpected network might be holding a container with real data, and this
+# guard's job is to make an operator look, not to delete on its behalf.
+warn_stray_default_network() {
+  local net="${COMPOSE_PROJECT}_default"
+  if docker network inspect "$net" >/dev/null 2>&1; then
+    warn "network '$net' exists - this is what a compose file WITHOUT an external network (e.g. the bundled docker-compose.yml) creates under this project name."
+    warn "if this project has never intentionally used the bundled stack, investigate before continuing:"
+    warn "  docker network inspect $net"
+    warn "  docker ps --filter network=$net"
   fi
 }
 

@@ -218,18 +218,24 @@ cd engine && pytest          # Information Engine regression (559)
 
 The board reuses its existing PostgreSQL, so it selects a different compose
 file through `.env` (`DANCEMATE_COMPOSE_FILE`). See
-`deploy/rockpro64/README.md` for the full procedure.
+`deploy/rockpro64/README.md` for the full procedure and for why every command
+here goes through a script rather than a bare `docker compose`.
 
 ```bash
 cp .env.example .env
 $EDITOR .env                 # set POSTGRES_PASSWORD: openssl rand -base64 24
+                              # and, on the board, DANCEMATE_COMPOSE_FILE=
+                              # deploy/rockpro64/docker-compose.external-postgres.yml
 
 scripts/install-rockpro64.sh # host readiness check (--prepare to create dirs)
-docker compose build
-scripts/start-server.sh      # start postgres + runtime + scheduler
+scripts/start-server.sh      # builds if needed, then starts (postgres +) runtime + scheduler
 scripts/check-server.sh      # exit 0 all PASS, 1 a component FAILed, 2 unreachable
 scripts/stop-server.sh       # stop; never removes volumes
 ```
+
+To deploy a **new version** on the board later (build a new image, back up
+first, recreate, health-gate), use `scripts/deploy-production.sh` instead -
+see `deploy/rockpro64/README.md`.
 
 Health output:
 

@@ -1,4 +1,33 @@
-# DanceMate v0.74 - Persistent Runtime + ROCKPro64 Staging Deployment.
+# DanceMate - LOCAL / DEVELOPMENT stack ONLY. NOT the ROCKPro64 production
+# compose file.
+#
+# ============================================================================
+# DO NOT use this file, or a bare `docker compose up -d`, against production.
+# ============================================================================
+#
+# v0.82.5 incident: exactly that command, run on the board with no `-f`,
+# picked this file by Docker's own default and created a brand-new, empty
+# PostgreSQL that silently took over the runtime/scheduler containers for a
+# few minutes. No production data was lost (the real database is a bind
+# mount this file has never heard of), but nothing blocked the command.
+#
+# The ROCKPro64's production compose file is the OTHER one:
+#
+#   deploy/rockpro64/docker-compose.external-postgres.yml
+#
+# and the only supported way to deploy it is:
+#
+#   scripts/deploy-production.sh            (add --check for a dry run)
+#
+# never a raw `docker compose ...` typed against either file directly. See
+# deploy/rockpro64/README.md for the full production procedure.
+#
+# This file's own bundled PostgreSQL service exists for local development and
+# CI only, where an isolated, throwaway database is exactly what is wanted -
+# it is deliberately kept, not deleted, for that reason (v0.82.6 spec item
+# 14/15: fresh-install/local and production deploy are separate concerns, and
+# removing the dev stack to "fix" a production mistake would only break local
+# development instead).
 #
 # Three containers on purpose: postgres, runtime, scheduler. The runtime and
 # the scheduler share ONE image and differ only by command, which keeps memory
@@ -19,7 +48,7 @@ x-runtime-image: &runtime-image
   build:
     context: .
     dockerfile: Dockerfile
-  image: dancemate/runtime:${DANCEMATE_VERSION:-0.82.5}
+  image: dancemate/runtime:${DANCEMATE_VERSION:-0.82.6}
   restart: unless-stopped
   env_file: [.env]
   # microSD write minimization: cap container logs instead of letting the

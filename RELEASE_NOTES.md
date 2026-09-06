@@ -1,5 +1,83 @@
 # DanceMate Release Notes
 
+## v0.82.6 Deployment Guard + Production Compose Safety
+
+Status:
+Fix and board acceptance completed against the ROCKPro64 board's real
+production database, 2026-09-06. Engine code unchanged.
+
+Version split:
+
+- Product Runtime: 0.82.6
+- Information Engine: unchanged (0.80).
+
+### Incident
+
+During v0.82.5's own production deploy, a raw `docker compose up -d` - typed
+directly on the board, no `-f` - was picked up by Docker's own default and
+resolved to this repository's bundled-PostgreSQL `docker-compose.yml`
+instead of the board's real `deploy/rockpro64/docker-compose.external-
+postgres.yml`. A brand-new, empty PostgreSQL silently took over the
+runtime/scheduler containers for a few minutes before it was noticed and
+corrected. No production data was lost - the real, bind-mounted
+`dancemate-postgres` container was never touched - but nothing in the
+repository would have *blocked* the wrong command from running.
+
+### Root cause
+
+Docker itself has no concept of "the production compose file"; that
+convention lived entirely in this project's own scripts
+(`scripts/_common.sh`'s `DANCEMATE_COMPOSE_FILE`), and a command typed
+directly on the board bypassed it. Production's own `.env` was already
+configured correctly (`DANCEMATE_COMPOSE_FILE=deploy/rockpro64/docker-
+compose.external-postgres.yml`) - the gap was that nothing stopped an
+operator from not using it.
+
+### Fix
+
+- `runtime/deploy_guard.py`: static, dockerless checks of a compose file's
+  own shape (no embedded `postgres` service, exactly `runtime`+`scheduler`,
+  an external network, `POSTGRES_HOST` not resolving to the bundled
+  `"postgres"` alias).
+- `scripts/deploy-production.sh`: the only supported production entry point.
+  Fixed compose file and pinned project name (never guessed from cwd), full
+  preflight (compose shape, real-database identity via a read-only row
+  count, no duplicate scheduler), then backup -> build -> recreate -> health
+  gate, in that order - the running stack is never touched before a new
+  image has actually built. `--check` runs the preflight only.
+- `scripts/_common.sh`: `compose()` now pins the project name; new guard
+  functions shared by any production-facing script.
+- `docker-compose.yml` gained an explicit LOCAL/DEVELOPMENT-ONLY banner (it
+  was previously titled "ROCKPro64 Staging Deployment", which is what made
+  it a plausible-looking wrong answer). It is kept, not removed or renamed -
+  local development and CI still need a self-contained stack.
+- README.md and deploy/rockpro64/README.md: every documented command now
+  goes through a script; no bare `docker compose ... up -d` remains in the
+  procedure.
+
+### Isolated reproduction (no production touched)
+
+- Pointing `scripts/deploy-production.sh --check` at the local dev compose
+  file (both explicitly and via a missing `DANCEMATE_COMPOSE_FILE`): BLOCKED
+  before any `docker compose` command targeting it ever ran.
+- Pointing it at the real production `.env`: preflight PASS, DB identity
+  read `sources=18` rows from the real database (read-only), reported the
+  currently-running image as the rollback candidate, made no changes.
+
+### Tests
+
+16 new unit tests (`tests/test_deploy_guard.py`) plus 3 new parametrized
+cases from adding `deploy-production.sh` to the existing operations-script
+hygiene checks (`tests/test_deployment_config.py`). Runtime full suite: 1208
+passed, the same 2 pre-existing failures as v0.82.5 (confirmed unrelated -
+historical Admin-CSV-seeded data absent from a fresh migration-only
+database). Engine code is unchanged this release (`engine-v0.80`, confirmed
+via `git diff` against the prior merge commit showing no changes under
+`engine/`); rather than the full ~51-minute suite, an import check plus a
+111-test smoke subset of the files most recently touched
+(`test_social_dance.py`, `test_extraction_rules.py`, `test_live_pipeline.py`)
+was run and passed.
+
 ## v0.82.5 Pohang/Daegu Candidate Extraction Gap Fix
 
 Status:
