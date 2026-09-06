@@ -171,6 +171,45 @@ def test_alias_candidates_expose_the_parts_worth_matching():
     ]
 
 
+# --- v0.82.5: consecutive parenthetical groups (bilingual name + address) --
+#
+# Found live: Miltang's own bilingual-name rendering ("Brand 한글이름" ->
+# "Brand (한글이름)", v0.82.1's _split_bilingual_venue_name()) followed by a
+# real street address reads as two adjacent parenthetical groups -
+# "PosTango (포스탱고) (포항시 남구 중앙로 83, 3층)" - which the boundary
+# rule used to read as "Name (alias)", then prose, silently dropping the
+# address. The dropped text is also the only thing in the body naming the
+# venue's actual region (see runtime.venue_resolution.guess_region_label()),
+# so this alone made Pohang and Daegu's real, correctly-classified events
+# fall back to "지역 미확인" even once classification (test_social_dance.py)
+# was fixed.
+
+@pytest.mark.parametrize("text,name", [
+    ("장소: PosTango (포스탱고) (포항시 남구 중앙로 83, 3층 프스탱고) 반복: 매주 금요일",
+     "PosTango (포스탱고) (포항시 남구 중앙로 83, 3층 프스탱고)"),
+    ("장소: Tango Cafe Dia (탱고 카페 디아) (대구 북구 침산로 168 5층 507호) 주최: DoyaDoya",
+     "Tango Cafe Dia (탱고 카페 디아) (대구 북구 침산로 168 5층 507호)"),
+    # Two groups where the second is not an address at all (Ulsan's own real
+    # body: the English name repeated in Korean, twice) - still both belong
+    # to the venue, same rule, no address-shape check needed to get this
+    # right.
+    ("장소: Ulsan Tango Sociedad (울산탱고) (Ulsan Tango Sociedad 울산탱고) 주최: 울산탱고",
+     "Ulsan Tango Sociedad (울산탱고) (Ulsan Tango Sociedad 울산탱고)"),
+])
+def test_consecutive_parenthetical_groups_both_belong_to_the_venue(text, name):
+    assert rules.extract_venue(text).name == name
+
+
+def test_a_bracket_after_one_group_still_ends_the_venue():
+    """Unchanged from before this release: a group followed by something
+    that is not another group is prose, exactly as
+    test_venue_stops_where_the_address_or_next_field_begins already checks -
+    this just pins the case where a real address-shaped second group is
+    absent, so there is nothing for the new lookahead to find."""
+    reading = rules.extract_venue("장소: 엔빠스(EnPaz Tango Studio) [ 테이블 예약 문의 ]")
+    assert reading.name == "엔빠스(EnPaz Tango Studio)"
+
+
 def test_extraction_does_not_resolve_or_register_a_venue():
     """Reading the string is all this layer does. Deciding that 아미고스튜디오
     is a known venue -- or creating it -- is a separate, supervised step."""

@@ -85,6 +85,47 @@ def test_a_lesson_that_names_a_milonga_is_still_a_lesson():
     assert classify("Special Milonga Lesson개설 (9월17일 개강)", "8주 강습 모집") == "CLASS"
 
 
+# --- v0.82.5: known_event_type ----------------------------------------------
+#
+# Found live: 47 of 108 real Miltang /milongas items ("디디디", "바모스",
+# "OPPA", "GERA MIL"...) carry no descriptive word anywhere in title or body
+# - the whole post is date/time/venue/organizer/recurrence, structured
+# exactly like every other milonga on that page, just under a brand name
+# that happens not to include "milonga". classify()'s own keyword search
+# then has nothing to find and returns OTHER, discarding a real event.
+# known_event_type is admissible evidence for exactly this case - a
+# collector whose own page/section structure already guarantees the type
+# (Section: "Source Registry / known series context") - and was already a
+# parameter classify() accepted; this is its first real caller.
+
+def test_a_brand_name_with_no_descriptive_word_needs_the_hint():
+    """Without known_event_type, a title/body with no milonga/social/class
+    keyword anywhere is - correctly, by the existing rule - OTHER. This is
+    the exact Daegu/Pohang shape, reproduced without their real text."""
+    assert classify("디디디", "장소: Tango Cafe Dia 주최: DoyaDoya 반복: 매주 수요일") == "OTHER"
+    assert classify("바모스", "시간: 20:30~23:30 장소: PosTango 반복: 매주 금요일") == "OTHER"
+
+
+def test_known_event_type_skips_the_guess_entirely():
+    assert classify(
+        "디디디", "장소: Tango Cafe Dia 주최: DoyaDoya 반복: 매주 수요일",
+        known_event_type="MILONGA",
+    ) == "MILONGA"
+    assert classify(
+        "바모스", "시간: 20:30~23:30 장소: PosTango 반복: 매주 금요일",
+        known_event_type="MILONGA",
+    ) == "MILONGA"
+
+
+def test_known_event_type_is_unused_by_default():
+    """Every caller that does not pass it keeps today's keyword guessing -
+    the parameter existed before this release and nothing about its default
+    changed."""
+    import inspect
+
+    assert inspect.signature(classify).parameters["known_event_type"].default is None
+
+
 def test_a_swing_social_is_an_event():
     assert classify(
         "■ 스윙타임빠 (9월 2일) 수 소셜 공지",
