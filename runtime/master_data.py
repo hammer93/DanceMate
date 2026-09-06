@@ -218,6 +218,35 @@ def update_venue(con, venue_id: int, **fields: Any) -> dict[str, Any] | None:
         return _row(cur)
 
 
+def backfill_venue_region(con, venue_id: int, region_id: int) -> dict[str, Any]:
+    """Give a venue a region it did not have when it was created or linked,
+    and carry that region onto the events already resolved to it.
+
+    `update_venue()` alone only touches the `venues` row - `link_unresolved_
+    venue()` copies a venue's `region_id` onto its events once, at link time,
+    and nothing re-reads the venue afterward. A venue created before its real
+    region existed in the master (v0.83.2: Mi Vida tango studio, created
+    during v0.83.1's Human Venue Review with `region_id=NULL` because Gwangju
+    had no region row yet) would otherwise stay region-less forever even
+    after the region is added.
+
+    Scoped deliberately narrow: only events currently at `region_id IS NULL`
+    are touched, so a venue already resolved to some other region is never
+    silently overwritten by this call.
+    """
+    with con.transaction():
+        venue = update_venue(con, venue_id, region_id=region_id)
+        with con.cursor() as cur:
+            cur.execute(
+                "UPDATE events SET region_id = %s, updated_at = now() "
+                "WHERE venue_id = %s AND region_id IS NULL "
+                "RETURNING event_id",
+                (region_id, venue_id),
+            )
+            updated_events = [r[0] for r in cur.fetchall()]
+    return {"venue": venue, "events_updated": updated_events}
+
+
 def add_venue_alias(
     con, venue_id: int, alias: str, *, ignore_conflict: bool = False
 ) -> dict[str, Any] | None:

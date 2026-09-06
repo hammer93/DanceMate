@@ -364,4 +364,63 @@ def test_group_apply_block_only_appears_when_not_alone():
     assert events_admin._group_apply_block(1, [1], []) == ""
     rendered = events_admin._group_apply_block(1, [1, 2], [])
     assert "Group Apply" not in rendered or "group-link" in rendered
+
+
+# --- v0.83.2: "스튜디오 오초" vs "OCHO" calibration fixture ------------------
+#
+# Found live (v0.83.0/v0.83.1): a real Unresolved Venues row, "스튜디오 오초",
+# scores LOW against the real Master venue "OCHO" (whose own aliases already
+# include the bare "오초") purely because SequenceMatcher penalises the
+# length mismatch between "스튜디오오초" and "오초" more than it credits the
+# fully-contained short token. This is recorded as calibration data, not
+# fixed - v0.83.2 Section 8/9 forbid changing the threshold on this single
+# case. A future release may consider a "core token fully contained in the
+# candidate name" bonus once several more true/false-positive cases like
+# this one exist; until then this test exists to notice, loudly, if the
+# score for this exact pair ever drifts for an unrelated reason.
+
+def test_studio_ocho_short_token_calibration_fixture():
+    score = venue_resolution._name_similarity("스튜디오오초", "오초")
+    assert score < venue_resolution._NAME_MEDIUM_THRESHOLD, (
+        "스튜디오 오초 vs OCHO's own '오초' alias no longer scores below MEDIUM - "
+        "the known short-token-containment gap this fixture tracks may have "
+        "closed (or moved) by accident. If the scorer genuinely changed on "
+        "purpose, this fixture should be updated as part of that change, not "
+        "silently broken by it."
+    )
+
+
+def test_v0832_did_not_move_the_fuzzy_thresholds():
+    """Sections 1/8/9: no threshold change this release, from either OCHO
+    calibration data or anything else. Pinning the actual constants, not
+    just behaviour, so any accidental edit fails loudly here first."""
+    assert venue_resolution._NAME_MEDIUM_THRESHOLD == 0.72
+    assert venue_resolution._NAME_LOW_THRESHOLD == 0.45
+
+
+# --- v0.83.2: relinking an already-resolved raw string is a safe no-op ------
+
+def test_relinking_the_same_raw_text_twice_does_not_duplicate_the_alias(pg, unique, seoul_id):
+    """Whatever a human decides for "스튜디오 오초" (or any future case), the
+    same raw text reappearing - a duplicate post, a retried admin click, a
+    fresh collection cycle before the alias is visible - must resolve to the
+    same venue without erroring or registering a second alias row. Generic
+    coverage, independent of which venue OCHO's review actually lands on."""
+    from runtime import master_data
+
+    venue_text = f"스튜디오 오초 {unique}"
+    normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
+    venue = master_data.create_venue(pg, name=f"OCHO {unique}", region_id=seoul_id)
+    entry = _queued(pg, venue_text)
+
+    first = normalization.link_unresolved_venue(pg, entry["unresolved_venue_id"], venue["venue_id"])
+    assert first["events_updated"] == 1
+
+    # Re-running the exact same link (idempotent retry) must not raise and
+    # must not register a second alias for the same normalised text.
+    second = normalization.link_unresolved_venue(pg, entry["unresolved_venue_id"], venue["venue_id"])
+    assert second["events_updated"] == 0  # nothing left UNRESOLVED to re-link
+
+    aliases = [a["alias"] for a in master_data.venue_aliases(pg, venue["venue_id"])]
+    assert aliases.count(venue_text) == 1
     assert "/admin/venues/unresolved/group-link/preview" in rendered

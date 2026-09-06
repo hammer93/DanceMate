@@ -66,6 +66,14 @@ _ADMIN_HEAD_RE = re.compile(rf"^\s*({_ADMIN})")
 
 _PARENTHETICAL_RE = re.compile(r"^(?P<head>[^(（]*)[(（](?P<inner>[^)）]*)[)）]\s*$")
 
+# Gwangju Metropolitan City's own five gu - the only safe way to tell it apart
+# from Gyeonggi-do's unrelated 광주시 (Gwangju-si), which has no gu-level
+# districts at all (it sits directly under 읍/면/동). "광주" alone, or a bare
+# "광주시", is genuinely ambiguous between the two and must never be guessed
+# (v0.83.2 Section 14) - only an explicit "광주광역시", or "광주" immediately
+# naming one of these five, is real evidence of the metro city.
+_GWANGJU_METRO_GU = ("동구", "서구", "남구", "북구", "광산구")
+
 
 class DuplicateVenue(Exception):
     """A venue that may already exist. Carries the candidates, not a verdict."""
@@ -122,12 +130,32 @@ def suggest(raw_venue: str, alias_candidates: list[str] | None = None) -> dict[s
         "name": name,
         "address": address,
         "aliases": aliases,
-        "region_hint": _ADMIN_HEAD_RE.match(address).group(1) if address and
-                       _ADMIN_HEAD_RE.match(address) else None,
+        "region_hint": _safe_admin_head(address),
         # True when the split was inferred rather than read off a label. The
         # form says so, so nobody assumes it was verified.
         "split_inferred": bool(match) and name != raw,
     }
+
+
+def _safe_admin_head(address: str | None) -> str | None:
+    """`_ADMIN_HEAD_RE`'s leading province/metro name, except a bare "광주"
+    match is only trusted when the address itself backs it: an explicit
+    "광주광역시", or "광주" immediately followed by one of the metro's own
+    five gu. Anything else that starts with "광주" (a bare "광주시 ...", or
+    "광주 <dong>..." with no gu at all) could just as easily be Gyeonggi-do's
+    Gwangju-si, so it is left unresolved rather than guessed."""
+    if not address:
+        return None
+    match = _ADMIN_HEAD_RE.match(address)
+    if not match:
+        return None
+    head = match.group(1)
+    if head != "광주":
+        return head
+    rest = address[match.end():].lstrip()
+    if any(rest.startswith(gu) for gu in _GWANGJU_METRO_GU):
+        return head
+    return None
 
 
 # Addresses are written in Korean and the region master is seeded in English,
@@ -206,6 +234,16 @@ def guess_region_label(raw_text: str | None) -> str | None:
         if city in text:
             return label
     for admin in _REGION_BY_ADMIN:
+        if admin == "광주":
+            # Same collision this module guards against everywhere else:
+            # "광주" alone is ambiguous with Gyeonggi-do's 광주시, which has
+            # no gu-level districts - only trust an explicit "광주광역시" or
+            # "광주" + one of the metro's own five gu.
+            if "광주광역시" in text or any(
+                re.search(rf"광주\s*{gu}", text) for gu in _GWANGJU_METRO_GU
+            ):
+                return admin
+            continue
         if admin in text:
             return admin
     return None
@@ -217,7 +255,16 @@ def terms_for_label(label: str) -> list[str]:
     filter) that needs to match an unresolved event by the same rule a
     resolved one is already matched by name."""
     terms = [city for city, mapped in CURATED_CITY_HINTS.items() if mapped == label]
-    if label in _REGION_BY_ADMIN:
+    if label == "광주":
+        # Bare "광주" would also pull in Gyeonggi-do's 광주시 by substring
+        # match (events_api.search() wraps each of these in "%...%" and runs
+        # it as ILIKE) - so search only for the same safe evidence
+        # guess_region_label() itself requires. The embedded "%" here is
+        # deliberate: wrapped again by the caller it becomes "%광주%동구%",
+        # matching "광주 동구" and "광주동구" alike.
+        terms.append("광주광역시")
+        terms.extend(f"광주%{gu}" for gu in _GWANGJU_METRO_GU)
+    elif label in _REGION_BY_ADMIN:
         terms.append(label)
     return terms
 
@@ -596,8 +643,7 @@ def prefill(con, entry: dict[str, Any]) -> dict[str, Any]:
         if from_posts:
             suggestion["address"] = from_posts["address"]
             address_source = "the post"
-            head = _ADMIN_HEAD_RE.match(from_posts["address"])
-            suggestion["region_hint"] = head.group(1) if head else None
+            suggestion["region_hint"] = _safe_admin_head(from_posts["address"])
 
     suggestion["address_source"] = address_source
     suggestion["region_id"] = suggested_region_id(con, suggestion["region_hint"])

@@ -64,6 +64,43 @@ def test_terms_for_label_is_the_exact_reverse_of_the_guess():
     assert venue_resolution.terms_for_label("남극") == []
 
 
+# --- v0.83.2: Gwangju Metro vs Gyeonggi-do's own, unrelated 광주시 ----------
+
+@pytest.mark.parametrize("raw_text,expected", [
+    ("Mi Vida tango studio (미비다 탱고 스튜디오) (광주 동구 중앙로 162-1 5층)", "광주"),
+    ("금비다 밀롱가 (광주광역시 서구 상무대로 1000)", "광주"),
+    ("어떤 스튜디오 (광주 북구 무등로 100)", "광주"),
+])
+def test_guess_region_label_matches_real_gwangju_metro_addresses(raw_text, expected):
+    assert venue_resolution.guess_region_label(raw_text) == expected
+
+
+@pytest.mark.parametrize("raw_text", [
+    "경기도 광주시 오포읍 오포로 100",
+    "광주시 경안동 100-1",
+    "광주 경안동 100-1",
+])
+def test_guess_region_label_never_confuses_gyeonggi_gwangju_si_with_the_metro(raw_text):
+    """경기도 광주시 (Gwangju-si) has no gu-level districts at all, unlike
+    Gwangju Metropolitan City's five - so nothing here may guess "광주" for
+    it (v0.83.2 Section 14). "경기도 광주시..." still correctly reads as 경기
+    through the ordinary province match; the bare forms resolve to nothing
+    rather than a guess."""
+    assert venue_resolution.guess_region_label(raw_text) != "광주"
+
+
+def test_gwangju_terms_never_bare_match_gyeonggi_gwangju_si():
+    """A bare "광주" term would make events_api.search()'s ILIKE '%광주%'
+    match "경기도 광주시..." too - every term here must carry real evidence
+    of the metro city (an explicit "광주광역시", or one of its own five gu),
+    the same standard guess_region_label() itself is held to."""
+    terms = venue_resolution.terms_for_label("광주")
+    assert "광주" not in terms
+    assert "광주광역시" in terms
+    for gu in ("동구", "서구", "남구", "북구", "광산구"):
+        assert any(gu in term for term in terms)
+
+
 # --- events_api.present() (pure) --------------------------------------------
 
 def _row(**overrides):
@@ -124,6 +161,112 @@ def test_an_unresolved_cheongju_event_is_findable_by_region_filter(pg, unique):
     matched = [e for e in result["events"] if e["name"] == f"청주 테스트 밀롱가 {unique}"][0]
     assert matched["region"] == "청주"
     assert matched["region_confirmed"] is False
+
+
+def test_gwangju_metro_region_filter_returns_a_real_resolved_event(pg, unique, gwangju_id):
+    """v0.83.2: unlike Cheongju/Jinju (still guess-only), Gwangju's region
+    row now exists, so a venue actually resolved to it must be found through
+    the ordinary resolved-region path (`r.code = ...`), not only the
+    unresolved-guess fallback."""
+    from runtime import master_data
+
+    venue = master_data.create_venue(
+        pg, name=f"미비다 탱고 스튜디오 {unique}", region_id=gwangju_id,
+        address="광주 동구 중앙로 162-1 5층",
+    )
+    stored = normalization.normalize_candidate(pg, {
+        "candidate_id": int(f"{unique[-6:]}3"), "post_id": 1,
+        "source_url": f"https://miltang.com/milongas/{unique}-3",
+        "event_name": f"광주 테스트 밀롱가 {unique}",
+        "event_type": "MILONGA", "event_date": "2026-09-05",
+        "start_time": "19:30", "end_time": "23:30", "end_day_offset": 0,
+        "venue": f"미비다 탱고 스튜디오 {unique}",
+        "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
+    })
+    assert stored["venue_status"] == "RESOLVED"
+    assert stored["venue_id"] == venue["venue_id"]
+
+    result = events_api.search(pg, on="2026-09-05", region="광주", limit=100)
+    names = {e["name"] for e in result["events"]}
+    assert f"광주 테스트 밀롱가 {unique}" in names
+    matched = [e for e in result["events"] if e["name"] == f"광주 테스트 밀롱가 {unique}"][0]
+    assert matched["region"] == "광주"
+    assert matched["region_confirmed"] is True
+
+
+def test_gwangju_region_filter_does_not_pull_in_an_unrelated_seoul_event(pg, unique, gwangju_id, seoul_id):
+    """The new Gwangju terms must stay as narrow as guess_region_label() -
+    an ordinary Seoul event must never show up under region=광주."""
+    from runtime import master_data
+
+    master_data.create_venue(pg, name=f"서울 스튜디오 {unique}", region_id=seoul_id)
+    normalization.normalize_candidate(pg, {
+        "candidate_id": int(f"{unique[-6:]}4"), "post_id": 1,
+        "source_url": f"https://miltang.com/milongas/{unique}-4",
+        "event_name": f"서울 테스트 밀롱가 {unique}",
+        "event_type": "MILONGA", "event_date": "2026-09-05",
+        "start_time": "19:30", "end_time": "23:30", "end_day_offset": 0,
+        "venue": f"서울 스튜디오 {unique}",
+        "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
+    })
+    result = events_api.search(pg, on="2026-09-05", region="광주", limit=100)
+    names = {e["name"] for e in result["events"]}
+    assert f"서울 테스트 밀롱가 {unique}" not in names
+
+
+def test_backfill_venue_region_updates_the_venue_and_its_null_region_events(pg, unique, gwangju_id):
+    """v0.83.2: a venue created before its real region existed in the master
+    (Mi Vida tango studio, v0.83.1, region_id=NULL because Gwangju had no row
+    yet) must be fixable after the fact, on both the venue and the events
+    already resolved to it - `update_venue()` alone only touches `venues`."""
+    from runtime import master_data
+
+    venue = master_data.create_venue(
+        pg, name=f"Mi Vida tango studio {unique}", region_id=None,
+        address="광주 동구 중앙로 162-1 5층",
+    )
+    stored = normalization.normalize_candidate(pg, {
+        "candidate_id": int(f"{unique[-6:]}5"), "post_id": 1,
+        "source_url": f"https://miltang.com/milongas/{unique}-5",
+        "event_name": f"미비다 테스트 {unique}",
+        "event_type": "MILONGA", "event_date": "2026-09-05",
+        "start_time": "19:30", "end_time": "23:30", "end_day_offset": 0,
+        "venue": f"Mi Vida tango studio {unique}",
+        "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
+    })
+    assert stored["venue_status"] == "RESOLVED"
+    assert stored["region_id"] is None  # Before
+
+    result = master_data.backfill_venue_region(pg, venue["venue_id"], gwangju_id)
+    assert result["venue"]["region_id"] == gwangju_id
+    assert stored["event_id"] in result["events_updated"]
+
+    updated = normalization.get(pg, stored["event_id"])
+    assert updated["region_id"] == gwangju_id  # After
+
+
+def test_backfill_venue_region_never_overwrites_an_already_resolved_event(pg, unique, gwangju_id, seoul_id):
+    """Scoped narrowly on purpose: only events at region_id IS NULL are
+    touched, so a venue that changes region for some other reason never
+    silently drags an already-correct event along with it."""
+    from runtime import master_data
+
+    venue = master_data.create_venue(pg, name=f"이미해결된곳 {unique}", region_id=seoul_id)
+    stored = normalization.normalize_candidate(pg, {
+        "candidate_id": int(f"{unique[-6:]}6"), "post_id": 1,
+        "source_url": f"https://miltang.com/milongas/{unique}-6",
+        "event_name": f"이미해결 테스트 {unique}",
+        "event_type": "MILONGA", "event_date": "2026-09-05",
+        "start_time": "19:30", "end_time": "23:30", "end_day_offset": 0,
+        "venue": f"이미해결된곳 {unique}",
+        "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
+    })
+    assert stored["region_id"] == seoul_id
+
+    result = master_data.backfill_venue_region(pg, venue["venue_id"], gwangju_id)
+    assert stored["event_id"] not in result["events_updated"]
+    unchanged = normalization.get(pg, stored["event_id"])
+    assert unchanged["region_id"] == seoul_id  # untouched, even though the venue itself moved
 
 
 def test_a_region_filter_that_matches_nothing_excludes_the_event(pg, unique):
