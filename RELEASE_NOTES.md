@@ -43,13 +43,18 @@ automatically on the next collection. Two of the fifteen (이데알 탱고
 decision via `link_existing(add_alias=True)`, applied inside the same
 transaction as the create so the pair lands together or not at all.
 
-**Disclosed discrepancy**: the approved list named 13 candidates; Azucar
-(대전, 아수까) was not in the enumerated list the user was shown, but was
-built into the batch by the same objective criteria (name + real address +
-region, no Master conflict) as the other 12 - a drafting gap when the
-question was condensed, not a substitution of Claude's judgment for the
-user's. Flagged here rather than left silent; happy to revert it (deactivate
-+ reopen the unresolved row) if the user does not consider it approved.
+**Addendum, 2026-09-06 (post-release)**: the approved list named 13
+candidates; Azucar (대전, 아수까) was not in the enumerated list the user
+was shown, though it was built into the batch by the same objective
+criteria (name + real address + region, no Master conflict) as the other
+12 - a drafting gap when the question was condensed, not a substitution of
+Claude's judgment for the user's. Flagged transparently in the original
+report rather than left silent. The user reviewed this afterward and gave
+explicit retroactive approval for Azucar as a CREATE NEW venue, with
+instructions to keep the created venue and its links exactly as they stood
+and make no further data changes. Recorded here as the Human Review
+decision of record: **Azucar - approved (post-hoc), no further action
+taken.**
 
 ### A real bug found and fixed along the way
 
