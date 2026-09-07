@@ -1,5 +1,108 @@
 # DanceMate Release Notes
 
+## v0.85.1 Direct Source Coverage Expansion
+
+Status: real live source research and re-verification, 2 sources added
+(disabled-first, live-tested, gate-passed), 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.1
+- Information Engine: 0.83 (unchanged - no `engine/` file touched)
+
+### Goal
+
+v0.85.0 measured Direct Source Coverage (PRIMARY + PROMOTION_BOARD share of
+upcoming Tango) at 5/147 = 3%: nearly all upcoming coverage came from
+re-aggregating services, not from a community's, organizer's, or studio's
+own posting. This release moves from "Directory tells us the event exists"
+toward "we hold the community's/organizer's own original post" for a real,
+verified handful of cases - not a target number.
+
+### Research
+
+30 candidates investigated (`docs/tango_direct_source_candidates.csv`),
+prioritizing v0.85.0's own Aggregator-only gap list (대전탱고/LaBoom, 부산탱고/
+이데알, La Ventana, O Nada, Andante, EN PAZ, 탱고 클럽 오초) plus a broader
+sweep of official homepages, Naver/Daum cafes, blogs, and Facebook pages.
+Every ADD_NOW candidate was independently re-fetched live (not trusted from
+the candidate list alone) before any registration.
+
+Most of the gap list's own organizers turned out to require a login-gated
+cafe detail page or sit behind Facebook's Terms (automated collection
+prohibited) - classified `REFERENCE_ONLY`, not force-implemented. Two real,
+public, no-login, robots-allowing, currently-active sources survived:
+
+- **SRC-D-003** - Solo Tango's own 화요정모 (Tuesday regular meetup) notice
+  board, a *different* board (73b) on the same 'latindance' Daum Cafe
+  SRC-D-001/002 already read. Reuses the existing DAUM_CAFE/Kakao Cafe
+  Search collector completely unchanged - only a new Source Master row
+  scoped via `url_contains`. Live-verified real post: 9/8, 20:00-23:30,
+  Tango O Nada, DJ 유진, 8,000원(22시 이후 5,000원) - the exact event
+  behind v0.85.0's own "Solo Tango 화요정모" gap entry.
+- **SRC-W-006** - TangoClass's own public WordPress REST API
+  (`/wp-json/wp/v2/posts`), robots ALLOW except `/wp-admin/`, no login. New
+  `runtime/tangoclass_discovery.py` parser - the list response already
+  carries each post's full body, so there is no separate detail fetch
+  (`FETCHED_FULL`, the same shape as Miltang's own milonga list).
+
+SRC-F-001/SRC-F-002 (Tango Club Ocho, Tango O Nada's own Facebook pages)
+were re-checked: still `enabled=false`, still no collectible `url` in their
+own config (`access_state: ACCESS_LIMITED`, imported from
+`engine/config/sources.json` with no real target). Facebook's own Terms
+prohibit automated collection - confirmed again this release, left
+`REFERENCE_ONLY`, not enabled.
+
+Both new sources registered **disabled**, per this project's standing
+practice: a migration registers a row, an operator tests then explicitly
+enables it - never auto-activated.
+
+### Live E2E audit (Section 37/38's Enable Gate) before enabling
+
+Both sources' one-shot live test (the admin [Test] button function itself,
+`collectors.test_source()` - writes nothing) passed on real data: SRC-D-003
+found 49 real posts on the real board (Kakao Cafe Search API, via
+production's own credential, in-memory only, no DB write); SRC-W-006 found
+10 real posts via its own new parser.
+
+Enabling SRC-W-006 on a genuinely fresh staging Postgres (the first time
+this project has ever exercised a truly *empty* candidate store at the
+moment the scheduler's `event-normalization` job runs) surfaced a real,
+pre-existing bug: `normalization.normalize_all()`'s zero-candidates early
+return omitted `unresolved_venues`/`pruned`, crashing the job with
+`KeyError`. Not caused by the new sources - unreachable in every prior
+release, since production always has hundreds of pending candidates by the
+time this job runs. Fixed (both keys now always present) and covered by a
+regression test. The real E2E run then completed cleanly: 10 collected ->
+10 ingested -> 5 real event candidates -> 2 normalized events (the other 3
+correctly skipped for having no explicit date - not fabricated), 0 errors.
+
+### Tests
+
+23 new tests: migration registration (2 sources, idempotent, existing
+sources untouched), the 15 required release-gate behaviors (primary/
+promotion-board ingestion, directory-duplicate recognition, PRIMARY-wins
+representative source, DIRECTORY evidence retained after a merge, direct
+source link, direct freshness, no fee/DJ inheritance across recurring
+instances, a conflicting pair still stays CONFLICT regardless of source
+tier, PRIMARY never implies VERIFIED, calendar counts a merge once,
+historical events stay queryable, a disabled source is never selected for
+collection, a failed live test never auto-enables), the `normalize_all()`
+regression, plus `tangoclass_discovery.py`'s own 11 parser unit tests.
+Full Runtime suite on staging: 1424 passed, 15 skipped (only the 2
+pre-existing, unrelated `test_tangocalendar_discovery.py` failures present
+on every prior release's baseline remain). Engine suite not re-run - no
+`engine/` file changed.
+
+### A second real bug found along the way
+
+`.env.example` and both `docker-compose.yml`s' image-tag defaults had
+drifted to `0.84.4` since v0.85.0's own version bump - nothing checks the
+template against `VERSION`, the same class of gap `test_env_example_
+engine_version_matches_the_default` already guards for `ENGINE_VERSION`.
+Fixed alongside this release's own version bump (retroactively correcting
+v0.85.0's oversight too).
+
 ## v0.85.0 Private Alpha Pilot: Compact Timeline + Weekly Calendar + Source Priority
 
 Status: Private Alpha pilot release, real live production data verified,
