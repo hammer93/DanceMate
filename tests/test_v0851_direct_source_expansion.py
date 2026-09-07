@@ -123,9 +123,9 @@ def _make_source_item(pg, *, source_role: str, source_url: str, collected_at=Non
         )
         source_id = cur.fetchone()[0]
         cur.execute(
-            "INSERT INTO source_items (source_id, external_key, source_url, "
-            "content_hash, discovered_at, collected_at) "
-            "VALUES (%s, %s, %s, %s, now(), COALESCE(%s, now())) "
+            "INSERT INTO source_items (source_id, external_id, url, "
+            "content_hash, collected_at) "
+            "VALUES (%s, %s, %s, %s, COALESCE(%s, now())) "
             "RETURNING source_item_id",
             (source_id, source_url, source_url, source_url, collected_at),
         )
