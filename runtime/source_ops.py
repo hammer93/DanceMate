@@ -13,9 +13,10 @@ next week should not have been dropped this week.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
-from . import sources
+from . import source_priority, sources
 
 ACTIVE = "ACTIVE"
 KEEP = "KEEP"
@@ -100,6 +101,54 @@ def upcoming_yield(con) -> dict[int, int]:
             "GROUP BY i.source_id"
         )
         return {row["source_id"]: row["upcoming"] for row in _rows(cur)}
+
+
+def evidence_tiers(con) -> dict[str, int]:
+    """v0.85.2 KPI (Section 22/23): for every visible upcoming event, which
+    source-priority tier(s) exist across it AND its folded-away duplicates -
+    not just the representative row's own tier. A folded DIRECTORY post is
+    retained evidence (Section 17), and an event carrying both PRIMARY and
+    DIRECTORY evidence is the concrete signal that "directory discovery"
+    has actually converged into "official confirmation" - the thing this
+    whole Direct Source effort is working toward, not just a raw coverage
+    percentage.
+
+    Returns counts, NOT mutually exclusive: `primary`/`promotion_board`
+    count every event carrying that tier anywhere in its evidence;
+    `directory_only` counts events whose evidence is DIRECTORY and nothing
+    else; `multi_tier` counts events whose evidence spans more than one
+    tier (Section 23's own highlighted case, PRIMARY+DIRECTORY, is a
+    subset of this).
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT COALESCE(e.canonical_event_id, e.event_id) AS canonical_id, "
+            "       src.source_role "
+            "FROM events e "
+            "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+            "LEFT JOIN sources src ON src.source_id = si.source_id "
+            "JOIN events canon ON canon.event_id = COALESCE(e.canonical_event_id, e.event_id) "
+            "WHERE canon.provenance = 'LIVE' AND canon.listing_state = 'LISTED' "
+            "  AND canon.canonical_event_id IS NULL AND canon.event_date >= current_date "
+            "  AND canon.engine_status <> 'CANCELLED'"
+        )
+        rows = _rows(cur)
+
+    tiers_by_event: dict[int, set[str]] = defaultdict(set)
+    for row in rows:
+        tiers_by_event[row["canonical_id"]].add(source_priority.tier_of(row["source_role"]))
+
+    result = {"primary": 0, "promotion_board": 0, "directory_only": 0, "multi_tier": 0}
+    for tiers in tiers_by_event.values():
+        if source_priority.PRIMARY in tiers:
+            result["primary"] += 1
+        if source_priority.PROMOTION_BOARD in tiers:
+            result["promotion_board"] += 1
+        if tiers == {source_priority.DIRECTORY}:
+            result["directory_only"] += 1
+        if len(tiers) > 1:
+            result["multi_tier"] += 1
+    return result
 
 
 def recommend(source: dict[str, Any], outcome: dict[str, Any],

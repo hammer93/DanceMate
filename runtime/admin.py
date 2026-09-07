@@ -367,6 +367,7 @@ def _source_priority_panel(settings: Settings) -> str:
                 by_role = dict(cur.fetchall())
             open_feedback = feedback.count_open(con)
             gap_rows = _aggregator_only_gap(con, limit=10)
+            evidence = source_ops.evidence_tiers(con)
     except db.DatabaseUnavailable:
         return ""
 
@@ -386,6 +387,17 @@ def _source_priority_panel(settings: Settings) -> str:
         ("열린 피드백", open_feedback, "정보가 달라요/부족해요 등"),
     ])
 
+    # v0.85.2 Section 22/23: not the representative row's own tier, but
+    # every tier of evidence retained behind it (folded duplicates
+    # included) - PRIMARY+DIRECTORY together is the concrete "directory
+    # discovery -> official confirmation" convergence signal.
+    evidence_cards = _cards([
+        ("PRIMARY evidence", evidence["primary"], "unique events, anywhere in their evidence"),
+        ("PROMOTION_BOARD evidence", evidence["promotion_board"], "unique events, anywhere in their evidence"),
+        ("DIRECTORY만", evidence["directory_only"], "다른 tier 증거 없음"),
+        ("MULTI-TIER", evidence["multi_tier"], "2개 이상 tier 증거 (예: PRIMARY+DIRECTORY)"),
+    ])
+
     gap_html = ""
     if gap_rows:
         rows = [
@@ -401,7 +413,9 @@ def _source_priority_panel(settings: Settings) -> str:
         )
 
     return (
-        "<h2>Source Priority</h2>" + cards + gap_html
+        "<h2>Source Priority</h2>" + cards
+        + "<h3>Multi-tier Evidence</h3>" + evidence_cards
+        + gap_html
         + '<p class="note">Section 51: direct/promotion 비율이 낮으면 다음 Source '
           "확장은 동호회 공식·주최자 공식·스튜디오 공식·홍보 게시판만 우선하고, "
           "aggregator 신규 확장은 후순위로 둡니다.</p>"
