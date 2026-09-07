@@ -18,10 +18,10 @@ import html
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import alpha_metrics, db, events_api, venue_resolution
+from . import alpha_metrics, db, events_api, feedback, venue_resolution
 from .config import Settings
 
 router = APIRouter(tags=["events"])
@@ -176,6 +176,47 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .source { padding: 0 1rem .8rem; font-size:.8rem; color:var(--muted); }
 .source a { color:var(--accent); text-decoration:none; margin-left:.3rem; }
 .source a:hover { text-decoration:underline; }
+/* Compact timeline row (v0.85.0): up to three stacked lines, never a card
+   (Section 12). li.event's own border/padding/gap already fit this; only
+   the line-specific typography is new. */
+li.event a { padding: .55rem .8rem; }
+.tl-1 { font-variant-numeric: tabular-nums; font-weight:600; font-size:.92rem; }
+.tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
+.tl-2 .ev-name { font-weight:600; }
+.tl-2 .dj { color:var(--muted); font-weight:400; }
+.tl-3 { padding: .15rem .8rem .6rem; font-size:.78rem; color:var(--muted); }
+.tl-3 a { color:var(--accent); text-decoration:none; }
+.tl-3 a:hover { text-decoration:underline; }
+.ext { font-size:.75em; }
+/* Weekly calendar (v0.85.0). */
+.calendar { margin: 0 0 1.25rem; border:1px solid var(--line); border-radius:12px;
+            background:var(--card); overflow:hidden; }
+.cal-nav-row { display:flex; align-items:center; justify-content:space-between;
+               padding:.6rem .8rem; border-bottom:1px solid var(--line);
+               font-size:.8rem; }
+.cal-nav-row .cal-nav { color:var(--accent); text-decoration:none; }
+.cal-range { color:var(--muted); }
+.cal-grid { display:grid; grid-template-columns:repeat(7, 1fr); }
+.cal-day { display:flex; flex-direction:column; align-items:center; gap:.15rem;
+           padding:.6rem .1rem; text-decoration:none; color:var(--fg);
+           border-right:1px solid var(--line); }
+.cal-day:last-child { border-right:none; }
+.cal-day .cal-wd { font-size:.7rem; color:var(--muted); }
+.cal-day .cal-d { font-size:.95rem; font-weight:600; }
+.cal-day .cal-n { font-size:.7rem; color:var(--muted); }
+.cal-day.today .cal-d { color:var(--accent); }
+.cal-day.selected { background:var(--bg); box-shadow:inset 0 -3px 0 var(--accent); }
+.cal-day.past { opacity:.55; }
+@media (max-width: 30rem) {
+  .cal-day { padding:.45rem .05rem; }
+  .cal-day .cal-d { font-size:.85rem; }
+}
+/* Feedback (v0.85.0): three small buttons, event-detail only (Section 55). */
+.feedback { margin-top:2rem; display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; }
+.feedback .fb-form { margin:0; }
+.feedback .fb-btn { border:1px solid var(--line); border-radius:999px; padding:.3rem .85rem;
+                    font-size:.8rem; background:var(--card); color:var(--fg); cursor:pointer; }
+.feedback .fb-btn:hover { border-color:var(--accent); color:var(--accent); }
 .banner { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
           border-radius:8px; padding:.8rem 1rem; margin-bottom:1rem; font-size:.875rem; }
 .empty-actions { margin:.75rem 0 0; display:flex; gap:.5rem; flex-wrap:wrap; padding:0; list-style:none; }
@@ -356,7 +397,21 @@ def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
     offering an empty filter: it says events of that kind are in here when they
     are not.
     """
-    window = events_api.window(when)
+    return _facets_window(con, events_api.window(when))
+
+
+def _facets_for_date(con, day_iso: str) -> dict[str, list[dict[str, Any]]]:
+    """Same promise as ``_facets()``, for a single calendar-selected day
+    (v0.85.0) rather than a ``when`` keyword - a past day included, since
+    _facets_window's own "no window" branch (today onward) would otherwise
+    wrongly hide every filter chip on a day already gone by."""
+    from datetime import date as date_type
+
+    day = date_type.fromisoformat(day_iso)
+    return _facets_window(con, (day, day))
+
+
+def _facets_window(con, window: tuple | None) -> dict[str, list[dict[str, Any]]]:
     where = [events_api._VISIBLE, "e.engine_status <> 'CANCELLED'"]
     params: list[Any] = []
     if window:
@@ -697,30 +752,6 @@ def _checked_line(event: dict[str, Any], *, now: "datetime | None" = None) -> st
     return f'<span class="checked">{E(when)} 확인{E(tail)}</span>'
 
 
-def _source_line(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """Where this listing came from, with a link to check it, and when we
-    last checked it (Section 8/9: freshness belongs on the card, not only
-    the detail page).
-
-    A sibling of the card's <a>, not nested inside it - two links in one
-    anchor is invalid HTML and browsers resolve it unpredictably. Only a real
-    http(s) URL becomes a link (events_api.present() already validated it);
-    otherwise this says so rather than making one up.
-    """
-    link = event.get("source_link") or {}
-    url = link.get("url")
-    label = link.get("label")
-    checked = _checked_line(event, now=now)
-    tail = f" · {checked}" if checked else ""
-    if not url:
-        return f'<div class="source"><span class="unknown">출처 미확인</span>{tail}</div>'
-    prefix = f"출처: {E(label)}" if label else "출처"
-    return (
-        f'<div class="source">{prefix}'
-        f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">원문 보기</a>{tail}</div>'
-    )
-
-
 def _is_unknown_heavy(event: dict[str, Any]) -> bool:
     """True when time, venue, and fee are all unknown at once.
 
@@ -735,17 +766,180 @@ def _is_unknown_heavy(event: dict[str, Any]) -> bool:
     return no_time and no_venue and no_fee
 
 
-def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    cancelled = " cancelled" if event.get("cancelled") else ""
+def _is_past(event: dict[str, Any], *, now: "datetime | None" = None) -> bool:
+    """Strictly by date, never by the engine's own status.
+
+    Section 28/36: production has only ever written POSSIBLE/VERIFIED - an
+    engine_status of COMPLETED is a real, supported value that has simply
+    never been set by anything upstream yet. Whether a night has already
+    happened is knowable today regardless: it is whatever the calendar
+    already says, compared against the same Asia/Seoul "today" every other
+    date computation on this page already uses.
+    """
+    day = event.get("date")
+    if not day:
+        return False
+    from datetime import date as date_type
+
+    return date_type.fromisoformat(day) < events_api.today(now)
+
+
+# --- compact timeline row (v0.85.0) -----------------------------------------
+#
+# Up to three stacked text lines, never a card (Section 12): region+date+
+# time+type, then name+DJ+fee, then source+confirmation-time - the third
+# line only when there is something real to put on it (a source link or a
+# confirmation timestamp; Section 29's "thin event" still gets exactly two
+# real lines, never a blank third one). The older, larger _event_item() this
+# replaces is gone outright, not kept behind a flag - Section 12 is explicit
+# that this never goes back to a big card.
+
+def _human_date(day_iso: str, *, now: "datetime | None" = None) -> str:
+    """오늘 / 내일 / 9/12(토) - Section 15, person-first over machine-first."""
+    from datetime import date as date_type, timedelta as timedelta_type
+
+    day = date_type.fromisoformat(day_iso)
+    today = events_api.today(now)
+    if day == today:
+        return "오늘"
+    if day == today + timedelta_type(days=1):
+        return "내일"
+    return f"{day.month}/{day.day}({WEEKDAYS[day.weekday()]})"
+
+
+def _timeline_clock(event: dict[str, Any]) -> str:
+    """19:00, or 시간 미확인 - never a blank (Section 16)."""
+    start = event.get("start_time")
+    if not start:
+        return '<span class="unknown">시간 미확인</span>'
+    if event.get("time_confirmed") is False:
+        # The post wrote a bare clock with no am/pm marker either way - the
+        # reading stands, flagged, exactly as the detail page already does.
+        return f'{start} <span class="tag">시간 미확인</span>'
+    return start
+
+
+def _timeline_region(event: dict[str, Any]) -> str:
+    """[서울] / [지역 미확인] - always the line's own first token (Section 14)."""
+    region = event.get("region")
+    if not region:
+        return '<span class="unknown">[지역 미확인]</span>'
+    tag = " <span class=\"tag\">미확인</span>" if not event.get("region_confirmed") else ""
+    return f"[{E(region)}]{tag}"
+
+
+def _timeline_badges(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+    """Small, inline status signals appended to line 1 - never a line of
+    their own (Section 28). CANCELLED never reaches here at all (excluded
+    from the default upcoming list before the page ever sees it); a past
+    date reads COMPLETED regardless of what the engine's own status says
+    (_is_past's own docstring explains why); CONFLICT gets its warn tone
+    unchanged from the previous card design.
+    """
+    if _is_past(event, now=now):
+        return f' <span class="status">{E(events_api.STATUS_LABELS[events_api.COMPLETED])}</span>'
+    if not event.get("cancelled") and _in_progress(event, now=now):
+        return ' <span class="status ok">진행 중</span>'
+    status = event.get("status")
+    label = event.get("status_label")
+    if not label:
+        return ""
+    tone = " ok" if status == "VERIFIED" else " warn" if status == "CONFLICT" else ""
+    title = (f' title="{E(events_api.VERIFIED_EXPLANATION)}"'
+             if status == "VERIFIED" else "")
+    return f'<span class="status{tone}"{title}>{E(label)}</span>'
+
+
+def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+    """[지역] 날짜 시간 종류 - Section 13, always in this order."""
+    day = event.get("date")
+    date_label = _human_date(day, now=now) if day else ""
+    type_label = event.get("event_type_label") or ""
+    parts = [_timeline_region(event), E(date_label), _timeline_clock(event),
+             E(type_label) if type_label else ""]
+    return (f'<div class="tl-1">' + " ".join(p for p in parts if p)
+            + _timeline_badges(event, now=now) + "</div>")
+
+
+def _fee_text(event: dict[str, Any]) -> str:
+    """입장료: 무료 / 20,000원 / 미확인 - Section 21's exact wording."""
+    fee = event.get("fee")
+    if fee is None:
+        return '입장료: <span class="unknown">미확인</span>'
+    if fee == 0:
+        return "입장료: 무료"
+    return f"입장료: {fee:,}원"
+
+
+def _timeline_line2(event: dict[str, Any]) -> str:
+    """행사명 (DJ) 입장료: 00 - Section 18-21. The DJ parenthetical is
+    entirely absent, not "DJ 미확인", when there is none (Section 20)."""
     thin = ' <span class="tag">정보 적음</span>' if _is_unknown_heavy(event) else ""
+    cancelled = " cancelled" if event.get("cancelled") else ""
+    name = f'<span class="ev-name{cancelled}">{E(event.get("name") or "")}</span>{thin}'
+    dj = event.get("dj")
+    dj_html = f' <span class="dj">(DJ {E(dj)})</span>' if dj else ""
+    return f'<div class="tl-2">{name}{dj_html} · {_fee_text(event)}</div>'
+
+
+def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+    """(2시간 전) - real evidence timestamp only (Section 26-27), the same
+    age-bucketing the previous card design already used, just re-shaped to
+    the timeline's own parenthetical form."""
+    from datetime import datetime as datetime_type, timezone
+
+    stamp = event.get("last_checked")
+    if not stamp:
+        return ""
+    try:
+        seen = datetime_type.fromisoformat(stamp)
+    except ValueError:
+        return ""
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    moment = now or datetime_type.now(timezone.utc)
+    local = seen.astimezone(events_api.SEOUL)
+    today = events_api.today(moment)
+    age = (moment - seen).total_seconds()
+    if age < 3600:
+        when = f"{max(1, int(age // 60))}분 전"
+    elif local.date() == today:
+        when = f"{int(age // 3600)}시간 전"
+    else:
+        when = f"{local.month}/{local.day} {local:%H:%M} 확인"
+    return f"({E(when)})"
+
+
+def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+    """출처: OOO ↗ (확인시간) - Section 22-27. Only rendered when there is a
+    real source or a real confirmation timestamp to put on it; a candidate
+    with neither (should not happen in practice - every live post has a
+    source_url - but defensively) contributes no third line at all, keeping
+    Section 12's "up to three lines" honest rather than padding to three."""
+    link = event.get("source_link") or {}
+    url = link.get("url")
+    label = link.get("label")
+    confirmed = _confirmation_text(event, now=now)
+    if not url and not confirmed:
+        return ""
+    if not url:
+        source_html = '<span class="unknown">출처 미확인</span>'
+    else:
+        source_html = (
+            f'출처: <a href="{E(url)}" target="_blank" rel="noopener noreferrer">'
+            f'{E(label) if label else "원문"} <span class="ext" aria-hidden="true">&#8599;</span></a>'
+        )
+    tail = f" {confirmed}" if confirmed else ""
+    return f'<div class="tl-3">{source_html}{tail}</div>'
+
+
+def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
     return (
         f'<li class="event"><a href="/events/{event["id"]}">'
-        f'{_when_line(event)}'
-        f'<div class="name{cancelled}">{E(event.get("name") or "")}{thin}</div>'
-        f'<div class="meta"><span>{_venue_line(event)}</span>'
-        f'<span>{_fee_line(event)}</span>{_status_line(event, now=now)}</div>'
+        f'{_timeline_line1(event, now=now)}'
+        f'{_timeline_line2(event)}'
         "</a>"
-        f"{_source_line(event, now=now)}"
+        f"{_timeline_line3(event, now=now)}"
         "</li>"
     )
 
@@ -775,8 +969,23 @@ def home(
                 con, when=events_api.WHEN_UPCOMING, genres=constraint, region=region,
                 limit=5)
             facets = _facets(con, events_api.WHEN_TODAY)
+            monday, sunday = events_api.week_window(0)
+            week_counts = events_api.week_counts(
+                con, start=monday, end=sunday, genres=constraint, region=region)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
+
+    genre_query = _genre_query(selected, options)
+    # Home has no date-filtered view of its own - a day cell takes the
+    # reader to the full /events page for that day, Section 33's own
+    # "Weekly Calendar -> Timeline" order kept intact by handing off to the
+    # page that actually renders both together for an arbitrary day.
+    calendar = _week_calendar(
+        monday=monday, sunday=sunday, counts=week_counts, selected_date=None,
+        week_offset=0, base_action="/events",
+        query={"when": events_api.WHEN_TODAY, **genre_query,
+               **({"region": region} if region else {})},
+    )
 
     narrowed = _is_narrowed(options, selected) or bool(region)
     if result["events"]:
@@ -802,12 +1011,72 @@ def home(
     body = (
         "<h1>DanceMate</h1>"
         '<p class="sub">오늘 어디서 출까.</p>'
-        + _nav("today", genre_query=_genre_query(selected, options))
+        + _nav("today", genre_query=genre_query)
         + _filter_bar("/", None, facets, options, selected, region)
+        + calendar
         + listing
         + _footer()
     )
     return HTMLResponse(_page("DanceMate", body))
+
+
+# --- weekly calendar (v0.85.0) ----------------------------------------------
+#
+# One 7-day strip: Monday first (Section 41), today marked, past days dimmed
+# but always a real link (Section 35-38), each cell's own number the count
+# of distinct events that day (Section 32/42) - clicking a day filters the
+# timeline below to it (Section 43), never a page reload's worth of new
+# navigation, just a normal link with `date=` set. Counts come from
+# events_api.week_counts() in one query per week (Section 63: no N+1 - the
+# whole reason that function exists rather than seven separate search()
+# calls here).
+
+def _week_calendar(*, monday: "date", sunday: "date", counts: dict[str, int],
+                   selected_date: str | None, week_offset: int,
+                   base_action: str, query: dict[str, str]) -> str:
+    from datetime import timedelta as timedelta_type
+    from urllib.parse import urlencode
+
+    today = events_api.today()
+    cells = []
+    for i in range(7):
+        day = monday + timedelta_type(days=i)
+        iso = day.isoformat()
+        count = counts.get(iso, 0)
+        classes = ["cal-day"]
+        if day == today:
+            classes.append("today")
+        if iso == selected_date:
+            classes.append("selected")
+        if day < today:
+            classes.append("past")
+        params = {**query, "week": str(week_offset), "date": iso}
+        cells.append(
+            f'<a class="{" ".join(classes)}" href="{E(base_action)}?{urlencode(params)}">'
+            f'<span class="cal-wd">{WEEKDAYS[i]}</span>'
+            f'<span class="cal-d">{day.day}</span>'
+            f'<span class="cal-n">{count}</span></a>'
+        )
+
+    def _nav_link(label: str, offset: int, *, clear_date: bool) -> str:
+        params = dict(query)
+        if clear_date:
+            params.pop("date", None)
+        params["week"] = str(offset)
+        return f'<a class="cal-nav" href="{E(base_action)}?{urlencode(params)}">{E(label)}</a>'
+
+    nav = (
+        _nav_link("← 이전 주", week_offset - 1, clear_date=True)
+        + f'<span class="cal-range">{monday.month}/{monday.day} - {sunday.month}/{sunday.day}</span>'
+        + _nav_link("이번 주", 0, clear_date=True)
+        + _nav_link("다음 주 →", week_offset + 1, clear_date=True)
+    )
+    return (
+        '<div class="calendar">'
+        f'<div class="cal-nav-row">{nav}</div>'
+        f'<div class="cal-grid">{"".join(cells)}</div>'
+        "</div>"
+    )
 
 
 @router.get("/events", response_class=HTMLResponse)
@@ -817,38 +1086,55 @@ def events_page(
     genres: list[str] | None = Query(None),
     genres_set: str | None = Query(None),
     region: str | None = None,
+    week: int = Query(0, description="week offset from this week, Section 34"),
+    date: str | None = Query(None, description="a single day, YYYY-MM-DD - overrides `when`"),
 ) -> HTMLResponse:
     asked = _split_genres(genres)
     # ?genre=TANGO still works; it simply means that one is ticked.
     if asked is None and genre:
         asked = _split_genres([genre])
     try:
-        events_api.window(when)
+        if date is None:
+            events_api.window(when)
         with _connection() as con:
             options = _genre_options(con)
             selected = _selected_genres(options, asked, bool(genres_set) or bool(genre))
-            result = events_api.search(
-                con, when=when, genres=_genre_constraint(options, selected),
-                region=region, limit=100)
-            facets = _facets(con, when)
+            constraint = _genre_constraint(options, selected)
+            if date is not None:
+                result = events_api.search(
+                    con, on=date, genres=constraint, region=region, limit=100)
+            else:
+                result = events_api.search(
+                    con, when=when, genres=constraint, region=region, limit=100)
+            facets = _facets(con, when) if date is None else _facets_for_date(con, date)
+            monday, sunday = events_api.week_window(week)
+            week_counts = events_api.week_counts(
+                con, start=monday, end=sunday, genres=constraint, region=region)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except db.DatabaseUnavailable:
         return _unavailable_page(when)
 
-    actions = _next_actions(when=when, region=region,
-                            genre_query=_genre_query(selected, options))
+    genre_query = _genre_query(selected, options)
+    calendar = _week_calendar(
+        monday=monday, sunday=sunday, counts=week_counts, selected_date=date,
+        week_offset=week, base_action="/events",
+        query={**({"when": when} if date is None else {}), **genre_query,
+               **({"region": region} if region else {})},
+    )
+
+    actions = _next_actions(when=when, region=region, genre_query=genre_query)
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
             _event_item(e) for e in result["events"]
         ) + "</ul>"
     elif _is_narrowed(options, selected) or region:
-        listing = f'<p class="empty">{EMPTY_FILTERED}</p>' + actions
+        listing = f'<p class="empty">{EMPTY_FILTERED}</p>' + (actions if date is None else "")
     else:
-        listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>' + actions
+        listing = '<p class="empty">해당 기간에 확인된 행사가 없습니다.</p>' + (actions if date is None else "")
 
     _count(alpha_metrics.EVENT_LIST_VIEW)
-    label = dict(TABS).get(when, when)
+    label = _human_date(date) if date is not None else dict(TABS).get(when, when)
     chosen_labels = [o["label"] for o in options if o["code"] in set(selected)]
     narrowed = " · ".join(
         x for x in (", ".join(chosen_labels) if _is_narrowed(options, selected) else "",
@@ -858,15 +1144,37 @@ def events_page(
         f'<p class="sub">{result["total"]}건'
         + (f" · {E(narrowed)}" if narrowed else "")
         + " · Asia/Seoul 기준</p>"
-        + _nav(when, region=region, genre_query=_genre_query(selected, options))
-        + _filter_bar("/events", when, facets, options, selected, region)
+        + (_nav(when, region=region, genre_query=genre_query) if date is None else
+           f'<p class="sub"><a href="/events?when={E(when)}&week={week}'
+           f'{"&region=" + quote(region) if region else ""}">&larr; 목록으로</a></p>')
+        + calendar
+        + _filter_bar("/events", when if date is None else None, facets, options, selected, region)
         + listing + _footer()
     )
     return HTMLResponse(_page(f"{label} - DanceMate", body))
 
 
+def _feedback_block(event_id: int, *, sent: str | None = None) -> str:
+    """정보가 정확해요 / 달라요 / 부족해요 - Section 54-56. Three plain GET-
+    submittable forms (no JavaScript required, same reasoning as the genre
+    filter's own auto-submit script: it is progressive enhancement, not a
+    requirement), each posting straight to the one thing this ever does -
+    record a row - and never touching the event itself (Section 56)."""
+    if sent:
+        label = feedback.LABELS.get(sent.upper())
+        if label:
+            return f'<p class="banner">의견을 남겨주셔서 감사합니다 - "{E(label)}"</p>'
+    buttons = "".join(
+        f'<form method="post" action="/events/{event_id}/feedback" class="fb-form">'
+        f'<input type="hidden" name="kind" value="{E(kind)}">'
+        f'<button class="fb-btn">{E(label)}</button></form>'
+        for kind, label in feedback.LABELS.items()
+    )
+    return f'<div class="feedback"><span class="key">이 정보, 어떤가요?</span>{buttons}</div>'
+
+
 @router.get("/events/{event_id}", response_class=HTMLResponse)
-def event_page(event_id: int) -> HTMLResponse:
+def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLResponse:
     try:
         with _connection() as con:
             event = events_api.get_event(con, event_id)
@@ -883,6 +1191,10 @@ def event_page(event_id: int) -> HTMLResponse:
         ("주소", E(venue.get("address")) if venue.get("address")
                  else '<span class="unknown">주소 미확인</span>'),
         ("요금", _fee_line(event)),
+    ]
+    if event.get("dj"):
+        rows.append(("DJ", E(event["dj"])))
+    rows += [
         ("종류", E(event.get("event_type_label") or "")
                  or '<span class="unknown">-</span>'),
         ("장르", E(event.get("genre_label") or "")
@@ -919,6 +1231,7 @@ def event_page(event_id: int) -> HTMLResponse:
         + f"<h1>{E(event.get('name') or '')}</h1>"
         f"<dl>{details}</dl>"
         + origin
+        + _feedback_block(event_id, sent=feedback)
         + _footer()
     )
     return HTMLResponse(_page(f"{event.get('name')} - DanceMate", body))
@@ -943,6 +1256,24 @@ def event_source(event_id: int, to: str) -> RedirectResponse:
         raise HTTPException(status_code=400, detail="not a source of this event")
     _count(alpha_metrics.SOURCE_LINK_CLICK, event_id)
     return RedirectResponse(to, status_code=303)
+
+
+@router.post("/events/{event_id}/feedback")
+def submit_feedback(event_id: int, kind: str = Form(...)) -> RedirectResponse:
+    """Record one feedback row and bounce straight back to the event page
+    (Section 56: never mutates the event - the redirect target is the same
+    detail page, now carrying ?feedback= so it can thank the reader)."""
+    try:
+        with _connection() as con:
+            if events_api.get_event(con, event_id) is None:
+                raise HTTPException(status_code=404, detail="no such event")
+            feedback.record(con, event_id=event_id, kind=kind)
+    except db.DatabaseUnavailable:
+        raise HTTPException(status_code=503, detail=UNAVAILABLE) from None
+    except feedback.UnknownKind:
+        raise HTTPException(status_code=400, detail="unknown feedback kind") from None
+    return RedirectResponse(
+        f"/events/{event_id}?feedback={quote(kind)}", status_code=303)
 
 
 def _footer() -> str:

@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import venue_resolution
+from . import source_priority, venue_resolution
 
 SEOUL = ZoneInfo("Asia/Seoul")
 
@@ -76,6 +76,83 @@ def window(when: str | None, *, now: datetime | None = None) -> tuple[date, date
     raise SearchError(
         f"unknown when={when!r}; expected one of {', '.join(WHEN_VALUES)}"
     )
+
+
+def week_window(offset: int = 0, *, now: datetime | None = None) -> tuple[date, date]:
+    """Monday through Sunday for the week ``offset`` weeks from this one.
+
+    ``offset=0`` is this week (today's own Monday-Sunday, even when today is
+    itself a Sunday - a week already three-quarters gone is still this week,
+    not last week, the same "still ahead of you" reasoning ``window()``
+    already applies to ``this_week``). Monday-start per Section 41: this
+    product's own dates are Asia/Seoul and its own readers are; ISO's own
+    Monday-start week is the one that matches how a Korean calendar app
+    already lays a week out, and there is no existing Sunday-start
+    convention anywhere else in this codebase to stay consistent with.
+    """
+    start = today(now)
+    monday = start - timedelta(days=start.weekday()) + timedelta(weeks=offset)
+    return monday, monday + timedelta(days=6)
+
+
+def week_counts(con, *, start: date, end: date, genre: str | None = None,
+                genres: "Sequence[str] | None" = None,
+                region: str | None = None) -> dict[str, int]:
+    """One distinct-event count per day in ``[start, end]``, zero-filled.
+
+    Never floors at today (Section 35-37): a week's Monday may already be
+    behind us, and a past day's count is exactly as real as tomorrow's -
+    the whole reason the weekly calendar keeps history instead of only
+    showing what is upcoming. "Distinct" costs nothing extra here: every row
+    ``_VISIBLE`` returns is already the one canonical, listed row for its
+    event (Section 47) - a duplicate merged into it was hidden, not counted,
+    by ``duplicates.record_decision()`` long before this query runs.
+    """
+    where = [_VISIBLE, "e.engine_status <> %s", "e.event_date BETWEEN %s AND %s"]
+    params: list[Any] = [CANCELLED, start, end]
+    if genre:
+        where.append("g.code = %s")
+        params.append(genre.strip().upper())
+    if genres is not None:
+        codes = [g.strip().upper() for g in genres if g and g.strip()]
+        if codes:
+            where.append("g.code = ANY(%s)")
+            params.append(codes)
+        else:
+            where.append("false")
+    if region:
+        region_value = region.strip()
+        guess_terms = venue_resolution.terms_for_label(region_value)
+        if guess_terms:
+            placeholders = " OR ".join(["e.venue_text ILIKE %s"] * len(guess_terms))
+            where.append(
+                f"(r.code = %s OR r.name ILIKE %s "
+                f"OR (e.region_id IS NULL AND ({placeholders})))"
+            )
+            params.extend([region_value.upper(), region_value])
+            params.extend(f"%{term}%" for term in guess_terms)
+        else:
+            where.append("(r.code = %s OR r.name ILIKE %s)")
+            params.extend([region_value.upper(), region_value])
+    clause = " AND ".join(where)
+
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT e.event_date, count(*) FROM events e "
+            "LEFT JOIN genres g ON g.genre_id = e.genre_id "
+            "LEFT JOIN regions r ON r.region_id = e.region_id "
+            f"WHERE {clause} GROUP BY 1",
+            tuple(params),
+        )
+        found = {row[0].isoformat(): row[1] for row in cur.fetchall()}
+
+    counts: dict[str, int] = {}
+    day = start
+    while day <= end:
+        key = day.isoformat()
+        counts[key] = found.get(key, 0)
+        day += timedelta(days=1)
+    return counts
 
 
 def _as_date(value: Any, field: str) -> date | None:
@@ -158,6 +235,7 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         },
         "fee": row.get("fee"),
         "currency": "KRW" if row.get("fee") is not None else None,
+        "dj": row.get("dj"),
         "event_type": row.get("event_type"),
         "event_type_label": EVENT_TYPE_LABELS.get(
             (row.get("event_type") or "").upper()),
@@ -192,6 +270,12 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
             "url": valid_public_url(row.get("source_url")),
             "label": source_label(row.get("source_platform"), row.get("source_name")),
         },
+        # v0.85.0: which tier this event's own source falls into (Section 5/8)
+        # - a display/ranking signal derived from sources.source_role, never
+        # a claim about verification. See runtime.source_priority's own
+        # docstring for the exact role->tier mapping.
+        "source_tier": source_priority.tier_of(row.get("source_source_role")),
+        "source_tier_label": source_priority.label_of(row.get("source_source_role")),
     }
 
 
@@ -206,7 +290,8 @@ _SELECT = (
     # The event's own source, for a reader who wants to check the original
     # post — not "every post that ever mentioned this event" (get_event's
     # duplicates.sources_of does that on the detail page), just this row's.
-    "       src.name AS source_name, src.platform AS source_platform "
+    "       src.name AS source_name, src.platform AS source_platform, "
+    "       src.source_role AS source_source_role "
     "FROM events e "
     "LEFT JOIN venues v ON v.venue_id = e.venue_id "
     "LEFT JOIN genres g ON g.genre_id = e.genre_id "
@@ -377,8 +462,18 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
         cur.execute(
             _SELECT + "WHERE " + clause +
             # Soonest first; an event with no time last within its day, because
-            # a time we do not have should not outrank one we do.
-            " ORDER BY e.event_date, e.start_time NULLS LAST, e.event_id "
+            # a time we do not have should not outrank one we do. Source
+            # directness (Section 9: "보조 ranking", a tiebreak, never a
+            # reason to reorder across dates or times) settles same-date-
+            # same-time ties only - this CASE mirrors source_priority.rank()
+            # exactly (see that module's own role sets); a test asserts the
+            # two never drift apart.
+            " ORDER BY e.event_date, e.start_time NULLS LAST, "
+            "CASE src.source_role "
+            "  WHEN 'ORGANIZER' THEN 0 WHEN 'VENUE' THEN 0 WHEN 'COMMUNITY' THEN 0 "
+            "  WHEN 'PROMOTION_BOARD' THEN 1 "
+            "  ELSE 2 END, "
+            "e.event_id "
             "LIMIT %s OFFSET %s",
             tuple(params) + (limit, offset),
         )

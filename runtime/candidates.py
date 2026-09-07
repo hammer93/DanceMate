@@ -74,6 +74,7 @@ def list_candidates(settings: Settings, *, limit: int = 200) -> list[dict[str, A
                    c.event_type,
                    c.status      AS candidate_status,
                    c.fee,
+                   c.dj,
                    p.post_id,
                    p.source_id,
                    p.source_url,
