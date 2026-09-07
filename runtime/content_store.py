@@ -267,9 +267,6 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     got wrong, and nothing about the stored article says so. Re-extraction is
     then an explicit operator decision, not something a scheduler infers.
     """
-    freshness = "" if force else (
-        " AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at)"
-    )
     # Normally only items whose article body we actually fetched are worth
     # re-reading: nothing else has changed. A forced pass is the other case --
     # the extractor changed, so every post we hold reads differently now,
@@ -282,12 +279,25 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     # image-OCR fallback `engine_ingest._gather_image_texts()` already
     # gates on field-missing + poster-present. A blocked item with no
     # poster stays excluded - there is nothing new to give the engine.
-    where = "true" if force else (
-        "((c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL) "
-        "OR (c.acquisition_status = %(blocked)s "
-        "    AND c.poster_candidates IS NOT NULL "
-        "    AND jsonb_array_length(c.poster_candidates) > 0))"
-    )
+    #
+    # A FETCH_BLOCKED outcome never sets `fetched_at` (it means "we got a
+    # body", which a blocked fetch by definition did not) - gating this
+    # branch on `fetched_at` the same way as FETCHED_FULL/PARTIAL would
+    # make it permanently ineligible the moment `reprocessed_at` is ever
+    # set at all (every item that has been through ordinary ingest once).
+    # `record_outcome()` bumps `updated_at` on every fetch regardless of
+    # outcome, so that is this branch's own freshness signal instead.
+    if force:
+        where = "true"
+    else:
+        where = (
+            "((c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL "
+            "  AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at)) "
+            "OR (c.acquisition_status = %(blocked)s "
+            "    AND c.poster_candidates IS NOT NULL "
+            "    AND jsonb_array_length(c.poster_candidates) > 0 "
+            "    AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.updated_at)))"
+        )
     params: dict[str, Any] = {} if force else {
         "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
         "blocked": acquisition.FETCH_BLOCKED,
@@ -299,7 +309,7 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
-            "WHERE " + where + freshness +
+            "WHERE " + where +
             " ORDER BY c.fetched_at NULLS LAST, c.source_item_id LIMIT %(limit)s",
             {**params, "limit": limit},
         )

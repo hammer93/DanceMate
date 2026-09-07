@@ -90,14 +90,21 @@ def test_a_reprocessed_blocked_item_is_not_selected_again(pg, unique):
     assert item_id not in selected
 
 
-def test_a_repeated_blocked_fetch_does_not_re_enter_the_queue(pg, unique):
+def test_a_re_fetched_blocked_item_is_eligible_again_after_reprocessing(pg, unique):
     """A FETCH_BLOCKED outcome never sets `fetched_at` (it means "we got a
-    body", which a blocked fetch by definition did not) - so a second,
-    still-blocked fetch of an already-reprocessed item carries no new
-    information and correctly does not re-enter the queue. This differs
-    from FETCHED_FULL/PARTIAL, where `fetched_at` advances on every
-    successful fetch and a changed body is exactly what re-triggers reprocess;
-    a page that never gained a body has nothing new to reprocess."""
+    body", which a blocked fetch by definition did not), so gating this
+    branch on `fetched_at` the way FETCHED_FULL/PARTIAL is gated would make
+    it permanently ineligible the moment `reprocessed_at` is set at all -
+    found running this exact scenario against real K-TANGO production rows,
+    every one of which already had a `reprocessed_at` from its original
+    ingest. `record_outcome()` bumps `updated_at` on every fetch regardless
+    of outcome, so a genuine re-fetch (the scheduler's own backoff-scheduled
+    retry, not a spurious call) re-enters the queue exactly like
+    FETCHED_FULL/PARTIAL already does on every successful fetch - even one
+    that finds no new content. Re-running OCR on an unchanged poster is
+    idempotent and cheap (the existing content-hash cache in
+    runtime.image_fallback skips the actual Tesseract call), so this
+    symmetry costs nothing but a little redundant engine-side reading."""
     item_id = _source_item(pg, unique)
     content_store.record_outcome(pg, item_id, _blocked_outcome(
         ["https://cdn.example.test/poster.jpg"]
@@ -107,7 +114,7 @@ def test_a_repeated_blocked_fetch_does_not_re_enter_the_queue(pg, unique):
         ["https://cdn.example.test/poster.jpg"]
     ))
     selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
-    assert item_id not in selected
+    assert item_id in selected
 
 
 def test_poster_candidates_are_stored_as_the_images_list(pg, unique):
