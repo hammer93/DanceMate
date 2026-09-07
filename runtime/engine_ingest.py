@@ -134,7 +134,16 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         source_id=raw.get("source_id") or item.get("source_key"),
         platform=raw.get("platform") or item.get("platform"),
         source_url=raw.get("source_url") or item.get("url") or "",
-        title=raw.get("title") or item.get("title") or "",
+        # item.get("title"): ingest_pending()'s `item` (intake.pending_items())
+        # carries the discovery-time title directly under this key.
+        # reprocess_acquired()'s `item` (content_store.needing_reprocess())
+        # is a source_item_content row first - its own "title" column is the
+        # page's own parsed title when acquisition found one, NULL for
+        # anything never fetched (a FETCH_BLOCKED row, most obviously) -
+        # source_item_title is that same call's explicit alias for the
+        # discovery-time title, so a blocked or title-less fetch still gets
+        # a real title instead of silently classifying an empty string.
+        title=raw.get("title") or item.get("title") or item.get("source_item_title") or "",
         body=body,
         # The stored raw JSON is the collector's own record; the column is the
         # runtime's. Either will do, and one of them is always there.

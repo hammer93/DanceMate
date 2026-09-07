@@ -231,11 +231,12 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
         # The body the site originally served: a real, complete announcement.
         # An explicit year avoids needing a `published_at` on the fixture
         # row - the same v0.80.2 rule that would otherwise leave the date
-        # unresolved.
+        # unresolved. "밀롱가" makes this classify as an event from the body
+        # alone, same as any real announcement naming its own kind of night.
         content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
             status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
             fetched_url=url,
-            text="2026.09.05 19:30-23:30 장소: PISTA 입장료 13,000원",
+            text="밀롱가 2026.09.05 19:30-23:30 장소: PISTA 입장료 13,000원",
         ))
         pg.commit()
         result = engine_ingest.ingest_pending(settings)
@@ -331,9 +332,13 @@ def test_reprocessing_a_blocked_item_with_a_readable_poster_now_recovers_via_ima
         pg.commit()
         monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
             url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+        # An explicit year - a yearless "8/1" would need `published_at` set
+        # on the fixture row for the v0.80.2 inference rule to resolve it,
+        # and a genuinely blocked item never gets one; this poster, like a
+        # real one, states its own year outright.
         monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
             status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
-            text="밀롱가 8/1(토) 19:00-23:00 장소: 연세대학교 대강당 입장료 13,000원"))
+            text="밀롱가 2026.08.01 19:00-23:00 장소: 연세대학교 대강당 입장료 13,000원"))
 
         selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
         assert item_id in selected
@@ -355,6 +360,14 @@ def test_reprocessing_a_blocked_item_with_a_readable_poster_now_recovers_via_ima
         assert after[0]["status"] == "POSSIBLE", (
             "an event whose classification and every field came from "
             "image OCR alone must never reach VERIFIED"
+        )
+        assert after[0]["name"] == title, (
+            "reprocess_acquired()'s own item shape has no title of its own "
+            "(source_item_content.title is only ever set by a page-title "
+            "parse, never by a blocked fetch) - needing_reprocess() must "
+            "still hand back the item's real, discovery-time title rather "
+            "than silently classifying and naming the event from an empty "
+            "string"
         )
     finally:
         with pg.cursor() as cur:
