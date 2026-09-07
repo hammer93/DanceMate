@@ -21,7 +21,11 @@ PRODUCT_VERSION = "0.82"
 # v0.84.1 bumped it again for extract_fee(): Korean 만원 notation, free
 # admission, and a package/session-tier exclusion guard - see
 # extraction_rules.py.
-DEFAULT_ENGINE_VERSION = "0.81"
+# v0.84.3 bumped it again: extract_with_image_fallback() gained venue as a
+# fourth fallback field alongside date/time/fee, and extract_fee()'s
+# _NOT_A_FEE narrowed "주차" so "무료주차" no longer disqualifies a real,
+# nearby, clearly-labelled fee.
+DEFAULT_ENGINE_VERSION = "0.82"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

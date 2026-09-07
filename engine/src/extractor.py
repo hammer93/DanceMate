@@ -402,7 +402,14 @@ IMAGE_OCR = "IMAGE_OCR"
 # "time" stands for the start_time/end_time pair, which extract_single()
 # already reads and records as one Evidence row - splitting it into two
 # fallback fields would just produce two evidence rows for the same reading.
-_FALLBACK_FIELDS = ("date", "time", "fee")
+#
+# v0.84.3: "venue" joins the same fallback set, at the same priority as any
+# of the others - a poster is exactly as likely to be the only place a venue
+# is named as it is for a date, time or fee. Nothing about resolving that
+# string against the Venue Master changes: extract_venue()'s own comment
+# above ("resolving this string ... is a separate, human-supervised step")
+# applies identically whether the string came from body text or an image.
+_FALLBACK_FIELDS = ("date", "time", "venue", "fee")
 
 
 def _field_value(ev, key: str):
@@ -410,13 +417,37 @@ def _field_value(ev, key: str):
         return ev.date
     if key == "time":
         return ev.start_time
+    if key == "venue":
+        return ev.venue
     return ev.fee
 
 
 def needs_image_fallback(ev) -> bool:
-    """The section-5 gate: only a body missing date, start_time or fee is
-    worth the cost of fetching and OCR-ing an image at all."""
-    return ev.date is None or ev.start_time is None or ev.fee is None
+    """The section-5 gate: only a body missing date, start_time, venue or fee
+    is worth the cost of fetching and OCR-ing an image at all."""
+    return ev.date is None or ev.start_time is None or ev.venue is None or ev.fee is None
+
+
+def _image_venue(sub):
+    """v0.84.3: a poster's own venue only counts as fallback evidence when
+    extract_venue() actually labelled it ("장소: ...") - never the bare
+    known-studio-name shortcut (PISTA/OCHO/오나다).
+
+    Found on a real K-TANGO poster: a multi-venue schedule table (~15
+    studios across two days) happened to name "오나다" as one of many
+    unrelated rows, and the bare-substring fallback picked it out as *the*
+    event's venue - paired with a time read off an entirely different row.
+    A short, curated post body rarely mentions an unrelated studio in
+    passing; a dense OCR'd poster does, so the same shortcut that is safe
+    on body text is not safe here. Body-text venue reading is unaffected -
+    this only narrows what an *image* is trusted to contribute.
+    """
+    if sub.venue is None:
+        return None
+    evidence = next((e for e in sub.evidences if e.field == "venue"), None)
+    if evidence is None or not (evidence.inference or "").startswith("LABEL:"):
+        return None
+    return sub.venue
 
 
 def _missing_fallback_fields(ev) -> set[str]:
@@ -454,17 +485,20 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
         sub = extract_single(title, image_text, source_role=source_role,
                              event_type=ev.event_type, published=published)
 
+        def _sub_value(key):
+            return _image_venue(sub) if key == "venue" else _field_value(sub, key)
+
         contributes = {
             key for key in missing
-            if _field_value(sub, key) is not None
+            if _sub_value(key) is not None
         }
         conflicts = [
-            (key, _field_value(ev, key), _field_value(sub, key))
+            (key, _field_value(ev, key), _sub_value(key))
             for key in _FALLBACK_FIELDS
             if key not in missing
             and _field_value(ev, key) is not None
-            and _field_value(sub, key) is not None
-            and _field_value(ev, key) != _field_value(sub, key)
+            and _sub_value(key) is not None
+            and _field_value(ev, key) != _sub_value(key)
         ]
 
         if not contributes and not conflicts:
@@ -489,6 +523,14 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
                     {"start": sub.start_time, "end": sub.end_time,
                      "end_day_offset": sub.end_day_offset},
                     time_evidence.raw_text if time_evidence else str(sub.start_time),
+                    evidence_type=IMAGE_OCR, source_role=source_role, inference=image_ref,
+                ))
+            elif key == "venue":
+                ev.venue = sub.venue
+                venue_evidence = next((e for e in sub.evidences if e.field == "venue"), None)
+                ev.evidences.append(Evidence(
+                    "venue", venue_evidence.value if venue_evidence else sub.venue,
+                    venue_evidence.raw_text if venue_evidence else sub.venue,
                     evidence_type=IMAGE_OCR, source_role=source_role, inference=image_ref,
                 ))
             elif key == "fee":

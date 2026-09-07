@@ -174,7 +174,7 @@ def test_a_template_board_post_is_read_from_its_readEdit_div():
 # readBottom prev/next footer, a page footer) to exercise every exclusion.
 TEMPLATE_BOARD_IMAGE_ONLY_URL = "http://www.k-tango.net/cnf/festival02/read.jsp?reqPageNo=1&no=13"
 TEMPLATE_BOARD_IMAGE_ONLY_PAGE = """<html><head><title>K-TANGO</title></head><body>
-<header><nav class="gnb">K-TANGO 소개 조직 및 운영위원 소개 초청 아티스트 소개 후원사 소개 CONTACT PROGRAM GALLERY NOTICE 로그인 회원가입</nav></header>
+<header><img src="/img/logo.png"/><nav class="gnb">K-TANGO 소개 조직 및 운영위원 소개 초청 아티스트 소개 후원사 소개 CONTACT PROGRAM GALLERY NOTICE 로그인 회원가입</nav></header>
 <div class="pro_m_wrap"><div class="m_menu"><ul class="subleftmenu">
 <li>관리자모드</li><li>온라인상담</li><li>전화상담</li><li>온라인예약</li><li>예약확인</li>
 <li>공지사항</li><li>갤러리</li><li>FAQ</li><li>회원가입</li><li>회원약관</li>
@@ -193,7 +193,7 @@ TEMPLATE_BOARD_IMAGE_ONLY_PAGE = """<html><head><title>K-TANGO</title></head><bo
 <tr><th>다음글</th><td><a href="read.jsp?reqPageNo=1&no=12">2025 K-TANGO CF</a></td></tr>
 </table></div>
 </div></div>
-<footer>K-TANGO CF 조직위원회 (주)KSACN TEL. 02-571-0108</footer>
+<footer><img src="/img/footer_logo01.png"/><img src="/img/footer_logo02.png"/>K-TANGO CF 조직위원회 (주)KSACN TEL. 02-571-0108</footer>
 </body></html>"""
 
 
@@ -242,6 +242,111 @@ def test_an_image_only_post_is_fetch_blocked_not_full_or_partial():
     assert outcome.status not in (acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL)
     assert outcome.status == acquisition.FETCH_BLOCKED
     assert "관리자모드" not in (outcome.text or "")
+
+
+# --- v0.84.3: the poster itself is captured even when the body is empty ----
+#
+# Reproduces the real production gap: 4 of K-TANGO's 6 FETCH_BLOCKED rows
+# have a genuine attached poster (confirmed via a live, read-only fetch),
+# but `fetch()` never carried an image list forward for a blocked outcome,
+# so image OCR fallback could never even be attempted for them.
+
+def test_a_poster_is_detected_inside_an_image_only_post():
+    images = acquisition.extract_content_images(
+        TEMPLATE_BOARD_IMAGE_ONLY_PAGE, TEMPLATE_BOARD_IMAGE_ONLY_URL
+    )
+    assert images == ["http://www.k-tango.net/upload/editor/1743398786601_79.png"]
+
+
+def test_the_header_logo_is_excluded_from_poster_candidates():
+    images = acquisition.extract_content_images(
+        TEMPLATE_BOARD_IMAGE_ONLY_PAGE, TEMPLATE_BOARD_IMAGE_ONLY_URL
+    )
+    assert not any("logo" in url for url in images)
+
+
+def test_the_footer_logos_are_excluded_from_poster_candidates():
+    images = acquisition.extract_content_images(
+        TEMPLATE_BOARD_IMAGE_ONLY_PAGE, TEMPLATE_BOARD_IMAGE_ONLY_URL
+    )
+    assert not any("footer_logo" in url for url in images)
+
+
+# A post whose readEdit region carries no <img> at all - a genuinely empty
+# announcement (K-TANGO's real source_item 644: `<p><br/></p>`, nothing
+# else). No poster exists here; OCR must never be attempted for it.
+LOGO_ONLY_PAGE = """<html><head><title>K-TANGO</title></head><body>
+<header><img src="/img/logo.png"/><nav class="gnb">PROGRAM GALLERY NOTICE 로그인</nav></header>
+<div class="programCon"><div class="programRead">
+<div class="readTop"><p class="imgTitle">공지</p></div>
+<div class="readEdit"><p><br/></p></div>
+<div class="readBottom"><table></table></div>
+</div></div>
+<footer><img src="/img/footer_logo01.png"/>K-TANGO CF 조직위원회</footer>
+</body></html>"""
+LOGO_ONLY_URL = "http://www.k-tango.net/cnf/festival02/read.jsp?reqPageNo=1&no=12"
+
+
+def test_a_post_with_no_attached_image_has_no_poster_candidates():
+    """Section 1's absolute rule: an image-less post must never be forced
+    into OCR - the site's own logo, outside the content boundary, must not
+    be mistaken for one."""
+    images = acquisition.extract_content_images(LOGO_ONLY_PAGE, LOGO_ONLY_URL)
+    assert images == []
+
+
+def test_a_blocked_fetch_still_carries_its_poster_candidate():
+    """The exact v0.84.3 bug: FETCH_BLOCKED used to discard `images` outright.
+    An image-only post's real poster must survive into the outcome even
+    though there is no body text at all."""
+    opener = _opener({
+        TEMPLATE_BOARD_IMAGE_ONLY_URL: _Response(
+            TEMPLATE_BOARD_IMAGE_ONLY_PAGE, url=TEMPLATE_BOARD_IMAGE_ONLY_URL
+        )
+    })
+    outcome = acquisition.fetch(TEMPLATE_BOARD_IMAGE_ONLY_URL, opener=opener)
+    assert outcome.status == acquisition.FETCH_BLOCKED
+    assert outcome.images == [
+        "http://www.k-tango.net/upload/editor/1743398786601_79.png"
+    ]
+
+
+def test_a_blocked_fetch_with_no_image_carries_no_poster_candidate():
+    opener = _opener({LOGO_ONLY_URL: _Response(LOGO_ONLY_PAGE, url=LOGO_ONLY_URL)})
+    outcome = acquisition.fetch(LOGO_ONLY_URL, opener=opener)
+    assert outcome.status == acquisition.FETCH_BLOCKED
+    assert outcome.images == []
+
+
+def test_a_full_text_post_still_captures_its_content_image_unchanged():
+    """Non-regression: the 4 already-correct K-TANGO text rows (real body,
+    real poster) must keep exactly the same image list as before."""
+    outcome_images = acquisition.extract_content_images(
+        TEMPLATE_BOARD_PAGE, TEMPLATE_BOARD_URL
+    )
+    assert outcome_images == []  # this fixture's own readEdit has no <img>
+
+
+def test_the_top_nav_bar_carries_no_images_here_but_would_be_excluded_too():
+    """The top `.gnb` nav in this fixture has no <img> of its own (the site's
+    real markup keeps its logo in <header>, tested above) - this asserts the
+    boundary itself: nothing between <body> and .readEdit ever contributes."""
+    images = acquisition.extract_content_images(
+        TEMPLATE_BOARD_IMAGE_ONLY_PAGE, TEMPLATE_BOARD_IMAGE_ONLY_URL
+    )
+    board_start = TEMPLATE_BOARD_IMAGE_ONLY_PAGE.find("readEdit")
+    nav_region = TEMPLATE_BOARD_IMAGE_ONLY_PAGE[:board_start]
+    assert "<img" in nav_region  # the header logo really is before the boundary
+    assert len(images) == 1  # yet only the poster survives
+
+
+def test_content_image_scoping_falls_back_to_whole_page_for_other_hosts():
+    """Daum/DanceInfo have no raw-HTML content boundary today - scoping must
+    fall back to the existing whole-page behaviour, unchanged."""
+    images = acquisition.extract_content_images(
+        MOBILE_PAGE, "https://m.cafe.daum.net/x/y/1"
+    )
+    assert images == acquisition.extract_images(MOBILE_PAGE, "https://m.cafe.daum.net/x/y/1")
 
 
 # A page with none of the known markers at all - no readEdit, no article

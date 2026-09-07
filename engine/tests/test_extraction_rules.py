@@ -314,6 +314,32 @@ def test_free_something_else_is_never_read_as_a_free_event(text):
     assert rules.extract_fee(text, "MILONGA") is None
 
 
+@pytest.mark.parametrize("text", [
+    "무료주차 가능 입장료 13,000원",
+    "입장료 13,000원 무료주차 가능",
+    "무료 주차 가능 입장료 13,000원",
+])
+def test_a_nearby_free_parking_mention_does_not_suppress_the_real_fee(text):
+    """v0.84.3 (found via a real K-TANGO-shaped poster): '주차' correctly
+    disqualifies a parking fee ('주차장 최대 7,000원'), but '무료주차' is a
+    bare fact with no amount of its own - it must not also blank out a
+    genuine, clearly-labelled entry fee that just happens to sit nearby."""
+    reading = rules.extract_fee(text, "MILONGA")
+    assert reading is not None
+    assert reading.amount == 13000
+
+
+@pytest.mark.parametrize("text", [
+    "주차장 추천(1일 최대 7,000원)",
+    "주차비 3,000원",
+])
+def test_a_genuine_parking_fee_is_still_excluded(text):
+    """Non-regression: the fix above narrows the exclusion to '무료주차'
+    specifically - an actual parking price must still never be read as the
+    event's own admission fee."""
+    assert rules.extract_fee(text, "MILONGA") is None
+
+
 def test_a_real_multi_tier_package_price_is_left_unpriced():
     """Real live post (a recurring guided practica): three genuine prices for
     three different commitments. Picking any one of them - even the
