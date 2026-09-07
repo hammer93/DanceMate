@@ -1,5 +1,137 @@
 # DanceMate Release Notes
 
+## v0.85.0 Private Alpha Pilot: Compact Timeline + Weekly Calendar + Source Priority
+
+Status: Private Alpha pilot release, real live production data verified,
+2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.0
+- Information Engine: 0.83 (unchanged - no `engine/` file touched this
+  release, confirmed via an empty `git diff main feature/... -- engine/`)
+
+### Goal
+
+A dancer opening the app should be able to see, within a few seconds, where
+to dance today or this week. The event list moves from a large card per
+event to a compact, 2-3 line, Twitter/X-timeline-style row, paired with a
+Monday-start weekly calendar for at-a-glance day-by-day browsing.
+
+### Compact Timeline
+
+Every row is exactly two lines by default, a third line only when there is
+a source link and/or a confirmation time to show:
+
+1. `[지역] 날짜 시간 종류` - region always first, "오늘"/"내일"/`9/12(토)`
+   date labels, "시간 미확인" when the time is not known (never blank), the
+   event type translated to Korean.
+2. `행사명 (DJ) 입장료: ..` - event name is the visual anchor; DJ appears in
+   parens only when the Information Engine actually extracted one; fee is
+   "무료" / "20,000원" / "미확인".
+3. `출처: 이름 ↗ (확인시간)` - the source name IS the link to the original
+   post (or the aggregator's own page when no direct original is known);
+   confirmation time is derived from the real `source_items.collected_at`
+   evidence timestamp, never a page-render time.
+
+A past date's events keep rendering with a "종료" badge rather than
+disappearing - history is never hidden by deleting it, only by the existing
+upcoming-list filter not showing past dates by default.
+
+### Weekly Calendar
+
+A 7-day, Monday-start week strip above the timeline. Each day cell shows
+weekday + day number + a real event count for that day (respecting the
+current region/genre filter, and counting a duplicate-merged event once,
+via the pre-existing `canonical_event_id IS NULL` visibility gate - no new
+de-dup logic needed). Past days stay clickable and show their own real,
+preserved historical events; today is marked; prev/next week navigation
+never removes a day from view. Backed by one new `events_api.week_counts()`
+query (a single grouped query, not seven per-day queries).
+
+### DJ field
+
+The Information Engine has always extracted a DJ name
+(`extractor.DJ_RE`/`EventCandidate.dj`), but nothing downstream ever read
+it: `runtime.candidates.list_candidates()`'s own SELECT never named the
+column, so it was silently dropped before `normalize_candidate()` ever saw
+it. Closed end-to-end this release (migration 026 adds `events.dj`,
+`candidates.py`'s SELECT and `normalization.py`'s values dict both now
+carry it through) - not a new extraction feature, a pipe that was already
+there and is now connected.
+
+### Source Priority (display/ranking only - not a new verification path)
+
+`runtime/source_priority.py` derives a three-tier display ranking
+(PRIMARY / PROMOTION_BOARD / DIRECTORY) from the existing
+`sources.source_role` column - no new schema. PRIMARY = ORGANIZER, VENUE,
+COMMUNITY roles (a community's or organizer's or studio's own posting);
+PROMOTION_BOARD = the PROMOTION_BOARD role; DIRECTORY = DIRECTORY and
+AGGREGATOR roles (Miltang, TangoNOW, Tango Calendar Korea, DanceInfo -
+re-aggregating services, never excluded, only ranked last).
+
+Used as a **tiebreak only**, never a primary key: in
+`duplicates._canonical_of()` it is consulted after `completeness()`, so a
+sparser-but-more-authoritative post can never suppress a richer aggregator
+post's actual field data; in `events_api.search()`'s `ORDER BY` it is
+consulted after date/time. Source priority never implies `VERIFIED` -
+that stays governed entirely by the pre-existing, unrelated
+`engine.verifier` evidence rules.
+
+A real, deliberate divergence from this spec's own illustrative example:
+the spec's Section 1 suggested classifying K-TANGO (SRC-W-001) as a
+PROMOTION_BOARD-tier example. K-TANGO's real, already-recorded
+`source_role` in production is `ORGANIZER` (`authority_level =
+PRIMARY_ORGANIZER`), and its own `notes` field (set in an earlier release)
+literally reads "Korea Tango Community and Festival organizing committee
+board" - it is the tango festival organizing committee's own board, a
+genuinely direct/primary source. The real database value was trusted over
+the spec's illustrative guess, consistent with this project's standing
+practice of verifying against real data rather than assuming.
+
+### Minimal feedback
+
+An event's detail page carries three buttons - "정보가 정확해요" /
+"정보가 달라요" / "정보가 부족해요" - writing to a new, anonymous,
+`event_id`-keyed `event_feedback` table. Deliberately separate from
+`human_review_actions` (an operator's own audited correction log): this is
+a public signal only, and by construction never mutates an event by
+itself - only the existing, audited Human Review path can change data.
+
+### Live production verification (2026-09-08, read-only)
+
+- 147 upcoming visible events; by source tier: PRIMARY 4, PROMOTION_BOARD
+  1, DIRECTORY 142 (of which AGGREGATOR 23, plain DIRECTORY 119) -
+  **Direct Source Coverage = 5/147 = 3%**. This is the release's key
+  finding: nearly all upcoming coverage today comes from re-aggregating
+  services, not from community/organizer/studio postings directly.
+- A real, tier-crossing representative-source example exists in
+  production: event 13697 ("...밀롱가 La Vida No.800 DJ 로띠", role
+  PROMOTION_BOARD) is already the live canonical/representative event over
+  a DIRECTORY-tier duplicate (50824, "Milonga La Vida") folded into it.
+  That specific merge decision predates this release's tiebreak change
+  (made under the pre-existing completeness-only logic), but the real
+  outcome already matches the new priority ordering, and the new tiebreak
+  additionally makes this the enforced behavior going forward wherever
+  completeness alone would otherwise tie.
+- 8 real timeline rows and a real past-date (2026-09-07, 6 events)
+  rendered correctly via the actual `public._timeline_line1/2/3`
+  functions against real data - see the full acceptance report for exact
+  samples.
+
+### Tests
+
+62 new tests (19 Timeline, 15 Calendar, 7 Source Priority, plus DJ-flow,
+feedback, and `source_priority` unit tests) in
+`tests/test_v085_timeline_calendar.py`; 3 pre-existing
+`tests/test_public_pages.py` tests updated to match the intentional card
+-> timeline redesign (source-link markup, no-link-when-nothing-to-show,
+freshness wording) - each verified to preserve its original intent, not
+weakened. Full Runtime suite on staging: 1397 passed, 15 skipped, 2 failed
+(both pre-existing, unrelated `test_tangocalendar_discovery.py` failures
+present on every prior release's baseline in this session). Engine suite
+not re-run - no `engine/` file changed.
+
 ## v0.84.4 Image-aware Event Classification + OCR Evidence Promotion
 
 Status: root-cause fix, generic (non-source-specific) design, real live

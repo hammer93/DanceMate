@@ -82,6 +82,8 @@ def test_event_names_are_escaped():
 
 
 def test_the_representative_source_link_is_rendered():
+    """v0.85.0: the compact timeline's own third line - '출처: <label> ↗',
+    the label itself carrying the link (Section 22-24)."""
     rendered = public._event_item({
         "id": 1, "name": "더 피스타 밀롱가", "date": "2026-09-05",
         "start_time": "19:30", "end_time": "23:30", "ends_next_day": False,
@@ -89,24 +91,31 @@ def test_the_representative_source_link_is_rendered():
         "source_link": {"url": "https://cafe.daum.net/latindance/5HTC/22276",
                         "label": "Daum Cafe"},
     })
-    assert "출처: Daum Cafe" in rendered
+    assert "출처:" in rendered
     assert 'href="https://cafe.daum.net/latindance/5HTC/22276"' in rendered
     assert 'target="_blank"' in rendered
     assert 'rel="noopener noreferrer"' in rendered
-    assert "원문 보기" in rendered
+    assert "Daum Cafe" in rendered
+    assert "&#8599;" in rendered  # the ↗ external-link glyph (Section 24)
 
 
 def test_a_missing_source_url_shows_no_link_at_all():
     """No fake source link - the card's own /events/{id} link is expected,
-    but nothing inside the .source block should be a link."""
+    but nothing inside the tl-3 (source/confirmation) block should be a
+    link. A missing URL with no confirmation timestamp either renders no
+    third line at all (Section 12's own "up to three lines, never padded"),
+    so this fixture carries a real timestamp to force one."""
+    from datetime import datetime as datetime_type
+
     rendered = public._event_item({
         "id": 1, "name": "이름 없는 행사", "date": "2026-09-05",
         "start_time": None, "end_time": None, "ends_next_day": False,
         "venue": {"name": None, "status": "ABSENT"}, "fee": None,
         "source_link": {"url": None, "label": None},
-    })
+        "last_checked": "2026-09-05T09:00:00+00:00",
+    }, now=datetime_type.fromisoformat("2026-09-05T20:00:00+09:00"))
     assert "출처 미확인" in rendered
-    source_block = rendered[rendered.index('<div class="source">'):]
+    source_block = rendered[rendered.index('<div class="tl-3">'):]
     assert "<a href" not in source_block
 
 
@@ -449,7 +458,7 @@ def test_freshness_is_shown_on_the_card_not_only_the_detail_page():
         "source_link": {"url": None, "label": None},
         "last_checked": seen,
     }, now=now)
-    assert "2시간 전 확인" in rendered
+    assert "2시간 전" in rendered
 
 
 def test_an_event_missing_time_venue_and_fee_is_flagged_as_thin():

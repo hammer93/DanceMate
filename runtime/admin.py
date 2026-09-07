@@ -26,8 +26,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from . import (
-    acquisition, candidates, collectors, content_store, db, health, intake,
-    master_data, quota, review, source_ops, sources, usage,
+    acquisition, candidates, collectors, content_store, db, events_api, feedback,
+    health, intake, master_data, quota, review, source_ops, source_priority,
+    sources, usage,
 )
 from .admin_auth import require_admin
 from .config import Settings
@@ -343,6 +344,95 @@ def _alpha_panel(settings: Settings) -> str:
     )
 
 
+def _source_priority_panel(settings: Settings) -> str:
+    """v0.85.0 Section 48-50/78: how much of upcoming coverage stands on its
+    own feet (PRIMARY/PROMOTION_BOARD) versus only exists because an
+    aggregator recompiled it (DIRECTORY) - the KPI Section 50 asks for by
+    name, plus the honest follow-up Section 52-53 wants: which of those
+    aggregator-only events has no direct source at all, so a human can
+    decide whether it is worth going and finding one. No new crawler here -
+    just what is already in the database, read differently.
+    """
+    try:
+        with _connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT src.source_role, count(*) FROM events e "
+                    "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+                    "LEFT JOIN sources src ON src.source_id = si.source_id "
+                    "WHERE " + events_api._VISIBLE + " AND e.event_date >= %s "
+                    "AND e.engine_status <> 'CANCELLED' "
+                    "GROUP BY 1", (events_api.today(),),
+                )
+                by_role = dict(cur.fetchall())
+            open_feedback = feedback.count_open(con)
+            gap_rows = _aggregator_only_gap(con, limit=10)
+    except db.DatabaseUnavailable:
+        return ""
+
+    tier_totals = {tier: 0 for tier in source_priority.TIERS}
+    for role, n in by_role.items():
+        tier_totals[source_priority.tier_of(role)] += n
+    total = sum(tier_totals.values())
+    direct_and_promotion = tier_totals[source_priority.PRIMARY] + tier_totals[source_priority.PROMOTION_BOARD]
+    coverage_pct = round(100 * direct_and_promotion / total) if total else None
+
+    cards = _cards([
+        ("PRIMARY/DIRECT", tier_totals[source_priority.PRIMARY], "upcoming, direct/official"),
+        ("PROMOTION BOARD", tier_totals[source_priority.PROMOTION_BOARD], "upcoming, promotion boards"),
+        ("DIRECTORY", tier_totals[source_priority.DIRECTORY], "upcoming, aggregator-sourced"),
+        ("Direct+Promotion 비율", f"{coverage_pct}%" if coverage_pct is not None else "-",
+         f"of {total} upcoming"),
+        ("열린 피드백", open_feedback, "정보가 달라요/부족해요 등"),
+    ])
+
+    gap_html = ""
+    if gap_rows:
+        rows = [
+            [E(g["event_name"] or "")[:56], E(g["event_date"].isoformat()),
+             E(g["region_name"] or "지역 미확인"), E(g["source_name"] or "-"),
+             E(g["venue_text"] or g["venue_name"] or "-")]
+            for g in gap_rows
+        ]
+        gap_html = (
+            "<h3>Aggregator-only (direct/promotion source 없음)</h3>"
+            + _table(["행사", "날짜", "지역", "현재 Source", "추정 주최/스튜디오"],
+                    rows, empty="-")
+        )
+
+    return (
+        "<h2>Source Priority</h2>" + cards + gap_html
+        + '<p class="note">Section 51: direct/promotion 비율이 낮으면 다음 Source '
+          "확장은 동호회 공식·주최자 공식·스튜디오 공식·홍보 게시판만 우선하고, "
+          "aggregator 신규 확장은 후순위로 둡니다.</p>"
+    )
+
+
+def _aggregator_only_gap(con, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Upcoming events whose only known source is DIRECTORY-tier - Section
+    52-53's gap list, exactly the columns it asks for (event/region/current
+    source/possible organizer), soonest first."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT e.event_name, e.event_date, e.venue_text, "
+            "       v.name AS venue_name, r.name AS region_name, "
+            "       src.name AS source_name, src.source_role AS source_role "
+            "FROM events e "
+            "LEFT JOIN venues v ON v.venue_id = e.venue_id "
+            "LEFT JOIN regions r ON r.region_id = e.region_id "
+            "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+            "LEFT JOIN sources src ON src.source_id = si.source_id "
+            "WHERE " + events_api._VISIBLE + " AND e.event_date >= %s "
+            "AND e.engine_status <> 'CANCELLED' "
+            "ORDER BY e.event_date, e.event_id",
+            (events_api.today(),),
+        )
+        names = [c.name for c in cur.description]
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+    gap = [r for r in rows if source_priority.tier_of(r["source_role"]) == source_priority.DIRECTORY]
+    return gap[:limit]
+
+
 def _coverage_panel(settings: Settings) -> str:
     """Genre against region. The zeroes are the interesting cells."""
     from . import quality
@@ -534,6 +624,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
     quality_panel = _quality_panel(settings)
     coverage_panel = _coverage_panel(settings)
     tango_coverage_panel = _genre_coverage_panel(settings, "TANGO", "Tango")
+    source_priority_panel = _source_priority_panel(settings)
     alpha_panel = _alpha_panel(settings)
 
     cards = _cards([
@@ -570,6 +661,7 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         + quality_panel
         + coverage_panel
         + tango_coverage_panel
+        + source_priority_panel
         + alpha_panel
         + "<h2>Collection</h2>"
         + cards

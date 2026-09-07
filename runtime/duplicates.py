@@ -28,6 +28,8 @@ import json
 from datetime import date
 from typing import Any
 
+from . import source_priority
+
 AUTO = "AUTO"
 HUMAN = "HUMAN"
 
@@ -81,10 +83,24 @@ def completeness(event: dict[str, Any]) -> int:
 
 
 def _canonical_of(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict, dict]:
-    """(canonical, duplicate). Deterministic: completeness, then oldest id."""
+    """(canonical, duplicate). Deterministic: completeness first, then
+    source directness, then oldest id.
+
+    v0.85.0 Section 7/9: source directness is a *tiebreak*, not a reason to
+    prefer a sparser post over a richer one - "보조 ranking" (Section 9),
+    never a primary key. A PRIMARY organiser's own post that is missing a
+    fee must not out-rank a DIRECTORY aggregator's post that has one; it
+    only wins when the two are otherwise equally complete, which is exactly
+    the common case Section 7 describes (several sources posting the same,
+    essentially-equivalent announcement). ``source_role`` is absent from a
+    caller that never joined it in (pre-v0.85.0 callers, or a synthetic
+    fixture) - ``source_priority.rank(None)`` is a safe DIRECTORY-tier
+    default, identical to today's behaviour for both sides.
+    """
     ranked = sorted(
         (left, right),
-        key=lambda e: (-completeness(e), e["event_id"]),
+        key=lambda e: (-completeness(e), source_priority.rank(e.get("source_role")),
+                       e["event_id"]),
     )
     return ranked[0], ranked[1]
 
@@ -204,7 +220,15 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
 
     with con.cursor() as cur:
         cur.execute(
-            "SELECT * FROM events e WHERE " + " AND ".join(where) +
+            # source_role joined in for _canonical_of()'s own tiebreak
+            # (v0.85.0) - left join, since an event whose source_item/source
+            # row has since gone missing (should not happen, but nothing
+            # here should 500 over it) still gets compared, just with
+            # source_priority.rank(None)'s safe DIRECTORY default.
+            "SELECT e.*, src.source_role AS source_role FROM events e "
+            "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+            "LEFT JOIN sources src ON src.source_id = si.source_id "
+            "WHERE " + " AND ".join(where) +
             " ORDER BY e.event_date, e.event_id",
             tuple(params),
         )
@@ -302,7 +326,11 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
     if decision == DUPLICATE:
         if canonical_event_id is None:
             with con.cursor() as cur:
-                cur.execute("SELECT * FROM events WHERE event_id = ANY(%s)", (list(members),))
+                cur.execute(
+                    "SELECT e.*, src.source_role AS source_role FROM events e "
+                    "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+                    "LEFT JOIN sources src ON src.source_id = si.source_id "
+                    "WHERE e.event_id = ANY(%s)", (list(members),))
                 left, right = _rows(cur)
             canonical_event_id = _canonical_of(left, right)[0]["event_id"]
         if canonical_event_id not in members:
