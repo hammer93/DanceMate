@@ -490,7 +490,10 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
 
     rows = candidate_store.list_candidates(settings, limit=limit)
     if not rows:
-        return {"candidates": 0, "normalized": 0, "skipped_no_date": 0}
+        return {
+            "candidates": 0, "normalized": 0, "skipped_no_date": 0,
+            "unresolved_venues": 0, "pruned": 0,
+        }
 
     ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
     aliases = candidate_store.venue_alias_candidates(settings, ids)
