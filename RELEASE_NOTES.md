@@ -1,5 +1,119 @@
 # DanceMate Release Notes
 
+## v0.84.3 Image-only Poster OCR Recovery + K-TANGO Evidence Extraction
+
+Status:
+Root-cause audit, generic fixes, and detect-only verification against the
+real live K-TANGO site and the ROCKPro64 board's real production database,
+2026-09-07.
+
+Version split:
+
+- Product Runtime: 0.84.3
+- Information Engine: 0.82 (up from 0.81) - `extract_with_image_fallback()`
+  and `extract_fee()` changed.
+
+### Goal
+
+v0.84.2 fixed K-TANGO's navigation-contamination bug but left 6 of its 10
+posts `FETCH_BLOCKED` - most of them genuinely image-only posters with no
+caption text. The existing v0.81.3 OCR fallback pipeline (image download
+safety, Tesseract kor+eng, PII scrub, cache-by-hash, "OCR alone never
+VERIFIED") was already sound; this release's job was to find out why it
+never even reached these posts, and close that gap without redesigning the
+pipeline itself.
+
+### Root cause
+
+Two structural gaps, not an OCR problem:
+
+1. `runtime.acquisition.fetch()`'s `FETCH_BLOCKED` branch never populated
+   `images` - a real poster's URL was discarded the moment the body came
+   up empty, even though the already-downloaded HTML plainly contained it.
+2. `content_store.needing_reprocess()` (the query the scheduler's
+   `engine-reprocess` job selects from) only ever considered
+   `FETCHED_FULL`/`PARTIAL` rows, so a `FETCH_BLOCKED` row that did carry a
+   poster candidate would never be handed back for image-only recovery.
+
+### Fix
+
+- Added `extract_content_images()`: scopes image discovery to the same raw-
+  HTML content boundary `extract_article()` already trusts (the
+  `template_board` `.readEdit` region), rather than the whole page - a
+  poster inside it is found, the site's own nav/logo/footer images (outside
+  the boundary) never are. Called for every fetch outcome, including
+  `FETCH_BLOCKED`.
+- Widened `needing_reprocess()`'s `WHERE` clause with a narrow `OR` branch:
+  a `FETCH_BLOCKED` row is now also eligible for reprocessing when its
+  `poster_candidates` is non-empty. A blocked row with no poster (a
+  genuinely empty post) stays excluded - nothing new to give the engine.
+  Still the existing scheduled job, still bounded, no ad-hoc reprocess call
+  anywhere.
+- Engine: `extract_with_image_fallback()` gains **venue** as a fourth
+  fallback field alongside date/time/fee, per this release's priority
+  order - K-TANGO's real posters are exactly the case where the body is
+  empty and only the poster names the venue. Venue was never part of
+  `core_complete`, so this cannot affect VERIFIED eligibility.
+
+### A real wrong-fill found and fixed during testing
+
+Writing the venue fallback's regression tests surfaced two genuine, pre-
+existing extraction bugs, both fixed here:
+
+- **Free parking suppressed a real, unrelated fee.** `_NOT_A_FEE`'s bare
+  "주차" disqualified any amount within 20 characters of it - correct for
+  "주차장 최대 7,000원" (a real parking price), wrong for "무료주차 가능
+  입장료 13,000원" (a free-parking *notice* sitting near a genuine, clearly
+  labelled entry fee). Narrowed the exclusion to leave a real parking fee
+  excluded without also blanking out an unrelated real one nearby.
+- **A bare known-studio-name match is unsafe on OCR text.** `extract_venue()`'s
+  three hardcoded studio-name fallbacks (a convenience for short body text)
+  wrongly picked a venue out of K-TANGO's real "서울 밀롱가데이" poster - a
+  schedule table naming ~15 participating studios across two days, one of
+  which happened to be one of the three names. `extract_with_image_fallback()`
+  now only trusts an *image's* venue reading when `extract_venue()` actually
+  labelled it ("장소: ..."); body-text venue reading is unchanged.
+
+### Verification
+
+- **Real live image inventory** (all 6 `FETCH_BLOCKED` K-TANGO posts,
+  read-only): 4 have a genuine attached poster fetchable under existing
+  safety limits, 1 has no image in its content region at all (a truly
+  empty post), 1 has a real poster exceeding the 5MB fetch cap (17MB - a
+  real, deliberate safety limit this release does not weaken).
+- **Detect-only against the real live site + real OCR**, all 4 fetchable
+  posters: 2 (source_items 647, 648) yield a single, clean, correct date
+  from unambiguous poster text ("2024.09.29", "2024.09.26") - both safe to
+  apply. 1 (643) yields nothing at all - its poster is itself a multi-day
+  schedule table dense enough that no field reads as a single clear value,
+  a safe non-result. 1 (646, "서울 밀롱가데이") is the multi-studio listing
+  above: after the venue fix, its venue correctly resolves to nothing, but
+  its *time* still reads as one arbitrary participating studio's own slot -
+  a real remaining risk building a "this is a multi-item listing" detector
+  would be needed to fully close, which is out of this release's scope.
+  **646 is excluded from this release's scoped production apply** (marked
+  reprocessed without ever computing or storing that time), reported here
+  rather than forced through.
+- 20 new tests across both layers: poster detection/scoping, chrome
+  (logo/nav/footer) exclusion, image-less posts never OCR'd, `FETCH_BLOCKED`
+  outcomes carrying their poster candidate, `needing_reprocess()`'s new
+  eligibility (DB-integration, against real PostgreSQL), venue fallback
+  fill/no-overwrite/conflict, the bare-known-name precision fix, the free-
+  parking fix, multi-tier-fee ambiguity via image text, and existing-source
+  (Daum/DanceInfo/text-post K-TANGO) non-regression.
+- Full Runtime suite (board staging, isolated throwaway PostgreSQL): 1331
+  passed, 2 pre-existing unrelated failures (`test_tangocalendar_discovery`,
+  confirmed identical against an unmodified image before this change).
+  Engine suite: 776 passed, 0 failures.
+
+### Also fixed
+
+`.env.example` and both compose files' `DANCEMATE_VERSION` fallback were
+still `0.84.1` after v0.84.2 bumped `VERSION` - a gap in that release's own
+version-bump step, caught by a fresh full local suite run. Production was
+unaffected (`deploy-production.sh`'s preflight guard already requires a
+match before it will build); the tracked defaults are now correct.
+
 ## v0.84.2 K-TANGO Content Acquisition Repair + Source Health Recovery
 
 Status:
