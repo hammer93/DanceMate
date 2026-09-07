@@ -5,7 +5,9 @@
 Status:
 Root-cause audit, generic fixes, and detect-only verification against the
 real live K-TANGO site and the ROCKPro64 board's real production database,
-2026-09-07.
+2026-09-07. A real data-loss incident surfaced and was closed during
+rollout (see "Incident during rollout" below) - production is stable as of
+the final redeploy, verified across 3+ scheduler cycles.
 
 Version split:
 
@@ -94,17 +96,87 @@ existing extraction bugs, both fixed here:
   **646 is excluded from this release's scoped production apply** (marked
   reprocessed without ever computing or storing that time), reported here
   rather than forced through.
-- 20 new tests across both layers: poster detection/scoping, chrome
-  (logo/nav/footer) exclusion, image-less posts never OCR'd, `FETCH_BLOCKED`
-  outcomes carrying their poster candidate, `needing_reprocess()`'s new
-  eligibility (DB-integration, against real PostgreSQL), venue fallback
-  fill/no-overwrite/conflict, the bare-known-name precision fix, the free-
-  parking fix, multi-tier-fee ambiguity via image text, and existing-source
-  (Daum/DanceInfo/text-post K-TANGO) non-regression.
-- Full Runtime suite (board staging, isolated throwaway PostgreSQL): 1331
+- 22 new tests across both layers (20 from the initial pass, 2 added while
+  closing the incident below): poster detection/scoping, chrome (logo/nav/
+  footer) exclusion, image-less posts never OCR'd, `FETCH_BLOCKED` outcomes
+  carrying their poster candidate, `needing_reprocess()`'s new eligibility
+  (DB-integration, against real PostgreSQL), venue fallback fill/no-
+  overwrite/conflict, the bare-known-name precision fix, the free-parking
+  fix, multi-tier-fee ambiguity via image text, existing-source (Daum/
+  DanceInfo/text-post K-TANGO) non-regression, the `reprocess_acquired()`
+  preserve-not-delete guard, and its genuine field-recovery counterpart (a
+  classifiable body missing only a fee, recovered from a poster).
+- Full Runtime suite (board staging, isolated throwaway PostgreSQL): 1333
   passed, 2 pre-existing unrelated failures (`test_tangocalendar_discovery`,
   confirmed identical against an unmodified image before this change).
-  Engine suite: 776 passed, 0 failures.
+  Engine suite (unaffected by the post-merge fixes, which never touched
+  `engine/`): 776 passed, 0 failures.
+
+### Incident during rollout: `reprocess_acquired()` deleted a real event
+
+Deploying the two structural fixes above and letting the scheduler's normal
+`engine-reprocess` cycle run exposed a third, more serious, pre-existing bug
+that neither fix had touched: `reprocess_acquired()` never wired
+`image_texts` into `process_discovered_post()` at all (an `_extract_single`/
+`_needs_fallback` import that was never actually used). Once
+`needing_reprocess()` started selecting `FETCH_BLOCKED` rows with a poster,
+this function re-extracted them with no image fallback, got zero events, and
+hit its own unconditional "replace this post's candidates with whatever the
+engine now makes of it" delete - silently wiping source_item 647's real,
+previously-correct event.
+
+Wiring `image_texts` into `reprocess_acquired()` the same way `ingest_pending()`
+already had it turned out not to be enough by itself:
+`process_discovered_post()` classifies from title+body alone, before it ever
+looks at `image_texts`, and a `FETCH_BLOCKED` item's body is empty - so a
+genuinely image-only post still classifies as `OTHER` and still produces
+zero events, wiring or no wiring. Fixing that would mean changing what
+`classify()` is allowed to see, which is out of this release's scope.
+
+What is in scope, and what closes the incident at its root: zero events from
+a `FETCH_BLOCKED` reprocess means "could not classify a blocked fetch," never
+"the engine says this is no longer an event" - only the second claim should
+ever trigger the delete. `reprocess_acquired()` now preserves existing
+candidates instead of deleting them when a blocked re-fetch can't classify,
+logged as `skipped_blocked` in the `engine-reprocess` job line. The existing
+delete-and-replace path for a genuine rule correction (an actually-fetched,
+non-blocked body that no longer classifies as an event) is untouched.
+
+647's event was restored verbatim from the pre-deploy backup (all 29
+columns, plus its engine-side `event_candidates`/`evidences` rows) rather
+than re-derived, since its original value already had no OCR involvement.
+Full K-TANGO audit and three clean `engine-reprocess` cycles after the guard
+shipped confirm the system is back to a stable, `pending=0` state with no
+further candidate loss.
+
+### Net K-TANGO outcome: honest, not what was targeted
+
+The two structural gaps this release set out to fix are fixed, tested, and
+verified live. The incident above, and its restore, mean the specific
+coverage win the "Verification" section above describes - 647 and 648 each
+gaining a clean, single, poster-derived date - **did not survive into the
+final production state** and was not reapplied. Every K-TANGO event now
+live (645, 646, 647) still resolves its date from body text or
+`published_at` fallback (`TEXT`/`EXPLICIT_YEAR`), not from OCR; no event
+anywhere carries an `IMAGE_OCR` evidence type. 648 has no event at all,
+matching its pre-release state.
+
+This is consistent with this release's own stated priority - **Wrong Fill =
+0 over coverage** - and no wrong value was ever shipped. But the honest
+summary is: this release fixed the pipeline's structural bugs, fixed two
+real extraction-precision bugs it surfaced along the way, and closed a real
+data-loss bug it caused - all durable, real wins - while the K-TANGO
+poster-OCR coverage gain itself did not make it to production. Reaching it
+without touching `classify()`'s body-only gate remains a real limitation of
+this pipeline, and is left as documented, scoped-out follow-up work rather
+than forced through by an ad-hoc write.
+
+The wiring fix is not wasted, though: it is the entire reason a post that
+*can* classify from its own body - the original, more common v0.81.3 case,
+still a real body missing only a field - now also gets image-fallback
+recovery when caught by `reprocess_acquired()` and not just
+`ingest_pending()`, which is what `engine/tests/test_image_fallback.py` and
+`tests/test_image_poster_ocr.py`'s fee-recovery test verify.
 
 ### Also fixed
 
