@@ -110,6 +110,18 @@ def test_a_re_fetched_blocked_item_is_eligible_again_after_reprocessing(pg, uniq
         ["https://cdn.example.test/poster.jpg"]
     ))
     content_store.mark_reprocessed(pg, item_id)
+    # `mark_reprocessed()` and `record_outcome()` both stamp their column
+    # with SQL now(), which Postgres freezes for the whole transaction - the
+    # `pg` fixture's own single, rolled-back transaction, so a second
+    # `now()` call here would read back identical to the first regardless of
+    # real elapsed time. Backdating `reprocessed_at` explicitly is the
+    # test's own concern, not a change to how production actually orders
+    # these two real, separately-committed calls a scheduler tick apart.
+    with pg.cursor() as cur:
+        cur.execute(
+            "UPDATE source_item_content SET reprocessed_at = reprocessed_at - interval '1 hour' "
+            "WHERE source_item_id = %s", (item_id,),
+        )
     content_store.record_outcome(pg, item_id, _blocked_outcome(
         ["https://cdn.example.test/poster.jpg"]
     ))
@@ -155,6 +167,11 @@ def _pending_item(pg, unique, title, url):
 def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
     pg, unique, env, monkeypatch
 ):
+    """ingest_pending() and reprocess_acquired() each open their own
+    autocommit connection (they are written to run standalone, as scheduler
+    jobs) - invisible to the `pg` fixture's own uncommitted transaction, so
+    this test commits its own writes and cleans them up explicitly instead
+    of relying on the fixture's usual rollback."""
     from runtime import engine_adapter
     from runtime.config import load_settings
     import sqlite3
@@ -162,58 +179,74 @@ def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
     title = "탱고 이벤트"
     url = "https://example.invalid/reprocess/post"
     item_id = _pending_item(pg, unique, title, url)
+    pg.commit()
     settings = load_settings()
 
-    # The body the site originally served: a real, complete announcement.
-    # An explicit year avoids needing a `published_at` on the fixture row -
-    # the same v0.80.2 rule that would otherwise leave the date unresolved.
-    content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
-        status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
-        fetched_url=url,
-        text="2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오 입장료 13,000원",
-    ))
-    result = engine_ingest.ingest_pending(settings)
-    assert result["ingested"] == 1
+    try:
+        # The body the site originally served: a real, complete announcement.
+        # An explicit year avoids needing a `published_at` on the fixture
+        # row - the same v0.80.2 rule that would otherwise leave the date
+        # unresolved.
+        content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+            status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
+            fetched_url=url,
+            text="2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오 입장료 13,000원",
+        ))
+        pg.commit()
+        result = engine_ingest.ingest_pending(settings)
+        assert result["ingested"] == 1
 
-    def _events_for(source_url):
-        con = sqlite3.connect(engine_adapter.engine_db_path(settings))
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT ec.* FROM event_candidates ec "
-            "JOIN raw_posts rp ON rp.post_id = ec.post_id "
-            "WHERE rp.source_url = ?", (source_url,),
-        ).fetchall()
-        con.close()
-        return [dict(r) for r in rows]
+        def _events_for(source_url):
+            con = sqlite3.connect(engine_adapter.engine_db_path(settings))
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT ec.* FROM event_candidates ec "
+                "JOIN raw_posts rp ON rp.post_id = ec.post_id "
+                "WHERE rp.source_url = ?", (source_url,),
+            ).fetchall()
+            con.close()
+            return [dict(r) for r in rows]
 
-    before = _events_for(url)
-    assert len(before) == 1
-    assert before[0]["event_date"] == "2026-09-05"
+        before = _events_for(url)
+        assert len(before) == 1
+        assert before[0]["event_date"] == "2026-09-05"
 
-    # The site now serves an image-only version of the same post: no body
-    # text at all, just a poster naming the same event.
-    content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
-        status=acquisition.FETCH_BLOCKED, method=acquisition.METHOD_NONE,
-        fetched_url=url, images=["https://cdn.example.test/poster.jpg"],
-        error_code="BODY_UNAVAILABLE", error="page fetched but no article body was served",
-    ))
-    monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
-        url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
-    monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
-        status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
-        text="탱고 이벤트 2026.09.05 19:30~23:30 장소: 라밀롱가 스튜디오 입장료 13,000원"))
+        # The site now serves an image-only version of the same post: no
+        # body text at all, just a poster naming the same event.
+        content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+            status=acquisition.FETCH_BLOCKED, method=acquisition.METHOD_NONE,
+            fetched_url=url, images=["https://cdn.example.test/poster.jpg"],
+            error_code="BODY_UNAVAILABLE", error="page fetched but no article body was served",
+        ))
+        pg.commit()
+        monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+            url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+        monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+            status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
+            text="탱고 이벤트 2026.09.05 19:30~23:30 장소: 라밀롱가 스튜디오 입장료 13,000원"))
 
-    selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
-    assert item_id in selected
+        selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
+        assert item_id in selected
 
-    outcome = engine_ingest.reprocess_acquired(settings)
-    assert outcome["reprocessed"] == 1
-    assert outcome["failed"] == 0
+        outcome = engine_ingest.reprocess_acquired(settings)
+        assert outcome["reprocessed"] == 1
+        assert outcome["failed"] == 0
 
-    after = _events_for(url)
-    assert len(after) == 1, (
-        "the real event must survive being reprocessed from an image-only "
-        "fetch, not be silently deleted for lack of image-fallback wiring"
-    )
-    assert after[0]["event_date"] == "2026-09-05"
-    assert after[0]["venue"] == "라밀롱가 스튜디오"
+        after = _events_for(url)
+        assert len(after) == 1, (
+            "the real event must survive being reprocessed from an "
+            "image-only fetch, not be silently deleted for lack of "
+            "image-fallback wiring"
+        )
+        assert after[0]["event_date"] == "2026-09-05"
+        assert after[0]["venue"] == "라밀롱가 스튜디오"
+    finally:
+        # This test committed its own writes (see docstring) - the `pg`
+        # fixture's rollback at teardown cannot undo them, so clean up
+        # explicitly rather than leaving rows in the shared staging database.
+        with pg.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM source_item_content WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM source_items WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM sources WHERE source_key = %s", (f"SRC-REP-{unique}",))
+        pg.commit()
