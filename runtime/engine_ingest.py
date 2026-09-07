@@ -259,6 +259,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         items = content_store.needing_reprocess(pg, limit=limit, force=force)
         if not items:
             return {"pending": 0, "reprocessed": 0, "skipped_reviewed": 0,
+                    "skipped_blocked": 0,
                     "candidates_before": 0, "candidates_after": 0, "failed": 0}
 
         with pg.cursor() as cur:
@@ -266,7 +267,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
             reviewed = {row[0] for row in cur.fetchall()}
 
         engine_con = _open_engine_store(settings, engine_db)
-        reprocessed = skipped = failed = 0
+        reprocessed = skipped = skipped_blocked = failed = 0
         before_total = after_total = 0
         failures: list[str] = []
         try:
@@ -313,6 +314,27 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         image_texts=image_texts,
                     )
                     events = result.get("events") or []
+
+                    # v0.84.3: a FETCH_BLOCKED item is, by definition, one
+                    # this reprocess has *less* text for than whatever
+                    # produced its existing candidates - needing_reprocess()
+                    # only ever selects one when a poster arrived to make up
+                    # for that gap, not because the body genuinely improved.
+                    # Zero events here means "we could not classify this from
+                    # a blocked fetch", never "the engine has decided this
+                    # is no longer an event" - the delete below cannot tell
+                    # those apart, and guessing wrong deletes a real event.
+                    # This is exactly what happened to K-TANGO source_item
+                    # 647 before this guard existed: its real, previously
+                    # OCR'd event was wiped the moment a later fetch came
+                    # back blocked. Preserve the existing candidates instead
+                    # and retry once a real fetch (full or partial) comes in.
+                    if not events and existing_ids and \
+                            item.get("acquisition_status") == acquisition.FETCH_BLOCKED:
+                        content_store.mark_reprocessed(pg, source_item_id)
+                        skipped_blocked += 1
+                        continue
+
                     # Replace this post's candidates with whatever the current
                     # engine now makes of it -- including nothing.
                     #
@@ -320,7 +342,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     # being an event kept the candidate it used to have. A rule
                     # correction could then never take effect: the engine would
                     # say "this is a lesson" and the old event would sit there,
-                    # normalised and listed, forever.
+                    # normalised and listed, forever. That still holds for a
+                    # real fetch (FULL/PARTIAL) - only a blocked one, handled
+                    # above, is exempted.
                     #
                     # Candidates a person has reviewed are never reached here;
                     # that check runs above and skips the item entirely.
@@ -356,6 +380,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         "pending": len(items),
         "reprocessed": reprocessed,
         "skipped_reviewed": skipped,
+        "skipped_blocked": skipped_blocked,
         "candidates_before": before_total,
         "candidates_after": after_total,
         "failed": failed,

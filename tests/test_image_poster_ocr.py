@@ -147,6 +147,18 @@ def test_poster_candidates_are_stored_as_the_images_list(pg, unique):
 # K-TANGO event (date correctly OCR'd from its own poster, back when the
 # post was still FETCHED_FULL pre-v0.84.2) was deleted the moment this
 # release's fix made the item eligible for reprocessing again.
+#
+# Wiring image_texts into reprocess_acquired() (below) is not, by itself,
+# enough to stop that: process_discovered_post() classifies from title+body
+# alone before it ever looks at image_texts, and a FETCH_BLOCKED item's body
+# is empty - so a genuinely image-only post still classifies as OTHER and
+# still produces zero events, wiring or no wiring. That gap is real and is
+# documented, deliberately unfixed, scope for this release (it would mean
+# changing what classify() itself is allowed to see). What *is* in scope,
+# and what the guard in reprocess_acquired() below provides, is refusing to
+# let "we couldn't classify this blocked fetch" be read as "the engine says
+# this is no longer an event" - the two are not the same claim, and only the
+# second one should ever delete a real candidate.
 
 def _pending_item(pg, unique, title, url):
     from runtime import sources
@@ -165,17 +177,38 @@ def _pending_item(pg, unique, title, url):
         return cur.fetchone()[0]
 
 
-def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
+def _events_for(settings, source_url):
+    from runtime import engine_adapter
+    import sqlite3
+
+    con = sqlite3.connect(engine_adapter.engine_db_path(settings))
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT ec.* FROM event_candidates ec "
+        "JOIN raw_posts rp ON rp.post_id = ec.post_id "
+        "WHERE rp.source_url = ?", (source_url,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_deleting_it(
     pg, unique, env, monkeypatch
 ):
     """ingest_pending() and reprocess_acquired() each open their own
     autocommit connection (they are written to run standalone, as scheduler
     jobs) - invisible to the `pg` fixture's own uncommitted transaction, so
     this test commits its own writes and cleans them up explicitly instead
-    of relying on the fixture's usual rollback."""
-    from runtime import engine_adapter
+    of relying on the fixture's usual rollback.
+
+    This is the exact shape of the K-TANGO 647 incident: a real event, then
+    a later fetch that comes back blocked. classify() cannot see the poster
+    at all (image_texts arrives after classification, and the body here is
+    empty), so it returns OTHER and zero events regardless of the wiring
+    fix - the honest guarantee this release provides for a truly image-only
+    reprocess is that the real prior event is preserved, not deleted, while
+    that gap stays open."""
     from runtime.config import load_settings
-    import sqlite3
 
     title = "탱고 이벤트"
     url = "https://example.invalid/reprocess/post"
@@ -197,18 +230,7 @@ def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
         result = engine_ingest.ingest_pending(settings)
         assert result["ingested"] == 1
 
-        def _events_for(source_url):
-            con = sqlite3.connect(engine_adapter.engine_db_path(settings))
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT ec.* FROM event_candidates ec "
-                "JOIN raw_posts rp ON rp.post_id = ec.post_id "
-                "WHERE rp.source_url = ?", (source_url,),
-            ).fetchall()
-            con.close()
-            return [dict(r) for r in rows]
-
-        before = _events_for(url)
+        before = _events_for(settings, url)
         assert len(before) == 1
         assert before[0]["event_date"] == "2026-09-05"
 
@@ -230,14 +252,19 @@ def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
         assert item_id in selected
 
         outcome = engine_ingest.reprocess_acquired(settings)
-        assert outcome["reprocessed"] == 1
         assert outcome["failed"] == 0
+        assert outcome["skipped_blocked"] == 1, (
+            "a blocked fetch that cannot be classified must be recorded as "
+            "preserved-not-reprocessed, not silently treated as a normal "
+            "reprocess"
+        )
+        assert outcome["reprocessed"] == 0
 
-        after = _events_for(url)
+        after = _events_for(settings, url)
         assert len(after) == 1, (
             "the real event must survive being reprocessed from an "
-            "image-only fetch, not be silently deleted for lack of "
-            "image-fallback wiring"
+            "image-only fetch, not be silently deleted because classify() "
+            "cannot see a poster's OCR text"
         )
         assert after[0]["event_date"] == "2026-09-05"
         assert after[0]["venue"] == "라밀롱가 스튜디오"
@@ -245,6 +272,79 @@ def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
         # This test committed its own writes (see docstring) - the `pg`
         # fixture's rollback at teardown cannot undo them, so clean up
         # explicitly rather than leaving rows in the shared staging database.
+        with pg.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM source_item_content WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM source_items WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM sources WHERE source_key = %s", (f"SRC-REP-{unique}",))
+        pg.commit()
+
+
+def test_reprocessing_a_fetched_item_missing_a_field_recovers_it_from_the_poster(
+    pg, unique, env, monkeypatch
+):
+    """The genuine, reachable win of wiring image_texts into
+    reprocess_acquired(): a post whose body classify() *can* read (it names
+    a milonga, so classification never depends on the poster) but which is
+    missing its fee, gets that fee filled from the poster once one is found
+    on a later fetch - exactly the pre-existing v0.81.3 image-fallback path,
+    now also reachable from reprocess_acquired() and not just
+    ingest_pending()."""
+    from runtime.config import load_settings
+
+    title = "밀롱가 안내"
+    url = "https://example.invalid/reprocess/post-full"
+    item_id = _pending_item(pg, unique, title, url)
+    pg.commit()
+    settings = load_settings()
+
+    try:
+        # First fetch: a real, classifiable body, but no fee anywhere in it
+        # and no poster yet.
+        content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+            status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
+            fetched_url=url,
+            text="밀롱가 2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오",
+        ))
+        pg.commit()
+        result = engine_ingest.ingest_pending(settings)
+        assert result["ingested"] == 1
+
+        before = _events_for(settings, url)
+        assert len(before) == 1
+        assert before[0]["fee"] is None
+
+        # A second fetch of the same body, this time with the post's own
+        # poster attached - the fee was on the poster all along.
+        content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+            status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
+            fetched_url=url,
+            text="밀롱가 2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오",
+            images=["https://cdn.example.test/poster.jpg"],
+        ))
+        pg.commit()
+        monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+            url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+        monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+            status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
+            text="밀롱가 2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오 입장료 13,000원"))
+
+        selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
+        assert item_id in selected
+
+        outcome = engine_ingest.reprocess_acquired(settings)
+        assert outcome["failed"] == 0
+        assert outcome["reprocessed"] == 1
+        assert outcome["skipped_blocked"] == 0
+
+        after = _events_for(settings, url)
+        assert len(after) == 1
+        assert after[0]["fee"] == 13000, (
+            "a missing fee found only on the post's own poster must be "
+            "recovered when reprocess_acquired() re-extracts, the same way "
+            "ingest_pending() already recovers it on first ingest"
+        )
+    finally:
         with pg.cursor() as cur:
             cur.execute("DELETE FROM events WHERE source_item_id = %s", (item_id,))
             cur.execute("DELETE FROM source_item_content WHERE source_item_id = %s", (item_id,))
