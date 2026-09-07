@@ -153,7 +153,8 @@ def _pending_item(pg, unique, title, url):
 
     source = sources.create_source(
         pg, source_key=f"SRC-REP-{unique}", name=f"reprocess probe {unique}",
-        platform="WEB", source_role="ORGANIZER", url="https://example.invalid/reprocess",
+        platform="WEB", source_role="ORGANIZER",
+        url=f"https://example.invalid/reprocess/{unique}",
         enabled=False)
     with pg.cursor() as cur:
         cur.execute(
