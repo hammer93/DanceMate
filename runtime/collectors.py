@@ -412,6 +412,17 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
     # for a `/notices` one - a single source can register both URLs and this
     # stays a no-op for the one that does not need it.
     extra_kwargs: dict[str, Any] = {}
+    # v0.85.2: SRC-W-006 (tangoclass_wp_json) pages backward with its own
+    # bounded stop conditions (module docstring) rather than reading only
+    # the single most-recent page - a real post was found to scroll off
+    # that window in under 30 minutes. Only this parser knows these
+    # keywords; config.lookback_days/max_pages are no-ops for every other
+    # parser, the same pattern days_ahead already uses above.
+    if parser == WEB_PARSER_TANGOCLASS:
+        if "lookback_days" in config:
+            extra_kwargs["lookback_days"] = config["lookback_days"]
+        if "max_pages" in config:
+            extra_kwargs["max_pages"] = config["max_pages"]
     if parser in (WEB_PARSER_DANCEINFO, WEB_PARSER_MILTANG) and "days_ahead" in config:
         extra_kwargs["days_ahead"] = config["days_ahead"]
 

@@ -1,5 +1,104 @@
 # DanceMate Release Notes
 
+## v0.85.2 Direct Source Depth + Primary Evidence Convergence
+
+Status: real live production representative-source flip confirmed
+organically, pagination regression found and fixed, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.2
+- Information Engine: 0.83 (unchanged)
+
+### Goal
+
+Not new source count - making the two sources v0.85.1 already added
+actually converge reliably: SRC-W-006 must not lose event posts to
+pagination, and SRC-D-003's real events must keep winning representative
+status over DIRECTORY duplicates the way the architecture already
+promises.
+
+### A real regression found and fixed: SRC-W-006 event-window collection
+
+v0.85.1's `tangoclass_discovery.py` only ever asked for the single most
+recent 10 posts. A live re-check roughly 30 minutes after the original
+live-acceptance test found a real event post ("9월~10월 스페셜 원데이 클래스")
+had already scrolled off that window - pushed out by two unrelated
+educational-article posts published in between. `discover()` now pages
+backward with three independent stop conditions - an empty page, a page
+whose oldest post already predates `lookback_days` (default 30), or
+WordPress's own `X-WP-TotalPages` header - plus a hard `max_pages`
+ceiling (default 5) that applies regardless of what any of those say, so
+a site that lies about (or omits) its own pagination headers can never
+turn this into an unbounded crawl. Confirmed live against the real site:
+the specific previously-missed post is now found (`MISS_CONFIRMED`), and
+a forced 5-page/50-post crawl completed in 4.1s with 0 duplicate post
+IDs across pages.
+
+### Confirmed live: the representative-source flip actually happens
+
+Production's own scheduler organically merged the real "Solo Tango
+화요정모" event: Miltang's DIRECTORY-tier post (event_id 88436) folded
+into SRC-D-003's own COMMUNITY/PRIMARY-tier post (event_id 221245) as
+canonical - no manual intervention, just the existing dedup pipeline
+doing what it was designed to do once the direct post's body finished
+enriching. The DIRECTORY post's evidence stayed retained
+(`duplicates.sources_of()` still returns both); the representative's own
+`source_link` points at the real original post
+(`cafe.daum.net/latindance/73b/68727`), not a directory link; freshness
+reflects the direct source's own `collected_at`; DJ ("유진") is shown,
+extracted from the direct post; fee stayed honestly unknown (the real
+post states a two-tier "8,000원(22시 이후 5,000원)" fee, which the existing
+v0.84.1 multi-tier-fee safety correctly declines to reduce to one
+number); status stayed POSSIBLE, never auto-promoted to VERIFIED.
+
+### New KPI: Multi-tier Evidence
+
+`runtime.source_ops.evidence_tiers()` (Section 22/23) - for every visible
+upcoming event, which tier(s) of evidence exist across it AND its folded
+duplicates, not just the representative row's own tier. Wired into the
+admin Source Priority panel. The Solo Tango event above is exactly what
+this counts: one real event now carrying both PRIMARY and DIRECTORY
+evidence - the concrete "directory discovery -> official confirmation"
+convergence signal this whole effort has been working toward.
+
+### New sources this release: 0
+
+EL TANGO's board showed no current/near-upcoming milonga with full date/
+time/venue this round (stays ADD_LATER). IGNOX's real "가을 숲 밀롱가" event
+is genuine but Nov-dated, outside the Sept/Oct window this release
+required for ADD_NOW (stays ADD_LATER/MONITOR). KCCTF (2026-10-03~05,
+OFFICIAL_PRIMARY, robots ALLOW) has real live value but its site is
+Next.js App Router with RSC streaming payloads (`self.__next_f.push(...)`),
+not the `__NEXT_DATA__` JSON shape `danceinfo_discovery.py` already knows
+how to read - confirmed live via the real page source. Building a
+structurally-safe parser for that (Section 30's own explicit ban on
+regex-scraping the raw stream) is real work disproportionate to one
+annual festival; deferred rather than rushed. Zero new sources is an
+accepted outcome this release (Section 31) - the actual goal (SRC-W-006/
+SRC-D-003 convergence) was met without one.
+
+### Coverage
+
+Before: 5/153 (3%, v0.85.1's own baseline). Continued organic convergence
+observed since: 6/154 -> 7/149 -> 10/158 (~6%) as SRC-D-003's remaining
+post bodies finished enriching, entirely from the two v0.85.1 sources -
+no new source contributed to this. Not a target number; reported honestly
+as measured at deploy time.
+
+### Tests
+
+34 new tests: 12 WordPress pagination unit tests (page1/page2,
+X-WP-TotalPages, max-pages bound, empty-page stop, duplicate-post-id
+dedup, stale-page stop, event-context isolation, request-failure
+propagation, regression guard for the original single-page behaviour) +
+10 direct-convergence tests (re-anchored to the real production Solo
+Tango scenario) + 3 evidence-tiers KPI tests, plus supporting fixture
+tests. Full Runtime suite on staging: 1454 passed, 15 skipped (only the
+2 pre-existing, unrelated `test_tangocalendar_discovery.py` failures
+remain, same baseline as every prior release). Engine suite not
+re-run - no `engine/` file changed.
+
 ## v0.85.1 Direct Source Coverage Expansion
 
 Status: real live source research and re-verification, 2 sources added
