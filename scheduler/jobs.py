@@ -81,7 +81,8 @@ def engine_reprocess(settings: Settings) -> str:
     result = engine_ingest.reprocess_acquired(settings)
     detail = (
         f"pending={result['pending']} reprocessed={result['reprocessed']} "
-        f"skipped_reviewed={result['skipped_reviewed']} failed={result['failed']} "
+        f"skipped_reviewed={result['skipped_reviewed']} "
+        f"skipped_blocked={result['skipped_blocked']} failed={result['failed']} "
         f"candidates {result['candidates_before']}->{result['candidates_after']}"
     )
     if result.get("failures"):
