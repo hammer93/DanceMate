@@ -81,3 +81,98 @@ def classify(title: str, body: str, known_event_type=None) -> str:
     if has_social:
         return "SOCIAL"
     return "OTHER"
+
+
+# Posts a keyword alone is trusted to promote from OTHER. Never CLASS: a
+# lesson/workshop advert with no social evidence anywhere (body or poster)
+# must never become a milonga/social event just because its poster also
+# happens to say "밀롱가" in a schedule footer.
+_SOCIAL_CONTEXT_CLASSIFICATIONS = {
+    "MILONGA", "SOCIAL", "MILONGA_WITH_CLASS", "SOCIAL_WITH_CLASS",
+}
+
+# Mirrors runtime.acquisition.MINIMUM_USEFUL_TEXT (v0.76) - the engine
+# package is stdlib-only and does not import runtime, so the threshold is
+# restated here rather than shared. Below this, a body or an image reading
+# is "too thin to mean anything," not "empty by coincidence."
+MIN_TEXT_FOR_IMAGE_TRUST = 20
+
+
+def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None,
+                                 known_event_type=None, published=None):
+    """classify(), then - only when the body itself was too thin to decide -
+    a second, stricter look at each trusted poster OCR text (v0.84.4).
+
+    Returns ``(classification, image_ref)`` - ``image_ref`` is the URL of the
+    poster that decided it, or ``None`` when the body alone (or nothing)
+    decided it, so a caller can record where a classification came from.
+
+    ``trusted_image_texts`` is a list of ``(image_ref, ocr_text)`` pairs the
+    runtime has *already* restricted to what v0.84.4's own gate calls
+    trustworthy for classification: inside the post's own content boundary,
+    a real poster candidate, OCR succeeded, at least `MIN_TEXT_FOR_IMAGE_TRUST`
+    characters, and not classified as a logo/nav asset. This function adds a
+    second, independent layer on top of that: even a trusted image is not
+    enough by itself:
+
+    * The body must actually have been too thin to judge - a long, text-rich
+      post that keyword-classifies as OTHER stays OTHER; an attached image
+      never overrides a real, text-rich judgment (Section 12).
+    * A single keyword is not enough - the image must classify as carrying
+      social/milonga context (not bare CLASS, not OTHER) *and* separately
+      read a date *and* (a start time or a LABEL-tagged venue) via the same
+      extractor every field-fill already trusts (Section 9). "밀롱가" on its
+      own, with no date or time or venue anywhere on the poster, is not
+      treated as an event announcement.
+    * A poster naming more than one distinct date (a multi-day schedule
+      table, a multi-studio listing) never promotes a classification - which
+      program the post is even about is not decidable, so no candidate is
+      safer than a guessed one (Section 15).
+
+    The first image that clears every gate wins; none of this ever changes
+    an already-decided (non-OTHER) classification.
+    """
+    classification = classify(title, body, known_event_type=known_event_type)
+    if classification != "OTHER":
+        return classification, None
+    if known_event_type:
+        return classification, None
+    if len((body or "").strip()) >= MIN_TEXT_FOR_IMAGE_TRUST:
+        return classification, None
+    if not trusted_image_texts:
+        return classification, None
+
+    # Imported here, not at module scope - extractor.py has no reason to
+    # import classifier.py, and this keeps that one-directional.
+    from .extractor import _as_date, _context_segments
+
+    published_date = _as_date(published)
+    for image_ref, image_text in trusted_image_texts:
+        if not image_text or len(image_text.strip()) < MIN_TEXT_FOR_IMAGE_TRUST:
+            continue
+        image_classification = classify(title, image_text)
+        if image_classification not in _SOCIAL_CONTEXT_CLASSIFICATIONS:
+            continue
+        # More than one distinct date on this one poster - a multi-event
+        # listing. Which program the post even announces is not decidable
+        # from this image; try the next one rather than guess.
+        segments = _context_segments(f"{title} {image_text}", published_date)
+        if len(segments) > 1:
+            continue
+        sub = _extract_signal(title, image_text, image_classification, published_date)
+        has_date = sub.date is not None
+        has_time = sub.start_time is not None
+        has_labelled_venue = any(
+            e.field == "venue" and (e.inference or "").startswith("LABEL:")
+            for e in sub.evidences
+        )
+        if has_date and (has_time or has_labelled_venue):
+            return image_classification, image_ref
+
+    return classification, None
+
+
+def _extract_signal(title, image_text, event_type, published_date):
+    from .extractor import extract_single
+
+    return extract_single(title, image_text, event_type=event_type, published=published_date)

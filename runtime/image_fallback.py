@@ -162,6 +162,48 @@ def gather_image_texts(
     return results
 
 
+# Mirrors engine.classifier.MIN_TEXT_FOR_IMAGE_TRUST - restated rather than
+# imported, the same way that constant restates runtime.acquisition's own
+# MINIMUM_USEFUL_TEXT: each package stays free of a cross-import for one
+# shared number, and both sides are exercised by their own tests.
+MIN_TEXT_FOR_CLASSIFICATION_TRUST = 20
+
+
+def gather_trusted_classification_texts(pg, source_item_id: int) -> list[tuple[str, str]]:
+    """Already-recorded ``(image_url, text)`` pairs trustworthy enough to
+    help *classify* this post (v0.84.4) - a stricter subset of whatever
+    ``gather_image_texts()`` already fetched and cached in
+    ``source_item_image`` for this item, not a new fetch or a new OCR call.
+
+    Three checks beyond "OCR succeeded" (which ``gather_image_texts()``
+    already requires to return anything at all):
+
+    * not classified LOGO by ``media_classifier.classify_media()`` - a
+      poster candidate can still be a brand mark or nav asset that merely
+      sat inside the post's own content boundary; extract_with_image_
+      fallback() stays happy to read a field off it, but classification
+      trusts it less.
+    * at least MIN_TEXT_FOR_CLASSIFICATION_TRUST characters - a single
+      garbled OCR word is not "the poster said this is a milonga."
+    * ``ocr_status`` is a real success, not merely present.
+
+    Callers pass this to classify_with_image_evidence() as
+    ``trusted_image_texts`` - a separate, usually smaller list from the one
+    handed to extract_with_image_fallback() as ``image_texts``, which stays
+    exactly as permissive as it was before this function existed.
+    """
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT image_url, ocr_text FROM source_item_image "
+            "WHERE source_item_id = %s AND ocr_status = %s "
+            "AND (media_class IS NULL OR media_class != 'LOGO') "
+            "AND length(trim(ocr_text)) >= %s "
+            "ORDER BY image_index",
+            (source_item_id, ocr.STATUS_SUCCESS, MIN_TEXT_FOR_CLASSIFICATION_TRUST),
+        )
+        return [(row[0], row[1]) for row in cur.fetchall()]
+
+
 def mark_used_as_fallback(pg, source_item_id: int, used_urls: set[str]) -> None:
     """Record which images `extract_with_image_fallback()` actually drew a
     field from - the engine decides this, only after extraction runs, so it

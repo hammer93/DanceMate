@@ -183,6 +183,10 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                         pg, settings, extract_single, needs_image_fallback,
                         item, content, post,
                     )
+                    trusted_classification_texts = \
+                        image_fallback.gather_trusted_classification_texts(
+                            pg, item["source_item_id"],
+                        )
 
                     post_id, is_new = engine_db.persist_raw_post(engine_con, post)
                     if is_new:
@@ -190,6 +194,7 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                             engine_con, post,
                             item.get("source_role") or DEFAULT_SOURCE_ROLE,
                             image_texts=image_texts,
+                            trusted_classification_texts=trusted_classification_texts,
                         )
                         events = result.get("events") or []
                         if events:
@@ -309,9 +314,19 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         pg, settings, extract_single, needs_image_fallback,
                         item, item, post,
                     )
+                    # v0.84.4: classify() ran on title+body alone, before
+                    # image_texts was ever consulted - a genuinely image-only
+                    # post (empty body) always classified OTHER and never
+                    # reached extraction at all, wiring or no wiring. See
+                    # engine.classifier.classify_with_image_evidence().
+                    trusted_classification_texts = \
+                        image_fallback.gather_trusted_classification_texts(
+                            pg, source_item_id,
+                        )
                     result = process_discovered_post(
                         engine_con, post, item.get("source_role") or DEFAULT_SOURCE_ROLE,
                         image_texts=image_texts,
+                        trusted_classification_texts=trusted_classification_texts,
                     )
                     events = result.get("events") or []
 
