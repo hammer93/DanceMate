@@ -134,7 +134,16 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         source_id=raw.get("source_id") or item.get("source_key"),
         platform=raw.get("platform") or item.get("platform"),
         source_url=raw.get("source_url") or item.get("url") or "",
-        title=raw.get("title") or item.get("title") or "",
+        # item.get("title"): ingest_pending()'s `item` (intake.pending_items())
+        # carries the discovery-time title directly under this key.
+        # reprocess_acquired()'s `item` (content_store.needing_reprocess())
+        # is a source_item_content row first - its own "title" column is the
+        # page's own parsed title when acquisition found one, NULL for
+        # anything never fetched (a FETCH_BLOCKED row, most obviously) -
+        # source_item_title is that same call's explicit alias for the
+        # discovery-time title, so a blocked or title-less fetch still gets
+        # a real title instead of silently classifying an empty string.
+        title=raw.get("title") or item.get("title") or item.get("source_item_title") or "",
         body=body,
         # The stored raw JSON is the collector's own record; the column is the
         # runtime's. Either will do, and one of them is always there.
@@ -183,6 +192,10 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                         pg, settings, extract_single, needs_image_fallback,
                         item, content, post,
                     )
+                    trusted_classification_texts = \
+                        image_fallback.gather_trusted_classification_texts(
+                            pg, item["source_item_id"],
+                        )
 
                     post_id, is_new = engine_db.persist_raw_post(engine_con, post)
                     if is_new:
@@ -190,6 +203,7 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                             engine_con, post,
                             item.get("source_role") or DEFAULT_SOURCE_ROLE,
                             image_texts=image_texts,
+                            trusted_classification_texts=trusted_classification_texts,
                         )
                         events = result.get("events") or []
                         if events:
@@ -309,9 +323,19 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         pg, settings, extract_single, needs_image_fallback,
                         item, item, post,
                     )
+                    # v0.84.4: classify() ran on title+body alone, before
+                    # image_texts was ever consulted - a genuinely image-only
+                    # post (empty body) always classified OTHER and never
+                    # reached extraction at all, wiring or no wiring. See
+                    # engine.classifier.classify_with_image_evidence().
+                    trusted_classification_texts = \
+                        image_fallback.gather_trusted_classification_texts(
+                            pg, source_item_id,
+                        )
                     result = process_discovered_post(
                         engine_con, post, item.get("source_role") or DEFAULT_SOURCE_ROLE,
                         image_texts=image_texts,
+                        trusted_classification_texts=trusted_classification_texts,
                     )
                     events = result.get("events") or []
 

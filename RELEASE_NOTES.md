@@ -1,5 +1,137 @@
 # DanceMate Release Notes
 
+## v0.84.4 Image-aware Event Classification + OCR Evidence Promotion
+
+Status: root-cause fix, generic (non-source-specific) design, real live
+K-TANGO detect-only verification, 2026-09-07.
+
+Version split:
+
+- Product Runtime: 0.84.4
+- Information Engine: 0.83 (up from 0.82) - `classifier.classify_with_
+  image_evidence()` (new) and `live_pipeline.process_discovered_post()`
+  (now calls it) changed.
+
+### Goal
+
+v0.84.3 closed the two structural gaps that discarded an image-only post's
+poster before OCR ever got a chance at it, but left the actual classification
+gate untouched: `process_discovered_post()` called `classify(title, body)`
+- title and body alone - *before* ever looking at a post's `image_texts`.
+An image-only post (empty body) always classified `OTHER` and returned
+`events=[]`, regardless of how good its poster's OCR reading was. This
+release closes that gate without redesigning the classifier or forcing
+`image_texts` into it wholesale.
+
+### Design
+
+`classifier.classify_with_image_evidence()` is a second, stricter layer on
+top of the unchanged `classify()`, engaged only when body text itself was
+too thin to have decided anything:
+
+- a text-rich post that already classifies as something other than `OTHER`
+  is returned unchanged - an attached image is never consulted, let alone
+  allowed to override a real, text-rich judgment;
+- a body under 20 characters (mirroring `runtime.acquisition.
+  MINIMUM_USEFUL_TEXT`) is what "too thin" means;
+- an image must carry social/milonga context (not bare `CLASS`, not
+  `OTHER`) **and** read a real date **and** (a start time or a
+  LABEL-tagged venue) via the exact extractor every field-fill already
+  trusts - a bare "밀롱가" with nothing else on the poster never promotes;
+- a poster naming more than one distinct date (a multi-day schedule table)
+  never promotes anything - which program the post even announces is not
+  decidable from it, and no candidate is safer than a guessed one.
+
+The runtime-side gate feeding it, `image_fallback.
+gather_trusted_classification_texts()`, is a DB-read-only, stricter subset
+of whatever `gather_image_texts()` already fetched/OCR'd: not classified
+`LOGO` by `media_classifier.classify_media()`, and at least 20 characters.
+It changes nothing about the existing, more permissive field-fallback path
+(`extract_with_image_fallback()`'s `image_texts`) - only classification
+gained a second input. Wired into both `ingest_pending()` and
+`reprocess_acquired()`, so a genuinely image-only post is reachable from
+either entry point.
+
+The existing IMAGE_OCR-excludes-VERIFIED rule (v0.81.3) needed no change:
+any event whose fields came entirely from a poster already carries
+`IMAGE_OCR` evidence for date/time/fee, which `verifier._text_evidenced()`
+already excludes from `core_complete` - so an image-classified event stays
+`POSSIBLE` by the same structural rule, automatically, with nothing new to
+verify.
+
+### A real bug found along the way
+
+`content_store.needing_reprocess()`'s query never selected the source
+item's own discovery-time title at all. `source_item_content` happens to
+carry its *own*, unrelated `title` column (the fetched page's own parsed
+title - NULL for anything never fetched, most obviously a `FETCH_BLOCKED`
+row), which Python's column-name dict-building let silently stand in for
+it with no error. Every post `reprocess_acquired()` ever built therefore
+had `title=""`, invisible before this release because `classify()` from
+body text alone never needed the title to already hold a real value - it
+becomes load-bearing the moment a poster's own keyword needs a title to
+combine with. Fixed by selecting `i.title AS source_item_title` explicitly
+and falling back to it in `_to_raw_post()`.
+
+### Verification
+
+- 22 new tests: the 8 required control fixtures (text-rich/image-only-
+  real-event/image-only-class-ad/generic-poster-missing-signal/logo-only/
+  unrelated-chrome/old-archive-flyer/multi-date-poster), `known_event_type`
+  short-circuit, the title-fallback fix, the trusted-texts DB gate (LOGO
+  exclusion, minimum length, real-poster inclusion), a synthetic 647-shaped
+  recovery through `reprocess_acquired()`, and never-VERIFIED-alone.
+- Full Runtime suite (board staging, isolated PostgreSQL): 1337 passed, the
+  same 2 pre-existing unrelated failures (`test_tangocalendar_discovery`).
+  Engine suite: 794 passed, 0 failures.
+- **Live detect-only against all 10 real K-TANGO items** (read-only: cached
+  OCR text plus one genuine, DB-write-free re-fetch for the one item with no
+  cached attempt yet; full detail per item logged). Result: **zero new false
+  candidates, zero wrong fills** - and an honest, per-item reason for every
+  one of the four items this release still cannot recover:
+  - **643**: a real multi-program festival schedule (`VIP 밀롱가 1/2/3`,
+    a separate performance slot, several venues). A date resolves cleanly
+    (only one date pattern appears), but the multi-signal gate correctly
+    refuses anyway - the OCR'd times are all stranded by the table's own
+    line-wrapping (no clean `HH:MM-HH:MM` reads), and no venue is
+    LABEL-tagged. This is the gate protecting against exactly the
+    multi-program risk Section 15 describes, just not via the explicit
+    multi-date check (only one date happens to OCR cleanly here).
+  - **647**: the item behind v0.84.3's own incident. Its poster's OCR is
+    heavily garbled (stylised festival typography - `"S@CIl Ey YY & PES
+    TI VAL"`, `"뚜벅뚜벅 축저"`) and contains no clean social/milonga
+    keyword at all. A genuine OCR-quality limit, not a design gap; its
+    existing event (21912) is preserved, not deleted, by v0.84.3's guard.
+  - **648**: OCR is actually clean here (`"Tango special Performance ...
+    2024.09.26 19:00 - 20:30"`) - but it is a stage performance, not a
+    social-dance milonga, and correctly does not classify as one under
+    this project's own MILONGA/SOCIAL/CLASS taxonomy. Not a recall miss;
+    a correct exclusion.
+  - **649**: its poster still exceeds the 5MB fetch cap (a real, deliberate
+    safety limit, unweakened) - unchanged since v0.84.3's own inventory of
+    this exact item.
+  - 645/646 (real, already-existing events) and 642/644/650/651
+    (real non-events) are all unaffected - confirmed byte-for-byte via the
+    same detect-only pass.
+- Because production currently has zero items eligible for reprocessing
+  (`needing_reprocess()` returns empty system-wide, unchanged since
+  v0.84.3's own final stable state), this deploy has **no immediate effect
+  on any existing candidate or event** - confirmed, not merely expected.
+  The benefit is the closed architecture gap itself, proven safe against
+  real, messy, real-world OCR data, and reachable by any future post whose
+  poster does carry the required clean, multi-signal evidence.
+
+### Also fixed
+
+`.env.example`'s `ENGINE_VERSION` had drifted to `0.81` through both
+v0.84.2 and v0.84.3 (real `DEFAULT_ENGINE_VERSION` bumps neither release's
+own version-bump step caught, since nothing checked the two against each
+other). A production `.env` is hand-edited at deploy time regardless, so
+production itself was never affected - but the checked-in template is what
+every fresh `.env` starts from. Fixed, and a new test
+(`test_env_example_engine_version_matches_the_default`) guards it from
+drifting again.
+
 ## v0.84.3 Image-only Poster OCR Recovery + K-TANGO Evidence Extraction
 
 Status:

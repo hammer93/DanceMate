@@ -304,7 +304,15 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     }
     with con.cursor() as cur:
         cur.execute(
-            "SELECT c.*, i.url, i.source_id, i.published_at, "
+            # i.title as its own alias: c.* already carries a `title` column
+            # (source_item_content's own, parsed from the fetched page body
+            # - NULL for anything that was never fetched, most obviously a
+            # FETCH_BLOCKED row) which would otherwise shadow the source
+            # item's real, discovery-time title from Python's column-name
+            # dict-building with no error or warning. v0.84.4: found because
+            # classify_with_image_evidence() needs a real title to work
+            # with, not a silently-empty one.
+            "SELECT c.*, i.url, i.source_id, i.published_at, i.title AS source_item_title, "
             "       s.source_key, s.source_role, i.raw "
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "

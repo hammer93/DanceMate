@@ -14,11 +14,20 @@ FETCH_BLOCKED now carrying `images`). This file covers gap 2 against the real
 staging PostgreSQL (the `pg` fixture rolls back) - nothing here calls
 normalize_all()/ingest_pending()/reprocess_acquired() in bulk, per the
 v0.82.2 safety rule.
+
+v0.84.4 adds a third gap this file also covers: even with both gaps above
+fixed, process_discovered_post() classified from title+body alone, before
+image_texts was ever consulted - a genuinely image-only post (empty body)
+always classified OTHER and never reached extraction. See
+engine.classifier.classify_with_image_evidence() and
+runtime.image_fallback.gather_trusted_classification_texts() for the fix;
+the tests near the end of this file cover the DB-integration and runtime-
+wiring side of it.
 """
 
 from __future__ import annotations
 
-from runtime import acquisition, content_store, engine_ingest, image_fetch, ocr
+from runtime import acquisition, content_store, engine_ingest, image_fallback, image_fetch, ocr
 
 
 def _source_item(pg, unique, suffix="1"):
@@ -201,13 +210,15 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
     this test commits its own writes and cleans them up explicitly instead
     of relying on the fixture's usual rollback.
 
-    This is the exact shape of the K-TANGO 647 incident: a real event, then
-    a later fetch that comes back blocked. classify() cannot see the poster
-    at all (image_texts arrives after classification, and the body here is
-    empty), so it returns OTHER and zero events regardless of the wiring
-    fix - the honest guarantee this release provides for a truly image-only
-    reprocess is that the real prior event is preserved, not deleted, while
-    that gap stays open."""
+    This is the shape of the K-TANGO 647 incident with a poster that OCR'd
+    fine but reads as nothing recognizable (v0.84.4's own K-TANGO detect-
+    only found real posters exactly this unreadable, e.g. source_items 643/
+    648/649) - image-aware classification (v0.84.4) still correctly leaves
+    this as OTHER (no social/milonga signal at all), so the v0.84.3 guard
+    below it is still what protects the real prior event. See
+    test_reprocessing_a_blocked_item_with_a_readable_poster_now_recovers_
+    via_image_aware_classification for the case a readable poster *does*
+    now recover, which this same guard used to (wrongly) suppress."""
     from runtime.config import load_settings
 
     title = "탱고 이벤트"
@@ -220,11 +231,12 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
         # The body the site originally served: a real, complete announcement.
         # An explicit year avoids needing a `published_at` on the fixture
         # row - the same v0.80.2 rule that would otherwise leave the date
-        # unresolved.
+        # unresolved. "밀롱가" makes this classify as an event from the body
+        # alone, same as any real announcement naming its own kind of night.
         content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
             status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
             fetched_url=url,
-            text="2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오 입장료 13,000원",
+            text="밀롱가 2026.09.05 19:30-23:30 장소: PISTA 입장료 13,000원",
         ))
         pg.commit()
         result = engine_ingest.ingest_pending(settings)
@@ -235,7 +247,9 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
         assert before[0]["event_date"] == "2026-09-05"
 
         # The site now serves an image-only version of the same post: no
-        # body text at all, just a poster naming the same event.
+        # body text at all, and a poster whose OCR text carries no social/
+        # milonga signal - a real, unreadable-for-classification result,
+        # not a fetch failure.
         content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
             status=acquisition.FETCH_BLOCKED, method=acquisition.METHOD_NONE,
             fetched_url=url, images=["https://cdn.example.test/poster.jpg"],
@@ -246,7 +260,7 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
             url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
         monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
             status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
-            text="탱고 이벤트 2026.09.05 19:30~23:30 장소: 라밀롱가 스튜디오 입장료 13,000원"))
+            text="안내 포스터 이미지를 확인해 주세요 자세한 사항은 문의 바랍니다"))
 
         selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
         assert item_id in selected
@@ -254,9 +268,9 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
         outcome = engine_ingest.reprocess_acquired(settings)
         assert outcome["failed"] == 0
         assert outcome["skipped_blocked"] == 1, (
-            "a blocked fetch that cannot be classified must be recorded as "
-            "preserved-not-reprocessed, not silently treated as a normal "
-            "reprocess"
+            "a blocked fetch with a poster that carries no recognizable "
+            "event signal must be recorded as preserved-not-reprocessed, "
+            "not silently treated as a normal reprocess"
         )
         assert outcome["reprocessed"] == 0
 
@@ -267,11 +281,95 @@ def test_reprocessing_a_blocked_item_preserves_its_existing_event_instead_of_del
             "cannot see a poster's OCR text"
         )
         assert after[0]["event_date"] == "2026-09-05"
-        assert after[0]["venue"] == "라밀롱가 스튜디오"
+        assert after[0]["venue"] == "PISTA"
     finally:
         # This test committed its own writes (see docstring) - the `pg`
         # fixture's rollback at teardown cannot undo them, so clean up
         # explicitly rather than leaving rows in the shared staging database.
+        with pg.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM source_item_content WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM source_items WHERE source_item_id = %s", (item_id,))
+            cur.execute("DELETE FROM sources WHERE source_key = %s", (f"SRC-REP-{unique}",))
+        pg.commit()
+
+
+def test_reprocessing_a_blocked_item_with_a_readable_poster_now_recovers_via_image_aware_classification(
+    pg, unique, env, monkeypatch
+):
+    """v0.84.4: the case the v0.84.3 guard above could only ever preserve,
+    never actually recover - a genuinely image-only post whose poster does
+    carry real, multi-signal event evidence (a date, a time, a labelled
+    venue, and social/milonga context) now classifies and creates a real
+    candidate through reprocess_acquired(), not just through
+    ingest_pending(). Every field here is IMAGE_OCR evidence, so this must
+    still never reach VERIFIED (Section 19-20)."""
+    from runtime.config import load_settings
+
+    title = "K-TANGO 행사"
+    url = "https://example.invalid/reprocess/post-image-aware"
+    item_id = _pending_item(pg, unique, title, url)
+    pg.commit()
+    settings = load_settings()
+
+    try:
+        # First fetch: blocked, and genuinely no poster at all - ingest_
+        # pending() correctly finds nothing to recover, exactly as it
+        # always has.
+        content_store.record_outcome(pg, item_id, _blocked_outcome([]))
+        pg.commit()
+        result = engine_ingest.ingest_pending(settings)
+        assert result["ingested"] == 1
+        assert _events_for(settings, url) == []
+
+        # A later fetch: still blocked, but the site now serves a poster -
+        # the real K-TANGO shape (643/648/649's own live-audited state).
+        content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+            status=acquisition.FETCH_BLOCKED, method=acquisition.METHOD_NONE,
+            fetched_url=url, images=["https://cdn.example.test/poster.jpg"],
+            error_code="BODY_UNAVAILABLE", error="page fetched but no article body was served",
+        ))
+        pg.commit()
+        monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+            url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+        # An explicit year - a yearless "8/1" would need `published_at` set
+        # on the fixture row for the v0.80.2 inference rule to resolve it,
+        # and a genuinely blocked item never gets one; this poster, like a
+        # real one, states its own year outright.
+        monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+            status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
+            text="밀롱가 2026.08.01 19:00-23:00 장소: 연세대학교 대강당 입장료 13,000원"))
+
+        selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
+        assert item_id in selected
+
+        outcome = engine_ingest.reprocess_acquired(settings)
+        assert outcome["failed"] == 0
+        assert outcome["skipped_blocked"] == 0, (
+            "a readable poster must not fall into the preserve-guard - it "
+            "should classify and reprocess normally"
+        )
+        assert outcome["reprocessed"] == 1
+        assert outcome["candidates_after"] == 1
+
+        after = _events_for(settings, url)
+        assert len(after) == 1
+        assert after[0]["event_date"] == "2026-08-01"
+        assert after[0]["venue"] == "연세대학교 대강당"
+        assert after[0]["fee"] == 13000
+        assert after[0]["status"] == "POSSIBLE", (
+            "an event whose classification and every field came from "
+            "image OCR alone must never reach VERIFIED"
+        )
+        assert after[0]["name"] == title, (
+            "reprocess_acquired()'s own item shape has no title of its own "
+            "(source_item_content.title is only ever set by a page-title "
+            "parse, never by a blocked fetch) - needing_reprocess() must "
+            "still hand back the item's real, discovery-time title rather "
+            "than silently classifying and naming the event from an empty "
+            "string"
+        )
+    finally:
         with pg.cursor() as cur:
             cur.execute("DELETE FROM events WHERE source_item_id = %s", (item_id,))
             cur.execute("DELETE FROM source_item_content WHERE source_item_id = %s", (item_id,))
@@ -351,3 +449,81 @@ def test_reprocessing_a_fetched_item_missing_a_field_recovers_it_from_the_poster
             cur.execute("DELETE FROM source_items WHERE source_item_id = %s", (item_id,))
             cur.execute("DELETE FROM sources WHERE source_key = %s", (f"SRC-REP-{unique}",))
         pg.commit()
+
+
+# --- v0.84.4: image_fallback.gather_trusted_classification_texts() ---------
+#
+# A stricter, DB-read-only subset of whatever gather_image_texts() already
+# fetched/OCR'd/cached in source_item_image for classification's own use -
+# see the function's own docstring in runtime/image_fallback.py. These
+# tests exercise gather_image_texts() first (the real way these rows get
+# populated) and then check what gather_trusted_classification_texts()
+# does and does not hand back.
+
+def test_gather_trusted_classification_texts_excludes_a_logo_classified_image(
+    pg, unique, monkeypatch,
+):
+    item_id = _source_item(pg, unique, suffix="logo")
+    monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+        url=u, status="FETCHED", content_type="image/png", data=b"\x89PNG fake"))
+    monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+        status=ocr.STATUS_SUCCESS, confidence=90.0, width=200, height=200,
+        text="밀롱가 9/5(토) 19:30-23:30 장소: PISTA 입장료 13,000원"))
+
+    from runtime.config import load_settings
+    settings = load_settings()
+    texts = image_fallback.gather_image_texts(
+        pg, settings, source_item_id=item_id,
+        candidate_urls=["https://cdn.example.test/site-logo.png"],
+    )
+    assert len(texts) == 1, "gather_image_texts() itself stays permissive - unchanged"
+
+    trusted = image_fallback.gather_trusted_classification_texts(pg, item_id)
+    assert trusted == [], (
+        "a URL classified LOGO by media_classifier.classify_media() must "
+        "never be trusted to help decide an image-only post's "
+        "classification, even though it is still trusted for field-fill"
+    )
+
+
+def test_gather_trusted_classification_texts_excludes_text_under_the_minimum_length(
+    pg, unique, monkeypatch,
+):
+    item_id = _source_item(pg, unique, suffix="short")
+    monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+        url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+    monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+        status=ocr.STATUS_SUCCESS, confidence=40.0, width=400, height=400,
+        text="밀롱가"))  # a real poster candidate, but a near-empty OCR read
+
+    from runtime.config import load_settings
+    settings = load_settings()
+    image_fallback.gather_image_texts(
+        pg, settings, source_item_id=item_id,
+        candidate_urls=["https://cdn.example.test/poster.jpg"],
+    )
+
+    trusted = image_fallback.gather_trusted_classification_texts(pg, item_id)
+    assert trusted == [], "a single word is not 'the poster said this is a milonga'"
+
+
+def test_gather_trusted_classification_texts_includes_a_real_poster_reading(
+    pg, unique, monkeypatch,
+):
+    item_id = _source_item(pg, unique, suffix="real")
+    poster_text = "밀롱가 9/5(토) 19:30-23:30 장소: PISTA 입장료 13,000원"
+    monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+        url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+    monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+        status=ocr.STATUS_SUCCESS, confidence=90.0, width=800, height=600,
+        text=poster_text))
+
+    from runtime.config import load_settings
+    settings = load_settings()
+    image_fallback.gather_image_texts(
+        pg, settings, source_item_id=item_id,
+        candidate_urls=["https://cdn.example.test/real-poster.jpg"],
+    )
+
+    trusted = image_fallback.gather_trusted_classification_texts(pg, item_id)
+    assert trusted == [("https://cdn.example.test/real-poster.jpg", poster_text)]

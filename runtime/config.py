@@ -25,7 +25,12 @@ PRODUCT_VERSION = "0.82"
 # fourth fallback field alongside date/time/fee, and extract_fee()'s
 # _NOT_A_FEE narrowed "주차" so "무료주차" no longer disqualifies a real,
 # nearby, clearly-labelled fee.
-DEFAULT_ENGINE_VERSION = "0.82"
+# v0.84.4 bumped it again: classify_with_image_evidence() (classifier.py)
+# and process_discovered_post()'s call to it (live_pipeline.py) - an
+# image-only post can now be classified from a trusted poster reading, not
+# just title+body, closing the gap that made v0.84.3's own OCR fallback
+# unreachable for a genuinely empty-body post.
+DEFAULT_ENGINE_VERSION = "0.83"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
