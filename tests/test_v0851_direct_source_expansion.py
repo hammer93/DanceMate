@@ -457,3 +457,25 @@ def test_a_failed_live_test_never_auto_enables_a_source(seeded, settings, monkey
             "a collection failure (or any collection attempt) must never itself "
             "flip enabled - only an explicit operator action does"
         )
+
+
+# --- a real bug found during this release's own live E2E audit --------------
+#
+# Enabling SRC-W-006 on a genuinely fresh, empty staging Postgres (Section
+# 37's own "disabled -> one-shot live test -> audit" order) crashed the
+# scheduler's event-normalization job with `KeyError: 'unresolved_venues'`.
+# normalize_all()'s zero-candidates early return had never included that key
+# (nor 'pruned') - unreachable in every prior release, since production
+# always has hundreds of pending candidates by the time this job runs. A
+# genuinely fresh staging database is the first time this exact zero-
+# candidates-at-normalization-time state has actually occurred in this
+# project. Not caused by v0.85.1's source additions themselves; caught by
+# them, on a properly fresh (not volume-reused) staging Postgres.
+
+def test_normalize_all_returns_every_key_even_with_zero_candidates(settings, monkeypatch):
+    from runtime import candidates as candidate_store
+
+    monkeypatch.setattr(candidate_store, "list_candidates", lambda *a, **kw: [])
+    result = normalization.normalize_all(settings)
+    for key in ("candidates", "normalized", "skipped_no_date", "unresolved_venues", "pruned"):
+        assert key in result, f"normalize_all()'s zero-candidates return is missing '{key}'"
