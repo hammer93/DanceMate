@@ -252,7 +252,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
     holding values the current engine would no longer produce. Both safeguards
     above still apply, so a forced pass cannot overwrite anyone's review.
     """
-    engine_db, RawPostRecord, process_discovered_post, _extract_single, _needs_fallback = \
+    engine_db, RawPostRecord, process_discovered_post, extract_single, needs_image_fallback = \
         _engine(settings)
 
     with db.connect(settings, autocommit=True) as pg:
@@ -294,8 +294,23 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         body=post.body, acquisition_quality=post.acquisition_quality,
                     )
 
+                    # v0.84.3: this call site never gathered image_texts at
+                    # all - an image-only post (no body, a poster
+                    # needing_reprocess() now selects it for) would always
+                    # re-extract to nothing and then hit the unconditional
+                    # delete below, losing whatever the *original* ingest's
+                    # own image fallback had found. Found by that exact
+                    # regression on a real K-TANGO event: 647's real,
+                    # correctly-OCR'd date was thrown away because this
+                    # path never even tried the fallback ingest_pending()
+                    # already wires up.
+                    image_texts = _gather_image_texts(
+                        pg, settings, extract_single, needs_image_fallback,
+                        item, item, post,
+                    )
                     result = process_discovered_post(
-                        engine_con, post, item.get("source_role") or DEFAULT_SOURCE_ROLE
+                        engine_con, post, item.get("source_role") or DEFAULT_SOURCE_ROLE,
+                        image_texts=image_texts,
                     )
                     events = result.get("events") or []
                     # Replace this post's candidates with whatever the current
@@ -318,6 +333,13 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     )
                     if events:
                         engine_db.persist_events(engine_con, post_id, events)
+                        used = {
+                            e.inference
+                            for ev in events for e in ev.evidences
+                            if e.evidence_type == "IMAGE_OCR" and e.inference
+                        }
+                        if used:
+                            image_fallback.mark_used_as_fallback(pg, source_item_id, used)
                     after_total += len(events)
                     engine_con.commit()
                     content_store.mark_reprocessed(pg, source_item_id)

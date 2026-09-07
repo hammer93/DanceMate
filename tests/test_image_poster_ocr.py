@@ -18,7 +18,7 @@ v0.82.2 safety rule.
 
 from __future__ import annotations
 
-from runtime import acquisition, content_store
+from runtime import acquisition, content_store, engine_ingest, image_fetch, ocr
 
 
 def _source_item(pg, unique, suffix="1"):
@@ -125,3 +125,95 @@ def test_poster_candidates_are_stored_as_the_images_list(pg, unique):
     row = content_store.get(pg, item_id)
     assert row["poster_candidates"] == ["https://cdn.example.test/poster.jpg"]
     assert row["image_count"] == 1
+
+
+# --- the real production regression: reprocess_acquired() never wired up ---
+# image fallback at all, so an image-only item now-selected by
+# needing_reprocess() would re-extract to nothing and hit the unconditional
+# "replace this post's candidates with whatever the engine now makes of it"
+# delete below it - losing a real, previously-correct event. Found live: a
+# K-TANGO event (date correctly OCR'd from its own poster, back when the
+# post was still FETCHED_FULL pre-v0.84.2) was deleted the moment this
+# release's fix made the item eligible for reprocessing again.
+
+def _pending_item(pg, unique, title, url):
+    from runtime import sources
+
+    source = sources.create_source(
+        pg, source_key=f"SRC-REP-{unique}", name=f"reprocess probe {unique}",
+        platform="WEB", source_role="ORGANIZER", url="https://example.invalid/reprocess",
+        enabled=False)
+    with pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO source_items "
+            "(source_id, external_id, url, title, content_hash, ingest_state) "
+            "VALUES (%s, %s, %s, %s, %s, 'PENDING') RETURNING source_item_id",
+            (source["source_id"], f"ext-rep-{unique}", url, title, f"hash-rep-{unique}"))
+        return cur.fetchone()[0]
+
+
+def test_reprocessing_an_image_only_item_recovers_from_its_poster_not_nothing(
+    pg, unique, env, monkeypatch
+):
+    from runtime import engine_adapter
+    from runtime.config import load_settings
+    import sqlite3
+
+    title = "탱고 이벤트"
+    url = "https://example.invalid/reprocess/post"
+    item_id = _pending_item(pg, unique, title, url)
+    settings = load_settings()
+
+    # The body the site originally served: a real, complete announcement.
+    # An explicit year avoids needing a `published_at` on the fixture row -
+    # the same v0.80.2 rule that would otherwise leave the date unresolved.
+    content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+        status=acquisition.FETCHED_FULL, method=acquisition.METHOD_TEMPLATE_BOARD,
+        fetched_url=url,
+        text="2026.09.05 19:30-23:30 장소: 라밀롱가 스튜디오 입장료 13,000원",
+    ))
+    result = engine_ingest.ingest_pending(settings)
+    assert result["ingested"] == 1
+
+    def _events_for(source_url):
+        con = sqlite3.connect(engine_adapter.engine_db_path(settings))
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT ec.* FROM event_candidates ec "
+            "JOIN raw_posts rp ON rp.post_id = ec.post_id "
+            "WHERE rp.source_url = ?", (source_url,),
+        ).fetchall()
+        con.close()
+        return [dict(r) for r in rows]
+
+    before = _events_for(url)
+    assert len(before) == 1
+    assert before[0]["event_date"] == "2026-09-05"
+
+    # The site now serves an image-only version of the same post: no body
+    # text at all, just a poster naming the same event.
+    content_store.record_outcome(pg, item_id, acquisition.AcquisitionOutcome(
+        status=acquisition.FETCH_BLOCKED, method=acquisition.METHOD_NONE,
+        fetched_url=url, images=["https://cdn.example.test/poster.jpg"],
+        error_code="BODY_UNAVAILABLE", error="page fetched but no article body was served",
+    ))
+    monkeypatch.setattr(image_fetch, "fetch_image", lambda u, **kw: image_fetch.ImageFetchResult(
+        url=u, status="FETCHED", content_type="image/jpeg", data=b"\xff\xd8\xff fake"))
+    monkeypatch.setattr(ocr, "run_ocr", lambda data, **kw: ocr.OcrResult(
+        status=ocr.STATUS_SUCCESS, confidence=88.0, width=800, height=600,
+        text="탱고 이벤트 2026.09.05 19:30~23:30 장소: 라밀롱가 스튜디오 입장료 13,000원"))
+
+    selected = {row["source_item_id"] for row in content_store.needing_reprocess(pg, limit=50)}
+    assert item_id in selected
+
+    outcome = engine_ingest.reprocess_acquired(settings)
+    assert outcome["reprocessed"] == 1
+    assert outcome["failed"] == 0
+
+    after = _events_for(url)
+    assert len(after) == 1, (
+        "the real event must survive being reprocessed from an image-only "
+        "fetch, not be silently deleted for lack of image-fallback wiring"
+    )
+    assert after[0]["event_date"] == "2026-09-05"
+    assert after[0]["venue"] == "라밀롱가 스튜디오"
