@@ -216,6 +216,21 @@ def test_env_example_carries_no_real_secret():
     assert f"DANCEMATE_VERSION={current}" in text
 
 
+def test_env_example_engine_version_matches_the_default():
+    """v0.84.4: `.env.example`'s ENGINE_VERSION default drifted to 0.81
+    through both v0.84.2 and v0.84.3 - two real DEFAULT_ENGINE_VERSION
+    bumps neither of which anyone caught, since nothing checked the two
+    against each other. A production `.env` overrides ENGINE_VERSION
+    explicitly (an operator edits it by hand alongside a real deploy, as
+    happened for both those releases), so this never affected production
+    itself - but the checked-in template is what every future `cp .env.
+    example .env` starts from, staging included, and it should not lie."""
+    from runtime.config import DEFAULT_ENGINE_VERSION
+
+    text = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert f"ENGINE_VERSION={DEFAULT_ENGINE_VERSION}" in text
+
+
 def test_env_is_git_ignored_but_the_template_is_not():
     _require_git()
 
