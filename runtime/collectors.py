@@ -143,7 +143,7 @@ def content_mode(source: dict[str, Any]) -> str:
     parser = _config(source).get("parser") or WEB_PARSER_BOARD
     if parser in acquisition.NON_HTML_API_PARSERS:
         return CONTENT_MODE_NON_HTML_API
-    if parser == WEB_PARSER_MILTANG:
+    if parser in (WEB_PARSER_MILTANG, WEB_PARSER_TANGOCLASS):
         return CONTENT_MODE_DISCOVERY_FULL
     if parser == WEB_PARSER_DANCEINFO:
         return CONTENT_MODE_DETAIL_FETCH
@@ -359,6 +359,7 @@ WEB_PARSER_DANCEINFO = "danceinfo_json"
 WEB_PARSER_TANGONOW = "tangonow_firestore"
 WEB_PARSER_TANGOCALENDAR = "tangocalendar_json"
 WEB_PARSER_MILTANG = "miltang_ssr"
+WEB_PARSER_TANGOCLASS = "tangoclass_wp_json"
 
 
 def _web_discovery_module(parser: str):
@@ -378,6 +379,10 @@ def _web_discovery_module(parser: str):
         from . import miltang_discovery  # noqa: PLC0415
 
         return miltang_discovery
+    if parser == WEB_PARSER_TANGOCLASS:
+        from . import tangoclass_discovery  # noqa: PLC0415
+
+        return tangoclass_discovery
     from . import web_discovery  # noqa: PLC0415
 
     return web_discovery
