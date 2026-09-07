@@ -149,6 +149,44 @@ def test_a_complete_body_including_venue_never_consults_the_image():
     assert not any(e.evidence_type == IMAGE_OCR for e in ev.evidences)
 
 
+def test_a_bare_known_studio_name_mentioned_in_a_listing_is_not_read_as_the_venue():
+    """v0.84.3 (found on a real K-TANGO poster, source_item 646 - a "서울
+    밀롱가데이" schedule table naming ~15 participating studios across two
+    days): one of them, picked out by the bare-substring known-name
+    shortcut, must not become *this* event's venue - that shortcut is only
+    trustworthy on a short curated body, not a dense OCR'd listing.
+    Body-text venue reading (extract_venue() itself) is untouched; this is
+    strictly about what an image is trusted to contribute.
+
+    Time is a separate, harder problem this fix does not attempt: a
+    same-shaped listing still hands back *a* time (whichever row's pattern
+    the regex meets first), because nothing here has a "no reliable single
+    reading in a multi-item listing" detector - building one is exactly the
+    kind of architecture change this release avoids. The real item this
+    fixture is shaped after (646) is excluded from this release's scoped
+    production apply for that reason, per its own detect-only audit."""
+    ev = extract_with_image_fallback(
+        "서울 밀롱가데이", "9/27 서울 전역",
+        event_type="MILONGA", published=PUBLISHED,
+        image_texts=[("img1",
+            "엔빠스 19:00-23:00 클럽판 19:00-23:30 루쓰탱고 20:00-01:00 "
+            "오나다 17:00-20:30 오뜨라 19:00-23:00 입장료 문의")],
+    )
+    assert ev.venue is None
+
+
+def test_a_labelled_venue_inside_a_listing_style_image_still_resolves():
+    """The fix narrows trust to LABEL-sourced venue evidence - it must not
+    also break the ordinary case where a poster's venue is properly
+    labelled, even alongside other studio names in the same text."""
+    ev = extract_with_image_fallback(
+        "탱고 이벤트", "9/5(토) 19:30-23:30 입장료 13,000원",
+        event_type="MILONGA", published=PUBLISHED,
+        image_texts=[("img1", "탱고 이벤트 장소: 라밀롱가 스튜디오 (엔빠스 근처)")],
+    )
+    assert ev.venue == "라밀롱가 스튜디오 (엔빠스 근처)"
+
+
 # --- v0.84.3: a real K-TANGO-shaped multi-fee poster stays ambiguous -------
 
 def test_free_parking_on_a_poster_is_not_read_as_a_free_event():

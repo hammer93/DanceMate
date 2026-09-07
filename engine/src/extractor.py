@@ -428,6 +428,28 @@ def needs_image_fallback(ev) -> bool:
     return ev.date is None or ev.start_time is None or ev.venue is None or ev.fee is None
 
 
+def _image_venue(sub):
+    """v0.84.3: a poster's own venue only counts as fallback evidence when
+    extract_venue() actually labelled it ("장소: ...") - never the bare
+    known-studio-name shortcut (PISTA/OCHO/오나다).
+
+    Found on a real K-TANGO poster: a multi-venue schedule table (~15
+    studios across two days) happened to name "오나다" as one of many
+    unrelated rows, and the bare-substring fallback picked it out as *the*
+    event's venue - paired with a time read off an entirely different row.
+    A short, curated post body rarely mentions an unrelated studio in
+    passing; a dense OCR'd poster does, so the same shortcut that is safe
+    on body text is not safe here. Body-text venue reading is unaffected -
+    this only narrows what an *image* is trusted to contribute.
+    """
+    if sub.venue is None:
+        return None
+    evidence = next((e for e in sub.evidences if e.field == "venue"), None)
+    if evidence is None or not (evidence.inference or "").startswith("LABEL:"):
+        return None
+    return sub.venue
+
+
 def _missing_fallback_fields(ev) -> set[str]:
     return {key for key in _FALLBACK_FIELDS if _field_value(ev, key) is None}
 
@@ -463,17 +485,20 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
         sub = extract_single(title, image_text, source_role=source_role,
                              event_type=ev.event_type, published=published)
 
+        def _sub_value(key):
+            return _image_venue(sub) if key == "venue" else _field_value(sub, key)
+
         contributes = {
             key for key in missing
-            if _field_value(sub, key) is not None
+            if _sub_value(key) is not None
         }
         conflicts = [
-            (key, _field_value(ev, key), _field_value(sub, key))
+            (key, _field_value(ev, key), _sub_value(key))
             for key in _FALLBACK_FIELDS
             if key not in missing
             and _field_value(ev, key) is not None
-            and _field_value(sub, key) is not None
-            and _field_value(ev, key) != _field_value(sub, key)
+            and _sub_value(key) is not None
+            and _field_value(ev, key) != _sub_value(key)
         ]
 
         if not contributes and not conflicts:
