@@ -1,5 +1,94 @@
 # DanceMate Release Notes
 
+## v0.85.8 Timeline Three-Line Lock + Address Reposition
+
+Status: PASS, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.8
+- Information Engine: 0.83 (unchanged)
+
+### The actual bug
+
+v0.85.7 built line 3 as one metadata row - 주소 · 출처: NAME ↗ ·
+확인시간 · 지도보기↗ - and allowed a horizontal micro-scroll as its own
+fallback for the rare case that row got too wide. In production that
+"rare case" turned out to be the common case: combined with a real
+address and a real source name, every one of the six representative
+source names measured (TangoNOW, Miltang, Tango Calendar Korea, Solo
+Tango 화요정모 공지, TangoClass 공식 사이트, DanceInfo) needed 425-534px
+against a 308px 360-wide budget - the row visually broke across several
+stacked lines instead of scrolling cleanly, exactly as reported.
+
+### The fix
+
+**Line 2** (행사명 (DJ) · 입장료 · 주소): the address moved here, after
+the fee, in the same small/meta font-size and color line 3 has always
+used (`.tl-2-addr`, `.78rem`, `var(--muted)`) - never the event name's
+own bold/size. Ellipsized via a bounded `max-width`, never hiding the
+name or fee; omitted entirely (not "주소 미확인") when there is none.
+
+**Line 3** (출처: OOO ↗ · 확인시간 · 지도보기↗): address-free now, and
+structurally unable to wrap or scroll - `white-space:nowrap;
+overflow:hidden` on the row, with no `overflow-x:auto` fallback this
+time (v0.85.7's own allowance is gone). The one thing permitted to give
+way is the source's own name: CSS `text-overflow:ellipsis` via flex
+`min-width:0` on `.src-name`, while the confirmation time and the map
+link are `flex-shrink:0` (`.tl-fixed`) and never touched regardless of
+how long the source name actually is. No `sources.short_name`/
+`display_name` field exists (checked first, per Section 16's own
+instruction) - CSS ellipsis on the real name, with the full name still
+in the link's `title` attribute, is the sanctioned fallback (Section 19).
+
+### Proof, not a guess
+
+Section 47 explicitly forbids relying on a pure string-width estimate
+for this release's own PASS. No headless-browser/DOM engine is available
+in this environment (consistent with every prior release), so the proof
+here comes from the CSS specification itself rather than empirical
+measurement: `.tl-3`'s `overflow:hidden` with no scroll mechanism
+anywhere in its rule, plus `flex-shrink:0` on everything except
+`.src-name`, means the row's rendered width can never exceed its
+container's `clientWidth` - for *any* source name length, not just the
+ones measured. The arithmetic is supplementary due diligence on top of
+that guarantee: the part of line 3 that never shrinks needs ~188-240px
+(measured two ways: a synthetic worst case, and the actual longest real
+production line 3 content), comfortably under every target viewport's
+available width (308-378px at 360/390/430px) with 70-190px to spare.
+
+### Live production audit (100 real upcoming events)
+
+- 100/100 line 2 rows, 100/100 line 3 rows, every event still exactly 3
+  structural rows (`<div class="tl-N">`).
+- 93/100 line 2 rows carry an address segment (`tl-2-addr`); the other 7
+  correctly have none - matches the address-known/unknown split exactly.
+- 0/100 line 3 rows contain any address-shaped text - full separation
+  confirmed.
+- Live long-source-name example, address-free and single-line: `출처:
+  Solo Tango 화요정모 공지 ↗ · 14시간 전 확인 · 지도보기↗`.
+- 0 JSON/API source-link leakage (re-verified).
+- Region chips unchanged from v0.85.7's own audit (전체 + 11
+  positive-count regions, no zero-count region shown).
+- `venue_genres`: 5 rows intact, untouched by this release.
+- Event count: 159, unchanged.
+
+### Tests
+
+19 new tests (`tests/test_v0858_timeline_three_line_lock.py`), 6
+existing test files updated (their assertions encoded the old
+address-in-line-3 layout or the pre-class-attribute `<a href=` string
+shape). Full suite: 1587 passed, 15 skipped, 2 pre-existing
+`test_tangocalendar_discovery.py` failures (unchanged baseline) - zero
+new regressions.
+
+### Scope discipline
+
+UI-only release: no schema change, no migration, no DB write, no engine
+change, no source expansion, no change to the source-URL resolver, the
+Naver map helper, venue genres, or region-count filtering beyond what
+was already shipped in v0.85.4-v0.85.7.
+
 ## v0.85.7 Compact Timeline + Venue Dance Genres + Active Region Filter + Naver Map
 
 Status: PASS, 2026-09-08.
