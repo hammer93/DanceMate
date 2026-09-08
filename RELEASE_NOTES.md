@@ -1,5 +1,109 @@
 # DanceMate Release Notes
 
+## v0.86.0 Private Alpha Field Validation
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.0
+- Information Engine: 0.85 (extractor.py's DJ_RE changed - a real bump)
+
+### What this release actually was
+
+Not a feature release. A full-field audit of production's own Timeline as
+a real user would see it - "실제 사용자가 첫 화면을 보고 오늘/내일/이번 주
+어디서 춤출지 판단할 때 틀리거나 헷갈리거나 불편한 정보를 찾아 그것만
+정확하게 수정한다" - and then only the confirmed real problems, nothing
+invented to justify the release.
+
+### Audit scope
+
+Every one of production's 148 real upcoming events, read through the
+actual `events_api`/`public` code paths (not a copy of the logic), across
+every dimension the Timeline shows: Line 1 (region/date/time/type), Line
+2 (title/DJ/fee/address), Line 3 (source/confirmation/map), every one of
+the 53 real multi-tier (PRIMARY+DIRECTORY) duplicate groups, and a sample
+of "fee unknown" events' raw source text.
+
+### Confirmed defects (2, both DJ-related)
+
+**1. DJ duplicate badge shown despite the title already naming the DJ**
+(event_id 13693: "...5시30분🎉DJ네로🎉🎉", dj=`네로`). The v0.85.3
+suppression logic only stripped a fixed list of stop characters (`)，、·`)
+from the title-embedded name before comparing - a real emoji-decorated
+title left "네로🎉🎉" instead of "네로", so it never matched and the
+redundant "(DJ 네로)" badge showed anyway. `runtime/public.py` now strips
+trailing decoration by Unicode category, mirroring
+`extraction_rules._strip_decoration()`'s already-proven approach on the
+engine side. Display-only; no stored data was wrong.
+
+**2. A genuinely wrong stored DJ field** (event_id 32096, DanceInfo):
+`dj` read as the literal string `"DJ"`. The real post's own structured
+info box puts a bare "DJ" field label directly against a value that
+itself starts with the word "DJ" ("...구글맵 DJ DJ 네로 강의..."), and the
+single-label pattern captured the second "DJ" as the name instead of
+"네로". `engine/src/extractor.py`'s `DJ_RE` now repeats the label match
+before capturing, so both "DJ" occurrences are consumed as label and the
+real name is reached. Corrected in production via a scoped, detect-only-
+verified update to candidate_id 1440 alone (in place, preserving
+candidate_id/event_id - never a full reprocess); every other field on
+that candidate was confirmed byte-identical before and after.
+
+### Everything else audited clean
+
+- End time: 141/141 events with a known `end_time` showed it correctly
+  on the Timeline (`20:00~23:30`) - v0.85.9's fix holding at full scale,
+  not just the one sample checked then.
+- Source priority: 0 representative-tier errors across all 53 real
+  multi-tier (PRIMARY/PROMOTION_BOARD vs DIRECTORY) duplicate groups -
+  Miltang/TangoNOW never won representative status over a PRIMARY.
+- Address/map link: 0 mismatches (every address has a map link, every
+  map-link-bearing event has an address) across 148 events.
+- Source links: 0 JSON/API endpoints exposed across every active source
+  sampled (SRC-D-003, Miltang, TangoNOW, Tango Calendar Korea,
+  DanceInfo, and five Daum Cafe community boards).
+- Line 3: 0 structural issues - always exactly one row.
+- Long titles: the widest real title (~423px estimated at .92rem, a
+  36-character Daum Cafe list-truncated title) does not break the
+  3-line lock or push out fee/address - the existing `overflow-wrap:
+  anywhere` (v0.85.8) already wraps it gracefully. No display fix
+  needed; the v0.85.8-deferred "Long Title" concern is not a real defect
+  in current production.
+- Fee-missing: one "fee unknown" candidate's body mentioned "무료", but
+  it described a free open dance *class*, not free admission to the
+  paid social - `extract_fee()`'s existing narrow phrase-matching
+  correctly declined to read it as the event's own fee. No real miss
+  found; no new parser added.
+- `review_hints.py`'s `_FEE_IN_TEXT` gap noted in v0.85.9: re-checked
+  against this audit's own samples, no real missed-fee case surfaced it.
+  Still deferred.
+- Region positive-only filter, weekly calendar (past dates still
+  queryable), venue_genres schema/admin, feedback flow (no auto-mutation
+  confirmed by code): all regression-clean.
+
+### Tests
+
+809 engine (+3 new) / 1151 runtime local (+8 new), 0 new regressions.
+Staged against real Postgres: 1610 passed, with 2 *additional* failures
+in `test_v0852_source_depth.py` traced to that file's own hardcoded
+`event_date="2026-09-08"` fixture now being in the past relative to
+`current_date` in Asia/Seoul (`source_ops.evidence_tiers()` filters
+`event_date >= current_date`; the fixture date doesn't move, the
+calendar did) - confirmed unrelated to any v0.86.0 code change by direct
+trace, not a regression. Noted honestly rather than hidden; not fixed
+this release (test-fixture calendar hygiene, not a user-visible
+production issue, is out of this release's own stated scope).
+
+### Next recommendation
+
+`test_v0852_source_depth.py`'s hardcoded 2026-09-08 fixture (and likely
+other similarly-dated fixtures elsewhere in the suite) will keep failing
+forever now that the calendar has passed it - worth a project-wide sweep
+for `current_date`-dependent tests pinned to a fixed past date, as its
+own small maintenance release rather than folded into a field-validation
+pass.
+
 ## v0.85.9 Event Time Range + Conditional Fee Display
 
 Status: PASS, 2026-09-08.
