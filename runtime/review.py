@@ -269,6 +269,15 @@ def apply_corrections(candidate: dict[str, Any], review: dict[str, Any]) -> dict
             merged[f"engine_{candidate_field}"] = candidate.get(candidate_field)
             merged[candidate_field] = corrected[review_field]
             merged.setdefault("corrected_fields", []).append(candidate_field)
+            if candidate_field == "fee":
+                # The engine's own display text describes the engine's own
+                # number ("8,000원 (22시 이후 5,000원)") - once a person
+                # overrides that number, the old text would contradict it,
+                # so it is dropped rather than shown next to a value it no
+                # longer describes. fee_display_text is not itself a
+                # correctable field (v0.85.9 keeps this release's own scope
+                # to what the engine reads, not a human fee-text editor).
+                merged["fee_display_text"] = None
     for extra in ("genre", "organizer", "notes"):
         if corrected.get(extra) is not None:
             merged[extra] = corrected[extra]

@@ -693,6 +693,13 @@ def _venue_line(event: dict[str, Any]) -> str:
 
 
 def _fee_line(event: dict[str, Any]) -> str:
+    # A conditional or multi-option fee (v0.85.9, Section 13) already spells
+    # out everything a plain number could - "8,000원 (22시 이후 5,000원)",
+    # "예매 15,000원 · 현매 20,000원" - so it wins over `fee` outright rather
+    # than the two being merged into something neither source actually said.
+    display = event.get("fee_display_text")
+    if display:
+        return E(display)
     fee = event.get("fee")
     if fee is None:
         return '<span class="unknown">요금 미확인</span>'
@@ -918,7 +925,16 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> 
 
 
 def _fee_text(event: dict[str, Any]) -> str:
-    """입장료: 무료 / 20,000원 / 미확인 - Section 21's exact wording."""
+    """입장료: 무료 / 20,000원 / 미확인 - Section 21's exact wording.
+
+    A conditional or multi-option fee (v0.85.9, Section 13) shows its own
+    full text instead - "입장료: 8,000원 (22시 이후 5,000원)" - never reduced
+    to just the base number, and never left "미확인" when a real price (with
+    a real condition) is known.
+    """
+    display = event.get("fee_display_text")
+    if display:
+        return f"입장료: {E(display)}"
     fee = event.get("fee")
     if fee is None:
         return '입장료: <span class="unknown">미확인</span>'

@@ -49,7 +49,7 @@ def _seed(settings, n: int = TOTAL_ROWS) -> None:
             CREATE TABLE event_candidates(
                 candidate_id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL,
                 name TEXT, event_type TEXT, event_date TEXT, start_time TEXT, end_time TEXT,
-                fee INTEGER, venue TEXT, status TEXT
+                fee INTEGER, fee_display_text TEXT, venue TEXT, status TEXT
             );
         """)
         for i in range(1, n + 1):
@@ -216,7 +216,7 @@ def _seed_mixed_sources(settings) -> None:
             CREATE TABLE event_candidates(
                 candidate_id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL,
                 name TEXT, event_type TEXT, event_date TEXT, start_time TEXT, end_time TEXT,
-                fee INTEGER, venue TEXT, status TEXT
+                fee INTEGER, fee_display_text TEXT, venue TEXT, status TEXT
             );
         """)
         rows = [

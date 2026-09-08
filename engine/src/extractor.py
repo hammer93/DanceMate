@@ -327,9 +327,20 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
             inference=reading.meridiem_evidence, context_id=context_id,
         ))
 
-    fee = extraction_rules.extract_fee(scope, ev.event_type)
+    # A fee condition's own bare hour ("10시 이후") is only ever resolved
+    # against a time range the extractor is already certain of (Section 23):
+    # an uncertain event time must never turn into a guessed fee condition.
+    known_start = known_end = None
+    if reading and reading.meridiem_evidence == extraction_rules.EVIDENCE_EXPLICIT \
+            and not reading.ambiguous:
+        known_start, known_end = reading.start, reading.end
+
+    fee = extraction_rules.extract_fee(
+        scope, ev.event_type, known_start=known_start, known_end=known_end,
+    )
     if fee:
         ev.fee = fee.amount
+        ev.fee_display_text = fee.display
         ev.evidences.append(Evidence(
             "fee", fee.amount, fee.segment, source_role=source_role,
             inference=fee.basis, context_id=context_id,
@@ -535,6 +546,7 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
                 ))
             elif key == "fee":
                 ev.fee = sub.fee
+                ev.fee_display_text = sub.fee_display_text
                 raw = next((e.raw_text for e in sub.evidences if e.field == "fee"), str(sub.fee))
                 ev.evidences.append(Evidence(
                     "fee", sub.fee, raw, evidence_type=IMAGE_OCR,
