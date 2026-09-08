@@ -52,10 +52,10 @@ def _event(**overrides):
 # 1. resolved venue after region
 def test_resolved_venue_shown_after_region_on_line1():
     line1 = public._timeline_line1(_event(), now=_NOW)
-    assert '<span class="tl-fixed">[서울]</span>' in line1
+    assert "[서울]" in line1
     assert '<span class="tl-1-venue" title="Tango O Nada" aria-label="Tango O Nada">' \
            'Tango O Nada</span>' in line1
-    assert '<span class="tl-fixed">· 오늘 20:00~23:30 밀롱가</span>' in line1
+    assert "오늘 20:00~23:30 밀롱가" in line1
 
 
 def test_venue_appears_immediately_after_region_and_before_date():
@@ -128,13 +128,24 @@ def test_long_venue_name_carries_full_text_in_title_and_aria_label():
 
 
 def test_venue_span_has_the_ellipsis_css_rule():
-    assert '.tl-1 .tl-1-venue { min-width:0; overflow:hidden; text-overflow:ellipsis;' \
-           in public.STYLE
+    assert '.tl-1 .tl-1-venue { display:inline-block; max-width:12em;' in public.STYLE
+    assert 'text-overflow:ellipsis; white-space:nowrap; }' in public.STYLE
 
 
-def test_fixed_parts_never_shrink_css_rule():
-    assert '.tl-1 .tl-fixed { flex-shrink:0;' in public.STYLE
-    assert '.tl-1 {' in public.STYLE and 'display:flex' in public.STYLE.split(".tl-1 {")[1].split("}")[0]
+def test_line1_is_not_a_single_line_flex_row():
+    """Regression pin for the exact defect the production audit caught:
+    an earlier version made .tl-1 `display:flex; white-space:nowrap;
+    overflow:hidden`, which silently clips the date/time/type/status tail
+    on any real event where that content alone (no venue at all) is
+    already wider than a narrow phone viewport - measured ~430px of
+    never-shrinking content against a ~310-380px budget on real
+    production venues (Mi Vida tango studio, Ulsan Tango Sociedad). Line 1
+    must stay plain inline flow, exactly like line 2, so it wraps instead
+    of clipping."""
+    tl1_rule = public.STYLE.split(".tl-1 {", 1)[1].split("}", 1)[0]
+    assert "display:flex" not in tl1_rule
+    assert "overflow:hidden" not in tl1_rule
+    assert "white-space:nowrap" not in tl1_rule
 
 
 # 8. date/time preserved

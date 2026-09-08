@@ -184,19 +184,21 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 li.event a { padding: .55rem .8rem; }
 /* v0.86.3 (Section 3, 13-16): the resolved venue name sits right after
    the region, on line 1 - "[서울] Tango O Nada · 오늘 20:00~23:30 밀롱가".
-   Region and the date/time/type tail (`.tl-fixed`, mirroring line 3's own
-   확인시간/지도보기 - the same never-shrink pattern, scoped to this line)
-   never give up space; the venue name is the only thing allowed to
-   ellipsize (`min-width:0`, CSS `text-overflow:ellipsis`) if it is
-   unusually long, exactly the way line 3's `.src-name` already works.
-   Weight matches the line's own existing bold, no badge/box, no added
-   color - Section 13/36's own "compact text, existing hierarchy" ask. */
-.tl-1 { font-variant-numeric: tabular-nums; font-weight:600; font-size:.92rem;
-        display:flex; align-items:baseline; white-space:nowrap; overflow:hidden;
-        gap:.35em; }
-.tl-1 .tl-fixed { flex-shrink:0; white-space:nowrap; }
-.tl-1 .tl-1-venue { min-width:0; overflow:hidden; text-overflow:ellipsis;
-                    white-space:nowrap; }
+   Plain inline flow, same as line 1 always was - not flex, no
+   `overflow:hidden`/`nowrap` on the line itself, since the date/time/
+   type/status tail alone can already be too wide for a narrow phone
+   viewport on real production data (confirmed: ~430px of that content
+   against a ~310-380px budget) and forcing it onto one non-wrapping row
+   would silently clip it. Only the venue name gets a bounded width - the
+   exact same `.tl-2-addr` shape line 2's own address already uses
+   (v0.85.8) - so an unusually long venue is the one thing that can
+   ellipsize (Section 14-15, 20); everything else wraps onto another
+   visual line exactly as it always safely could. Weight matches the
+   line's own existing bold, no badge/box, no added color - Section
+   13/36's own "compact text, existing hierarchy" ask. */
+.tl-1 { font-variant-numeric: tabular-nums; font-weight:600; font-size:.92rem; }
+.tl-1 .tl-1-venue { display:inline-block; max-width:12em; vertical-align:bottom;
+                    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
 .tl-2 .ev-name { font-weight:600; }
 .tl-2 .dj { color:var(--muted); font-weight:400; }
@@ -957,32 +959,33 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> 
     1-7). No venue at all keeps the exact pre-v0.86.3 form, "[지역] 날짜
     시간 종류", with no floating separator (Section 4).
 
-    Region and the date/time/type tail are each wrapped in their own
-    non-shrinking span (`.tl-fixed`, mirroring line 3's own 확인시간/
-    지도보기 - Section 16) so an unusually long venue name is the only
-    thing that can ever ellipsize (Section 14-15, 20): the actual
-    decision-making fields - date, time, event type - are never pushed
-    out or hidden to make room for it.
+    Plain inline flow, not flex: an early version of this made the whole
+    line a single-line flex row with `overflow:hidden`, which broke on
+    real production data the moment the *non-venue* tail alone (date +
+    time + "시간 미확인" + type + the "확인 필요" status badge, all
+    `flex-shrink:0`) was already too wide for a narrow phone viewport -
+    Mi Vida tango studio and 여러 real events measured ~430px of
+    never-shrinking content against a ~310-380px budget, which
+    `overflow:hidden` would have silently clipped rather than wrapped.
+    This instead mirrors line 2's own already-proven `.tl-2-addr` pattern
+    (v0.85.8): only the venue name itself gets a bounded `max-width` +
+    `text-overflow:ellipsis` (Section 14-15, 20); everything else stays
+    normal inline text that wraps onto another visual line exactly as it
+    always safely could, never overflowing the page horizontally.
     """
     day = event.get("date")
     date_label = _human_date(day, now=now) if day else ""
     type_label = event.get("event_type_label") or ""
-    rest = [E(date_label), _timeline_clock(event), E(type_label) if type_label else ""]
-    rest_text = " ".join(p for p in rest if p)
-    region_html = _timeline_region(event)
     venue_name = _timeline_line1_venue_name(event)
+    venue_html = ""
     if venue_name:
         escaped = E(venue_name)
-        body = (
-            f'<span class="tl-fixed">{region_html}</span>'
-            f'<span class="tl-1-venue" title="{escaped}" aria-label="{escaped}">{escaped}</span>'
-            f'<span class="tl-fixed">· {rest_text}</span>'
-        )
-    else:
-        body = f'<span class="tl-fixed">{region_html} {rest_text}</span>'
-    badges = _timeline_badges(event, now=now)
-    badges_html = f'<span class="tl-fixed">{badges}</span>' if badges else ""
-    return f'<div class="tl-1">{body}{badges_html}</div>'
+        venue_html = (f'<span class="tl-1-venue" title="{escaped}" '
+                      f'aria-label="{escaped}">{escaped}</span> ·')
+    parts = [_timeline_region(event), venue_html, E(date_label), _timeline_clock(event),
+             E(type_label) if type_label else ""]
+    return (f'<div class="tl-1">' + " ".join(p for p in parts if p)
+            + _timeline_badges(event, now=now) + "</div>")
 
 
 def _fee_text(event: dict[str, Any]) -> str:
