@@ -15,6 +15,7 @@ at all.
 from __future__ import annotations
 
 import html
+import re
 from typing import Any, Callable
 from urllib.parse import quote
 
@@ -871,6 +872,33 @@ def _fee_text(event: dict[str, Any]) -> str:
     return f"입장료: {fee:,}원"
 
 
+# v0.85.3: a raw post title can already spell out "(DJ : 유진)" as free
+# text, while the engine *also* extracts "유진" into the structured `dj`
+# field it has always had - both true, both independently rendered, and
+# the reader sees the same name twice. Found live in production
+# (event_id 221245, SRC-D-003). Only the DISPLAY badge is skipped when it
+# would repeat the title verbatim; the title text and the stored `dj`
+# field are never touched (Section 31's own requirement). Normalization
+# is limited to label spacing/case/colon/parens (Section 32) - no fuzzy
+# name matching, so a genuinely different DJ named in the title is never
+# mistaken for a match (Section 33) and stays visible as a real conflict
+# signal rather than being silently hidden.
+_DJ_LABEL_RE = re.compile(r"DJ\s*[:：]?\s*", re.IGNORECASE)
+_DJ_NAME_STOP = re.compile(r"[)）,、·]")
+
+
+def _title_already_announces_dj(title: str, dj: str) -> bool:
+    dj = (dj or "").strip()
+    if not title or not dj:
+        return False
+    for match in _DJ_LABEL_RE.finditer(title):
+        rest = title[match.end():]
+        name = _DJ_NAME_STOP.split(rest, maxsplit=1)[0].strip()
+        if name == dj:
+            return True
+    return False
+
+
 def _timeline_line2(event: dict[str, Any]) -> str:
     """행사명 (DJ) 입장료: 00 - Section 18-21. The DJ parenthetical is
     entirely absent, not "DJ 미확인", when there is none (Section 20)."""
@@ -878,7 +906,11 @@ def _timeline_line2(event: dict[str, Any]) -> str:
     cancelled = " cancelled" if event.get("cancelled") else ""
     name = f'<span class="ev-name{cancelled}">{E(event.get("name") or "")}</span>{thin}'
     dj = event.get("dj")
-    dj_html = f' <span class="dj">(DJ {E(dj)})</span>' if dj else ""
+    dj_html = (
+        f' <span class="dj">(DJ {E(dj)})</span>'
+        if dj and not _title_already_announces_dj(event.get("name") or "", dj)
+        else ""
+    )
     return f'<div class="tl-2">{name}{dj_html} · {_fee_text(event)}</div>'
 
 
