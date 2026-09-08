@@ -1,5 +1,115 @@
 # DanceMate Release Notes
 
+## v0.85.9 Event Time Range + Conditional Fee Display
+
+Status: PASS, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.9
+- Information Engine: 0.84 (extraction_rules.py, extractor.py, models.py,
+  database.py all changed - a real bump, not a hold)
+
+### The actual bug
+
+Solo Tango's own weekly "화정" Tuesday milonga (SRC-D-003) read its
+20:00-23:30 time range correctly every single week - `parse_time_range()`
+already handled "오후 8시 ~ 11시 30분" correctly and needed no change this
+release. Its fee, on the same post, every week: unknown. Root cause was not
+an over-cautious multi-price safety net discarding a successful read, as
+first assumed - `extract_fee()` had no pattern for Korean 천원 (thousand-won)
+notation at all, so "8천원 (10시 이후 5천원)" was never even recognised as
+an amount, let alone reduced to one number.
+
+### The fix
+
+**Korean 천원 notation** (`_CHEON_AMOUNT_RE`, mirroring the existing 만원
+pattern): "8천원"/"5천원" now read as 8,000/5,000; bare "8천" (no 원) reads
+as money only behind a fee label (Section 20/21) - "8천명"/"8천번" still
+never qualify.
+
+**Conditional fee display**: a trailing `(<hour>시 이후 <amount>)`
+parenthetical immediately after a base fee amount is now read as a
+condition, not a second unrelated number - `EventCandidate.fee` keeps the
+base amount, a new `fee_display_text` field carries the full text
+("8,000원 (22시 이후 5,000원)"). The condition's bare hour is resolved to a
+real clock value only by anchoring against the event's *own* already-EXPLICIT
+start/end window (10시 candidates are 10:00/22:00; only 22:00 falls inside
+20:00-23:30) - never a blanket AM/PM guess (Section 2/23). Without a usable
+anchor, the raw hour text is kept exactly as written rather than invented.
+
+**Multi-option pricing preserved, not silently picked**: "예매 15,000원 /
+현매 20,000원" and "회원 15,000원 / 비회원 20,000원" used to leave the event
+unpriced entirely rather than guess which number was "the" fee (a real,
+deliberate v0.84.1 safety net). This release keeps both real numbers instead
+- `fee_display_text = "예매 15,000원 · 현매 20,000원"`, `fee` stays empty
+since no single number is honestly "the" price.
+
+**Timeline end time** (found during this release's own live acceptance
+audit, not part of the original spec): the Timeline showed only
+`start_time` even when the extractor already had a real `end_time` - the
+detail page's own range display has existed for longer. `_timeline_clock()`
+now shows `20:00~23:30` when an end time is known, bare `20:00` otherwise,
+unchanged.
+
+**New schema**: `event_candidates.fee_display_text` (engine SQLite, added
+via the same idempotent `_add_column_if_missing` pattern v0.81.2 used for
+`context_id`) and `events.fee_display_text` (Postgres, migration 029),
+bridged through `normalize_candidate()`. No other schema, no new pricing
+subsystem - the existing `fee` int and one new text column carry everything.
+
+### Real production regression fixture
+
+The exact real post (SRC-D-003, post_id 606, captured verbatim from
+`raw_posts.body`) is now a permanent regression test
+(`test_the_solo_tango_hwajeong_post_that_defined_v0_85_9`):
+date=2026-09-08, start=20:00, end=23:30, dj=유진, venue=Tango O nada,
+fee=8000, fee_display_text="8,000원 (22시 이후 5,000원)". "화정지기"/
+"화정도우미" (event-specific volunteer-role labels) and the raffle-ticket
+mention do not leak into DJ/venue/fee/date.
+
+### Detect-only, then scoped apply
+
+Applied the new parser to the real post in dry-run mode first (Section
+40-41) and confirmed an exact match before writing anything. The scoped
+apply then updated candidate_id 1847 **in place** (never delete+reinsert,
+which would have AUTOINCREMENTed a new candidate_id and orphaned the
+existing `events` row instead of updating it) - `event_id` stayed 221245
+throughout. Only this one post was touched; `normalize_all()`/
+`ingest_pending()`/`reprocess_acquired()` were never called.
+
+### Live production audit (real Solo Tango 화정 event, 2026-09-08)
+
+```
+[서울] 오늘 20:00~23:30 밀롱가
+[화정] 9월 8일 화정 공지 (DJ : 유진) · 입장료: 8,000원 (22시 이후 5,000원) · 마포구 동교로 193…
+출처: Solo Tango 화요정모 공지 ↗ · 확인시간 · 지도보기↗
+```
+
+- Detail page: 20:00–23:30 / 요금 8,000원 (22시 이후 5,000원).
+- Source priority unaffected (unchanged this release): representative
+  stays SRC-D-003 (event_id 221245, `canonical_event_id` NULL); the
+  Miltang duplicate (event_id 88436) points `canonical_event_id` at
+  221245 - correctly non-representative.
+- Calendar: exactly one card for this event on 2026-09-08 - 0 duplicates.
+- venue_id 187 (Tango O Nada), address, and Naver map link unchanged.
+
+### Tests
+
+96 engine tests (13 new + 2 upgraded from "unpriced" to "preserved" per
+Section 14/15) + 1143 runtime tests (17 new: 13 fee/timeline + 4
+timeline-end-time), 0 new regressions. Full suites: 806 engine, 1600
+runtime (staging, real Postgres) / 1143 (local) - 2 pre-existing
+`test_tangocalendar_discovery.py` failures unchanged from baseline.
+
+### Next recommendation
+
+`_FEE_IN_TEXT` in `review_hints.py` (the admin "body mentions an amount
+but nothing was extracted" hint) still only matches 3+ plain digits before
+원 - it never caught 천원-notation misses before this release and still
+won't catch a genuinely new gap the same way. Low priority: this release's
+own fix removes the only known real-world case of it.
+
 ## v0.85.8 Timeline Three-Line Lock + Address Reposition
 
 Status: PASS, 2026-09-08.
