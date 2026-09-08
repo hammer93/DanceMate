@@ -23,6 +23,16 @@ def _genre_id(pg, code: str) -> int:
     pytest.skip(f"{code} genre is not seeded; run the migrations first")
 
 
+def _region_name(pg, code: str) -> str:
+    """Daegu (KR-DAEGU), unlike Busan, is seeded by the migrations
+    themselves rather than added later by hand on production - safe to
+    rely on in any freshly-migrated environment, staging included."""
+    for r in master_data.list_regions(pg):
+        if r["code"] == code:
+            return r["name"]
+    pytest.skip(f"{code} region is not seeded; run the migrations first")
+
+
 def _candidate(unique: str, suffix: str = "1", **overrides):
     base = {
         "candidate_id": int(f"{unique[-6:]}{suffix}"),
@@ -175,17 +185,19 @@ def _live_event(pg, unique, suffix, *, region_id, genre_code="TANGO", event_date
             "  genre_id, identity_key, provenance, listing_state, engine_status) "
             "VALUES (%s, %s, %s, %s, %s, %s, 'LIVE', 'LISTED', 'POSSIBLE')",
             (int(f"{unique[-6:]}{suffix}"), f"지역테스트 {unique}-{suffix}",
-             event_date or "2026-09-05", region_id, genre_id, f"regionkey-{unique}-{suffix}"),
+             event_date or (events_api.today() + timedelta(days=1)).isoformat(),
+             region_id, genre_id, f"regionkey-{unique}-{suffix}"),
         )
 
 
 # 13. count=0 hidden - a region with no matching events under the current
 #     window never appears in region_options.
-def test_region_zero_count_hidden(pg, unique, seoul_id, busan_name):
+def test_region_zero_count_hidden(pg, unique, seoul_id):
+    daegu_name = _region_name(pg, "KR-DAEGU")
     _live_event(pg, unique, "1", region_id=seoul_id)
     facets = public._facets_window(pg, (events_api.today(), events_api.today() + timedelta(days=30)))
     labels = {r["label"] for r in facets["region_options"]}
-    assert busan_name not in labels
+    assert daegu_name not in labels
 
 
 # 14. count=1 visible
@@ -254,11 +266,12 @@ def test_region_counts_change_with_selected_date(pg, unique, seoul_id, seoul_nam
 
 # 20. selected zero-count region resets safely - no ghost chip is rendered
 #     for a region whose count has dropped to zero under the current filter.
-def test_selected_zero_count_region_no_ghost_chip(pg, unique, seoul_id, busan_name):
+def test_selected_zero_count_region_no_ghost_chip(pg, unique, seoul_id):
+    daegu_name = _region_name(pg, "KR-DAEGU")
     _live_event(pg, unique, "1", region_id=seoul_id)
     facets = public._facets_window(pg, (events_api.today(), events_api.today() + timedelta(days=30)))
-    html = public._region_chips("/events", None, facets["region_options"], busan_name, {})
-    assert busan_name not in html
+    html = public._region_chips("/events", None, facets["region_options"], daegu_name, {})
+    assert daegu_name not in html
 
 
 # 21. ordering retained - highest count still sorts first among the

@@ -29,3 +29,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS venue_genres_venue_genre_key
     ON venue_genres (venue_id, genre_id);
 CREATE INDEX IF NOT EXISTS venue_genres_venue_idx
     ON venue_genres (venue_id);
+
+-- Same reasoning as 018/020's own CSV-import actions: master_data_actions.
+-- action's CHECK did not know about confirming or removing a venue's
+-- dance genre, so runtime.master_edit.set_venue_genres() could not record
+-- either one to the existing audit trail without this.
+ALTER TABLE master_data_actions
+    DROP CONSTRAINT IF EXISTS master_data_actions_action_check;
+ALTER TABLE master_data_actions
+    ADD CONSTRAINT master_data_actions_action_check
+    CHECK (action IN (
+        'EDIT', 'ENABLE', 'DISABLE', 'ALIAS_ADD', 'ALIAS_REMOVE',
+        'VENUE_CSV_IMPORT', 'SOURCE_CSV_IMPORT',
+        -- A venue's confirmed dance genre, added or removed by a human
+        -- through the admin console (v0.85.7).
+        'GENRE_ADD', 'GENRE_REMOVE'
+    ));
