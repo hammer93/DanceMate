@@ -1,5 +1,96 @@
 # DanceMate Release Notes
 
+## v0.86.2 Timeline Venue Name Prefix
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.2
+- Information Engine: 0.85 (unchanged - no engine code touched)
+
+### What changed
+
+Line 2 now leads with the resolved Venue Master name, ahead of the event
+title: `Tango O Nada · [화정] 9월 8일 화정 공지 (DJ : 유진) · 입장료: 8,000원
+(22시 이후 5,000원) · 마포구 동교로 193…`. Display-only - no event, venue,
+or candidate row is written by this release, and Line 1/Line 3 are
+untouched.
+
+### Safety policy (Section 3-11)
+
+Only a **RESOLVED** venue prefixes at all - an unresolved venue (raw text
+read, not yet matched to the Venue Master) or an event with no venue
+evidence keeps line 2 exactly as it rendered before this release. When
+the event's own title already names the venue - by its resolved name or
+any of its officially registered aliases - the prefix is suppressed
+rather than shown twice ("Tango O Nada · Tango O Nada 월나다" never
+happens). Duplicate detection reuses `master_data.normalize_alias()` (the
+same NFKC/case-fold/punctuation-strip the alias table itself is matched
+with) and a plain substring check - never fuzzy matching, never inferring
+an alias nobody registered.
+
+### Implementation
+
+- `runtime/events_api.py`: `_SELECT` gains one additive `LEFT JOIN
+  LATERAL` for the venue's own `venue_aliases`, aggregated in the same
+  query as everything else - confirmed no N+1 (Section 31): the query
+  already joined `venues` for the name, this adds only the alias list
+  alongside it, once per query, not once per event. `present()` exposes
+  it as `venue.aliases` (new, additive API field).
+- `runtime/public.py`: `_venue_prefix_html()` (RESOLVED-only gate,
+  duplicate/alias suppression) and `_title_already_announces_venue()`
+  (the substring check). Styled to match `.ev-name`'s own font-weight -
+  no badge, no new color.
+
+### Production audit (148 real upcoming events, live production data)
+
+- Venue Known (resolved): 137/148 · Prefix Shown: 125 · Duplicate
+  Suppressed: 12 · Missing (no venue evidence): 11.
+- All 12 duplicate-suppressed cases verified against the real
+  `venue_aliases` table - every one backed by a genuinely registered
+  alias (PISTA↔피스타, Tango Mio↔Mio, 아브라쏘↔abrazo, 청주탱고
+  우르끼자↔urquiza, and others) - 0 false suppressions, 0 wrong prefixes.
+- Structural check across all 148: 0 line2/line3 div-count issues, 0
+  cases of the venue span appearing after the event title.
+- Exact Section 49 acceptance target confirmed on the real Solo Tango 화정
+  event (event_id 221245): `Tango O Nada · [화정] 9월 8일 화정 공지 (DJ :
+  유진) · 입장료: 8,000원 (22시 이후 5,000원) · 마포구 동교로 193…`.
+- 4 additional named live samples (BUSAN TANGO FIRE → 이데알 탱고 까페,
+  TANGO FIRE → 라 벤따나, 까사밀롱가 → OCHO, plus the Solo Tango case
+  above) - all correct, no duplicates, no wrong venue.
+
+### Regressions confirmed unaffected
+
+End time, conditional fee, DJ-duplicate suppression (including the
+emoji-decorated-title case from v0.86.0), source-link human-readability,
+Naver map format, positive-region-filter, and line 3's one-line structure
+- all pinned by dedicated regression tests in this release's own test
+file, all passing against real Postgres.
+
+Two pre-existing tests needed updating for the new, intentional behavior
+(not regressions in the tests' own original intent): `test_events_api.py
+::test_an_unresolved_venue_says_so` (exact-dict-equality now includes the
+additive `aliases: []` field) and `test_v0854_address_source_link.py
+::test_venue_name_never_shown_as_address` (its real intent was always
+"not inside the address span specifically" - the venue name now has a
+second, legitimate reason to appear elsewhere on line 2).
+
+### Tests
+
+22 new (test_v0862_timeline_venue_prefix.py, covering all 20 items
+Section 48 required plus 2 extra DJ-regression variants), 1656 passed /
+15 skipped / 0 failed against real Postgres (staging), 1195 passed
+locally. Engine: unchanged, not re-run (no engine code touched).
+
+### Next recommendation
+
+None of this release's own scope is left open. A future release could
+consider display-only ellipsis on the venue span itself (Section 19
+explicitly allows it) if a real production venue name is ever found wide
+enough to matter - none was in this audit's 148 real events, so nothing
+was added speculatively.
+
 ## v0.86.1 Time-dependent Test Stabilization
 
 Status: PASS, 2026-09-09.
