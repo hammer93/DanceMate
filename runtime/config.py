@@ -30,7 +30,7 @@ PRODUCT_VERSION = "0.82"
 # image-only post can now be classified from a trusted poster reading, not
 # just title+body, closing the gap that made v0.84.3's own OCR fallback
 # unreachable for a genuinely empty-body post.
-DEFAULT_ENGINE_VERSION = "0.84"
+DEFAULT_ENGINE_VERSION = "0.85"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
