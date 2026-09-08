@@ -1,5 +1,102 @@
 # DanceMate Release Notes
 
+## v0.85.6 Human Venue Verification + Safe Address Completion
+
+Status: PASS, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.6
+- Information Engine: 0.83 (unchanged)
+
+### Goal
+
+v0.85.5 correctly deferred two identity/address questions instead of
+guessing: were CLUB PAN TANGO and 강남탱고 판 the same place, and what
+was 실루엣 분당정자동's actual current address after investigation
+turned up three conflicting candidates. This release does not try to
+resolve either one automatically - it builds the evidence packet, pauses,
+and applies only what a person actually confirms.
+
+### Human review
+
+Two evidence packets were presented; both were reviewed and answered
+directly rather than assumed:
+
+**CLUB PAN TANGO / 강남탱고 판** - confirmed as the same place, with the
+address confirmed against Miltang's own listing (서울 서초구
+강남대로595 경승빌딩 B1). Merged onto one new venue via
+`create_and_link` + `link_existing` - 5 upcoming events improved (3 under
+"CLUB PAN TANGO", 2 under "강남탱고 판").
+
+**실루엣 분당정자동** - confirmed as 지파크프라자 5층 (정자동 23-1),
+not the 정자일로 192 candidate found during investigation. A further,
+unprompted correction identified that a third candidate found in
+research - 느티로27 하나플라자빌딩 310호 - belongs to an entirely
+different, unrelated business ("실루엣 댄스스포츠", a Salsa studio) -
+exactly the same-name collision risk Section 34 of v0.85.5's own spec
+exists to catch, confirmed by a real person rather than assumed away. The
+new venue is named "실루엣 (분당정자동)", not bare "실루엣", specifically
+to avoid future confusion with that other business - 1 upcoming event
+improved.
+
+Both writes are recorded in the existing venue-resolution audit trail
+(`venue_resolution.history()`), reviewer tagged
+`human-approved-v0.85.6-kimpro`.
+
+### Human Review KPI
+
+- Reviewed venues: 6 (CLUB PAN TANGO, 강남탱고 판, Mariposa, 아브라쏘,
+  Tango Mio, 실루엣 분당정자동)
+- Confirmed: 2 (CLUB PAN TANGO/강남탱고 판 as one decision, 실루엣)
+- Linked: 1 (강남탱고 판 → the CLUB PAN TANGO venue)
+- Created: 2 (CLUB PAN TANGO, 실루엣 (분당정자동))
+- Kept Open: 3 (Mariposa, 아브라쏘, Tango Mio - single-DIRECTORY-source
+  evidence only, no new corroboration this release, no human input
+  volunteered - Section 9's own default)
+- Rejected: 0
+- Relocation Deferred: 0 (실루엣's relocation question was resolved by
+  direct human confirmation, not deferred)
+
+### Coverage
+
+Before: 127/159 known (79.9%). After: 132/159 known (83.0%). This release
+was scored on confirmed recovery, not a coverage target - the three
+single-directory venues stay open exactly because no stronger evidence
+exists yet, not because of an arbitrary cutoff.
+
+### Safety
+
+- Both addresses came from an explicit human answer, not an automated
+  confidence score - `_address_conflict()`/`similar_venues()` were used
+  only as pre-write sanity checks, never as the approval itself.
+- The current schema's single `venues.address` field means a linked
+  raw string's entire history (were it to have any) would take on the
+  new address - documented and test-covered (Section 18/19), and neither
+  of this release's two fixes actually has any pre-existing historical
+  event under its exact raw string, so no retroactive distortion
+  occurred in practice.
+- A full PostgreSQL backup was taken immediately before either write.
+- Wrong Address: 0. Wrong Date/Time/Venue/Region/Fee/DJ: 0. False
+  VERIFIED: 0.
+
+### Tests
+
+15 new tests (`tests/test_v0856_human_venue_verification.py`)
+characterizing the human-approval gate itself: no address is ever
+written without a human-provided venue_id/address, two human-confirmed-
+same-place names merge with both aliases registered, region conflicts
+and disagreeing historical addresses still refuse to auto-merge. Full
+suite: 1527 passed, 15 skipped, 2 pre-existing
+`test_tangocalendar_discovery.py` failures (unchanged baseline) - zero
+new regressions.
+
+### Scope discipline
+
+No new runtime code, no new source, no map integration, no schema
+migration, no engine change, no mass venue-resolution expansion beyond
+the two human-confirmed cases.
+
 ## v0.85.5 Venue Address Coverage Improvement
 
 Status: PASS, 2026-09-08.
