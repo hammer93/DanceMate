@@ -177,8 +177,11 @@ def test_no_evidence_stays_unknown(pg, unique):
     stored = normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
     event = events_api.get_event(pg, stored["event_id"])
     assert event["venue"]["address"] is None
-    line3 = public._timeline_line3(event)
-    assert "주소 미확인" in line3
+    # v0.85.8: no address means no address segment anywhere in the
+    # Timeline - not "주소 미확인" (line 2 omits it entirely, Section
+    # 25-26), and line 3 no longer carries address content at all.
+    line2 = public._timeline_line2(event)
+    assert "tl-2-addr" not in line2
 
 
 # 9. v0.85.4's compact-address formatter still works on this release's

@@ -260,7 +260,8 @@ def test_scoped_allow_list_touches_only_approved_venue(pg, unique, seoul_id):
 
 
 # 11. the Timeline shows the human-approved address, compacted per
-#     v0.85.4's own formatter - no regression.
+#     v0.85.4's own formatter - no regression. Lives on line 2 since
+#     v0.85.8 (was line 3 through v0.85.7).
 def test_timeline_shows_human_approved_address(pg, unique, seoul_id):
     venue_text = f"타임라인홀 {unique}"
     stored = normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
@@ -270,8 +271,8 @@ def test_timeline_shows_human_approved_address(pg, unique, seoul_id):
         name=venue_text, region_id=seoul_id,
         address="서울 서초구 강남대로595 경승빌딩 B1", reviewer="human-approved-tester")
     event = events_api.get_event(pg, stored["event_id"])
-    line3 = public._timeline_line3(event)
-    assert "서초구 강남대로595" in line3
+    line2 = public._timeline_line2(event)
+    assert "서초구 강남대로595" in line2
 
 
 # 12. calendar count is unchanged by a venue link/address approval.
