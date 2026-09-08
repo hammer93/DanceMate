@@ -277,15 +277,26 @@ def test_timeline_shows_human_approved_address(pg, unique, seoul_id):
 
 # 12. calendar count is unchanged by a venue link/address approval.
 def test_calendar_count_unchanged(pg, unique, seoul_id):
+    """v0.86.1: same fix as test_v0855_venue_address_coverage.py's
+    test_calendar_count_unchanged_by_venue_link - `search(when="upcoming")`
+    reads the real clock without an explicit `now=`, and this fixture's
+    own `event_date` ("2026-09-05") is fixed, so once the real calendar
+    passed it the delta assertion below started passing vacuously (0==0)
+    regardless of whether venue-linking actually left the calendar count
+    alone. Pinning `now=` to a moment before the fixture's own date keeps
+    it "upcoming" no matter what day this test actually runs."""
+    from datetime import datetime
+
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=events_api.SEOUL)
     venue_text = f"캘린더홀6 {unique}"
     normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
-    before_total = events_api.search(pg, when="upcoming", limit=100)["total"]
+    before_total = events_api.search(pg, when="upcoming", limit=100, now=now)["total"]
     entry = _queued(pg, venue_text)
     venue_resolution.create_and_link(
         pg, unresolved_venue_id=entry["unresolved_venue_id"],
         name=venue_text, region_id=seoul_id, address="서울 마포구 캘린더로 6",
         reviewer="human-approved-tester")
-    after_total = events_api.search(pg, when="upcoming", limit=100)["total"]
+    after_total = events_api.search(pg, when="upcoming", limit=100, now=now)["total"]
     assert after_total == before_total
 
 
