@@ -23,7 +23,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import alpha_metrics, db, events_api, feedback, venue_resolution
+from . import alpha_metrics, db, events_api, feedback, master_data, venue_resolution
 from .config import Settings
 
 router = APIRouter(tags=["events"])
@@ -186,6 +186,10 @@ li.event a { padding: .55rem .8rem; }
 .tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
 .tl-2 .ev-name { font-weight:600; }
 .tl-2 .dj { color:var(--muted); font-weight:400; }
+/* v0.86.2 (Section 35-36): the venue name is distinguishable from the
+   event title by weight alone, matching .ev-name exactly - no badge/box,
+   no added color, the existing text hierarchy already does the job. */
+.tl-2 .tl-2-venue { font-weight:600; }
 /* v0.85.8 (Section 4-11): the address moved here from line 3, as its own
    trailing segment - existing small/meta styling (same font-size/color
    line 3 has always used), never the event name's own bold/size. Bounded
@@ -998,20 +1002,64 @@ def _title_already_announces_dj(title: str, dj: str) -> bool:
     return False
 
 
+def _title_already_announces_venue(title: str, venue_name: str, aliases: list[str]) -> bool:
+    """True when the event's own title already names the venue - a resolved
+    Venue Master name or any of its official aliases (Section 8-11 of
+    v0.86.2), so prefixing it again would read as "Tango O Nada · Tango O
+    Nada 월나다".
+
+    Reuses master_data.normalize_alias() (NFKC + case-fold + punctuation
+    strip - the same comparison the alias table itself is matched with)
+    rather than a new normalization scheme, and a plain substring check
+    rather than fuzzy matching (Section 9/11): a title that happens to
+    read similarly but does not actually contain the venue's own name or
+    a confirmed alias is never treated as a duplicate.
+    """
+    title_key = master_data.normalize_alias(title or "")
+    if not title_key:
+        return False
+    for candidate in [venue_name, *aliases]:
+        candidate_key = master_data.normalize_alias(candidate or "")
+        if candidate_key and candidate_key in title_key:
+            return True
+    return False
+
+
+def _venue_prefix_html(event: dict[str, Any]) -> str:
+    """Venue name · - Section 1-7 of v0.86.2: the resolved Venue Master
+    name, compact, ahead of the event title on line 2. Section 5's own
+    safe policy: only a RESOLVED venue prefixes at all - an unresolved
+    venue (raw text only, or none) keeps line 2 exactly as before this
+    release, never a guessed or raw-text prefix (Section 4 case C).
+    """
+    venue = event.get("venue") or {}
+    if venue.get("status") != "RESOLVED":
+        return ""
+    name = (venue.get("name") or "").strip()
+    if not name:
+        return ""
+    if _title_already_announces_venue(event.get("name") or "", name,
+                                      venue.get("aliases") or []):
+        return ""
+    return f'<span class="tl-2-venue">{E(name)}</span> · '
+
+
 def _timeline_line2(event: dict[str, Any]) -> str:
-    """행사명 (DJ) · 입장료 · 주소 - Section 4-11 of v0.85.8 (was 행사명
-    (DJ) · 입장료 alone through v0.85.7; the address moved here from line
-    3 so line 3 could become strictly one line). The DJ parenthetical is
-    entirely absent, not "DJ 미확인", when there is none (Section 20).
+    """Venue · 행사명 (DJ) · 입장료 · 주소 - Section 1-7 of v0.86.2 add the
+    resolved venue name ahead of everything else (was 행사명 (DJ) · 입장료
+    · 주소 alone through v0.86.1). The DJ parenthetical is entirely absent,
+    not "DJ 미확인", when there is none (Section 20 of v0.85.8, unchanged).
 
     The address (already display-compacted by _compact_address(), never
     the raw value) is its own trailing span in the existing small/meta
-    styling (Section 6-7) - never the same size/weight as the event name.
-    It is what ellipsizes first if the line runs long (Section 9), and it
-    is omitted entirely rather than shown as "주소 미확인" when there is
-    none (Section 25-26): a name and a fee are always the point of this
-    line, an unknown address is not information worth a whole segment
+    styling (Section 6-7 of v0.85.8) - never the same size/weight as the
+    event name. It is what ellipsizes first if the line runs long (Section
+    17 of v0.86.2, same priority v0.85.8 already established), and it is
+    omitted entirely rather than shown as "주소 미확인" when there is none
+    (Section 25-26 of v0.85.8): a name and a fee are always the point of
+    this line, an unknown address is not information worth a whole segment
     for."""
+    venue_html = _venue_prefix_html(event)
     thin = ' <span class="tag">정보 적음</span>' if _is_unknown_heavy(event) else ""
     cancelled = " cancelled" if event.get("cancelled") else ""
     name = f'<span class="ev-name{cancelled}">{E(event.get("name") or "")}</span>{thin}'
@@ -1023,7 +1071,7 @@ def _timeline_line2(event: dict[str, Any]) -> str:
     )
     address = _compact_address((event.get("venue") or {}).get("address"))
     address_html = f' · <span class="tl-2-addr">{E(address)}</span>' if address else ""
-    return f'<div class="tl-2">{name}{dj_html} · {_fee_text(event)}{address_html}</div>'
+    return f'<div class="tl-2">{venue_html}{name}{dj_html} · {_fee_text(event)}{address_html}</div>'
 
 
 def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) -> str:

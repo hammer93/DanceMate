@@ -247,10 +247,14 @@ def test_resolved_venue_address_rendered():
 
 # 22. a venue's NAME is never shown in place of a real address - and with
 #     no real address, line 2 shows no address segment at all (v0.85.8).
+#     v0.86.2: the venue name now legitimately appears elsewhere on line 2
+#     (its own tl-2-venue prefix, Section 1-7), so the guard narrows to
+#     what it always actually meant - the name must never sit inside the
+#     address's own span, and an unknown address still shows no address
+#     segment at all.
 def test_venue_name_never_shown_as_address():
     event = _event(venue={"name": "Tango O Nada", "status": "RESOLVED", "address": None})
     line2 = public._timeline_line2(event)
-    assert "Tango O Nada" not in line2
     assert "tl-2-addr" not in line2
 
 
