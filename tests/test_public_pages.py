@@ -147,11 +147,22 @@ def test_internal_source_codes_never_reach_the_card():
 
 # --- events_api.source_label / valid_public_url ------------------------------
 
-def test_a_search_api_platform_gets_its_brand_name():
+def test_a_real_source_name_wins_over_the_generic_platform_label():
+    """v0.85.4: a source's own real name is what identifies it to a reader -
+    "출처: Daum Cafe" for every DAUM_CAFE source, regardless of which cafe
+    post it actually was, was the exact defect this reverses (Section
+    26-28)."""
     from runtime import events_api
 
-    assert events_api.source_label("DAUM_CAFE", "외부홍보게시판(파티)") == "Daum Cafe"
-    assert events_api.source_label("NAVER_BLOG", "소셜댄스 블로그 검색") == "Naver Blog"
+    assert events_api.source_label("DAUM_CAFE", "외부홍보게시판(파티)") == "외부홍보게시판(파티)"
+    assert events_api.source_label("NAVER_BLOG", "소셜댄스 블로그 검색") == "소셜댄스 블로그 검색"
+
+
+def test_platform_label_is_a_last_resort_when_no_name_exists():
+    from runtime import events_api
+
+    assert events_api.source_label("DAUM_CAFE", None) == "Daum Cafe"
+    assert events_api.source_label("NAVER_BLOG", "") == "Naver Blog"
 
 
 def test_a_web_source_uses_its_own_registered_name():

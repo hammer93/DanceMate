@@ -185,7 +185,8 @@ li.event a { padding: .55rem .8rem; }
 .tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
 .tl-2 .ev-name { font-weight:600; }
 .tl-2 .dj { color:var(--muted); font-weight:400; }
-.tl-3 { padding: .15rem .8rem .6rem; font-size:.78rem; color:var(--muted); }
+.tl-3 { padding: .15rem .8rem .6rem; font-size:.78rem; color:var(--muted);
+        overflow-wrap: anywhere; }
 .tl-3 a { color:var(--accent); text-decoration:none; }
 .tl-3 a:hover { text-decoration:underline; }
 .ext { font-size:.75em; }
@@ -915,9 +916,10 @@ def _timeline_line2(event: dict[str, Any]) -> str:
 
 
 def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """(2시간 전) - real evidence timestamp only (Section 26-27), the same
-    age-bucketing the previous card design already used, just re-shaped to
-    the timeline's own parenthetical form."""
+    """2시간 전 - real evidence timestamp only (Section 26-27, 48), the same
+    age-bucketing the previous card design already used. v0.85.4: no more
+    wrapping parens - this now sits as its own " · "-joined segment on line
+    3 instead of trailing the source link, so a bare phrase reads better."""
     from datetime import datetime as datetime_type, timezone
 
     stamp = event.get("last_checked")
@@ -939,30 +941,82 @@ def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) 
         when = f"{int(age // 3600)}시간 전"
     else:
         when = f"{local.month}/{local.day} {local:%H:%M} 확인"
-    return f"({E(when)})"
+    return when
+
+
+# v0.85.4 (Section 7-14): a 시/도 prefix is already redundant once
+# _timeline_line1's own "[지역]" token is on screen, so it is dropped here as
+# a display-only simplification - the stored venues.address value itself is
+# never touched (Section 25: "원본 DB 주소 값은 절대 변경하지 않는다").
+_PROVINCE_PREFIX = re.compile(
+    "^(?:서울특별시|서울시|서울|부산광역시|부산|대구광역시|대구|인천광역시|인천|"
+    "광주광역시|광주|대전광역시|대전|울산광역시|울산|세종특별자치시|세종|"
+    "경기도|경기|강원특별자치도|강원도|강원|충청북도|충북|충청남도|충남|"
+    "전북특별자치도|전라북도|전북|전라남도|전남|"
+    "경상북도|경북|경상남도|경남|제주특별자치도|제주도|제주)\\s+"
+)
+_PURE_STREET_NUMBER = re.compile(r"^\d+(-\d+)?$")
+_ADDRESS_HARD_CAP = 18
+
+
+def _compact_address(address: str | None) -> str | None:
+    """서울 서초구 서초대로 123 4층 -> 서초구 서초대로 123... (Section 8-14).
+
+    Display-only: keeps the district and road name plus the first street
+    number, and drops whatever comes after it (floor, suite, building name,
+    station exit) since that is what makes an address too long for one
+    line, not what makes it identifiable. Never invents or reorders
+    anything already there - it only decides where to stop reading."""
+    if not address or not address.strip():
+        return None
+    text = _PROVINCE_PREFIX.sub("", address.strip(), count=1)
+    tokens = [t for t in re.split(r"[\s,]+", text) if t]
+    if not tokens:
+        return None
+    kept: list[str] = []
+    for index, token in enumerate(tokens):
+        kept.append(token)
+        if _PURE_STREET_NUMBER.match(token):
+            return " ".join(kept) + ("…" if index < len(tokens) - 1 else "")
+    joined = " ".join(tokens)
+    if len(joined) > _ADDRESS_HARD_CAP:
+        return joined[:_ADDRESS_HARD_CAP].rstrip() + "…"
+    return joined
 
 
 def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """출처: OOO ↗ (확인시간) - Section 22-27. Only rendered when there is a
-    real source or a real confirmation timestamp to put on it; a candidate
-    with neither (should not happen in practice - every live post has a
-    source_url - but defensively) contributes no third line at all, keeping
-    Section 12's "up to three lines" honest rather than padding to three."""
+    """주소 · 출처: OOO ↗ · 확인시간 - one row, Section 1-4/7-14/18-30.
+
+    Only rendered when there is a real address, source, or confirmation
+    timestamp to put on it; a candidate with none of the three (should not
+    happen in practice - every live post has a source_url - but
+    defensively) contributes no third line at all, keeping Section 12's
+    "up to three lines" honest rather than padding to three."""
     link = event.get("source_link") or {}
-    url = link.get("url")
+    # Defense in depth: events_api.present() already runs this, but a
+    # malformed URL must never become a clickable link here either
+    # (Section 18), whatever handed the event dict to this function.
+    url = events_api.valid_public_url(link.get("url"))
     label = link.get("label")
     confirmed = _confirmation_text(event, now=now)
-    if not url and not confirmed:
+    raw_address = (event.get("venue") or {}).get("address")
+    address = _compact_address(raw_address)
+    if not address and not url and not label and not confirmed:
         return ""
-    if not url:
-        source_html = '<span class="unknown">출처 미확인</span>'
-    else:
+    address_html = E(address) if address else '<span class="unknown">주소 미확인</span>'
+    if url:
         source_html = (
             f'출처: <a href="{E(url)}" target="_blank" rel="noopener noreferrer">'
             f'{E(label) if label else "원문"} <span class="ext" aria-hidden="true">&#8599;</span></a>'
         )
-    tail = f" {confirmed}" if confirmed else ""
-    return f'<div class="tl-3">{source_html}{tail}</div>'
+    elif label:
+        source_html = f"출처: {E(label)}"
+    else:
+        source_html = '<span class="unknown">출처 미확인</span>'
+    parts = [address_html, source_html]
+    if confirmed:
+        parts.append(E(confirmed))
+    return f'<div class="tl-3">{" · ".join(parts)}</div>'
 
 
 def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:

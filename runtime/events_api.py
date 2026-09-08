@@ -20,6 +20,7 @@ Dates are Asia/Seoul. "Today" means today where the dancer is, not UTC: at
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 from datetime import date, datetime, time, timedelta
 from collections.abc import Sequence
@@ -191,8 +192,15 @@ PLATFORM_LABELS = {
 
 
 def source_label(platform: str | None, name: str | None) -> str | None:
-    """The friendly label a reader sees for where an event's post came from."""
-    return PLATFORM_LABELS.get(platform or "") or name or None
+    """The friendly label a reader sees for where an event's post came from.
+
+    v0.85.4: a source's own real name (e.g. "Solo Tango 화요정모 공지") is
+    what identifies it to a reader - PLATFORM_LABELS is a last-resort filler
+    for the rare row with no name at all, not a default that overrides one.
+    Before this, every DAUM_CAFE source read as the generic "출처: Daum
+    Cafe" regardless of which cafe post it actually was (Section 26-28).
+    """
+    return name or PLATFORM_LABELS.get(platform or "") or None
 
 
 def valid_public_url(url: str | None) -> str | None:
@@ -205,6 +213,51 @@ def valid_public_url(url: str | None) -> str | None:
         return None
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return None
+    return url
+
+
+# v0.85.4 (Section 18-30, 41-43, 56-57): a source's own *collection* target
+# (what the collector fetches - a JSON API in these two cases) is not what a
+# reader should be sent to when they tap "출처" (Section 23). Both patterns
+# below are pure string rewrites of the already-stored source_url - no
+# network call, so this costs nothing at render time (Section 43-44).
+#
+# Tango Calendar Korea (SRC-W-003) stores its own API detail endpoint
+# (".../api/events/{uuid}") as source_url. The site's own sitemap.xml
+# declares "{origin}/?eventId={uuid}" as the canonical, crawlable page for
+# that same event (confirmed live: sitemap.xml lists exactly this shape with
+# lastmod/changefreq/priority for dozens of real events) - so the rewrite
+# below is not a guess, it is the operator's own declared URL for the page.
+_TANGOCALENDAR_API_DETAIL = re.compile(
+    r"^(https?://[^/]+)/api/events/([0-9a-fA-F-]{36})/?(?:\?.*)?$"
+)
+
+# TangoNOW (SRC-W-002) stores a raw Firestore REST document URL as
+# source_url. tangonow_discovery.py's own eventsBundle investigation (kept
+# in that module's docstring) already found that ~80% of that source's own
+# records carry no link/sourceLink field at all and that ktnow.kr's
+# frontend is JS-only with no per-event route to recover one - there is no
+# real per-event human page to rewrite to, so the only honest fallback is
+# the source's own home page (Section 25's own prescribed fallback order).
+_FIRESTORE_DOCUMENT = re.compile(r"^https?://firestore\.googleapis\.com/")
+_HOME_PAGE_FALLBACK = {
+    "firestore": "https://ktnow.kr/",
+}
+
+
+def resolve_public_source_url(url: str | None) -> str | None:
+    """The human page a reader should be sent to, never the collector's own
+    API endpoint (Section 18-30). Pattern-matches the stored source_url only
+    - never fetches anything - so an already-human URL (Daum Cafe, Miltang,
+    DanceInfo, TangoClass's own WordPress `link`) passes through unchanged.
+    """
+    if not url:
+        return None
+    match = _TANGOCALENDAR_API_DETAIL.match(url)
+    if match:
+        return f"{match.group(1)}/?eventId={match.group(2)}"
+    if _FIRESTORE_DOCUMENT.match(url):
+        return _HOME_PAGE_FALLBACK["firestore"]
     return url
 
 
@@ -267,7 +320,7 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         # source_item_id / source_url already denormalize onto every event
         # row. No fallback: a missing URL means no link, not a guessed one.
         "source_link": {
-            "url": valid_public_url(row.get("source_url")),
+            "url": valid_public_url(resolve_public_source_url(row.get("source_url"))),
             "label": source_label(row.get("source_platform"), row.get("source_name")),
         },
         # v0.85.0: which tier this event's own source falls into (Section 5/8)
@@ -519,7 +572,7 @@ def get_event(con, event_id: int) -> dict[str, Any] | None:
     event = present(rows[0])
     event["sources"] = [
         {
-            "url": source["source_url"],
+            "url": valid_public_url(resolve_public_source_url(source["source_url"])),
             "event_name": source["event_name"],
             "is_canonical": source["is_canonical"],
         }
