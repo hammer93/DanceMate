@@ -1,5 +1,114 @@
 # DanceMate Release Notes
 
+## v0.86.1 Time-dependent Test Stabilization
+
+Status: PASS, 2026-09-09.
+
+Test determinism maintenance release. No production event/source/
+extraction semantics changed.
+
+Version split:
+
+- Product Runtime: 0.86.1
+- Information Engine: 0.85 (unchanged - no engine code touched)
+
+### The problem
+
+`tests/test_v0852_source_depth.py` and `tests/test_tangocalendar_discovery.py`
+both hardcoded a fixed calendar date whose test *intent* was "this event
+must count as upcoming/current" - `source_ops.evidence_tiers()` filters
+`event_date >= current_date` (Postgres, Asia/Seoul), and
+`tangocalendar_discovery.parse_events()` has its own upcoming-only cutoff.
+Once the real calendar passed 2026-09-08/09-05, both fixtures silently
+became past data and every dependent assertion started failing (or, worse,
+in two other files, silently stopped meaning anything) - forever, with
+each passing day, not a flake.
+
+### Baseline (reproduced before any fix)
+
+- `test_v0852_source_depth.py::test_evidence_tiers_counts_a_primary_directory_pair_as_multi_tier`
+  and `::test_evidence_tiers_folded_duplicate_still_counts_toward_multi_tier`:
+  `assert before["multi_tier"] >= 1` → `assert 0 >= 1`. Root cause: fixture
+  `event_date="2026-09-08"` vs. real `current_date` already past it.
+- `test_tangocalendar_discovery.py::test_discover_tags_every_post_with_source_and_platform`
+  and `::test_parse_list_reads_a_recorded_api_response_text`: `IndexError:
+  list index out of range` on `posts[0]`. Root cause: `_event()`'s fixed
+  `startDate="2026-09-06T05:00:00Z"` fell outside `parse_events()`'s own
+  upcoming-only cutoff once real "today" passed it, and neither
+  `discover()` nor `parse_list()` exposed a way to pin "today" the way
+  `parse_events()` itself already could.
+
+### Project-wide sweep
+
+Every `test_*.py` in `tests/` and `engine/tests/` (158 files) checked for
+the same pattern: a fixed date literal reaching a real-clock default
+(`date.today()`, `datetime.now()` with no override, or a SQL
+`current_date`/`now()` filter) instead of an explicit injected clock. Two
+already-known files, plus two more the sweep itself found: silently
+**vacuous** (not failing, just no longer testing anything) delta
+assertions in `test_v0855_venue_address_coverage.py::test_calendar_count_unchanged_by_venue_link`
+and `test_v0856_human_venue_verification.py::test_calendar_count_unchanged`
+- both compared `events_api.search(when="upcoming")` totals before/after a
+venue-link action, against a fixture pinned at `event_date="2026-09-05"`;
+once that fell out of "upcoming" relative to the real clock, both
+before/after totals excluded the fixture entirely and the delta assertion
+(`0 == 0`) passed regardless of whether venue-linking actually worked.
+Everything else in both directories was confirmed already safe (explicit
+`now=`/`today=`/`on=`/`published=` injection, or dates that never reach a
+real-clock comparison at all) - no other genuinely dangerous fixture found.
+
+### Fixes
+
+- `runtime/tangocalendar_discovery.py`: `parse_list()` and `discover()`
+  now accept an optional `today: date | None = None`, forwarded to
+  `parse_events()`'s own pre-existing parameter. Production never passes
+  it (defaults to `None`, identical to `parse_events()` itself) - **zero
+  behaviour change** for any real caller.
+- `tests/test_v0852_source_depth.py`: hardcoded `"2026-09-08"` /
+  `date(2026, 9, 8)` replaced throughout with `_BASE_DATE =
+  events_api.today() + timedelta(days=14)` (the same "today in Seoul"
+  helper production itself uses) and a matching Monday-Sunday week
+  window. No assertion in the file ever cared about the literal date.
+- `tests/test_tangocalendar_discovery.py`: the two affected tests now pin
+  `today=TODAY` explicitly, the same way `test_base_event_parses_title_venue_fee`
+  already did through `parse_events()` directly.
+- `tests/test_v0855_venue_address_coverage.py` and
+  `tests/test_v0856_human_venue_verification.py`: both `..._unchanged`
+  tests now pin `now=` to a fixed moment before their own fixture's date,
+  so the delta assertion is exercising real behaviour again - confirmed:
+  venue-linking genuinely does leave the calendar count unchanged, no
+  latent bug was hiding behind the vacuous pass.
+- `tests/test_v0861_time_test_stabilization.py` (new): pins the date
+  arithmetic all of the above relies on across a KST boundary matrix
+  (00:00, 00:30, 08:59, 09:00, 23:59 - the dangerous 00:00-08:59 window
+  where UTC still reads the previous day), Monday week-start, and a
+  4-point today-simulation matrix (2026-09-08/09, 2026-12-31, 2027-01-01)
+  including the year-boundary case.
+
+No production code touched beyond the two purely-additive, default-`None`
+`today=` parameters above. Source priority, Timeline rendering, and
+extraction are all byte-for-byte unchanged this release.
+
+### Validation
+
+- Full runtime suite (staging, real Postgres): 1634 passed, 15 skipped,
+  **0 failed** (previously 2 tangocalendar + 2 v0852 failures).
+- Full runtime suite (local, no DB): 1173 passed, 470 skipped, 0 failed.
+- Full engine suite: 809 passed, 0 failed (no engine code changed).
+- Repeated runs: the 5 stabilized files ×5 against real Postgres, plus
+  the DB-free files ×10 locally - 0 flakes across all 15 runs.
+- No wall-clock sleeps anywhere in the new/changed tests - every clock is
+  an explicit value passed to a parameter the function already accepted
+  or was extended to accept.
+
+### Next recommendation
+
+None of the remaining fixed-future dates found by the sweep
+(`"2027-01-15"` in `test_v0852_source_depth.py`'s directory-only isolation
+fixture, and similar far-future literals elsewhere) are dangerous today,
+but they will eventually need the same relative-date treatment as their
+own "today" passes them - low priority, no action needed until then.
+
 ## v0.86.0 Private Alpha Field Validation
 
 Status: PASS, 2026-09-09.
