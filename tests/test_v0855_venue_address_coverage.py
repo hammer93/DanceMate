@@ -199,13 +199,13 @@ def test_region_prefix_trimming_regression():
 def test_calendar_count_unchanged_by_venue_link(pg, unique, seoul_id):
     venue_text = f"캘린더홀 {unique}"
     normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
-    before_total = events_api.search(pg, when="upcoming", limit=200)["total"]
+    before_total = events_api.search(pg, when="upcoming", limit=100)["total"]
     entry = _queued(pg, venue_text)
     venue_resolution.create_and_link(
         pg, unresolved_venue_id=entry["unresolved_venue_id"],
         name=venue_text, region_id=seoul_id, address="서울 마포구 캘린더로 1",
         reviewer="tester")
-    after_total = events_api.search(pg, when="upcoming", limit=200)["total"]
+    after_total = events_api.search(pg, when="upcoming", limit=100)["total"]
     assert after_total == before_total
 
 
