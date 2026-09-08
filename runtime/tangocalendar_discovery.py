@@ -232,18 +232,26 @@ def _synthesize_body(record: dict[str, Any], start: datetime | None, end: dateti
     return " ".join(parts)
 
 
-def parse_list(raw_text: str, list_url: str) -> list[dict[str, Any]]:
+def parse_list(raw_text: str, list_url: str, *,
+               today: date | None = None) -> list[dict[str, Any]]:
     """`collectors._collect_snapshot()`'s generic WEB entry point: a raw,
     already-fetched response body (here, the `/api/events` JSON text, e.g. a
     recorded fixture) -> RawPostRecord-shaped dicts. A thin wrapper around
     `parse_events()` so a snapshot/fixture dry-run for this source goes
     through the same dispatch every other WEB source already uses.
+
+    ``today`` (v0.86.1) just forwards to ``parse_events()``'s own existing
+    parameter - production never passes it (real callers want today's real
+    cutoff), so this changes nothing about live behaviour; it exists so a
+    fixture dry-run can pin the same "today" its own recorded dates were
+    written against, the same way `test_base_event_parses_title_venue_fee`
+    already does through `parse_events()` directly.
     """
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise DiscoveryError(f"{list_url} snapshot is not valid JSON: {exc}") from exc
-    return parse_events(payload, list_url)
+    return parse_events(payload, list_url, today=today)
 
 
 def parse_events(
@@ -338,11 +346,15 @@ def fetch_event_detail(
 
 def discover(
     list_url: str, *, source_id: str, platform: str = "WEB",
-    timeout: int = DEFAULT_TIMEOUT, opener=None,
+    timeout: int = DEFAULT_TIMEOUT, opener=None, today: date | None = None,
 ) -> list[dict[str, Any]]:
-    """Every upcoming, non-cancelled Tango Calendar Korea event."""
+    """Every upcoming, non-cancelled Tango Calendar Korea event.
+
+    ``today`` (v0.86.1) forwards to ``parse_events()`` - see ``parse_list()``'s
+    own docstring for why it exists and why leaving it unset changes nothing.
+    """
     payload = _fetch_json(list_url, timeout=timeout, opener=opener)
-    posts = parse_events(payload, list_url)
+    posts = parse_events(payload, list_url, today=today)
     for post in posts:
         post["source_id"] = source_id
         post["platform"] = platform

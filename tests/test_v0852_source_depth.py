@@ -12,11 +12,28 @@ new Section 22/23 multi-tier evidence KPI this release adds.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from runtime import duplicates, events_api, migrate, normalization, source_ops, source_priority
+
+# v0.86.1: this file used to hardcode 2026-09-08 - the real date the
+# production incident it is modelled on (event_id 88436/221245, Solo
+# Tango 화요정모) was observed live. Every assertion in this file is about
+# *upcoming* multi-tier evidence convergence, never about that literal
+# date, so once the real calendar passed 2026-09-08 the whole file failed
+# permanently (source_ops.evidence_tiers() filters `event_date >=
+# current_date`) - a stale fixture, not a regression. Anchored 14 days out
+# from Seoul's own "today" (events_api.today(), the same helper production
+# itself uses - Section 11's "KST가 기준") instead: comfortably upcoming
+# for any current_date filter, on whatever real day this actually runs,
+# and far enough out that a test run near a week/month boundary does not
+# make the fixture itself flip between "this week" and "next week".
+_BASE_DATE = events_api.today() + timedelta(days=14)
+_BASE_DATE_STR = _BASE_DATE.isoformat()
+_WEEK_START = _BASE_DATE - timedelta(days=_BASE_DATE.weekday())  # Monday
+_WEEK_END = _WEEK_START + timedelta(days=6)  # Sunday
 
 
 def _apply(pg, *versions: str) -> None:
@@ -40,7 +57,7 @@ def _candidate(unique, **overrides):
         "source_url": f"https://example.test/{unique}-a",
         "event_name": f"밀롱가 {unique}",
         "event_type": "MILONGA",
-        "event_date": "2026-09-08",
+        "event_date": _BASE_DATE_STR,
         "start_time": "20:00", "end_time": "23:00", "end_day_offset": 0,
         "venue": f"venue-{unique}", "fee": 10000,
         "candidate_status": "POSSIBLE",
@@ -106,7 +123,7 @@ def _solo_tango_pair(pg, unique):
 
 def test_primary_direct_representative(seeded, unique):
     directory_event, primary_event, _, _ = _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     with seeded.cursor() as cur:
         cur.execute("SELECT canonical_event_id FROM events WHERE event_id = %s",
                     (directory_event["event_id"],))
@@ -117,7 +134,7 @@ def test_primary_direct_representative(seeded, unique):
 
 def test_directory_retained(seeded, unique):
     directory_event, primary_event, directory_url, primary_url = _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     linked = duplicates.sources_of(seeded, primary_event["event_id"])
     urls = {s["source_url"] for s in linked}
     assert directory_url in urls
@@ -128,7 +145,7 @@ def test_directory_retained(seeded, unique):
 
 def test_direct_source_link(seeded, unique):
     _, primary_event, _, primary_url = _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     result = events_api.get_event(seeded, primary_event["event_id"])
     assert result["source_link"]["url"] == primary_url
 
@@ -151,7 +168,7 @@ def test_direct_collected_at_freshness(seeded, unique):
 
 def test_duplicate_event_count_unchanged(seeded, unique):
     directory_event, primary_event, _, _ = _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     with seeded.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM events WHERE event_id IN (%s, %s) AND canonical_event_id IS NULL",
@@ -164,16 +181,16 @@ def test_duplicate_event_count_unchanged(seeded, unique):
 
 def test_calendar_count_unchanged(seeded, unique):
     _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
-    counts = events_api.week_counts(seeded, start=date(2026, 9, 7), end=date(2026, 9, 13))
-    assert counts.get("2026-09-08", 0) >= 1  # this test's own pair contributes at most 1
+    duplicates.scan(seeded, on=_BASE_DATE)
+    counts = events_api.week_counts(seeded, start=_WEEK_START, end=_WEEK_END)
+    assert counts.get(_BASE_DATE_STR, 0) >= 1  # this test's own pair contributes at most 1
 
 
 # 19. DJ from direct -------------------------------------------------------------
 
 def test_dj_from_direct(seeded, unique):
     _, primary_event, _, _ = _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     result = events_api.get_event(seeded, primary_event["event_id"])
     assert result["dj"] == "유진"
 
@@ -210,7 +227,7 @@ def test_conflict_safety_primary_does_not_silently_overwrite(seeded, unique):
     )
     _link_event_to_source_item(seeded, left["event_id"], primary_item)
     _link_event_to_source_item(seeded, right["event_id"], directory_item)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     with seeded.cursor() as cur:
         cur.execute(
             "SELECT canonical_event_id FROM events WHERE event_id IN (%s, %s)",
@@ -233,7 +250,7 @@ def test_primary_does_not_imply_verified(seeded, unique):
 
 def test_evidence_tiers_counts_a_primary_directory_pair_as_multi_tier(seeded, unique):
     _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     before = source_ops.evidence_tiers(seeded)
     # Re-derive scoped to just this test's own pair via a direct query,
     # since the real table also carries whatever this shared board already
@@ -258,7 +275,7 @@ def test_evidence_tiers_folded_duplicate_still_counts_toward_multi_tier(seeded, 
     """The KPI must read evidence from BOTH the canonical row and its
     folded-away duplicate - not just the representative's own tier."""
     directory_event, primary_event, _, _ = _solo_tango_pair(seeded, unique)
-    duplicates.scan(seeded, on=date(2026, 9, 8))
+    duplicates.scan(seeded, on=_BASE_DATE)
     with seeded.cursor() as cur:
         cur.execute("SELECT canonical_event_id FROM events WHERE event_id = %s",
                     (directory_event["event_id"],))
