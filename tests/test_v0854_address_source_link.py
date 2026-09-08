@@ -247,10 +247,14 @@ def test_no_address_honest_unknown():
     assert public._compact_address("") is None
 
 
-# 24. the region already shown on line 1 is trimmed from the address on line 3.
+# 24. the region already shown on line 1 is trimmed from the address on line 3
+#     - including a metro city's own contracted "-시" form (found live in
+#     production: "부산시 부산진구..." was not being trimmed before this).
 def test_region_prefix_trimmed():
     assert public._compact_address("서울 마포구 잔다리로 48, 2층") == "마포구 잔다리로 48…"
     assert public._compact_address("부산 부산진구 서면로68번길 38 4층") == "부산진구 서면로68번길 38…"
+    assert public._compact_address(
+        "부산시 부산진구 신천대로 62번길 62") == "부산진구 신천대로 62번길 62"
 
 
 # 25. compacting for display never mutates the original stored value.
