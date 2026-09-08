@@ -1,5 +1,82 @@
 # DanceMate Release Notes
 
+## v0.85.3 Direct Source Expansion Round 2 + DJ Display Fix
+
+Status: honest zero-new-source research outcome, one real UX defect
+fixed, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.3
+- Information Engine: 0.83 (unchanged)
+
+### Goal
+
+v0.85.2's own post-release audit ranked OCHO, Tango O Nada, PISTA, Tango
+Andante, and EN PAZ as the highest-frequency remaining aggregator-only
+organizer gaps (13-18 events each). This release re-verified every one
+of them live before writing any code.
+
+### Research: zero new sources (an accepted outcome)
+
+- **OCHO / Tango O Nada**: cross-referenced against the curated 나무위키
+  탱고학원 (tango academy) index - neither appears as an independent
+  teaching academy with its own community board. Both are rented venues;
+  the recurring events held there are organized by other communities
+  that are either already registered (Solo Tango -> SRC-D-003) or
+  private (Milonga Casa's own Facebook *group*, confirmed via 나무위키
+  밀롱가 as 까사밀롱가's real organizer - login-required, REJECT,
+  unchanged from v0.85.1's own finding for the same group).
+- **PISTA**: a new lead this round (tangoinkorea Daum Cafe) redirects
+  straight to `logins.daum.net` before any list content loads - fails
+  the ADD_NOW gate immediately.
+- **Tango Andante**: no independent site found beyond its already-known
+  Facebook page (REFERENCE_ONLY, unchanged from v0.85.1).
+- **EN PAZ**: no official homepage, cafe, blog, or even a distinct
+  social page found at all - genuinely nothing to classify beyond REJECT.
+
+`docs/tango_direct_source_candidates.csv` updated with six new
+reverification rows (CAND-TANGO-031 through 036) - existing conclusions
+preserved, not overwritten. Zero new sources is the honest result, not a
+shortfall: Section 58/Section 57 of this release's own spec explicitly
+treat this as an acceptable outcome when no candidate actually clears
+the public/no-login/Terms-clear/current-event bar.
+
+### A real UX defect fixed: DJ shown twice
+
+Found live in v0.85.2's own post-release audit (event_id 221245,
+SRC-D-003): a raw post title already spelling out "(DJ : 유진)" as free
+text, plus the structured `dj` field the engine has always extracted,
+rendered as two separate things - "...(DJ : 유진) (DJ 유진)".
+`runtime.public._title_already_announces_dj()` now skips the display
+badge only when it would repeat the title verbatim (label spacing/case/
+colon/parens normalization only - no fuzzy name matching), so a
+genuinely different DJ named in the title stays visible as a real
+conflict signal rather than being silently hidden. Neither the raw
+title text nor the stored `dj` field is ever modified - this is a
+display-only fix, confirmed against the exact real production data that
+first showed the bug.
+
+### Coverage
+
+Unchanged by this release's own actions (no new source, no reprocessing):
+10/159 (6.3%), same as v0.85.2's own converged measurement - the small
+denominator drift is normal event-count churn over time, not a
+regression. Still one MULTI-TIER event (Solo Tango).
+
+### Tests
+
+12 new tests for the DJ-display fix (title-already-announces-dj in
+several label spellings, no-mention shows the badge, a genuinely
+different DJ is never hidden, raw title/data never mutated, plus
+supporting unit tests for the detector itself and two timeline
+regression checks). No new source-handling tests this release - no new
+source code was added; the existing dedup/representative/conflict/
+calendar/historical guarantees remain covered by v0.85.1/v0.85.2's own
+test suites. Full Runtime suite on staging: 1466 passed, 15 skipped
+(only the 2 pre-existing, unrelated `test_tangocalendar_discovery.py`
+failures remain, same baseline as every prior release).
+
 ## v0.85.2 Direct Source Depth + Primary Evidence Convergence
 
 Status: real live production representative-source flip confirmed
