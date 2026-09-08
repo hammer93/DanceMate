@@ -22,7 +22,14 @@ TIME_RE = re.compile(
     re.I,
 )
 FEE_RE = re.compile(r"(?:입장료|fee\s*:?)\s*([0-9][0-9,]*)\s*원?", re.I)
-DJ_RE = re.compile(r"DJ\s*[:.]?\s*([A-Za-z가-힣._]+)", re.I)
+# The label repeats (`+`, not one match) because a real page can carry it
+# twice in a row: "...구글맵 DJ DJ 네로 강의..." (DanceInfo's own field-label
+# "DJ" sitting directly against a value that itself starts with the word
+# "DJ" - v0.86.0, found live on event_id 32096, dj had literally read as
+# the string "DJ"). A single `DJ\s*[:.]?\s*` stopped at the first "DJ" and
+# captured the second one as the name; repeating the label consumes both
+# and reaches the real "네로".
+DJ_RE = re.compile(r"(?:DJ\s*[:.]?\s*)+([A-Za-z가-힣._]+)", re.I)
 
 
 def _as_date(value):
