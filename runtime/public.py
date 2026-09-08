@@ -182,14 +182,24 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
    (Section 12). li.event's own border/padding/gap already fit this; only
    the line-specific typography is new. */
 li.event a { padding: .55rem .8rem; }
-.tl-1 { font-variant-numeric: tabular-nums; font-weight:600; font-size:.92rem; }
+/* v0.86.3 (Section 3, 13-16): the resolved venue name sits right after
+   the region, on line 1 - "[서울] Tango O Nada · 오늘 20:00~23:30 밀롱가".
+   Region and the date/time/type tail (`.tl-fixed`, mirroring line 3's own
+   확인시간/지도보기 - the same never-shrink pattern, scoped to this line)
+   never give up space; the venue name is the only thing allowed to
+   ellipsize (`min-width:0`, CSS `text-overflow:ellipsis`) if it is
+   unusually long, exactly the way line 3's `.src-name` already works.
+   Weight matches the line's own existing bold, no badge/box, no added
+   color - Section 13/36's own "compact text, existing hierarchy" ask. */
+.tl-1 { font-variant-numeric: tabular-nums; font-weight:600; font-size:.92rem;
+        display:flex; align-items:baseline; white-space:nowrap; overflow:hidden;
+        gap:.35em; }
+.tl-1 .tl-fixed { flex-shrink:0; white-space:nowrap; }
+.tl-1 .tl-1-venue { min-width:0; overflow:hidden; text-overflow:ellipsis;
+                    white-space:nowrap; }
 .tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
 .tl-2 .ev-name { font-weight:600; }
 .tl-2 .dj { color:var(--muted); font-weight:400; }
-/* v0.86.2 (Section 35-36): the venue name is distinguishable from the
-   event title by weight alone, matching .ev-name exactly - no badge/box,
-   no added color, the existing text hierarchy already does the job. */
-.tl-2 .tl-2-venue { font-weight:600; }
 /* v0.85.8 (Section 4-11): the address moved here from line 3, as its own
    trailing segment - existing small/meta styling (same font-size/color
    line 3 has always used), never the event name's own bold/size. Bounded
@@ -930,15 +940,49 @@ def _timeline_badges(event: dict[str, Any], *, now: "datetime | None" = None) ->
     return f'<span class="status{tone}"{title}>{E(label)}</span>'
 
 
+def _timeline_line1_venue_name(event: dict[str, Any]) -> str | None:
+    """The resolved Venue Master's own canonical name, or None - v0.86.3
+    Section 3-6: only a RESOLVED venue shows at all, and only its Master
+    name (never an alias, never raw unresolved source text, never
+    guessed). Escaping/wrapping is the caller's job."""
+    venue = event.get("venue") or {}
+    if venue.get("status") != "RESOLVED":
+        return None
+    return (venue.get("name") or "").strip() or None
+
+
 def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """[지역] 날짜 시간 종류 - Section 13, always in this order."""
+    """[지역] Venue · 날짜 시간 종류 - v0.86.3 moved the resolved venue name
+    here from line 2 (Section 1-7; was 행사명 앞, v0.86.2's own Section
+    1-7). No venue at all keeps the exact pre-v0.86.3 form, "[지역] 날짜
+    시간 종류", with no floating separator (Section 4).
+
+    Region and the date/time/type tail are each wrapped in their own
+    non-shrinking span (`.tl-fixed`, mirroring line 3's own 확인시간/
+    지도보기 - Section 16) so an unusually long venue name is the only
+    thing that can ever ellipsize (Section 14-15, 20): the actual
+    decision-making fields - date, time, event type - are never pushed
+    out or hidden to make room for it.
+    """
     day = event.get("date")
     date_label = _human_date(day, now=now) if day else ""
     type_label = event.get("event_type_label") or ""
-    parts = [_timeline_region(event), E(date_label), _timeline_clock(event),
-             E(type_label) if type_label else ""]
-    return (f'<div class="tl-1">' + " ".join(p for p in parts if p)
-            + _timeline_badges(event, now=now) + "</div>")
+    rest = [E(date_label), _timeline_clock(event), E(type_label) if type_label else ""]
+    rest_text = " ".join(p for p in rest if p)
+    region_html = _timeline_region(event)
+    venue_name = _timeline_line1_venue_name(event)
+    if venue_name:
+        escaped = E(venue_name)
+        body = (
+            f'<span class="tl-fixed">{region_html}</span>'
+            f'<span class="tl-1-venue" title="{escaped}" aria-label="{escaped}">{escaped}</span>'
+            f'<span class="tl-fixed">· {rest_text}</span>'
+        )
+    else:
+        body = f'<span class="tl-fixed">{region_html} {rest_text}</span>'
+    badges = _timeline_badges(event, now=now)
+    badges_html = f'<span class="tl-fixed">{badges}</span>' if badges else ""
+    return f'<div class="tl-1">{body}{badges_html}</div>'
 
 
 def _fee_text(event: dict[str, Any]) -> str:
@@ -1002,64 +1046,29 @@ def _title_already_announces_dj(title: str, dj: str) -> bool:
     return False
 
 
-def _title_already_announces_venue(title: str, venue_name: str, aliases: list[str]) -> bool:
-    """True when the event's own title already names the venue - a resolved
-    Venue Master name or any of its official aliases (Section 8-11 of
-    v0.86.2), so prefixing it again would read as "Tango O Nada · Tango O
-    Nada 월나다".
-
-    Reuses master_data.normalize_alias() (NFKC + case-fold + punctuation
-    strip - the same comparison the alias table itself is matched with)
-    rather than a new normalization scheme, and a plain substring check
-    rather than fuzzy matching (Section 9/11): a title that happens to
-    read similarly but does not actually contain the venue's own name or
-    a confirmed alias is never treated as a duplicate.
-    """
-    title_key = master_data.normalize_alias(title or "")
-    if not title_key:
-        return False
-    for candidate in [venue_name, *aliases]:
-        candidate_key = master_data.normalize_alias(candidate or "")
-        if candidate_key and candidate_key in title_key:
-            return True
-    return False
-
-
-def _venue_prefix_html(event: dict[str, Any]) -> str:
-    """Venue name · - Section 1-7 of v0.86.2: the resolved Venue Master
-    name, compact, ahead of the event title on line 2. Section 5's own
-    safe policy: only a RESOLVED venue prefixes at all - an unresolved
-    venue (raw text only, or none) keeps line 2 exactly as before this
-    release, never a guessed or raw-text prefix (Section 4 case C).
-    """
-    venue = event.get("venue") or {}
-    if venue.get("status") != "RESOLVED":
-        return ""
-    name = (venue.get("name") or "").strip()
-    if not name:
-        return ""
-    if _title_already_announces_venue(event.get("name") or "", name,
-                                      venue.get("aliases") or []):
-        return ""
-    return f'<span class="tl-2-venue">{E(name)}</span> · '
-
-
 def _timeline_line2(event: dict[str, Any]) -> str:
-    """Venue · 행사명 (DJ) · 입장료 · 주소 - Section 1-7 of v0.86.2 add the
-    resolved venue name ahead of everything else (was 행사명 (DJ) · 입장료
-    · 주소 alone through v0.86.1). The DJ parenthetical is entirely absent,
-    not "DJ 미확인", when there is none (Section 20 of v0.85.8, unchanged).
+    """행사명 (DJ) · 입장료 · 주소 - v0.86.3 Section 1-7 moved the resolved
+    venue name to line 1 (after the region), so line 2 goes back to what
+    v0.86.1 had: event title first, never a venue prefix here again
+    (v0.86.2's own brief home for it). The DJ parenthetical is entirely
+    absent, not "DJ 미확인", when there is none (Section 20 of v0.85.8,
+    unchanged).
 
     The address (already display-compacted by _compact_address(), never
     the raw value) is its own trailing span in the existing small/meta
     styling (Section 6-7 of v0.85.8) - never the same size/weight as the
-    event name. It is what ellipsizes first if the line runs long (Section
-    17 of v0.86.2, same priority v0.85.8 already established), and it is
-    omitted entirely rather than shown as "주소 미확인" when there is none
-    (Section 25-26 of v0.85.8): a name and a fee are always the point of
-    this line, an unknown address is not information worth a whole segment
-    for."""
-    venue_html = _venue_prefix_html(event)
+    event name. It is what ellipsizes first if the line runs long, and it
+    is omitted entirely rather than shown as "주소 미확인" when there is
+    none (Section 25-26 of v0.85.8): a name and a fee are always the point
+    of this line, an unknown address is not information worth a whole
+    segment for.
+
+    v0.86.3 Section 9: the event's own raw title may still happen to
+    contain the venue's name (e.g. "Tango O Nada 월나다") - that is the
+    original post's own text and is never edited or filtered here. Only
+    the line 1 venue span (Section 3) has anything to do with the venue at
+    all now; this line never adds one.
+    """
     thin = ' <span class="tag">정보 적음</span>' if _is_unknown_heavy(event) else ""
     cancelled = " cancelled" if event.get("cancelled") else ""
     name = f'<span class="ev-name{cancelled}">{E(event.get("name") or "")}</span>{thin}'
@@ -1071,7 +1080,7 @@ def _timeline_line2(event: dict[str, Any]) -> str:
     )
     address = _compact_address((event.get("venue") or {}).get("address"))
     address_html = f' · <span class="tl-2-addr">{E(address)}</span>' if address else ""
-    return f'<div class="tl-2">{venue_html}{name}{dj_html} · {_fee_text(event)}{address_html}</div>'
+    return f'<div class="tl-2">{name}{dj_html} · {_fee_text(event)}{address_html}</div>'
 
 
 def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
