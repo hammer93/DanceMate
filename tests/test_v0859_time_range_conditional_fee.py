@@ -50,6 +50,33 @@ def _event(**overrides):
 
 # --- Timeline / Detail rendering --------------------------------------------
 
+def test_timeline_line1_shows_the_end_time_when_known():
+    """Section 8-10: the exact target render is "[서울] 오늘 20:00~23:30
+    밀롱가" - the Timeline used to show only start_time even when the
+    extractor already had a real end_time (parse_time_range() itself is
+    unchanged this release; only the display was missing this)."""
+    line1 = public._timeline_line1(_event(), now=_NOW)
+    assert "20:00~23:30" in line1
+
+
+def test_timeline_line1_falls_back_to_bare_start_without_an_end_time():
+    line1 = public._timeline_line1(_event(end_time=None), now=_NOW)
+    assert "20:00" in line1
+    assert "~" not in line1
+
+
+def test_timeline_line1_marks_next_day_end():
+    line1 = public._timeline_line1(
+        _event(start_time="23:00", end_time="02:00", ends_next_day=True), now=_NOW)
+    assert "23:00~02:00<sup>+1</sup>" in line1
+
+
+def test_timeline_line1_still_flags_an_unconfirmed_bare_clock():
+    line1 = public._timeline_line1(
+        _event(end_time=None, time_confirmed=False), now=_NOW)
+    assert "시간 미확인" in line1
+
+
 def test_timeline_shows_the_conditional_fee_text_not_the_bare_amount():
     line2 = public._timeline_line2(_event())
     assert "입장료: 8,000원 (22시 이후 5,000원)" in line2

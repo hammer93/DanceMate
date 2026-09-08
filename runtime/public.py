@@ -871,15 +871,27 @@ def _human_date(day_iso: str, *, now: "datetime | None" = None) -> str:
 
 
 def _timeline_clock(event: dict[str, Any]) -> str:
-    """19:00, or 시간 미확인 - never a blank (Section 16)."""
+    """20:00~23:30 when the post gave an end time, else bare 20:00 - never a
+    blank (Section 16). 미확인 when there is no reading at all.
+
+    v0.85.9 (Section 8-10): the Timeline used to show only `start_time`,
+    dropping an end time the extractor already had (the detail page's own
+    `_when_line()` has shown it for longer, with an en dash - `~` here
+    instead, matching this section's own exact target render). A time the
+    post itself left ambiguous keeps its existing 미확인 flag regardless.
+    """
     start = event.get("start_time")
     if not start:
         return '<span class="unknown">시간 미확인</span>'
+    end = event.get("end_time")
+    clock = f"{start}~{end}" if end else start
+    if event.get("ends_next_day"):
+        clock += "<sup>+1</sup>"
     if event.get("time_confirmed") is False:
         # The post wrote a bare clock with no am/pm marker either way - the
         # reading stands, flagged, exactly as the detail page already does.
-        return f'{start} <span class="tag">시간 미확인</span>'
-    return start
+        clock += ' <span class="tag">시간 미확인</span>'
+    return clock
 
 
 def _timeline_region(event: dict[str, Any]) -> str:
