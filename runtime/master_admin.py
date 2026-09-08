@@ -150,6 +150,48 @@ def alias_editor(venue: dict[str, Any], alias_rows: list[dict[str, Any]],
 </form>"""
 
 
+def genre_editor(venue: dict[str, Any], all_genres: list[dict[str, Any]],
+                 observed: list[dict[str, Any]] | None = None) -> str:
+    """Which dance genres are confirmed at this venue (v0.85.7).
+
+    A multi-select checkbox group, not one-at-a-time like aliases - the
+    genre set is small and fixed (TANGO/SALSA/SWING today), so ticking the
+    boxes that apply and saving once is the whole interaction. Saving
+    diffs the checked set against what is already confirmed rather than
+    replacing rows wholesale, so nothing is touched that did not change.
+
+    ``observed`` (Section 18/62), when given, is a read-only suggestion
+    from the venue's own event history - shown beside the checkboxes,
+    never pre-checking anything on its own. A human still ticks the box.
+    """
+    checked = set(venue.get("genre_codes") or [])
+    boxes = []
+    for g in all_genres:
+        mark = " checked" if g["code"] in checked else ""
+        boxes.append(
+            f'<label class="chip"><input type="checkbox" name="genre_ids" '
+            f'value="{g["genre_id"]}"{mark}> {E(g["name"])}</label>'
+        )
+    observed_note = ""
+    if observed:
+        parts = ", ".join(
+            f'{E(row["genre_name"])} ({row["event_count"]})' for row in observed)
+        observed_note = (
+            f'<p class="note">Observed from event history: {parts} - '
+            "a suggestion only, nothing here is saved until you check a box "
+            "and press Save.</p>"
+        )
+    return f"""
+<h3 style="font-size:13px;margin:14px 0 6px">Dance Genres</h3>
+{observed_note}
+<form method="post" action="/admin/master-data/VENUE/{venue['venue_id']}/genres">
+  <div class="grid">{''.join(boxes)}</div>
+  <div class="actions"><button>Save Genres</button></div>
+  <p class="note">이 장소에서 실제로 열리는 것으로 확인된 춤 종류만 선택하세요.
+  event 하나가 발견됐다고 자동으로 채워지지 않습니다 - 사람이 확인한 것만 저장됩니다.</p>
+</form>"""
+
+
 # --- routes -----------------------------------------------------------------
 
 def _back(entity_type: str, message: str, tone: str = "ok") -> RedirectResponse:
@@ -262,6 +304,28 @@ def admin_remove_venue_alias(
         except master_edit.EditError as exc:
             return _back(master_edit.VENUE, str(exc), "bad")
     return _back(master_edit.VENUE, f"alias '{removed['alias']['alias']}' 삭제됨")
+
+
+@router.post("/admin/master-data/VENUE/{venue_id}/genres")
+def admin_set_venue_genres(
+    venue_id: int,
+    genre_ids: list[int] = Form(default=[]),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    with db.connect(admin._settings()) as con:
+        try:
+            result = master_edit.set_venue_genres(
+                con, venue_id, genre_ids, reviewer=reviewer,
+            )
+            con.commit()
+        except master_edit.EditError as exc:
+            return _back(master_edit.VENUE, str(exc), "bad")
+    parts = []
+    if result["added"]:
+        parts.append(f"추가: {', '.join(result['added'])}")
+    if result["removed"]:
+        parts.append(f"삭제: {', '.join(result['removed'])}")
+    return _back(master_edit.VENUE, "; ".join(parts) if parts else "변경 없음")
 
 
 @api.get("/master-data/history")

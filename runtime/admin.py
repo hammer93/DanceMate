@@ -1511,7 +1511,9 @@ def _source_test_report(source: dict[str, Any], report: dict[str, Any]) -> str:
 # --- venues -----------------------------------------------------------------
 
 def _venue_edit(venue: dict[str, Any], regions: list[dict[str, Any]],
-                aliases: list[dict[str, Any]], usage: dict[int, int]) -> str:
+                aliases: list[dict[str, Any]], usage: dict[int, int],
+                all_genres: list[dict[str, Any]],
+                observed_genres: list[dict[str, Any]] | None = None) -> str:
     """The venue's own record, opened where it is listed and already filled in."""
     from . import master_admin, master_edit
 
@@ -1529,7 +1531,8 @@ def _venue_edit(venue: dict[str, Any], regions: list[dict[str, Any]],
             master_admin.field("address", "Address", venue.get("address")),
             master_admin.field("notes", "Notes", venue.get("notes")),
         ],
-        extra=master_admin.alias_editor(venue, aliases, usage),
+        extra=(master_admin.alias_editor(venue, aliases, usage)
+              + master_admin.genre_editor(venue, all_genres, observed_genres)),
         note="이름을 바꿔도 같은 장소로 남습니다 — 연결된 Event는 그대로입니다.",
     )
 
@@ -1587,10 +1590,18 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
                       for v in venues}
         alias_usage = {v["venue_id"]: master_data.venue_alias_usage(con, v["venue_id"])
                        for v in venues}
+        all_genres = master_data.list_genres(con, enabled_only=True)
+        observed_genres = {v["venue_id"]: master_data.observed_venue_genres(con, v["venue_id"])
+                           for v in venues}
 
+    genre_names = {g["code"]: g["name"] for g in all_genres}
     rows = [
         [E(v["name"]), E(str(v.get("region_name") or "-")), E(str(v.get("address") or "-")),
          ", ".join(E(a) for a in (v.get("aliases") or [])) or "-",
+         # v0.85.7 (Section 21): "Tango" / "Tango · Salsa" - a real name per
+         # genre, not the raw code, same convention as everywhere else this
+         # console shows a genre to an operator.
+         " · ".join(E(genre_names.get(code, code)) for code in (v.get("genre_codes") or [])) or "-",
          (f'<strong>{v["events"]}</strong>'
           + (f' <span class="muted">({v["listed_events"]} listed)</span>'
              if v["listed_events"] else "")
@@ -1598,12 +1609,17 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
          _badge("ENABLED" if v["enabled"] else "DISABLED", "ok" if v["enabled"] else "muted"),
          '<div class="actionbar">'
          + _venue_edit(v, regions, alias_rows.get(v["venue_id"], []),
-                       alias_usage.get(v["venue_id"], {}))
+                       alias_usage.get(v["venue_id"], {}), all_genres,
+                       observed_genres.get(v["venue_id"], []))
          + _venue_actions(v) + "</div>"]
         for v in venues
     ]
     region_options = "".join(
         f'<option value="{r["region_id"]}">{E(r["name"])}</option>' for r in regions
+    )
+    genre_boxes = "".join(
+        f'<label class="chip"><input type="checkbox" name="genre_ids" '
+        f'value="{g["genre_id"]}"> {E(g["name"])}</label>' for g in all_genres
     )
     add_form = f"""
 <details><summary>Add Venue</summary>
@@ -1615,10 +1631,13 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
     <div><label>Aliases (comma separated)</label>
       <input name="aliases" placeholder="La Ventana, 라벤타나, 벤타나"></div>
     <div><label>Notes</label><input name="notes"></div>
+    <div><label>Dance Genres</label><div class="grid">{genre_boxes}</div></div>
   </div>
   <div class="actions"><button class="primary">Add Venue</button></div>
   <p class="note">Aliases are how "La Ventana", "라벤타나" and "벤타나" resolve to
-  one venue. The venue name is registered as an alias automatically.</p>
+  one venue. The venue name is registered as an alias automatically. Dance
+  Genres는 확실히 아는 경우에만 체크하세요 - 비워두면 나중에 편집에서 추가할 수
+  있습니다.</p>
 </form></details>"""
 
     csv_bar = (
@@ -1635,8 +1654,9 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
             'the evidence and the events stay, and the strings they were read '
             'from go back in that queue.</p>'
             ) + csv_bar + add_form + _table(
-        ["Name", "Region", "Address", "Aliases", "Events using", "State", "Actions"], rows,
-        empty="no venue registered yet",
+        ["Name", "Region", "Address", "Aliases", "Dance Genres", "Events using",
+         "State", "Actions"],
+        rows, empty="no venue registered yet",
     ) + pagination.nav("/admin/venues", {}, page, total)
     return HTMLResponse(_page("Venues", "/admin/venues", body, flash=_flash(request)))
 
@@ -1648,16 +1668,22 @@ def admin_create_venue(
     address: str = Form(""),
     aliases: str = Form(""),
     notes: str = Form(""),
-    _: str = Depends(require_admin),
+    genre_ids: list[int] = Form(default=[]),
+    reviewer: str = Depends(require_admin),
 ) -> RedirectResponse:
     alias_list = [a.strip() for a in aliases.split(",") if a.strip()]
     try:
         with _connection() as con:
-            master_data.create_venue(
+            venue = master_data.create_venue(
                 con, name=name, region_id=int(region_id) if region_id else None,
                 address=address.strip() or None, notes=notes.strip() or None,
                 aliases=alias_list,
             )
+            if genre_ids:
+                from . import master_edit
+                master_edit.set_venue_genres(
+                    con, venue["venue_id"], genre_ids, reviewer=reviewer,
+                )
     except Exception as exc:
         return _back("/admin/venues", f"could not add venue: {exc}", "bad")
     return _back("/admin/venues", f"added venue {name}")

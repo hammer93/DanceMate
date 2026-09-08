@@ -185,8 +185,18 @@ li.event a { padding: .55rem .8rem; }
 .tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
 .tl-2 .ev-name { font-weight:600; }
 .tl-2 .dj { color:var(--muted); font-weight:400; }
-.tl-3 { padding: .15rem .8rem .6rem; font-size:.78rem; color:var(--muted);
-        overflow-wrap: anywhere; }
+/* v0.85.7 (Section 4-9): address and the "출처 → 확인시간 → 지도보기"
+   group are two flex items. Address may wrap/shrink - it is already
+   pre-compacted in Python to a handful of characters. The meta group
+   never breaks internally: if it does not fit beside the address it
+   wraps whole onto its own row, and if it is still too wide for the
+   viewport even alone (a long source name on a narrow phone) it becomes
+   a horizontally-scrollable strip rather than ever forcing the page
+   itself to overflow. */
+.tl-3 { display:flex; flex-wrap:wrap; align-items:baseline; column-gap:.3em;
+        padding: .15rem .8rem .6rem; font-size:.78rem; color:var(--muted); }
+.tl-3 .tl-addr { overflow-wrap: anywhere; }
+.tl-3 .tl-meta { white-space: nowrap; overflow-x: auto; max-width: 100%; }
 .tl-3 a { color:var(--accent); text-decoration:none; }
 .tl-3 a:hover { text-decoration:underline; }
 .ext { font-size:.75em; }
@@ -343,12 +353,16 @@ def _genre_options(con) -> list[dict[str, str]]:
 
 
 def _region_options(con, counted: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every place a reader may filter by, with today's counts where there are any.
+    """Every place with something to show, under the filters on screen right now.
 
-    Built from the region master rather than from the events on screen, for the
-    same reason as the genres: a filter that appears only once something
-    matches cannot be used to ask whether anything does. Cities only -- the
-    country-level row is not somewhere to go.
+    v0.85.7 (Section 24-30): built from the region master so a real region is
+    never mis-spelled or mis-ordered, but a chip only survives into the
+    returned list when its count under the *current* window/genre selection
+    is at least 1 - "청주 0" is not a place to go, it is a dead end with a
+    number attached, and Section 24 says to just not offer it. "전체" (All)
+    is unaffected: it is injected separately by ``_region_chips()`` and never
+    passes through this list at all, so it stays visible regardless of any
+    region's individual count.
     """
     from . import master_data
 
@@ -362,9 +376,12 @@ def _region_options(con, counted: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not row.get("city"):
             continue
         name = row.get("name")
-        if name:
-            options.append({"value": name, "label": name, "events": counts.get(name, 0)})
+        if name and counts.get(name, 0) > 0:
+            options.append({"value": name, "label": name, "events": counts[name]})
     if not options:
+        # list_regions() itself failed - counted is already positive-count-only
+        # (it comes straight from a GROUP BY over actual matching events, so a
+        # region with zero matches was never a row in it to begin with).
         options = list(counted)
     options.sort(key=lambda o: (-(o["events"] or 0), o["label"]))
     return options
@@ -391,18 +408,22 @@ def _genre_constraint(options: list[dict[str, str]], selected: list[str]) -> lis
     return selected
 
 
-def _facets(con, when: str) -> dict[str, list[dict[str, Any]]]:
+def _facets(con, when: str, genre_codes: "list[str] | None" = None
+           ) -> dict[str, list[dict[str, Any]]]:
     """The genres and regions that have events *in the window being shown*.
 
     Counted over the same dates the page lists, because a chip is a promise. A
     "Swing 1" chip beside a page that returns nothing is the same small lie as
     offering an empty filter: it says events of that kind are in here when they
-    are not.
+    are not. ``genre_codes`` (v0.85.7, Section 25) scopes the *region* counts
+    to the currently-ticked genre chips - the genre chips themselves always
+    count across every genre, so a reader can still see what else exists.
     """
-    return _facets_window(con, events_api.window(when))
+    return _facets_window(con, events_api.window(when), genre_codes)
 
 
-def _facets_for_date(con, day_iso: str) -> dict[str, list[dict[str, Any]]]:
+def _facets_for_date(con, day_iso: str, genre_codes: "list[str] | None" = None
+                     ) -> dict[str, list[dict[str, Any]]]:
     """Same promise as ``_facets()``, for a single calendar-selected day
     (v0.85.0) rather than a ``when`` keyword - a past day included, since
     _facets_window's own "no window" branch (today onward) would otherwise
@@ -410,10 +431,12 @@ def _facets_for_date(con, day_iso: str) -> dict[str, list[dict[str, Any]]]:
     from datetime import date as date_type
 
     day = date_type.fromisoformat(day_iso)
-    return _facets_window(con, (day, day))
+    return _facets_window(con, (day, day), genre_codes)
 
 
-def _facets_window(con, window: tuple | None) -> dict[str, list[dict[str, Any]]]:
+def _facets_window(con, window: tuple | None,
+                   genre_codes: "list[str] | None" = None
+                   ) -> dict[str, list[dict[str, Any]]]:
     where = [events_api._VISIBLE, "e.engine_status <> 'CANCELLED'"]
     params: list[Any] = []
     if window:
@@ -423,6 +446,14 @@ def _facets_window(con, window: tuple | None) -> dict[str, list[dict[str, Any]]]
         where.append("e.event_date >= %s")
         params.append(events_api.today())
     clause = " AND ".join(where)
+
+    # Only the region query is scoped by the current genre selection - the
+    # genre chips themselves must keep counting every genre regardless of
+    # which ones are ticked, or a reader could never discover/re-select one
+    # they just unchecked.
+    region_join = "JOIN genres g ON g.genre_id = e.genre_id " if genre_codes else ""
+    region_where = clause + (" AND g.code = ANY(%s)" if genre_codes else "")
+    region_params = list(params) + ([genre_codes] if genre_codes else [])
 
     with con.cursor() as cur:
         cur.execute(
@@ -435,16 +466,17 @@ def _facets_window(con, window: tuple | None) -> dict[str, list[dict[str, Any]]]
         cur.execute(
             "SELECT r.name AS value, r.name AS label, count(*) AS events "
             "FROM events e JOIN regions r ON r.region_id = e.region_id "
+            f"{region_join}"
             # Only places, not the country-level row. "South Korea" as a filter
             # option next to Seoul and Busan tells a reader nothing about where
             # to go, and offering it makes the other two look like subsets.
-            f"WHERE {clause} AND r.city IS NOT NULL "
+            f"WHERE {region_where} AND r.city IS NOT NULL "
             "GROUP BY 1, 2 ORDER BY events DESC",
-            tuple(params),
+            tuple(region_params),
         )
         regions = [dict(zip([c.name for c in cur.description], r)) for r in cur.fetchall()]
 
-    unresolved = _unresolved_region_counts(con, clause, params)
+    unresolved = _unresolved_region_counts(con, clause, params, genre_codes)
     by_label = {row["label"]: row for row in regions}
     for label, extra in unresolved.items():
         if label in by_label:
@@ -459,25 +491,32 @@ def _facets_window(con, window: tuple | None) -> dict[str, list[dict[str, Any]]]
             "region_options": _region_options(con, regions)}
 
 
-def _unresolved_region_counts(con, clause: str, params: list) -> dict[str, int]:
+def _unresolved_region_counts(con, clause: str, params: list,
+                              genre_codes: "list[str] | None" = None) -> dict[str, int]:
     """Regions an unresolved venue's raw text would still earn, per
     venue_resolution.guess_region_label() - Section 22 of the v0.82.4 task:
     a filter chip's count is a promise, and "청주: 0" while real Cheongju
     milongas sit unresolved would be the same small lie the genre docstring
-    above already refuses to tell.
+    above already refuses to tell. Genre-scoped the same way the resolved
+    region count is (v0.85.7 Section 25), so the two halves of one chip's
+    number never disagree about which genre they are counting.
     """
     counts: dict[str, int] = {}
     labels = sorted({label for label in venue_resolution.CURATED_CITY_HINTS.values()})
+    genre_join = "JOIN genres g ON g.genre_id = e.genre_id " if genre_codes else ""
+    genre_where = " AND g.code = ANY(%s)" if genre_codes else ""
     with con.cursor() as cur:
         for label in labels:
             terms = venue_resolution.terms_for_label(label)
             if not terms:
                 continue
             ors = " OR ".join(["e.venue_text ILIKE %s"] * len(terms))
+            query_params = (tuple(params) + tuple(f"%{t}%" for t in terms)
+                            + ((genre_codes,) if genre_codes else ()))
             cur.execute(
-                f"SELECT count(*) FROM events e WHERE {clause} "
-                f"AND e.region_id IS NULL AND ({ors})",
-                tuple(params) + tuple(f"%{t}%" for t in terms),
+                f"SELECT count(*) FROM events e {genre_join}WHERE {clause} "
+                f"AND e.region_id IS NULL AND ({ors}){genre_where}",
+                query_params,
             )
             n = cur.fetchone()[0]
             if n:
@@ -916,10 +955,12 @@ def _timeline_line2(event: dict[str, Any]) -> str:
 
 
 def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """2시간 전 - real evidence timestamp only (Section 26-27, 48), the same
-    age-bucketing the previous card design already used. v0.85.4: no more
-    wrapping parens - this now sits as its own " · "-joined segment on line
-    3 instead of trailing the source link, so a bare phrase reads better."""
+    """2시간 전 확인 - real evidence timestamp only (Section 26-27, 48), the
+    same age-bucketing the previous card design already used. v0.85.4: no
+    more wrapping parens - this sits as its own " · "-joined segment on
+    line 3. v0.85.7 (Section 11): "확인" now appended consistently across
+    every bucket rather than only the oldest one, so the phrase reads the
+    same regardless of how long ago the post was checked."""
     from datetime import datetime as datetime_type, timezone
 
     stamp = event.get("last_checked")
@@ -936,9 +977,9 @@ def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) 
     today = events_api.today(moment)
     age = (moment - seen).total_seconds()
     if age < 3600:
-        when = f"{max(1, int(age // 60))}분 전"
+        when = f"{max(1, int(age // 60))}분 전 확인"
     elif local.date() == today:
-        when = f"{int(age // 3600)}시간 전"
+        when = f"{int(age // 3600)}시간 전 확인"
     else:
         when = f"{local.month}/{local.day} {local:%H:%M} 확인"
     return when
@@ -986,7 +1027,16 @@ def _compact_address(address: str | None) -> str | None:
 
 
 def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """주소 · 출처: OOO ↗ · 확인시간 - one row, Section 1-4/7-14/18-30.
+    """주소 · 출처: OOO ↗ · 확인시간 · 지도보기↗ - Section 1-11 of v0.85.7.
+
+    Two flex items: the (already short, pre-compacted) address, and a
+    "출처 → 확인시간 → 지도보기" group that is never allowed to break
+    internally (Section 4-5) - if the row is too narrow for both, the meta
+    group wraps to its own line as one unbroken unit rather than splitting
+    apart; if even the meta group alone cannot fit a viewport (a long
+    source name on a narrow phone), it scrolls horizontally within its own
+    inline strip instead of ever forcing the page itself to overflow
+    (Section 8-9). Address is what shrinks - never source/confirm/map.
 
     Only rendered when there is a real address, source, or confirmation
     timestamp to put on it; a candidate with none of the three (should not
@@ -1000,8 +1050,12 @@ def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> 
     url = events_api.valid_public_url(link.get("url"))
     label = link.get("label")
     confirmed = _confirmation_text(event, now=now)
-    raw_address = (event.get("venue") or {}).get("address")
+    venue = event.get("venue") or {}
+    raw_address = venue.get("address")
     address = _compact_address(raw_address)
+    # Never a fabricated map link for an address we do not actually have
+    # (Section 36) - map_url is already None whenever raw_address is.
+    map_url = venue.get("map_url")
     if not address and not url and not label and not confirmed:
         return ""
     address_html = E(address) if address else '<span class="unknown">주소 미확인</span>'
@@ -1014,10 +1068,16 @@ def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> 
         source_html = f"출처: {E(label)}"
     else:
         source_html = '<span class="unknown">출처 미확인</span>'
-    parts = [address_html, source_html]
+    meta_parts = [source_html]
     if confirmed:
-        parts.append(E(confirmed))
-    return f'<div class="tl-3">{" · ".join(parts)}</div>'
+        meta_parts.append(E(confirmed))
+    if map_url:
+        meta_parts.append(
+            f'<a href="{E(map_url)}" target="_blank" rel="noopener noreferrer">'
+            f'지도보기 <span class="ext" aria-hidden="true">&#8599;</span></a>'
+        )
+    meta_html = f'<span class="tl-meta">· {" · ".join(meta_parts)}</span>'
+    return f'<div class="tl-3"><span class="tl-addr">{address_html}</span>{meta_html}</div>'
 
 
 def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
@@ -1055,7 +1115,7 @@ def home(
             upcoming = events_api.search(
                 con, when=events_api.WHEN_UPCOMING, genres=constraint, region=region,
                 limit=5)
-            facets = _facets(con, events_api.WHEN_TODAY)
+            facets = _facets(con, events_api.WHEN_TODAY, constraint)
             monday, sunday = events_api.week_window(0)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
@@ -1193,7 +1253,8 @@ def events_page(
             else:
                 result = events_api.search(
                     con, when=when, genres=constraint, region=region, limit=100)
-            facets = _facets(con, when) if date is None else _facets_for_date(con, date)
+            facets = (_facets(con, when, constraint) if date is None
+                     else _facets_for_date(con, date, constraint))
             monday, sunday = events_api.week_window(week)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
