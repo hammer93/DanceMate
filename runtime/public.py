@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from typing import Any, Callable
 from urllib.parse import quote
 
@@ -970,6 +971,20 @@ _DJ_LABEL_RE = re.compile(r"DJ\s*[:：]?\s*", re.IGNORECASE)
 _DJ_NAME_STOP = re.compile(r"[)）,、·]")
 
 
+def _strip_trailing_decoration(value: str) -> str:
+    """Drop trailing emoji/ornaments a decorated title puts right up
+    against a name, e.g. "...DJ네로\U0001f389\U0001f389" - the same
+    unicodedata-category approach extraction_rules._strip_decoration()
+    already uses on the engine side (Symbol/Punctuation/Separator/Mark/
+    Other), so a name followed by decoration reads as that name, not as
+    the name-plus-decoration string _DJ_NAME_STOP's plain stop-character
+    list never anticipated every real emoji for."""
+    value = value.strip()
+    while value and unicodedata.category(value[-1])[0] in ("S", "P", "Z", "M", "C"):
+        value = value[:-1]
+    return value.strip()
+
+
 def _title_already_announces_dj(title: str, dj: str) -> bool:
     dj = (dj or "").strip()
     if not title or not dj:
@@ -977,6 +992,7 @@ def _title_already_announces_dj(title: str, dj: str) -> bool:
     for match in _DJ_LABEL_RE.finditer(title):
         rest = title[match.end():]
         name = _DJ_NAME_STOP.split(rest, maxsplit=1)[0].strip()
+        name = _strip_trailing_decoration(name)
         if name == dj:
             return True
     return False
