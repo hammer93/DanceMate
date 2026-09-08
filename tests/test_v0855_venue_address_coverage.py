@@ -200,15 +200,27 @@ def test_region_prefix_trimming_regression():
 
 # 11. linking a venue does not change how many upcoming events exist.
 def test_calendar_count_unchanged_by_venue_link(pg, unique, seoul_id):
+    """v0.86.1: `search(when="upcoming")` reads the real clock when `now=`
+    is not given, and this fixture's own `event_date` ("2026-09-05") is
+    fixed - once the real calendar passed it, the fixture stopped
+    appearing in either `before_total` or `after_total`, and the delta
+    assertion below passed vacuously (0 == 0) regardless of whether
+    venue-linking actually left the calendar count alone. Pinning `now=`
+    to a moment before the fixture's own date makes it "upcoming" no
+    matter what day this test actually runs, so the assertion is
+    exercising the real behaviour again."""
+    from datetime import datetime
+
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=events_api.SEOUL)
     venue_text = f"캘린더홀 {unique}"
     normalization.normalize_candidate(pg, _candidate(unique, venue=venue_text))
-    before_total = events_api.search(pg, when="upcoming", limit=100)["total"]
+    before_total = events_api.search(pg, when="upcoming", limit=100, now=now)["total"]
     entry = _queued(pg, venue_text)
     venue_resolution.create_and_link(
         pg, unresolved_venue_id=entry["unresolved_venue_id"],
         name=venue_text, region_id=seoul_id, address="서울 마포구 캘린더로 1",
         reviewer="tester")
-    after_total = events_api.search(pg, when="upcoming", limit=100)["total"]
+    after_total = events_api.search(pg, when="upcoming", limit=100, now=now)["total"]
     assert after_total == before_total
 
 

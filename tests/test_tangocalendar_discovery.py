@@ -257,9 +257,15 @@ class _Headers:
 
 
 def test_discover_tags_every_post_with_source_and_platform(monkeypatch):
+    """today=TODAY (v0.86.1): _event()'s own startDate is fixed at
+    2026-09-06, so without pinning "today" this test silently stopped
+    finding anything the moment the real calendar passed that date -
+    IndexError on posts[0], not a real discover()/parse_events() defect.
+    Pinning it is what test_base_event_parses_title_venue_fee already does
+    through parse_events() directly; discover() now exposes the same knob."""
     monkeypatch.setattr(tc.acquisition, "robots_allows", lambda url, **kw: True)
     opener = lambda request, timeout=None: _Resp([_event()])
-    posts = tc.discover(LIST_URL, source_id="SRC-W-003", opener=opener)
+    posts = tc.discover(LIST_URL, source_id="SRC-W-003", opener=opener, today=TODAY)
     assert posts[0]["source_id"] == "SRC-W-003"
     assert posts[0]["platform"] == "WEB"
 
@@ -306,9 +312,15 @@ def test_fetch_event_detail_uses_the_documented_endpoint(monkeypatch):
 
 def test_parse_list_reads_a_recorded_api_response_text():
     """The same entry point collectors._collect_snapshot() calls for every
-    WEB source - a fixture dry-run must go through this, not a bespoke path."""
+    WEB source - a fixture dry-run must go through this, not a bespoke path.
+
+    today=TODAY (v0.86.1): same reasoning as
+    test_discover_tags_every_post_with_source_and_platform above - without
+    pinning it, this silently returns [] once the real calendar passes
+    _event()'s fixed 2026-09-06 startDate, which is a stale fixture, not a
+    parse_list()/parse_events() regression."""
     raw_text = json.dumps([_event()])
-    posts = tc.parse_list(raw_text, LIST_URL)
+    posts = tc.parse_list(raw_text, LIST_URL, today=TODAY)
     assert posts[0]["title"] == "Alonga"
 
 
