@@ -1,5 +1,99 @@
 # DanceMate Release Notes
 
+## v0.86.3 Venue After Region
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.3
+- Information Engine: 0.85 (unchanged - no engine code touched)
+
+### What changed
+
+Moves the resolved venue name from line 2 ("Venue · 행사명 (DJ) · 입장료 ·
+주소", v0.86.2's own brief home for it) to line 1, right after the
+region: `[서울] Tango O Nada · 오늘 20:00~23:30 밀롱가`. Line 2 reverts to
+what v0.86.1 had - event title first, no venue prefix. UI-only: no DB
+write, no migration, no engine change.
+
+### A real defect caught by this release's own production audit
+
+The first implementation made `.tl-1` a single-line flex row
+(`display:flex; white-space:nowrap; overflow:hidden`) with the venue as
+the only shrinkable child - the same shape line 3 already uses safely.
+Running the production audit against real data broke that assumption
+immediately: on several real events (Mi Vida tango studio, Ulsan Tango
+Sociedad, Tango club Mi Noche), the *non-venue* tail alone - date + time
++ "시간 미확인" flag + event type + the "확인 필요" status badge, all
+`flex-shrink:0` - measured ~430px, wider than any of the 360/390/430px
+target viewports even before the venue name is considered. `overflow:
+hidden` would have silently clipped that content rather than wrapping it.
+
+Fixed before this ever reached staging or production: line 1 now stays
+plain inline flow, exactly as it always was and exactly as line 2 still
+is. Only the venue name gets a bounded width - the same `display:
+inline-block; max-width; text-overflow:ellipsis` shape line 2's own
+`.tl-2-addr` has used since v0.85.8 - so an unusually long venue name is
+the one thing that can ellipsize; everything else wraps onto another
+visual line instead of being clipped, the same guarantee line 2 has
+always had.
+
+### Duplicate-suppression helpers removed (investigated first)
+
+v0.86.2's `_venue_prefix_html()` and `_title_already_announces_venue()`
+existed to stop line 2 from showing "Tango O Nada · Tango O Nada 월나다".
+Checked first whether either was used anywhere else (Section 8) - neither
+was, outside line 2's own now-removed venue prefix and its own test
+file. Line 1 has no competing "title" to duplicate against, so both were
+deleted rather than left as dead code. A raw event title that happens to
+already contain the venue's name is the original post's own text and is
+never edited or filtered - only line 1's own venue span is new, and it
+never touches that title.
+
+`events_api.py` is untouched: the `venue_aliases` join and `venue.
+aliases` API field added in v0.86.2 stay, since `public.py` no longer
+consuming them for duplicate-checking doesn't mean nothing else might.
+
+### Production audit (154 real upcoming events, live production data)
+
+- Venue Known (resolved): 143/154 · Shown After Region: 143 · Missing (no
+  venue evidence): 11 · Wrong: 0.
+- 0 structural issues across all 154: exactly one `tl-1` div each, venue
+  always between region and the date/time/type tail, never before region.
+- All 5 required live samples confirmed exact-match on real production
+  data: Solo Tango 화정 (`[서울] Tango O Nada · 9/8(화) 20:00~23:30
+  밀롱가`), BUSAN TANGO FIRE (`[부산] 이데알 탱고 까페 · ...`), TANGO FIRE
+  (`[서울] 라 벤따나 · ...`), 까사밀롱가 (`[서울] OCHO · ...`), Abrazo
+  밀롱가 (`[서울] PISTA · ...`).
+
+### Regressions confirmed unaffected
+
+End time, conditional fee, DJ-duplicate suppression, address, source-link
+human-readability, Naver map format, positive-region-filter, and week
+window/calendar - all pinned by dedicated regression tests, all passing
+against real Postgres.
+
+### Tests
+
+24 new/replaced (`tests/test_v0863_venue_after_region.py`, superseding
+`test_v0862_timeline_venue_prefix.py` whose entire subject - line 2's
+venue prefix - no longer exists), covering all 18 items the task spec
+required plus regression pins. 1658 passed / 15 skipped / 0 failed
+against real Postgres (staging), 1197 passed locally.
+
+### Private Alpha Observation
+
+The field-observation window that started with v0.86.2 continues
+unbroken - this UI release does not reset it. Daily observation from
+this point on reflects the new venue-in-line-1 layout.
+
+### Next recommendation
+
+None outstanding from this release's own scope. Continue the Private
+Alpha field observation as planned; no further Timeline layout changes
+are queued.
+
 ## v0.86.2 Timeline Venue Name Prefix
 
 Status: PASS, 2026-09-09.
