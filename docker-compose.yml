@@ -48,7 +48,7 @@ x-runtime-image: &runtime-image
   build:
     context: .
     dockerfile: Dockerfile
-  image: dancemate/runtime:${DANCEMATE_VERSION:-0.85.7}
+  image: dancemate/runtime:${DANCEMATE_VERSION:-0.85.8}
   restart: unless-stopped
   env_file: [.env]
   # microSD write minimization: cap container logs instead of letting the
