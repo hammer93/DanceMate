@@ -1,5 +1,141 @@
 # DanceMate Release Notes
 
+## v0.85.5 Venue Address Coverage Improvement
+
+Status: PASS, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.5
+- Information Engine: 0.83 (unchanged)
+
+### Goal
+
+Reduce the "주소 미확인" rate on the first screen by backfilling only
+venue addresses with real, checkable evidence behind them - never a
+guess, never a copy from a same-named venue in a different city, never a
+Search-snippet-only claim. No new source, no schema change, no mass
+reprocess.
+
+### Baseline
+
+100 real upcoming events audited in v0.85.4 showed 81% known / 19%
+unknown. A fresh, full-population snapshot for this release (all 159
+upcoming Tango events, not a 100-sample) measured **124/159 known
+(78.0%)** before any change.
+
+### Where the gap actually was
+
+Every one of the 35 unknown-address events turned out to have
+`venue_id IS NULL` - **zero** were a case of "resolved venue, missing
+address" (Section 20's own priority-1 bucket had no candidates at all,
+an honest finding worth stating plainly). Classification of all 35:
+
+| Bucket | Count | Meaning |
+|---|---|---|
+| RESOLVED_VENUE_ADDRESS_MISSING | 0 | none found |
+| UNRESOLVED_VENUE (no address text) | 11 | venue never resolved, no address anywhere in the raw text |
+| RAW_ADDRESS_PRESENT_NOT_LINKED | 11 | venue unresolved but its own raw text already carries a full address |
+| SOURCE_HAS_ADDRESS_MASTER_MISSING | 0 | n/a to this dataset |
+| NO_ADDRESS_EVIDENCE | 11 | no venue text at all |
+| AMBIGUOUS_VENUE | 1 | 실루엣 분당정자동 - see below |
+| OTHER | 1 | "강습 인원" - already dismissed as not-a-venue in a prior release |
+
+**Recoverable Gap**: Unknown 35 / Recoverable (real address evidence
+exists) 11 / Not Recoverable 24. Of the 11 Recoverable, 3 were resolved
+this release; 8 stay deferred (see below) for lack of independent
+corroboration - "recoverable" is not the same claim as "safe to apply
+today."
+
+### What this release used: existing infrastructure, not new code
+
+`runtime/venue_resolution.py` already has a full, safe Human Venue
+Review workflow (`link_existing`, `create_and_link`, `address_in`,
+`address_from_context`, `similar_venues`, `_address_conflict`,
+`record_action`/`history` for the audit trail) - built for exactly this
+kind of decision and already used under human approval in earlier
+releases. This release wrote **zero new runtime code**; it used that
+existing machinery for two well-evidenced backfills.
+
+### Two approved backfills
+
+1. **홍대 솔로땅고 → Solo Tango (existing venue 4210)**. The organizer's
+   own PRIMARY-tier Daum Cafe post (SRC-D-003) for event 222882 gave the
+   full address "마포구 홍익로5길 57, 지하 1층" - identical (road, number,
+   floor) to the already-resolved "Solo Tango" venue's own stored address.
+   `link_existing()` - zero new address written, just the correct venue
+   link. 1 event improved.
+2. **Tango Brujo (new venue 4224)**. Miltang's directory listing gave
+   "마포구 잔다리로 68 ymca빌딩 지하1층"; the studio's own official site
+   (sites.google.com/view/tango-brujo/home) states, verbatim, "주소: 서울시
+   마포구 잔다리로 68 YMCA빌딩 B1" - independent official confirmation of
+   the same place. `create_and_link()`. 2 events improved.
+
+### What was investigated and correctly deferred
+
+Five more venues (Mariposa, 아브라쏘, Tango Mio, CLUB PAN TANGO/강남탱고
+판, 실루엣 분당정자동) had address text in their raw posts, but:
+
+- **Mariposa, 아브라쏘, Tango Mio**: Miltang (DIRECTORY tier) only, no
+  independent source found despite a real search attempt.
+- **CLUB PAN TANGO / 강남탱고 판**: a matching Facebook business page
+  exists (confirming these two names are the same real place), but a
+  direct fetch of the page itself could not confirm the address text
+  (Facebook's static page serves no address content) - Section 16's
+  "verify the actual page, not the search snippet" bar was not met.
+- **실루엣 분당정자동**: investigation surfaced **three different**
+  addresses across sources for this name (하나플라자빌딩 310호 → 느티로
+  27 310호 → 지파크프라자 5층, and a fourth, unrelated "정자일로 192" for
+  a same-named business) - a real relocation-and-possible-name-collision
+  case, exactly what Section 34/35 exist to catch. DEFERRED, not applied.
+
+Zero of these were written. Coverage improvement was capped by evidence,
+not by effort.
+
+### Coverage after
+
+**127/159 known (79.9%)**, up from 124/159 (78.0%). Total upcoming count
+unchanged at 159 (Section 42) - this was a venue-link correction, not a
+new or merged event.
+
+### Safety
+
+- `venues.address` and `venue_id` are not part of any dedup/canonical key
+  (`duplicates.py`'s own key is `venue:{venue_id}` or lowercased
+  `venue_text` - confirmed in code before writing anything).
+  `normalization.link_unresolved_venue()` only recomputes the specific
+  updated events' own `identity_key`/`series_key` - no mass reprocess, no
+  `normalize_all()`/`ingest_pending()`/`reprocess_acquired()` call.
+- Both writes are recorded in the existing venue-resolution audit trail
+  (`venue_resolution.history()`), reviewer tagged
+  `claude-v0.85.5-address-coverage`, before/after JSON included.
+- A full PostgreSQL backup was taken immediately before either write.
+- Wrong Date/Time/Venue/Region/Fee/DJ: 0. False VERIFIED: 0. Wrong
+  Address: 0 (both backfills independently confirmed against a second
+  source before being applied).
+
+### Tests
+
+18 new tests (`tests/test_v0855_venue_address_coverage.py`) exercising
+the existing venue-resolution safety functions under this release's exact
+scenarios, plus v0.85.4 formatter/source-link/calendar-identity
+regression checks against the new real address values. Full suite: 1512
+passed, 15 skipped, 2 pre-existing `test_tangocalendar_discovery.py`
+failures (unchanged baseline) - zero new regressions.
+
+### Mobile
+
+Same DOM-geometry method as v0.85.4 (no headless-browser tool available
+in this environment): the two new real address strings, run through
+Unicode East Asian Width classification against the deployed `.tl-3` CSS
+at 360/390/430px. Worst case (Solo Tango's address, 437px needed) wraps
+to 2 lines at every width.
+
+### Scope discipline
+
+No new source, no map integration, no OCHO/O Nada/PISTA/Andante/EN PAZ
+re-research, no schema migration, no engine change.
+
 ## v0.85.4 Compact Timeline Address + Human-readable Source Link
 
 Status: PASS, 2026-09-08.
