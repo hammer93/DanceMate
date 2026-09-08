@@ -147,11 +147,22 @@ def test_internal_source_codes_never_reach_the_card():
 
 # --- events_api.source_label / valid_public_url ------------------------------
 
-def test_a_search_api_platform_gets_its_brand_name():
+def test_a_real_source_name_wins_over_the_generic_platform_label():
+    """v0.85.4: a source's own real name is what identifies it to a reader -
+    "출처: Daum Cafe" for every DAUM_CAFE source, regardless of which cafe
+    post it actually was, was the exact defect this reverses (Section
+    26-28)."""
     from runtime import events_api
 
-    assert events_api.source_label("DAUM_CAFE", "외부홍보게시판(파티)") == "Daum Cafe"
-    assert events_api.source_label("NAVER_BLOG", "소셜댄스 블로그 검색") == "Naver Blog"
+    assert events_api.source_label("DAUM_CAFE", "외부홍보게시판(파티)") == "외부홍보게시판(파티)"
+    assert events_api.source_label("NAVER_BLOG", "소셜댄스 블로그 검색") == "소셜댄스 블로그 검색"
+
+
+def test_platform_label_is_a_last_resort_when_no_name_exists():
+    from runtime import events_api
+
+    assert events_api.source_label("DAUM_CAFE", None) == "Daum Cafe"
+    assert events_api.source_label("NAVER_BLOG", "") == "Naver Blog"
 
 
 def test_a_web_source_uses_its_own_registered_name():
@@ -314,7 +325,10 @@ def test_the_representative_source_is_the_events_own_registered_source(pg, uniqu
     assert canonical[0]["url"] == url
 
 
-def test_a_daum_source_shows_its_platform_brand_not_its_operational_name(pg, unique):
+def test_a_daum_source_shows_its_own_real_name_not_the_platform_brand(pg, unique):
+    """v0.85.4 (Section 26-28): a reader sees which cafe post this actually
+    is - "출처: Daum Cafe" for every DAUM_CAFE source, regardless of which
+    post, was the exact defect this reverses."""
     from runtime import events_api, intake, sources
 
     source = sources.create_source(
@@ -335,8 +349,8 @@ def test_a_daum_source_shows_its_platform_brand_not_its_operational_name(pg, uni
 
     found = [e for e in events_api.search(pg, when="today", limit=100)["events"]
              if unique in (e["name"] or "")]
-    assert found[0]["source_link"]["label"] == "Daum Cafe"
-    assert "외부홍보게시판" not in found[0]["source_link"]["label"]
+    assert found[0]["source_link"]["label"] == f"외부홍보게시판(파티) {unique}"
+    assert found[0]["source_link"]["label"] != "Daum Cafe"
 
 
 def test_a_time_the_post_did_not_qualify_is_shown_but_flagged():
