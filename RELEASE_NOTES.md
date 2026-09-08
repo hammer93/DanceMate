@@ -1,5 +1,137 @@
 # DanceMate Release Notes
 
+## v0.85.7 Compact Timeline + Venue Dance Genres + Active Region Filter + Naver Map
+
+Status: PASS, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.7
+- Information Engine: 0.83 (unchanged)
+
+### Goal
+
+Four requests in one release: keep the first screen denser rather than
+letting it grow more lines, add a genuinely useful "지도보기" (map) link
+without any map API, let a venue carry which dance genres it hosts, and
+stop showing region filter chips for places with nothing in them right
+now.
+
+### Timeline line 3: the map link joins the line, not a new one
+
+`주소 · 출처: OOO ↗ · 확인시간 · 지도보기↗` - address and the "출처 →
+확인시간 → 지도보기" group are two flex items. The meta group never
+splits apart internally: if it does not fit beside the address it wraps
+whole onto its own row, and in the (now genuinely common, on a narrow
+phone, with a long source name) case where even the meta group alone
+exceeds the viewport, it becomes a horizontally-scrollable strip rather
+than ever letting the page itself overflow. Address is what shrinks
+first - it was already display-compacted by v0.85.4's own logic.
+Confirmation wording made consistent ("N분/시간 전 확인" in every age
+bucket now, not just the oldest one).
+
+### Naver Map link - no API, no key, no stored URL
+
+`events_api.build_naver_map_search_url()`: a pure, deterministic
+transform of a venue's own full raw address into a Naver Maps *search*
+URL (`https://map.naver.com/p/search/{encoded}?c=15.00,0,0,0,dh`) -
+`urllib.parse.quote()`, nothing hand-rolled, no network call, nothing
+written to the database. None/empty address -> no link, never a
+fabricated one. Verified against the spec's own worked example
+character-for-character.
+
+### Region filter: only places with something in them
+
+`_region_options()` now drops any region whose count under the *current*
+window/genre selection is 0 - "전체" is unaffected, it is injected
+separately and never filtered by any individual region's count. Region
+counts themselves (`_facets_window`/`_unresolved_region_counts`) are now
+also scoped by the currently-ticked genre chips, not just the date
+window, so "Genre=Tango, this week" only ever offers regions that
+actually have a Tango event that week.
+
+### Venue Dance Genres - Venue Master only, human-confirmed only
+
+New `venue_genres` join table (migration 028, mirrors `venue_aliases`'
+own shape exactly) reusing the existing TANGO/SALSA/SWING genre master -
+no new enum, no bulk backfill, no venue auto-assigned a genre from a
+single event. Admin venue create/edit gets a multi-select checkbox
+group; `master_edit.set_venue_genres()` diffs the checked set against
+what is already confirmed and writes only the difference, each change
+recorded in the existing `master_data_actions` audit trail (028 also
+widens that table's own CHECK constraint to allow the two new actions -
+caught by the staging full-suite run before it ever reached production).
+`observed_venue_genres()` offers a read-only suggestion from a venue's
+real event history for the admin screen to show beside the checkboxes -
+never itself written.
+
+Live-confirmed for 5 unambiguously-Tango-named real venues (Solo Tango,
+Tango Andante, Tango O Nada, Todotango, Tango Brujo) through the actual
+admin route, not a bypass script - each is the venue's own name stating
+its genre directly, the same evidentiary bar this project's Human Venue
+Review has used since v0.85.5.
+
+### Line 2 title-clamp: deferred
+
+The spec's own Section 54 explicitly permits dropping this if it carries
+real regression risk against a working Line 2; it does (event
+name/DJ/fee share one line's text flow, and a naive line-clamp risks
+clipping the fee), so it stays out of this release. Line 3 was the
+priority.
+
+### Live production audit (100 real upcoming events)
+
+- 93/100 show a map link, 7/100 correctly omit it (all 7 are exactly the
+  "주소 미확인" rows - 0 events with an unknown address wrongly showing
+  a map link).
+- 33 distinct, correctly-formatted `map.naver.com/p/search/...
+  ?c=15.00,0,0,0,dh` URLs found on the page.
+- 0 raw JSON/API source-link leakage (re-verified, v0.85.4 regression).
+- Region chips: exactly the positive-count regions shown (서울 94, 부산
+  20, 대전 7, 대구 6, 광주 4, 진주 3, 청주 3, 울산 2, 창원 2, 포항 2,
+  경기 1) plus "전체" - no zero-count region appeared.
+- Discovered mid-audit: 5 venues this project's own v0.85.5/v0.85.6
+  reports had flagged as "KEEP_OPEN, needs a human" (Ulsan Tango
+  Sociedad, CON TANGO, Tango Mio, Bailamos Tango, 청주탱고 우르끼자) had
+  since been resolved with real addresses through the live admin console
+  by its own operator (`venue_resolution_actions`, reviewer `dancemate`,
+  `CREATE_AND_LINK`) - independent of this release, the Human Venue
+  Review workflow doing exactly its job.
+
+### Mobile - honest finding, not just a pass/fail
+
+DOM-geometry method (no headless-browser tool available in this
+environment): the real longest production tl-3 content, checked at
+360/390/430px. The address segment alone always fits easily (116-154px
+needed vs 308-378px available). The "출처 → 확인 → 지도보기" meta
+segment, now that it always includes the map link, commonly needs
+395-411px for a real long source name - *more* than the available width
+at every one of the three target viewports. This is not a layout bug:
+Section 4's actual requirement (the group is never broken apart
+mid-phrase) is met exactly as specified, and Section 8's requirement
+(the page itself never overflows horizontally) is also met - both by the
+same mechanism, a horizontal micro-scroll scoped to that one inline
+strip. In practice the source name and part of the confirmation time are
+visible without scrolling (they lead the string); reaching "지도보기"
+on the narrowest phones with the longest source names can require a
+small scroll gesture within that one row. Reported plainly rather than
+claimed as a clean pass, per this project's own standing "no overclaiming"
+practice.
+
+### Tests
+
+41 new tests (`tests/test_v0857_compact_map_venue_genres.py`): Venue
+Dance Genres (12), Region Filter (9), Naver Map (11), Timeline (9). Full
+suite: 1568 passed, 15 skipped, 2 pre-existing
+`test_tangocalendar_discovery.py` failures (unchanged baseline) - zero
+new regressions.
+
+### Scope discipline
+
+No map API, no Naver Maps API key, no .env change, no new source, no
+engine change, no bulk venue-genre backfill, no address-coverage work
+resumed (that stays v0.85.5/v0.85.6's own scope).
+
 ## v0.85.6 Human Venue Verification + Safe Address Completion
 
 Status: PASS, 2026-09-08.
