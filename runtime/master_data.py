@@ -137,13 +137,19 @@ def list_venues(
 ) -> list[dict[str, Any]]:
     sql = (
         "SELECT v.*, r.name AS region_name, r.code AS region_code, "
-        "  COALESCE(a.aliases, ARRAY[]::text[]) AS aliases "
+        "  COALESCE(a.aliases, ARRAY[]::text[]) AS aliases, "
+        "  COALESCE(dg.genre_codes, ARRAY[]::text[]) AS genre_codes "
         "FROM venues v "
         "LEFT JOIN regions r ON r.region_id = v.region_id "
         "LEFT JOIN LATERAL ("
         "  SELECT array_agg(alias ORDER BY alias) AS aliases "
         "  FROM venue_aliases WHERE venue_id = v.venue_id"
-        ") a ON TRUE"
+        ") a ON TRUE "
+        "LEFT JOIN LATERAL ("
+        "  SELECT array_agg(g.code ORDER BY g.code) AS genre_codes "
+        "  FROM venue_genres vg JOIN genres g ON g.genre_id = vg.genre_id "
+        "  WHERE vg.venue_id = v.venue_id"
+        ") dg ON TRUE"
     )
     if enabled_only:
         sql += " WHERE v.enabled"
@@ -268,6 +274,71 @@ def venue_aliases(con, venue_id: int) -> list[dict[str, Any]]:
     with con.cursor() as cur:
         cur.execute(
             "SELECT * FROM venue_aliases WHERE venue_id = %s ORDER BY alias",
+            (venue_id,),
+        )
+        return _rows(cur)
+
+
+# --- venue dance genres (v0.85.7) --------------------------------------------
+#
+# "This venue is known to host Tango" - a fact about the place, confirmed by
+# a person (or a future release's own sufficiently-repeated-evidence policy),
+# never written just because one event happened to carry that genre. Mirrors
+# venue_aliases' own shape exactly: a plain join table, add/remove by pair,
+# no soft-disable (a wrong genre is removed, not deactivated).
+
+def venue_genres(con, venue_id: int) -> list[dict[str, Any]]:
+    """This venue's confirmed genres, each row carrying the genre's own code
+    and name so a caller never has to join genres separately."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT vg.*, g.code AS genre_code, g.name AS genre_name "
+            "FROM venue_genres vg JOIN genres g ON g.genre_id = vg.genre_id "
+            "WHERE vg.venue_id = %s ORDER BY g.code",
+            (venue_id,),
+        )
+        return _rows(cur)
+
+
+def add_venue_genre(con, venue_id: int, genre_id: int, *,
+                    ignore_conflict: bool = True) -> dict[str, Any] | None:
+    """Confirm one genre for a venue. Idempotent by default - re-confirming
+    a genre that is already there is a no-op, not an error."""
+    conflict = (" ON CONFLICT (venue_id, genre_id) DO NOTHING" if ignore_conflict
+               else "")
+    with con.cursor() as cur:
+        cur.execute(
+            "INSERT INTO venue_genres (venue_id, genre_id) "
+            f"VALUES (%s, %s){conflict} RETURNING *",
+            (venue_id, genre_id),
+        )
+        return _row(cur) if cur.description and cur.rowcount else None
+
+
+def remove_venue_genre(con, venue_id: int, genre_id: int) -> dict[str, Any] | None:
+    """Un-confirm one genre for a venue. The venue and its events are
+    untouched - this only removes a fact about the place."""
+    with con.cursor() as cur:
+        cur.execute(
+            "DELETE FROM venue_genres WHERE venue_id = %s AND genre_id = %s "
+            "RETURNING *",
+            (venue_id, genre_id),
+        )
+        return _row(cur)
+
+
+def observed_venue_genres(con, venue_id: int) -> list[dict[str, Any]]:
+    """Genres actually seen in this venue's own event history - a read-only
+    suggestion for a human reviewing the venue, never written on its own
+    (Section 17-19 of the v0.85.7 task: observed is not confirmed).
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT g.genre_id, g.code AS genre_code, g.name AS genre_name, "
+            "  count(*) AS event_count "
+            "FROM events e JOIN genres g ON g.genre_id = e.genre_id "
+            "WHERE e.venue_id = %s GROUP BY g.genre_id, g.code, g.name "
+            "ORDER BY event_count DESC, g.code",
             (venue_id,),
         )
         return _rows(cur)

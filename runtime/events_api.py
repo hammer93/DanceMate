@@ -261,6 +261,26 @@ def resolve_public_source_url(url: str | None) -> str | None:
     return url
 
 
+# v0.85.7 (Section 31-42): a Naver Maps *search* URL, never a geocoding
+# API call - the address is only ever handed to the same search box a
+# person would type into themselves. Deterministic and stateless: the
+# same address always produces the same URL, so nothing is stored.
+_NAVER_MAP_SEARCH = "https://map.naver.com/p/search/{query}?c=15.00,0,0,0,dh"
+
+
+def build_naver_map_search_url(address: str | None) -> str | None:
+    """A Naver Map search link for a real venue address, or None.
+
+    None/empty/whitespace-only in, None out - never a link with nowhere
+    real to go. The full raw address is expected (never the display-
+    compacted one): whatever venues.address actually says, URL-encoded
+    with the standard library, nothing hand-rolled.
+    """
+    if not address or not address.strip():
+        return None
+    return _NAVER_MAP_SEARCH.format(query=urllib.parse.quote(address.strip()))
+
+
 def present(row: dict[str, Any]) -> dict[str, Any]:
     """One event as the API returns it.
 
@@ -285,6 +305,7 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
             "status": row.get("venue_status"),
             "address": row.get("venue_address"),
             "id": row.get("venue_id"),
+            "map_url": build_naver_map_search_url(row.get("venue_address")),
         },
         "fee": row.get("fee"),
         "currency": "KRW" if row.get("fee") is not None else None,

@@ -42,6 +42,8 @@ ENABLE = "ENABLE"
 DISABLE = "DISABLE"
 ALIAS_ADD = "ALIAS_ADD"
 ALIAS_REMOVE = "ALIAS_REMOVE"
+GENRE_ADD = "GENRE_ADD"
+GENRE_REMOVE = "GENRE_REMOVE"
 
 # Fields the console may change, per entity. A code is absent from every list
 # on purpose: see the module docstring.
@@ -243,6 +245,49 @@ def add_alias(con, venue_id: int, alias: str, *,
             after={"alias": alias}, detail=f"added alias {alias}",
         )
     return {"alias": created, "venue": venue}
+
+
+def set_venue_genres(con, venue_id: int, genre_ids: list[int], *,
+                     reviewer: str = "admin") -> dict[str, Any]:
+    """Set a venue's confirmed dance genres to exactly this set (v0.85.7).
+
+    Diffs against what is already confirmed and only writes the difference -
+    unticking nothing changes nothing, and each genre actually added or
+    removed gets its own audit row, same discipline as an alias change.
+    Human-driven only: this never runs from anywhere but the admin console
+    form a person just submitted, and it never infers a genre from event
+    history on its own (Section 17 - observed is not confirmed).
+    """
+    venue = master_data.get_venue(con, venue_id)
+    if venue is None:
+        raise EditError(f"no venue {venue_id}")
+    current = {row["genre_id"] for row in master_data.venue_genres(con, venue_id)}
+    wanted = set(genre_ids)
+    added, removed = [], []
+    with con.transaction():
+        for genre_id in wanted - current:
+            genre = master_data.get_genre(con, genre_id)
+            if genre is None:
+                raise EditError(f"no genre {genre_id}")
+            master_data.add_venue_genre(con, venue_id, genre_id)
+            record(
+                con, entity_type=VENUE, entity_id=venue_id, action=GENRE_ADD,
+                reviewer=reviewer, entity_name=venue["name"],
+                after={"genre_code": genre["code"]},
+                detail=f"confirmed genre {genre['code']}",
+            )
+            added.append(genre["code"])
+        for genre_id in current - wanted:
+            genre = master_data.get_genre(con, genre_id)
+            master_data.remove_venue_genre(con, venue_id, genre_id)
+            record(
+                con, entity_type=VENUE, entity_id=venue_id, action=GENRE_REMOVE,
+                reviewer=reviewer, entity_name=venue["name"],
+                before={"genre_code": genre["code"] if genre else genre_id},
+                detail=f"removed genre {genre['code'] if genre else genre_id}",
+            )
+            removed.append(genre["code"] if genre else genre_id)
+    return {"venue": venue, "added": added, "removed": removed}
 
 
 def remove_alias(con, venue_alias_id: int, *, reviewer: str = "admin",
