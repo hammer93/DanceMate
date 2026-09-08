@@ -113,7 +113,7 @@ def test_source_shown():
 # 12. source is clickable
 def test_source_clickable():
     line3 = public._timeline_line3(_event(), now=NOW)
-    assert "<a href=" in line3
+    assert "<a " in line3 and 'href="' in line3
 
 
 # 13. the source URL rendered is the event's own

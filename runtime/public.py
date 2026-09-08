@@ -185,21 +185,36 @@ li.event a { padding: .55rem .8rem; }
 .tl-2 { margin:.2rem 0 0; overflow-wrap: anywhere; }
 .tl-2 .ev-name { font-weight:600; }
 .tl-2 .dj { color:var(--muted); font-weight:400; }
-/* v0.85.7 (Section 4-9): address and the "출처 → 확인시간 → 지도보기"
-   group are two flex items. Address may wrap/shrink - it is already
-   pre-compacted in Python to a handful of characters. The meta group
-   never breaks internally: if it does not fit beside the address it
-   wraps whole onto its own row, and if it is still too wide for the
-   viewport even alone (a long source name on a narrow phone) it becomes
-   a horizontally-scrollable strip rather than ever forcing the page
-   itself to overflow. */
-.tl-3 { display:flex; flex-wrap:wrap; align-items:baseline; column-gap:.3em;
+/* v0.85.8 (Section 4-11): the address moved here from line 3, as its own
+   trailing segment - existing small/meta styling (same font-size/color
+   line 3 has always used), never the event name's own bold/size. Bounded
+   and ellipsized rather than flex-shrunk: line 2's title is already
+   allowed to wrap onto more than one visual line for a long event name
+   (unchanged, pre-existing, deliberately out of this release's scope -
+   Section 11), so the address cannot assume it is sharing a single flex
+   line with the name/fee before it the way line 3's own items do. */
+.tl-2 .tl-2-addr { font-size:.78rem; color:var(--muted); font-weight:400;
+                   display:inline-block; max-width:16em; vertical-align:bottom;
+                   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* v0.85.8 (Section 12-20): line 3 is 출처/확인시간/지도보기 only now (no
+   address) and it is a single row that can never wrap or scroll -
+   `overflow:hidden` here is the hard backstop, not a fallback path the
+   way v0.85.7's `overflow-x:auto` was. The one part allowed to give way
+   is the source's own name (`.src-name`): flex `min-width:0` lets it
+   shrink below its own content width so `text-overflow:ellipsis` can
+   activate, while 확인시간/지도보기 (`.tl-fixed`) stay flex-shrink:0 and
+   are never touched, whatever the source name's real length turns out
+   to be. */
+.tl-3 { display:flex; align-items:baseline; white-space:nowrap; overflow:hidden;
         padding: .15rem .8rem .6rem; font-size:.78rem; color:var(--muted); }
-.tl-3 .tl-addr { overflow-wrap: anywhere; }
-.tl-3 .tl-meta { white-space: nowrap; overflow-x: auto; max-width: 100%; }
+.tl-3 .src-link { display:inline-flex; align-items:baseline; min-width:0;
+                  overflow:hidden; flex-shrink:1; }
+.tl-3 .src-name { min-width:0; overflow:hidden; text-overflow:ellipsis;
+                  white-space:nowrap; }
+.tl-3 .tl-fixed { flex-shrink:0; white-space:nowrap; }
 .tl-3 a { color:var(--accent); text-decoration:none; }
 .tl-3 a:hover { text-decoration:underline; }
-.ext { font-size:.75em; }
+.ext { font-size:.75em; flex-shrink:0; }
 /* Weekly calendar (v0.85.0). */
 .calendar { margin: 0 0 1.25rem; border:1px solid var(--line); border-radius:12px;
             background:var(--card); overflow:hidden; }
@@ -940,8 +955,19 @@ def _title_already_announces_dj(title: str, dj: str) -> bool:
 
 
 def _timeline_line2(event: dict[str, Any]) -> str:
-    """행사명 (DJ) 입장료: 00 - Section 18-21. The DJ parenthetical is
-    entirely absent, not "DJ 미확인", when there is none (Section 20)."""
+    """행사명 (DJ) · 입장료 · 주소 - Section 4-11 of v0.85.8 (was 행사명
+    (DJ) · 입장료 alone through v0.85.7; the address moved here from line
+    3 so line 3 could become strictly one line). The DJ parenthetical is
+    entirely absent, not "DJ 미확인", when there is none (Section 20).
+
+    The address (already display-compacted by _compact_address(), never
+    the raw value) is its own trailing span in the existing small/meta
+    styling (Section 6-7) - never the same size/weight as the event name.
+    It is what ellipsizes first if the line runs long (Section 9), and it
+    is omitted entirely rather than shown as "주소 미확인" when there is
+    none (Section 25-26): a name and a fee are always the point of this
+    line, an unknown address is not information worth a whole segment
+    for."""
     thin = ' <span class="tag">정보 적음</span>' if _is_unknown_heavy(event) else ""
     cancelled = " cancelled" if event.get("cancelled") else ""
     name = f'<span class="ev-name{cancelled}">{E(event.get("name") or "")}</span>{thin}'
@@ -951,7 +977,9 @@ def _timeline_line2(event: dict[str, Any]) -> str:
         if dj and not _title_already_announces_dj(event.get("name") or "", dj)
         else ""
     )
-    return f'<div class="tl-2">{name}{dj_html} · {_fee_text(event)}</div>'
+    address = _compact_address((event.get("venue") or {}).get("address"))
+    address_html = f' · <span class="tl-2-addr">{E(address)}</span>' if address else ""
+    return f'<div class="tl-2">{name}{dj_html} · {_fee_text(event)}{address_html}</div>'
 
 
 def _confirmation_text(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
@@ -1027,22 +1055,28 @@ def _compact_address(address: str | None) -> str | None:
 
 
 def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
-    """주소 · 출처: OOO ↗ · 확인시간 · 지도보기↗ - Section 1-11 of v0.85.7.
+    """출처: OOO ↗ · 확인시간 · 지도보기↗ - Section 1-22 of v0.85.8.
 
-    Two flex items: the (already short, pre-compacted) address, and a
-    "출처 → 확인시간 → 지도보기" group that is never allowed to break
-    internally (Section 4-5) - if the row is too narrow for both, the meta
-    group wraps to its own line as one unbroken unit rather than splitting
-    apart; if even the meta group alone cannot fit a viewport (a long
-    source name on a narrow phone), it scrolls horizontally within its own
-    inline strip instead of ever forcing the page itself to overflow
-    (Section 8-9). Address is what shrinks - never source/confirm/map.
+    The address moved to line 2 this release; line 3 is only 출처/
+    확인시간/지도보기 now, and it is a single, structurally-unbreakable
+    row - not "usually one line" like v0.85.7's own address+meta design,
+    which still allowed a rare horizontal micro-scroll. This release
+    forbids that too (Section 15): the row itself is `white-space:nowrap;
+    overflow:hidden` with no scroll mechanism at all, and the ONE thing
+    allowed to shrink is the source's own name (`.src-name`, CSS
+    text-overflow: ellipsis via flex min-width:0) - 확인시간 and 지도보기
+    are flex-shrink:0 and never touched (Section 20, 37). No source
+    master field for a pre-shortened name exists (checked before writing
+    this - Section 16's own instruction), so this is the sanctioned
+    fallback (Section 19): a real ellipsis on the real name, never an
+    invented abbreviation, with the full name still in the link's own
+    `title` attribute for anyone who wants it (Section 38).
 
-    Only rendered when there is a real address, source, or confirmation
-    timestamp to put on it; a candidate with none of the three (should not
-    happen in practice - every live post has a source_url - but
-    defensively) contributes no third line at all, keeping Section 12's
-    "up to three lines" honest rather than padding to three."""
+    Only rendered when there is a real source or confirmation timestamp
+    to put on it; a candidate with neither (should not happen in practice
+    - every live post has a source_url - but defensively) contributes no
+    third line at all, keeping Section 12's "up to three lines" honest
+    rather than padding to three."""
     link = event.get("source_link") or {}
     # Defense in depth: events_api.present() already runs this, but a
     # malformed URL must never become a clickable link here either
@@ -1050,34 +1084,36 @@ def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> 
     url = events_api.valid_public_url(link.get("url"))
     label = link.get("label")
     confirmed = _confirmation_text(event, now=now)
-    venue = event.get("venue") or {}
-    raw_address = venue.get("address")
-    address = _compact_address(raw_address)
     # Never a fabricated map link for an address we do not actually have
-    # (Section 36) - map_url is already None whenever raw_address is.
-    map_url = venue.get("map_url")
-    if not address and not url and not label and not confirmed:
+    # (Section 36) - map_url is already None whenever the venue's own
+    # raw address is.
+    map_url = (event.get("venue") or {}).get("map_url")
+    if not url and not label and not confirmed:
         return ""
-    address_html = E(address) if address else '<span class="unknown">주소 미확인</span>'
     if url:
+        shown = E(label) if label else "원문"
+        title_attr = f' title="{E(label)}"' if label else ""
         source_html = (
-            f'출처: <a href="{E(url)}" target="_blank" rel="noopener noreferrer">'
-            f'{E(label) if label else "원문"} <span class="ext" aria-hidden="true">&#8599;</span></a>'
+            f'출처: <a class="src-link" href="{E(url)}" target="_blank" '
+            f'rel="noopener noreferrer"{title_attr}>'
+            f'<span class="src-name">{shown}</span> '
+            f'<span class="ext" aria-hidden="true">&#8599;</span></a>'
         )
     elif label:
-        source_html = f"출처: {E(label)}"
+        source_html = f'출처: <span class="src-name" title="{E(label)}">{E(label)}</span>'
     else:
         source_html = '<span class="unknown">출처 미확인</span>'
-    meta_parts = [source_html]
+    tail = []
     if confirmed:
-        meta_parts.append(E(confirmed))
+        tail.append(f'<span class="tl-fixed">{E(confirmed)}</span>')
     if map_url:
-        meta_parts.append(
-            f'<a href="{E(map_url)}" target="_blank" rel="noopener noreferrer">'
-            f'지도보기 <span class="ext" aria-hidden="true">&#8599;</span></a>'
+        tail.append(
+            f'<a class="tl-fixed" href="{E(map_url)}" target="_blank" '
+            f'rel="noopener noreferrer">지도보기 '
+            f'<span class="ext" aria-hidden="true">&#8599;</span></a>'
         )
-    meta_html = f'<span class="tl-meta">· {" · ".join(meta_parts)}</span>'
-    return f'<div class="tl-3"><span class="tl-addr">{address_html}</span>{meta_html}</div>'
+    body = source_html + "".join(f" · {t}" for t in tail)
+    return f'<div class="tl-3">{body}</div>'
 
 
 def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
