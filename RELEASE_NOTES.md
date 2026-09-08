@@ -1,5 +1,149 @@
 # DanceMate Release Notes
 
+## v0.85.4 Compact Timeline Address + Human-readable Source Link
+
+Status: PASS, 2026-09-08.
+
+Version split:
+
+- Product Runtime: 0.85.4
+- Information Engine: 0.83 (unchanged)
+
+### Goal
+
+Denser first-screen information: show a partial venue address directly in
+the Timeline, fold the source row into one line with the address and the
+confirmation time, and - the critical fix - make sure the source link a
+reader taps always opens something a person can actually read, never a
+collector's own JSON API endpoint. No new source research this release
+(explicitly out of scope).
+
+### Timeline line 3 redesigned: address + source + confirmation time, one row
+
+`주소 · 출처: OOO ↗ · 확인시간` replaces the old source-and-time-only line.
+`runtime.public._compact_address()` shortens a resolved `venues.address`
+for display only: it drops the region prefix already shown on line 1
+(including a metro city's own contracted "-시" form - found live and
+fixed mid-release, see below) and keeps district + road + the first
+street number, ellipsizing whatever comes after (floor, suite, building
+name, station exit). The stored address itself is never touched. No
+address at all renders as an honest "주소 미확인", never a guess, and a
+venue's *name* is never shown in place of a real address.
+
+### The real defect: two sources were exposing raw JSON as the source link
+
+Auditing every active source's stored `source_url` against what actually
+opens in a browser found two that were showing a reader their own
+collector's API response instead of a page:
+
+- **Tango Calendar Korea (SRC-W-003)** stored its own
+  `/api/events/{uuid}` REST endpoint as the link - opening it in a
+  browser shows raw JSON. The site's own `sitemap.xml` declares
+  `{origin}/?eventId={uuid}` as the canonical per-event page for the same
+  events (confirmed live: real UUIDs, `lastmod`/`changefreq`/`priority`
+  entries), so `events_api.resolve_public_source_url()` rewrites to that
+  shape - a pure string transform of already-stored data, no fetch.
+- **TangoNOW (SRC-W-002)** stored a raw Firestore REST document URL.
+  This module's own prior investigation (kept in
+  `tangonow_discovery.py`'s docstring) already found ~80% of this
+  source's own records carry no link field at all and `ktnow.kr`'s
+  frontend is JS-only with no per-event route - there is no real human
+  deep link to rewrite to, so the honest fallback is the source's own
+  home page (`https://ktnow.kr/`).
+
+Both are pattern-matched against the stored URL string only - no network
+call at render time, no schema change, no backfill of existing rows.
+SRC-D-001/003/010/011/012 (Daum Cafe), DanceInfo, Miltang, and TangoClass
+were already storing their real human pages and needed no change -
+TangoClass in particular was already correct despite this release's own
+spec worrying it might not be (it stores WordPress's own `link` field,
+not its collection API).
+
+### A second real defect, found by inspection: platform label beat the source's own name
+
+`events_api.source_label()` returned the generic `PLATFORM_LABELS` map
+(e.g. "Daum Cafe") whenever the source's platform was a known key, even
+when the source's own real name ("Solo Tango 화요정모 공지") was
+available - every Daum Cafe source read as the same generic brand
+regardless of which cafe post it actually was. Priority reversed: a
+source's own name now always wins, the platform map is a last-resort
+fallback for the rare row with no name at all.
+
+### Found live, fixed mid-release: a second province-prefix gap
+
+The initial production audit (100 real upcoming events) caught
+`"부산시 부산진구 신천대로 62번길 62..."` not being trimmed -
+`_PROVINCE_PREFIX` covered Seoul's contracted "-시" form (서울시) but not
+the other five metro cities' own contracted forms (부산시/대구시/인천시/
+광주시/대전시/울산시). Fixed and redeployed before tagging; re-audited
+live to confirm.
+
+### Live production audit (100 real upcoming events, all active sources)
+
+- 81/100 show a real, compacted address; 19/100 honestly show "주소
+  미확인" (all checked: genuinely no resolved venue address, never a
+  suppressed real one).
+- 0/100 show "출처 미확인" - every visible event has a resolvable
+  source.
+- 0 raw JSON/API URLs found anywhere on the page (`firestore.googleapis.com`,
+  `/api/events/{uuid}` - both searched for directly, zero matches).
+- Solo Tango 화요정모 공지 (SRC-D-003, PRIMARY-representative for its
+  event) links to its own `cafe.daum.net` post - never the co-listed
+  Miltang DIRECTORY link for the same event - unchanged representative-
+  source selection, confirmed still holding under the new resolver.
+- SRC-W-006 (TangoClass): the one current live event's source redirect
+  (`/events/{id}/source`) returns `303 -> https://tangoclass.co.kr/...
+  /2026/08/22/sep-class/` - confirmed live to be the real WordPress
+  article, not JSON.
+
+| Source | Displayed name | User-visible link | Result |
+|---|---|---|---|
+| SRC-D-003 Solo Tango | Solo Tango 화요정모 공지 | cafe.daum.net (own post) | PASS |
+| SRC-W-002 TangoNOW | TangoNOW | ktnow.kr (home, no per-event page exists) | PASS |
+| SRC-W-003 Tango Calendar Korea | Tango Calendar Korea | tangocalendar.kr/?eventId=... (rewritten) | PASS |
+| SRC-W-004 DanceInfo | DanceInfo | danceinfo.net/lessons/{id} | PASS |
+| SRC-W-005 Miltang | Miltang | miltang.com/milongas/{id} | PASS |
+| SRC-W-006 TangoClass | TangoClass 공식 사이트 | tangoclass.co.kr (real article, JSON never exposed) | PASS |
+
+### Mobile check
+
+No headless-browser/screenshot tool is available in this environment, so
+line-wrap risk was checked by DOM-geometry calculation instead: the
+actual longest real line-3 and line-2 strings from the 100-event live
+audit, run through Unicode East Asian Width classification against the
+real deployed CSS (`.tl-3` font-size .78rem, `.8rem` padding; narrow-
+viewport `main`/`li.event a` padding) at 360/390/430px. Worst real line 3
+(65 characters, the Tango Calendar Korea example) wraps to 2 lines at
+every width - well inside the "3-5 lines is a FAIL" bound. Line 2
+(unchanged this release) can reach 2-3 lines on an emoji-heavy real
+title, a pre-existing characteristic of the compact-timeline design
+(each `tl-N` is one structural block, not a hard one-CSS-line
+guarantee), not a regression from this release's own changes.
+
+### Tests
+
+28 new/rewritten tests (`tests/test_v0854_address_source_link.py`, plus
+two `test_public_pages.py` assertions that encoded the old label
+priority and one integration test for the same). Full suite against a
+fresh staging Postgres: 1494 passed, 15 skipped, 2 pre-existing
+`test_tangocalendar_discovery.py` failures (unchanged from the v0.85.3
+baseline, unrelated to this release) - zero new regressions.
+
+### Data quality
+
+Wrong Date / Wrong Time / Wrong Venue / Wrong Region / Wrong Fee / Wrong
+DJ: 0. False VERIFIED: 0. This release touches display/provenance code
+only - no date, time, venue, region, fee, or DJ extraction path was
+changed - and the live audit's 100-event sample surfaced no field
+defects.
+
+### Scope discipline
+
+No new source added, no source research reopened (OCHO/O Nada/PISTA/
+Andante/EN PAZ stay at v0.85.3's own conclusions). No migration, no
+backfill: both URL fixes and the address formatter operate on
+already-stored data at render time.
+
 ## v0.85.3 Direct Source Expansion Round 2 + DJ Display Fix
 
 Status: honest zero-new-source research outcome, one real UX defect
