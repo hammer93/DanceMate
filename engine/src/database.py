@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS raw_posts(
 CREATE TABLE IF NOT EXISTS event_candidates(
  candidate_id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER NOT NULL, name TEXT,
  event_type TEXT, event_date TEXT, start_time TEXT, end_time TEXT, end_day_offset INTEGER,
- fee INTEGER, venue TEXT, dj TEXT, status TEXT, core_complete INTEGER,
+ fee INTEGER,
+ -- Full text for a fee that means more than one plain number - a
+ -- conditional discount or a set of named options (v0.85.9, Section 18).
+ -- NULL for an ordinary single price, where `fee` alone already says it.
+ fee_display_text TEXT,
+ venue TEXT, dj TEXT, status TEXT, core_complete INTEGER,
  FOREIGN KEY(post_id) REFERENCES raw_posts(post_id)
 );
 CREATE TABLE IF NOT EXISTS evidences(
@@ -2823,6 +2828,7 @@ def init_db(path: Path):
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
     _add_column_if_missing(con, "evidences", "context_id", "TEXT")
+    _add_column_if_missing(con, "event_candidates", "fee_display_text", "TEXT")
     con.commit()
     return con
 
@@ -2869,8 +2875,8 @@ def persist_fixture(con, key, source_id, title, body, events):
 
 def persist_events(con, post_id, events):
     for ev in events:
-        cur = con.execute("""INSERT INTO event_candidates(post_id,name,event_type,event_date,start_time,end_time,end_day_offset,fee,venue,dj,status,core_complete)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (post_id, ev.name, ev.event_type, ev.date, ev.start_time, ev.end_time, ev.end_day_offset, ev.fee, ev.venue, ev.dj, ev.status, int(ev.core_complete)))
+        cur = con.execute("""INSERT INTO event_candidates(post_id,name,event_type,event_date,start_time,end_time,end_day_offset,fee,fee_display_text,venue,dj,status,core_complete)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (post_id, ev.name, ev.event_type, ev.date, ev.start_time, ev.end_time, ev.end_day_offset, ev.fee, ev.fee_display_text, ev.venue, ev.dj, ev.status, int(ev.core_complete)))
         cid = cur.lastrowid
         for e in ev.evidences:
             con.execute("INSERT INTO evidences(candidate_id,field,value,raw_text,evidence_type,source_role,inference,context_id) VALUES(?,?,?,?,?,?,?,?)",

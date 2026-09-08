@@ -24,6 +24,11 @@ class EventCandidate:
     end_time: Optional[str] = None
     end_day_offset: int = 0
     fee: Optional[int] = None
+    # Full text for a fee that means more than one plain number - a
+    # conditional discount ("8,000원 (22시 이후 5,000원)") or a set of named
+    # options ("예매 15,000원 · 현매 20,000원") - v0.85.9 Section 18. None for
+    # an ordinary single price, where `fee` alone already says everything.
+    fee_display_text: Optional[str] = None
     venue: Optional[str] = None
     dj: Optional[str] = None
     evidences: List[Evidence] = field(default_factory=list)

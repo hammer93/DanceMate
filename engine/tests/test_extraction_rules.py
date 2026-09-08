@@ -350,20 +350,31 @@ def test_a_real_multi_tier_package_price_is_left_unpriced():
     assert rules.extract_fee(text, "PRACTICA") is None
 
 
-def test_advance_and_door_pricing_is_left_unpriced_not_averaged_or_first():
+def test_advance_and_door_pricing_is_preserved_not_averaged_or_first():
     """Real live post (DanceInfo): '예매15,000/현매20,000' is two genuine
-    prices for the same event with no label this module recognises (예매/
-    현매 name a purchase channel, not the fee) - Section 17 forbids
-    collapsing either member/non-member or advance/door pairs to one
-    number, so this must stay unpriced rather than picking 15,000, 20,000,
-    or an average of the two."""
+    prices for the same event. v0.84.1 refused to collapse them to one
+    number and left the event unpriced entirely - honest, but Section 14 of
+    v0.85.9 asks for better: 예매/현매 name a purchase channel exactly the
+    way an explicit fee label names an amount, so both real numbers are
+    keepable, and 'unpriced' is no longer the safest available answer once
+    they can both be said at once."""
     text = "🎂디제이-네로 🎂예매15,000/현매20,000 🎂카뱅3333-21-5422369"
-    assert rules.extract_fee(text, "MILONGA") is None
+    reading = rules.extract_fee(text, "MILONGA")
+    assert reading is not None
+    # No single number is "the" fee - Section 2 forbids picking 15,000,
+    # 20,000, or an average of the two.
+    assert reading.amount is None
+    assert reading.display == "예매 15,000원 · 현매 20,000원"
 
 
-def test_member_and_non_member_pricing_is_left_unpriced():
+def test_member_and_non_member_pricing_is_preserved():
+    """Same upgrade as advance/door pricing above, for 회원/비회원 (Section
+    15): both real prices kept, neither silently dropped."""
     text = "회원 15,000원 / 비회원 20,000원"
-    assert rules.extract_fee(text, "MILONGA") is None
+    reading = rules.extract_fee(text, "MILONGA")
+    assert reading is not None
+    assert reading.amount is None
+    assert reading.display == "회원 15,000원 · 비회원 20,000원"
 
 
 def test_a_street_address_number_is_never_read_as_a_fee():
@@ -387,6 +398,92 @@ def test_extract_fee_has_no_memory_between_calls():
     assert unpriced is None
 
 
+# --- v0.85.9: Korean 천원 notation, conditional fee display -----------------
+#
+# Found live: a real recurring milonga ("화정") whose weekly post has read
+# 20:00-23:30 correctly for six straight weeks (parse_time_range already
+# handled "오후 8시 ~ 11시 30분" before this release - untouched here) while
+# its fee read unknown every single week, because "8천원" used a notation
+# extract_fee() had no pattern for at all. The real root cause was a missing
+# pattern, not an over-eager safety net discarding a successful read.
+
+@pytest.mark.parametrize("text,amount,basis", [
+    ("입장료 : 8천원", 8000, rules.BASIS_LABEL),
+    ("참가비 5천원", 5000, rules.BASIS_LABEL),
+    ("회비 1.5천원", 1500, rules.BASIS_LABEL),
+    ("밀롱가 : 3천원", 3000, rules.BASIS_EVENT_CONTEXT),
+])
+def test_korean_cheon_notation_is_read_as_one_thousand_won(text, amount, basis):
+    reading = rules.extract_fee(text, "MILONGA")
+    assert (reading.amount, reading.basis) == (amount, basis)
+
+
+@pytest.mark.parametrize("text", [
+    "참가자 8천명 예상",   # a headcount, not money
+    "이번이 8천번째 모임",  # an ordinal, not money
+])
+def test_bare_cheon_without_a_label_is_never_read_as_money(text):
+    """Section 21: '8천' with no 원 is only money once a label says so
+    (mirroring the existing unsuffixed-digit rule) - a headcount or an
+    ordinal must never qualify just because a number precedes '천'."""
+    assert rules.extract_fee(text, "MILONGA") is None
+
+
+def test_bare_cheon_with_a_label_and_no_won_is_still_read_as_money():
+    """Section 20: '8천' with no 원 suffix at all is real money once a fee
+    label names it - the 천 marker itself is enough signal, unlike a plain
+    digit run which still needs 4+ digits before a label is trusted."""
+    reading = rules.extract_fee("입장료 8천", "MILONGA")
+    assert reading is not None
+    assert reading.amount == 8000
+
+
+def test_conditional_fee_keeps_both_the_base_and_the_condition():
+    """The exact real shape (Section 11-13): a base price plus a time-gated
+    discount, immediately parenthesised after it. Both numbers are kept -
+    never reduced to 8,000 alone (losing the discount) nor to unknown
+    (losing a fee that is, in fact, fully known)."""
+    reading = rules.extract_fee(
+        "입장료 : 8천원 (10시 이후 5천원)", "MILONGA",
+        known_start="20:00", known_end="23:30",
+    )
+    assert reading is not None
+    assert reading.amount == 8000
+    assert reading.display == "8,000원 (22시 이후 5,000원)"
+
+
+def test_conditional_fee_hour_is_never_guessed_without_an_anchor():
+    """Section 2: 오후/오전 시간 추측 금지. Without the event's own already-
+    EXPLICIT start/end to anchor against, the condition's bare hour is kept
+    exactly as written rather than invented as either AM or PM."""
+    reading = rules.extract_fee("입장료 : 8천원 (10시 이후 5천원)", "MILONGA")
+    assert reading is not None
+    assert reading.amount == 8000
+    assert reading.display == "8,000원 (10시 이후 5,000원)"
+
+
+def test_conditional_fee_hour_is_not_resolved_when_it_cannot_fit_the_window():
+    """A condition hour whose *both* 12-hour readings sit outside the
+    event's own window is exactly as unresolved as having no window at all
+    - Section 23's anchor only fires when it points to a single, sensible
+    answer, never as a fallback guess."""
+    reading = rules.extract_fee(
+        "입장료 : 8천원 (10시 이후 5천원)", "MILONGA",
+        known_start="01:00", known_end="02:00",
+    )
+    assert reading is not None
+    assert reading.display == "8,000원 (10시 이후 5,000원)"
+
+
+def test_fee_condition_time_is_never_confused_with_event_end_time():
+    """Section 22/23 (very important): '10시 이후' inside the fee line is a
+    fee condition, never a second reading of the event's own end time.
+    parse_time_range() must not see it at all - only extract_fee() does."""
+    text = "시간 : 오후 8시 ~ 11시 30분 입장료 : 8천원 (10시 이후 5천원)"
+    reading = rules.parse_time_range(text, "MILONGA")
+    assert (reading.start, reading.end) == ("20:00", "23:30")
+
+
 # --- the whole post ---------------------------------------------------------
 
 def test_the_post_that_defined_this_release():
@@ -404,3 +501,39 @@ def test_the_post_that_defined_this_release():
     time_evidence = next(e for e in candidate.evidences if e.field == "time")
     assert time_evidence.inference == rules.EVIDENCE_EXPLICIT
     assert "PM 07:30~11:30" in time_evidence.raw_text
+
+
+def test_the_solo_tango_hwajeong_post_that_defined_v0_85_9():
+    """The real production post this release exists for (v0.85.9, Section
+    38) - SRC-D-003's own weekly 화정 announcement, post_id 606, captured
+    verbatim from the engine's own raw_posts.body. Every week since this
+    event started recurring, start/end read correctly (20:00-23:30, already
+    handled before this release) while the fee read unknown, because '8천원'
+    used a notation extract_fee() had no pattern for. '화정지기'/'화정도우미'
+    (volunteer-role labels specific to this event) and the raffle mention
+    must not leak into DJ/venue/fee/date, and the fee condition's '10시' must
+    resolve to 22:00 by anchoring against this same post's own EXPLICIT
+    20:00-23:30 window - never a blanket AM/PM guess."""
+    candidate = extract_single(
+        "[화정] 9월 8일 화정 공지 (DJ : 유진)",
+        "SINCE 2000 화정 밀롱가에서 DJ 유진의 음악을 즐기며 화정에서 만날수 있는 "
+        "탱고인들과의 교류를 즐겁게 만들어 볼까요~ 이번 화정은 빵 or 떡을 준비해 "
+        "보겠습니다. 그리고 화정티켓 두장은 번호표 뽑기로 진행합니다^^ 뽑기하기전 "
+        "귀가하신분은 뽑혀도 탈~~~락!! 날짜 : 9월 8일 화요일 시간 : 오후 8시 ~ 11시 "
+        "30분 디제이 : 유진 장소 : Tango O nada 화정지기 : 에리카 이어링투 루나 "
+        "화정도우미 : 라벤더,냥이,나빌레라 입장료 : 8천원 (10시 이후 5천원) "
+        "이벤트 번호표 뽑기 진행 ❤️ 예약문의 : 댓글을 활용해 주세요 ❤️ 🎉 화정 "
+        "생일빵 🎉 화정에서 생일빵을 진행합니다. 테이블 예약시 카페에 신청해 "
+        "주세요. 솔땅 회원분들 그리고 품앗이님들 생일이나 벙개는 화정에서~!! 모두 "
+        "함께 축하하고, 즐거운 밤이 되길 바래요~ ♡ 우리 모두의 화정을 위한 약속 "
+        "세가지 ♡ ☞ 까베 매너 : 무례한 까베로 블랙리스트에 오르지 않도록 주의하기! "
+        "☞ 론다 매너 : 음악이 흐른 후 론다에 입장하시고, 꼬르띠나가 시작되면 "
+        "론다에서 나오기! ☞ 개인 위생 : 철저한 개인위생으로 사랑스런 파트너 지켜주기!",
+        published="2026-09-06",
+    )
+    assert candidate.date == "2026-09-08"
+    assert (candidate.start_time, candidate.end_time) == ("20:00", "23:30")
+    assert candidate.dj == "유진"
+    assert candidate.venue == "Tango O nada"
+    assert candidate.fee == 8000
+    assert candidate.fee_display_text == "8,000원 (22시 이후 5,000원)"

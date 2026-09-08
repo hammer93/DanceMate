@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # --- meridiem ---------------------------------------------------------------
 
@@ -444,6 +444,15 @@ _MIN_UNSUFFIXED_DIGITS = 4
 # would risk misreading a plain "20,000" as "2" if the patterns overlapped.
 _MAN_AMOUNT_RE = re.compile(r"(?P<man>[0-9]+(?:\.[0-9]+)?)\s*만\s*(?P<won>원)")
 
+# "8천원", "5천원", bare "8천": Korean 1,000-unit notation - v0.85.9's own
+# missing piece, found on a real recurring milonga ("입장료 : 8천원 (10시 이후
+# 5천원)") whose fee had read as unknown every week since it never used plain
+# digits or 만원. 원 is optional the same way _AMOUNT_RE's is (Section 20's
+# bare "8천"), gated back to fee-only meaning by the same label requirement
+# extract_fee() already applies to any unsuffixed number - "8천명"/"8천번"
+# carry no fee label nearby and so never qualify (Section 21).
+_CHEON_AMOUNT_RE = re.compile(r"(?P<cheon>[0-9]+(?:\.[0-9]+)?)\s*천\s*(?P<won>원)?")
+
 # A price sitting next to its own session/membership count is a package or
 # membership rate, not the fee for showing up to *this* one listing -
 # "10만원(2달, 8회)" is a two-month, eight-visit price. v0.84.1: found live
@@ -492,6 +501,30 @@ _FEE_LABEL = re.compile(
     re.I,
 )
 
+# A price change tied to a time of night, immediately trailing the base
+# amount it modifies: "8천원 (10시 이후 5천원)". Section 11-19's whole point --
+# a single post naming two real prices under one condition must keep both,
+# never collapse to "8,000원" alone (losing the discount) nor to "미확인"
+# (losing a fee we do in fact know). Scoped tightly to "(<hour>시 이후 <amount>)"
+# immediately after a matched fee so it can never latch onto an unrelated
+# parenthetical elsewhere in the post.
+_CONDITION_RE = re.compile(
+    r"\s*\(\s*(?P<hour>\d{1,2})\s*시\s*이후\s*"
+    r"(?:(?P<cheon>[0-9]+(?:\.[0-9]+)?)\s*천\s*원"
+    r"|(?P<man>[0-9]+(?:\.[0-9]+)?)\s*만\s*원"
+    r"|(?P<amount>[0-9][0-9,]*)\s*원)\s*\)"
+)
+
+# A short word naming which of several genuinely different prices an amount
+# belongs to - "예매 15,000원 / 현매 20,000원" (Section 14) or "회원 10,000원 /
+# 비회원 15,000원" (Section 15). Deliberately a small, real-word list rather
+# than "any word before a price": an unrecognised pairing falls back to the
+# still-safe "가격 옵션 있음" rather than inventing a label.
+_OPTION_WORD_RE = re.compile(
+    r"(사전예매|얼리버드|예매|현매|현장|도어|당일|회원|비회원|멤버|비멤버|학생|일반)"
+    r"\s*[:：]?\s*$"
+)
+
 # What the event itself is called, per event type. A milonga's fee is the one
 # next to the word 밀롱가; a swing social's is the one next to 소셜.
 _EVENT_WORDS = {
@@ -521,18 +554,65 @@ BASIS_EVENT_CONTEXT = "EVENT_CONTEXT"
 
 @dataclass
 class FeeReading:
-    amount: int
+    #: None for a genuine multiple-option fee (Section 14/15) where no single
+    #: number is "the" price - never an arbitrary pick among real options.
+    #: Populated with the base amount for a conditional fee (Section 11-13),
+    #: since a conditional reading does have one real starting price.
+    amount: int | None
     raw: str
     #: LABEL when a fee label named it, EVENT_CONTEXT when the event name did.
     basis: str
     segment: str
+    #: Full rendered text for a reading that means more than a plain number -
+    #: a conditional discount or a set of named options (Section 18). None
+    #: for an ordinary single price, where the caller's own "13,000원"
+    #: formatting from ``amount`` already says everything there is to say.
+    display: str | None = None
 
 
 def _segments(text: str) -> list[str]:
     return [part.strip() for part in _SEGMENT_RE.split(text or "") if part and part.strip()]
 
 
-def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
+def _resolve_condition_clock(hour: int, known_start: str | None,
+                              known_end: str | None) -> str | None:
+    """"22시"-style text for a fee condition's bare hour, anchored to the
+    event's own already-EXPLICIT time range - never a blanket AM/PM guess
+    (Section 2/23). A post that puts "10시 이후" inside its own 20:00-23:30
+    event only makes sense as 22:00: 10:00 would be two hours before the
+    party even starts. Resolved only when exactly one of the two 12-hour
+    readings actually falls inside that window; otherwise the raw hour is
+    kept as written (Section 40's fallback) and nothing is invented.
+    """
+    if not known_start or not known_end:
+        return None
+    try:
+        s_h, s_m = (int(p) for p in known_start.split(":"))
+        e_h, e_m = (int(p) for p in known_end.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    start_min = s_h * 60 + s_m
+    end_min = e_h * 60 + e_m
+    if end_min < start_min:
+        end_min += 1440
+    in_range = [c for c in _candidates(hour, 0) if start_min <= c <= end_min]
+    if len(in_range) != 1:
+        return None
+    h, m = divmod(in_range[0] % 1440, 60)
+    return f"{h:02d}시" if m == 0 else f"{h:02d}:{m:02d}"
+
+
+def _condition_amount(match: re.Match) -> int:
+    if match.group("cheon"):
+        return int(round(float(match.group("cheon")) * 1000))
+    if match.group("man"):
+        return int(round(float(match.group("man")) * 10000))
+    return int(match.group("amount").replace(",", ""))
+
+
+def extract_fee(text: str, event_type: str = "MILONGA", *,
+                 known_start: str | None = None,
+                 known_end: str | None = None) -> FeeReading | None:
     """The fee for *this* event, or nothing.
 
     A post lists several amounts and only some are the price of getting in.
@@ -544,6 +624,13 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
         특강+밀롱가 38000원 / 특강만 30000원     -> skipped, a class package
         주차장 추천(1일 최대 7,000원)            -> skipped, parking
         심야 밀롱가 3,000원 할인                 -> skipped, a discount
+        8천원 (10시 이후 5천원)                 -> 8000, conditional display
+        예매 15,000원 / 현매 20,000원           -> None, multi-option display
+
+    ``known_start``/``known_end`` are the event's own already-EXPLICIT
+    "HH:MM" start/end (Section 23) -- the only anchor a fee condition's bare
+    hour is ever resolved against; omit them and the condition keeps its raw
+    hour text rather than guessing a half of day.
 
     Returns None rather than the first number it can find. An invented fee
     makes a candidate look complete enough to be VERIFIED, which is the one
@@ -551,7 +638,11 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
     """
     event_words = _EVENT_WORDS.get((event_type or "").upper())
     is_class_event = bool(re.search(_EVENT_WORDS["CLASS"], event_type or "", re.I))
-    best: tuple[int, int, FeeReading] | None = None
+    best: tuple[int, int, FeeReading, re.Match, str] | None = None
+    # Every LABEL-tier reading seen, regardless of whether it wins `best` --
+    # the only way to notice a *second*, genuinely different, equally-labelled
+    # price (Section 14/15) instead of silently picking the first one.
+    label_readings: list[tuple[int, int, str, str | None]] = []  # (order, amount, before, opt)
 
     def _tier(before: str) -> tuple[int, str] | None:
         """LABEL if a fee label named it, EVENT_CONTEXT if the event's own
@@ -559,6 +650,11 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
         so a plain 13,000원 and a 만원-notation 1.3만원 are judged the same
         way."""
         if _FEE_LABEL.search(before):
+            return 1, BASIS_LABEL
+        if _OPTION_WORD_RE.search(before):
+            # 예매/현매/회원/비회원/... name what the price is *for* the same
+            # way an explicit fee label does (Section 14/15) - not a lesser
+            # signal, just a different word for the same thing.
             return 1, BASIS_LABEL
         if event_words and re.search(rf"(?:{event_words})[^0-9]{{0,8}}$", before, re.I):
             return 2, BASIS_EVENT_CONTEXT
@@ -574,7 +670,8 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
         )
 
     def _consider(order: int, segment: str, match: re.Match, amount: int,
-                  raw: str, require_won_or_label: bool = False) -> None:
+                  raw: str, require_won_or_label: bool = False,
+                  min_unsuffixed_digits: int = _MIN_UNSUFFIXED_DIGITS) -> None:
         nonlocal best
         if amount <= 0:
             return
@@ -586,14 +683,21 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
         near = before[-_NEAR_BEFORE:] + segment[match.end():match.end() + _NEAR_AFTER]
         if _disqualified(before, near):
             return
-        labelled = bool(_FEE_LABEL.search(before))
+        # An option word ("예매"/"현매"/"회원"/"비회원"/...) names what the
+        # price is for the same way an explicit fee label does (Section
+        # 14/15) - "예매15,000" with no 원 at all is still real money once
+        # something says whose price it is.
+        labelled = bool(_FEE_LABEL.search(before)) or bool(_OPTION_WORD_RE.search(before))
         if require_won_or_label:
-            # No 원 on the number itself: only a *label* makes an unsuffixed
-            # run of digits money at all (never the event's own name - "밀롱가
-            # 2026" is a year, not a fee, however many digits it has), and
-            # even then only once it reads as real money.
+            # No 원 on the number itself: only a *label* makes it money at
+            # all (never the event's own name - "밀롱가 2026" is a year, not
+            # a fee, however many digits it has). A plain digit run also
+            # needs to read as real money (4+ digits: "1.3" in "1.3 정도
+            # 생각하세요" must not pass); "8천" already carries its own
+            # thousands marker, so a single digit is enough once a label is
+            # there (Section 20) - callers pick the right floor.
             digits = re.sub(r"[^0-9]", "", raw)
-            if not labelled or len(digits) < _MIN_UNSUFFIXED_DIGITS:
+            if not labelled or len(digits) < min_unsuffixed_digits:
                 return
         tier = _tier(before)
         if tier is None:
@@ -604,8 +708,14 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
             basis=tier[1],
             segment=re.sub(r"\s+", " ", segment)[:120].strip(),
         )
+        if tier[1] == BASIS_LABEL:
+            label_readings.append((order, amount, before, _option_word(before)))
         if best is None or (tier[0], order) < (best[0], best[1]):
-            best = (tier[0], order, reading)
+            best = (tier[0], order, reading, match, segment)
+
+    def _option_word(before: str) -> str | None:
+        m = _OPTION_WORD_RE.search(before)
+        return m.group(1) if m else None
 
     for order, segment in enumerate(_segments(text)):
         for match in _AMOUNT_RE.finditer(segment):
@@ -618,6 +728,11 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
         for match in _MAN_AMOUNT_RE.finditer(segment):
             amount = int(round(float(match.group("man")) * 10000))
             _consider(order, segment, match, amount, match.group(0))
+        for match in _CHEON_AMOUNT_RE.finditer(segment):
+            amount = int(round(float(match.group("cheon")) * 1000))
+            _consider(order, segment, match, amount, match.group(0),
+                      require_won_or_label=not match.group("won"),
+                      min_unsuffixed_digits=1)
         for match in _FREE_RE.finditer(segment):
             # Free admission is a real amount (0), but _consider() treats
             # amount<=0 as "nothing found" - that guard exists to keep a
@@ -633,5 +748,40 @@ def extract_fee(text: str, event_type: str = "MILONGA") -> FeeReading | None:
                 basis=tier[1], segment=re.sub(r"\s+", " ", segment)[:120].strip(),
             )
             if best is None or (tier[0], order) < (best[0], best[1]):
-                best = (tier[0], order, reading)
-    return best[2] if best else None
+                best = (tier[0], order, reading, match, segment)
+
+    if best is None:
+        return None
+
+    # Multiple genuinely different label-anchored amounts: no single number
+    # is "the" fee, so keep amount empty and say what the choices actually
+    # are rather than arbitrarily picking one (Section 2/14/15).
+    distinct_amounts = sorted({amount for _, amount, _, _ in label_readings})
+    if len(distinct_amounts) >= 2:
+        ordered: list[tuple[str | None, int]] = []
+        seen: set[int] = set()
+        for order, amount, before, opt in sorted(label_readings, key=lambda r: r[0]):
+            if amount in seen:
+                continue
+            seen.add(amount)
+            ordered.append((opt, amount))
+        if all(opt for opt, _ in ordered):
+            display = " · ".join(f"{opt} {amount:,}원" for opt, amount in ordered)
+        else:
+            display = "가격 옵션 있음"
+        _, _, reading0, _, segment0 = best
+        return FeeReading(
+            amount=None, raw=display, basis=BASIS_LABEL,
+            segment=segment0, display=display,
+        )
+
+    _, _, reading, match, segment = best
+    cond = _CONDITION_RE.match(segment, match.end())
+    if cond:
+        hour = int(cond.group("hour"))
+        cond_amount = _condition_amount(cond)
+        resolved = _resolve_condition_clock(hour, known_start, known_end)
+        hour_text = resolved if resolved else f"{hour}시"
+        display = f"{reading.amount:,}원 ({hour_text} 이후 {cond_amount:,}원)"
+        reading = replace(reading, display=display)
+    return reading

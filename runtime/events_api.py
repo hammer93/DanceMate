@@ -309,6 +309,10 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         },
         "fee": row.get("fee"),
         "currency": "KRW" if row.get("fee") is not None else None,
+        # Full text for a fee that means more than one plain number - a
+        # conditional discount or a set of named options (v0.85.9,
+        # Section 18). None for an ordinary single price.
+        "fee_display_text": row.get("fee_display_text"),
         "dj": row.get("dj"),
         "event_type": row.get("event_type"),
         "event_type_label": EVENT_TYPE_LABELS.get(
