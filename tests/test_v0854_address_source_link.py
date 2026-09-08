@@ -44,18 +44,22 @@ def test_line1_region_date_time_type():
     assert "[서울]" in line1 and "19:00" in line1 and "밀롱가" in line1
 
 
-# 2. line 2 still carries event name / DJ / fee - unchanged this release.
+# 2. line 2 carries event name / DJ / fee / address - the address moved
+#    here in v0.85.8 (was line 3 through v0.85.7).
 def test_line2_event_dj_fee():
     line2 = public._timeline_line2(_event(dj="Minsu"))
     assert "더 피스타 밀롱가" in line2 and "DJ Minsu" in line2 and "20,000원" in line2
 
 
-# 3. line 3 carries address, source, and confirmation time together, in one row.
+# 3. address lives on line 2, source+confirmation on line 3 (v0.85.8 split).
 def test_line3_address_source_time_one_row():
     rendered = public._event_item(_event(), now=NOW)
     assert rendered.count('<div class="tl-3">') == 1
+    line2 = public._timeline_line2(_event())
     line3 = public._timeline_line3(_event(), now=NOW)
-    assert "마포구" in line3 and "출처:" in line3 and "2시간 전" in line3
+    assert "마포구" in line2
+    assert "출처:" in line3 and "2시간 전" in line3
+    assert "마포구" not in line3
 
 
 # 4. never a fourth structural line, whatever content line 3 carries.
@@ -64,21 +68,27 @@ def test_max_three_lines_with_address():
     assert rendered.count('<div class="tl-') == 3
 
 
-# 5. a long address is ellipsized rather than shown in full.
+# 5. a long address is ellipsized rather than shown in full - now on line 2.
 def test_address_ellipsis():
-    line3 = public._timeline_line3(_event(), now=NOW)
-    assert "…" in line3
-    assert "B1" not in line3
+    line2 = public._timeline_line2(_event())
+    assert "…" in line2
+    assert "B1" not in line2
 
 
-# 6. a missing address is an honest "주소 미확인", never blank or guessed.
+# 6. a missing address is simply omitted from line 2 (v0.85.8, Section
+#    25-26) - a name and a fee are always the point of the line, an
+#    unknown address is not worth its own segment.
 def test_missing_address_is_honest():
     event = _event(venue={"name": "더 피스타", "status": "RESOLVED", "address": None})
-    line3 = public._timeline_line3(event, now=NOW)
-    assert "주소 미확인" in line3
+    line2 = public._timeline_line2(event)
+    assert "더 피스타 밀롱가" in line2
+    assert "주소 미확인" not in line2
+    assert "tl-2-addr" not in line2
 
 
-# 7. a long source name still renders in full (no name truncation).
+# 7. a long source name still renders in full (no name truncation) when it
+#    fits - CSS ellipsis only engages under real width pressure, which a
+#    pure-Python string check cannot see (Section 19, 47).
 def test_long_source_name_still_renders():
     long_name = "Solo Tango 화요정모 공지 - 매주 화요일 저녁 밀롱가 상세 안내"
     event = _event(source_link={"url": "https://cafe.daum.net/x/1", "label": long_name})
@@ -86,8 +96,8 @@ def test_long_source_name_still_renders():
     assert long_name in line3
 
 
-# 8. a long address AND a long source name together still both survive on
-#    the one line - the address is what gets shortened, not the source name.
+# 8. a long address on line 2 and a long source name on line 3 both survive
+#    independently now that they are on separate lines (v0.85.8).
 def test_long_address_and_source_both_visible():
     long_name = "Solo Tango 화요정모 공지"
     event = _event(
@@ -95,8 +105,9 @@ def test_long_address_and_source_both_visible():
                "address": "서울특별시 서초구 반포대로30길 82 우서빌딩 지하 1층"},
         source_link={"url": "https://cafe.daum.net/x/1", "label": long_name},
     )
+    line2 = public._timeline_line2(event)
     line3 = public._timeline_line3(event, now=NOW)
-    assert "서초구 반포대로30길 82" in line3
+    assert "서초구 반포대로30길 82" in line2
     assert long_name in line3
 
 
@@ -182,15 +193,15 @@ def test_primary_representative_url_used():
 def test_invalid_url_safely_omitted():
     event = _event(source_link={"url": "not a url", "label": "테스트"})
     line3 = public._timeline_line3(event, now=NOW)
-    assert "<a href=" not in line3
-    assert "출처: 테스트" in line3
+    assert 'href="not a url"' not in line3
+    assert "출처:" in line3 and "테스트" in line3
 
 
 # 18b. with neither a valid URL nor a label, the source is an honest unknown.
 def test_invalid_url_and_no_label_is_honest_unknown():
     event = _event(source_link={"url": "not a url", "label": None})
     line3 = public._timeline_line3(event, now=NOW)
-    assert "<a href=" not in line3
+    assert 'href="not a url"' not in line3
     assert "출처 미확인" in line3
 
 
@@ -227,18 +238,20 @@ def test_no_json_endpoint_visible_in_render():
 # Address (6)
 # =============================================================================
 
-# 21. a resolved venue master address is rendered, compacted.
+# 21. a resolved venue master address is rendered, compacted - on line 2
+#     since v0.85.8.
 def test_resolved_venue_address_rendered():
-    line3 = public._timeline_line3(_event(), now=NOW)
-    assert "마포구 월드컵북로6길 49" in line3
+    line2 = public._timeline_line2(_event())
+    assert "마포구 월드컵북로6길 49" in line2
 
 
-# 22. a venue's NAME is never shown in place of a real address.
+# 22. a venue's NAME is never shown in place of a real address - and with
+#     no real address, line 2 shows no address segment at all (v0.85.8).
 def test_venue_name_never_shown_as_address():
     event = _event(venue={"name": "Tango O Nada", "status": "RESOLVED", "address": None})
-    line3 = public._timeline_line3(event, now=NOW)
-    assert "Tango O Nada" not in line3
-    assert "주소 미확인" in line3
+    line2 = public._timeline_line2(event)
+    assert "Tango O Nada" not in line2
+    assert "tl-2-addr" not in line2
 
 
 # 23. no address at all -> honest unknown, not a blank line-3 segment.
@@ -261,7 +274,7 @@ def test_region_prefix_trimmed():
 def test_original_address_unchanged_by_formatter():
     raw = "서울시 마포구 양화로 12길 24 선진빌딩 B1"
     event = _event(venue={"name": "Tango Andante", "status": "RESOLVED", "address": raw})
-    public._timeline_line3(event, now=NOW)
+    public._timeline_line2(event)
     assert event["venue"]["address"] == raw
 
 

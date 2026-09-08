@@ -359,10 +359,12 @@ def test_naver_map_uses_full_address_not_compact():
         "source_link": {"url": "https://cafe.daum.net/x/1", "label": "테스트"},
         "last_checked": _NOW.isoformat(),
     }
+    # The compact display address (line 2, v0.85.8) never includes 지하1층
+    # (Section 6), but the map query URL (line 3) must still carry it
+    # (Section 34-35).
+    line2 = public._timeline_line2(event)
     line3 = public._timeline_line3(event, now=_NOW)
-    # The compact display address never includes 지하1층 (Section 6), but the
-    # map query URL must still carry it (Section 34-35).
-    assert "마포구 동교로 193…" in line3
+    assert "마포구 동교로 193…" in line2
     import urllib.parse
     assert "지하1층" in urllib.parse.unquote(line3)
 
@@ -396,19 +398,19 @@ def _event_with_map(**overrides):
 # Timeline (9)
 # =============================================================================
 
-# 33. source-confirm-map is one semantic (nowrap) group in the markup
+# 33. source-confirm-map is line 3's entire content, one nowrap group
+#     (v0.85.8: line 3 no longer carries an address at all).
 def test_timeline_source_confirm_map_one_group():
     line3 = public._timeline_line3(_event_with_map(), now=_NOW)
-    assert '<span class="tl-meta">' in line3
-    # everything after the address lives inside that single span
-    meta = line3.split('<span class="tl-meta">', 1)[1]
-    assert "출처:" in meta and "확인" in meta and "지도보기" in meta
+    assert line3.count('<div class="tl-3">') == 1
+    assert "출처:" in line3 and "확인" in line3 and "지도보기" in line3
+    assert "마포구" not in line3
 
 
 # 34. source clickable
 def test_timeline_source_clickable():
     line3 = public._timeline_line3(_event_with_map(), now=_NOW)
-    assert '<a href="https://cafe.daum.net/latindance/73b/68727"' in line3
+    assert 'href="https://cafe.daum.net/latindance/73b/68727"' in line3
 
 
 # 35. confirmation visible
@@ -424,18 +426,20 @@ def test_timeline_map_link_visible_with_address():
     assert "map.naver.com" in line3
 
 
-# 37. map omitted without an address
+# 37. map omitted without an address; line 2 shows no address segment
+#     either (v0.85.8's "omit, don't say 미확인" design, Section 25-26).
 def test_timeline_map_omitted_without_address():
     event = _event_with_map(venue={"address": None, "map_url": None})
+    line2 = public._timeline_line2(event)
     line3 = public._timeline_line3(event, now=_NOW)
     assert "지도보기" not in line3
-    assert "주소 미확인" in line3
+    assert "tl-2-addr" not in line2
 
 
-# 38. address ellipsis still applied (v0.85.4 regression)
+# 38. address ellipsis still applied (v0.85.4 regression) - now on line 2.
 def test_timeline_address_ellipsis_regression():
-    line3 = public._timeline_line3(_event_with_map(), now=_NOW)
-    assert "마포구 동교로 193…" in line3
+    line2 = public._timeline_line2(_event_with_map())
+    assert "마포구 동교로 193…" in line2
 
 
 # 39. DJ duplicate regression (v0.85.3)

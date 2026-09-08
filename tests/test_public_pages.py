@@ -128,7 +128,7 @@ def test_the_source_link_is_never_nested_inside_the_card_link():
         "source_link": {"url": "https://example.com/post/1", "label": "Example"},
     })
     card_link_end = rendered.index("</a>")
-    source_link_start = rendered.index('<a href="https://example.com')
+    source_link_start = rendered.index('href="https://example.com')
     assert card_link_end < source_link_start
 
 
