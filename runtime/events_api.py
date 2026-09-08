@@ -306,6 +306,9 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
             "address": row.get("venue_address"),
             "id": row.get("venue_id"),
             "map_url": build_naver_map_search_url(row.get("venue_address")),
+            # The Venue Master's own official aliases (v0.86.2) - additive,
+            # existing consumers reading only the fields above see no change.
+            "aliases": list(row.get("venue_aliases") or []),
         },
         "fee": row.get("fee"),
         "currency": "KRW" if row.get("fee") is not None else None,
@@ -359,6 +362,10 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
 
 _SELECT = (
     "SELECT e.*, v.name AS venue_name, v.address AS venue_address, "
+    # v0.86.2: the venue's own official aliases, one row's worth per event
+    # in the same query - never a per-event follow-up lookup (Section 31).
+    # Mirrors master_data.list_venues()'s identical LATERAL shape.
+    "       COALESCE(va.aliases, ARRAY[]::text[]) AS venue_aliases, "
     "       g.code AS genre_code, g.name AS genre_name, "
     "       r.name AS region_name, r.code AS region_code, "
     # When the post behind this event was last collected. A dancer deciding
@@ -372,6 +379,9 @@ _SELECT = (
     "       src.source_role AS source_source_role "
     "FROM events e "
     "LEFT JOIN venues v ON v.venue_id = e.venue_id "
+    "LEFT JOIN LATERAL ("
+    "  SELECT array_agg(alias) AS aliases FROM venue_aliases WHERE venue_id = v.venue_id"
+    ") va ON TRUE "
     "LEFT JOIN genres g ON g.genre_id = e.genre_id "
     "LEFT JOIN regions r ON r.region_id = e.region_id "
     "LEFT JOIN source_items i ON i.source_item_id = e.source_item_id "

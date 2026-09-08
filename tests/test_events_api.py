@@ -84,7 +84,7 @@ def test_an_unresolved_venue_says_so():
     })
     assert presented["venue"] == {
         "name": "미등록 스튜디오", "status": "UNRESOLVED", "address": None, "id": None,
-        "map_url": None,
+        "map_url": None, "aliases": [],
     }
     assert presented["fee"] == 13000
     assert presented["currency"] == "KRW"
