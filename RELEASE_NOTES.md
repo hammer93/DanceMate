@@ -1,5 +1,95 @@
 # DanceMate Release Notes
 
+## v0.86.7 Admin Venue Filters + Genre/Region Management + Social Event Format
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.7
+- Information Engine: 0.85 (unchanged - no classifier change)
+
+### What changed
+
+**Venue filters.** `/admin/venues` gets a region selector (exact
+`venues.region_id` match, never a fuzzy region-name comparison) and a
+multi-genre checkbox filter - OR across the genres chosen, AND with
+region. Both live in the query string
+(`?region=<code>&genres=<code>,<code>`), so a reload or a shared link
+keeps the same view; a result count and a reset link are shown. The
+AND/OR toggle UI some future release might want is deliberately out of
+scope - OR is the only behaviour this release ships.
+
+**Safe genre/region delete.** Every foreign key to `genres`/`regions`
+across the schema (`organizers`, `sources`, `events`, `venue_genres`
+for genres; `venues`, `organizers`, `sources`, `events` for regions)
+was confirmed to carry no `ON DELETE CASCADE` - Postgres already
+refuses a referenced delete on its own. `master_edit.delete_genre()`/
+`delete_region()` add a friendly reference-count check in front of
+that, in the same "refuse with a real count" shape `remove_alias()`
+already established - no unlink/cascade escape hatch exists for either
+one. TANGO/SALSA/SWING are protected unconditionally, reference count
+or not.
+
+**Social Event Format.** Investigated first, per this release's own
+instruction not to duplicate an existing field: `events.event_type`
+already carries almost exactly this vocabulary (MILONGA/PRACTICA/
+SOCIAL/SOCIAL_WITH_CLASS/PARTY/CLASS/OTHER), already labelled in
+Korean via `EVENT_TYPE_LABELS`, already surfaced on the public Timeline
+and the Admin Source Audit's Extracted table. Fixed PRACTICA's label
+(쁘락띠까 → 쁘렉, the word the scene actually uses) and added GENERAL
+(제너럴) to the vocabulary - not yet emitted by the engine anywhere
+(confirmed: no classifier code path assigns it), since this release is
+taxonomy/UI only, no classifier change. `events_api.format_of()` is a
+pure, read-only mapping down to the five Admin chip categories
+(MILONGA/PRACTICA/GENERAL/SOCIAL/UNKNOWN) - no new write action was
+added, since no genuinely repeated hybrid-format case ("쁘렉+소셜") was
+found to justify one. Admin/Public parity holds by construction: one
+dict feeds both the Timeline and the Admin chips.
+
+### A real defect caught by this release's own staging run, before merge
+
+`master_edit.delete_genre()`/`delete_region()` record their audit
+entry through the existing `master_data_actions` table, like every
+other master-data edit - but that table's `action` CHECK constraint had
+never been extended for a genre/region actually being deleted (only
+edited/enabled/disabled/aliased/imported/genre-tagged). Every delete
+call raised a `CheckViolation` instead of the intended `EditError`.
+Migration 031 extends the same constraint 018/020/028 already extended
+for their own new action values. Verified against a freshly recreated
+staging database after the fix: clean.
+
+### Production audit (real data)
+
+- 35 real venues: Seoul-only filter → 14 (region_id match confirmed on
+  every row), Tango-only → 5, Seoul AND Tango → 5.
+- Core genre protection verified against real usage: TANGO (5 venues,
+  10 sources, 289 events), SALSA (9 sources, 17 events), SWING (9
+  sources, 6 events) - all three correctly blocked regardless of these
+  real counts.
+- Seoul region delete attempt correctly blocked with real counts
+  (14 venues, 9 sources, 189 events) - nothing was actually deleted at
+  any point against production; only the blocked path was exercised.
+- Real production `event_type` distribution today: MILONGA (277),
+  SOCIAL_WITH_CLASS (46), SOCIAL (18) - no PRACTICA, GENERAL, or PARTY
+  events exist live yet, so the corrected/new labels aren't visible on
+  any real event today. Reported honestly rather than staged to match;
+  the vocabulary is ready for whenever one appears.
+
+### Tests
+
+30 new tests in `tests/test_v0867_venue_filters_event_format.py`
+(venue filter OR/AND semantics, genre/region delete blocking and core
+protection, no-cascade verification, Event Format label mapping,
+Admin/Public parity, regressions) plus one migration-discovery test
+extended. Full suite in a freshly recreated isolated staging container
+(after the migration fix): **1802 passed, 0 failed, 18 skipped.**
+
+### Private Alpha Observation
+
+Continues unchanged - the standing recurring observation job was never
+touched by this release.
+
 ## v0.86.6 Open-ended Event Time Display
 
 Status: PASS, 2026-09-09.
