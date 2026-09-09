@@ -1,5 +1,140 @@
 # DanceMate Release Notes
 
+## v0.86.4 Admin Source Audit & Public Display Parity
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.4
+- Information Engine: 0.85 (unchanged - no extraction algorithm touched)
+
+### What changed
+
+Two real Timeline defects, fixed together because they shared one root
+cause: the old status/time vocabulary was baked into free text, so any
+new certainty signal had nowhere to live except more text.
+
+1. A real, shown clock value (`20:30~23:30`) could still carry its own
+   contradicting `시간 미확인` tag right next to it, whenever the post's
+   time was am/pm-ambiguous. Fixed on both the Timeline and the detail
+   page: the value stands, unflagged; a genuinely absent time (no
+   reading at all) still shows the honest, non-contradictory `시간
+   미확인` placeholder it always did.
+2. The `확인 필요` text badge is retired outright, replaced by a small
+   "?" right after the event type (`밀롱가 ?`), with a tooltip. Its
+   visibility reuses the engine's existing status vocabulary (POSSIBLE/
+   EXPECTED/CONFLICT/UNKNOWN show it by default; VERIFIED is fixed off,
+   never admin-togglable; CANCELLED/COMPLETED defer to their own
+   existing UI) rather than inventing a new confidence score - none
+   existed anywhere in this codebase to reuse instead. A new Admin
+   Settings page (`/admin/settings`) lets an operator turn the whole
+   thing off or narrow which statuses show it, backed by a new,
+   deliberately small `timeline_confirmation_settings` table (migration
+   030) - no generic admin-settings mechanism existed to reuse.
+
+The Admin Source list is reworked from a plain CRUD table into an audit
+workbench: a genre filter (ALL/TANGO/SALSA/SWING/장르 미확인 - a
+source's own `genre_id` is a single nullable FK, so "multi-genre
+bucket" does not apply to today's data model), a visible source tier
+badge (PRIMARY/PROMOTION_BOARD/DIRECTORY), a wider desktop layout, and
+a Collector-vs-Public URL column so an operator can tell a source's own
+collection endpoint apart from the real page a reader would open. A
+new per-item Item Audit Detail page
+(`/admin/sources/{id}/items/{item_id}`) compares Original -> Acquired
+-> Extracted -> Public Display for one post side by side - the Public
+Display column calls `runtime.public`'s own `_timeline_line1/2/3`
+directly, never a second formatter that could quietly drift from what a
+real reader sees.
+
+### A real defect caught by this release's own production audit
+
+`_source_url_cell()`'s Public URL resolution reuses
+`events_api.resolve_public_source_url()` - the same function the live
+Timeline already uses per-item - but a SOURCE's own top-level `url` is
+the collector's *list* endpoint, not a specific post. Tango Calendar
+Korea's is `https://tangocalendar.kr/api/events` (no per-event id), which
+matched neither of the function's existing per-item patterns and fell
+through unchanged: a JSON endpoint would have been shown as "원문보기"
+on the new Source Audit Workbench, exactly what Section 82-92 forbids.
+Caught against real production data before merge, fixed with a generic
+`/api/...` -> site-origin fallback (`https://tangocalendar.kr/`),
+consistent with the function's existing "no per-event page exists, fall
+back to the site itself" reasoning for TangoNOW's Firestore case.
+Re-verified against all four DIRECTORY/AGGREGATOR sources' real stored
+URLs afterward.
+
+### Explicit non-goal: event 277498 stays unfixed
+
+Event 277498 (a Daum Cafe post naming several distinct time slots
+across one newsletter) is this release's own worked acceptance example
+for the Item Audit Detail, not a bug to fix here. Original: the real
+party runs 21:00-02:00(+1); a workshop sub-segment inside the same post
+runs 20:30-21:20. Extracted and Public both read 20:30-21:20 - the
+wrong sub-segment. The Item Audit Detail makes this immediately visible
+side by side (exactly its purpose); the parser itself is untouched, per
+this release's own scope decision. Confirmed still present, identically
+shaped, during the Private Alpha Field Observation's Day 2 daily
+check-in on the same day.
+
+### Production audit (real data, before and after the fix above)
+
+- 100 real upcoming events scanned for the time-text contradiction:
+  0 found, in either direction. `확인 필요` text: 0 occurrences.
+- All 312 currently-listed events are `POSSIBLE`; 0 are `VERIFIED`
+  anywhere in the live database. The "?" indicator therefore shows on
+  effectively every event today - an honest reflection of the engine's
+  evidence gate never having promoted anything yet, not a defect
+  introduced by this release. Flagged as this release's own Next
+  Recommendation.
+- Genre filter, live: ALL 20 / TANGO 10 / SALSA 3 / SWING 2 / 장르
+  미확인 5 - real Salsa and Swing sources exist and are correctly
+  bucketed; the 5-source UNKNOWN bucket matches the sources that
+  genuinely carry no `genre_id`.
+- Named-source audit summaries (Items / Events / gaps), real data:
+  SRC-D-003 (Solo Tango, PRIMARY) 49 items / 28 events; SRC-W-002
+  (TangoNOW, DIRECTORY) 78/38; SRC-W-003 (Tango Calendar Korea,
+  DIRECTORY) 52/16; SRC-W-004 (DanceInfo, DIRECTORY) 20/2; SRC-W-005
+  (Miltang, DIRECTORY) 172/159; SRC-W-006 (TangoClass, PRIMARY) 10/2.
+  Miltang's fee/DJ gaps (159/159 and 154/159) are the largest in the
+  dataset - a real completeness gap, not a rendering defect.
+- 20 real events compared Admin-preview-vs-live-Timeline field by
+  field: 0 differences (both call the identical `runtime.public`
+  functions - this confirms the parity claim structurally, not by
+  coincidence).
+- Both today's real duplicate-fold groups (38596, 188132) were
+  DIRECTORY-vs-DIRECTORY ties; no PRIMARY-vs-DIRECTORY case existed
+  today to further stress representative selection.
+
+### Tests
+
+50 new tests in `tests/test_v0864_admin_source_audit_public_parity.py`
+(Timeline Status, Admin/Public Parity, Source Audit Workbench/Item
+Detail, Regression), plus 4 pre-existing tests updated because they
+pinned the exact old behaviour this release deliberately changed (the
+old contradicting time flag; the old `확인 필요` text badge) and one
+migration-discovery test extended for the new migration file. Full
+suite in the isolated staging container: **1710 passed, 0 failed, 17
+skipped.**
+
+An unrelated finding along the way: re-running the full suite twice
+against one persistent staging Postgres (without recreating it between
+runs) produced 4 unrelated failures in `tests/test_image_poster_ocr.py`
+from committed rows left behind by tests that open their own autocommit
+connections - confirmed as test-infrastructure cross-run pollution, not
+a regression, by re-running once against a freshly recreated database.
+Worth flagging for whoever wires this into repeatable CI.
+
+### Private Alpha Observation
+
+Continues unchanged - the standing recurring observation job was never
+touched, deleted, or reset by this release. Its own Day 2 check-in (run
+independently, same day) re-confirmed the 277498 pattern and found one
+new, similarly-shaped case (event 140726, a different source and
+genre) plus one new, distinct defect (a DJ named in the post's own text
+but not extracted) - both logged for the observation's own separate
+report, not fixed here.
+
 ## v0.86.3 Venue After Region
 
 Status: PASS, 2026-09-09.
