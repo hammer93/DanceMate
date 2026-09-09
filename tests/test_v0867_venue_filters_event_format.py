@@ -402,12 +402,16 @@ def test_admin_format_chips_use_the_same_label_dict_as_public():
 
 def test_no_duplicate_event_format_column_or_table():
     """Section 27-28: Event Format is a derived view over events.event_type,
-    never a second stored column - confirmed no new migration exists for
-    this release (UI/taxonomy only, per Section 42-44's own scope limit)."""
-    import glob
-
-    migrations = sorted(glob.glob("migrations/runtime/0*.sql"))
-    assert migrations[-1].endswith("030_timeline_confirmation_settings.sql")
+    never a second stored column - this release's own migration (031) only
+    extends master_data_actions' action CHECK constraint for the new
+    genre/region DELETE audit entry, it does not touch events or add any
+    new event-format table/column."""
+    migration_031 = open(
+        "migrations/runtime/031_master_data_delete_action.sql", encoding="utf-8"
+    ).read()
+    assert "ALTER TABLE events" not in migration_031
+    assert "CREATE TABLE" not in migration_031
+    assert "master_data_actions" in migration_031
 
 
 # === Regression (Section 52) ================================================
