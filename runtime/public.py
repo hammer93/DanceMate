@@ -23,7 +23,10 @@ from urllib.parse import quote
 from fastapi import APIRouter, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from . import alpha_metrics, db, events_api, feedback, master_data, venue_resolution
+from . import (
+    alpha_metrics, db, events_api, feedback, master_data, timeline_settings,
+    venue_resolution,
+)
 from .config import Settings
 
 router = APIRouter(tags=["events"])
@@ -171,6 +174,10 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .status.warn { border-color:#c0392b; color:#c0392b; font-weight:600; }
 @media (prefers-color-scheme: dark) { .status.warn { border-color:#ff6b5e; color:#ff6b5e; } }
 .status + .status { margin-left:.3rem; }
+/* v0.86.4: the "?" confirmation indicator - small, warning-token colour
+   only, deliberately not a bordered/background badge like .status. */
+.confirm-flag { color:#c0392b; cursor:help; margin-left:.15em; }
+@media (prefers-color-scheme: dark) { .confirm-flag { color:#ff6b5e; } }
 .checked { color:var(--muted); font-size:.75rem; }
 .cancelled { text-decoration: line-through; }
 /* A card's <a> is the whole event; the source link sits outside it as a
@@ -671,11 +678,12 @@ def _when_line(event: dict[str, Any]) -> str:
         clock = f"{start}–{end}" + ("<sup>+1</sup>" if event.get("ends_next_day") else "")
     elif start:
         clock = start
-    if start and event.get("time_confirmed") is False:
-        # The post wrote a bare clock. 5시30 is very likely half past five in
-        # the evening, but the post does not say so and neither will we -- the
-        # reading stands, flagged, with the original a click away.
-        clock += ' <span class="tag">시간 미확인</span>'
+    # v0.86.4 (Section 4-6): a bare, am/pm-ambiguous clock (5시30 is very
+    # likely half past five in the evening, but the post does not say so)
+    # used to append its own "시간 미확인" tag right next to the real value
+    # it was flagging - self-contradictory the moment a reader is shown a
+    # time and told in the same breath that it is unknown. The reading
+    # stands, unflagged here; the original is a click away regardless.
     if not start:
         # Not "TBD": we simply do not know, and the post is linked so a reader
         # can check for themselves.
@@ -894,8 +902,16 @@ def _timeline_clock(event: dict[str, Any]) -> str:
     v0.85.9 (Section 8-10): the Timeline used to show only `start_time`,
     dropping an end time the extractor already had (the detail page's own
     `_when_line()` has shown it for longer, with an en dash - `~` here
-    instead, matching this section's own exact target render). A time the
-    post itself left ambiguous keeps its existing 미확인 flag regardless.
+    instead, matching this section's own exact target render).
+
+    v0.86.4 (Section 4-6): a time the post left ambiguous (no am/pm marker)
+    used to append its own "시간 미확인" tag right after a real clock value -
+    "20:30~23:30 시간 미확인", self-contradictory the moment a reader has
+    just been shown the time and is then told it is unknown. That ambiguity
+    is real and still worth surfacing, but never as text that contradicts
+    the value sitting right next to it - it now folds into the same "?"
+    confirmation indicator every other kind of uncertainty already uses
+    (`_needs_confirmation()`), not a second, competing signal here.
     """
     start = event.get("start_time")
     if not start:
@@ -904,10 +920,6 @@ def _timeline_clock(event: dict[str, Any]) -> str:
     clock = f"{start}~{end}" if end else start
     if event.get("ends_next_day"):
         clock += "<sup>+1</sup>"
-    if event.get("time_confirmed") is False:
-        # The post wrote a bare clock with no am/pm marker either way - the
-        # reading stands, flagged, exactly as the detail page already does.
-        clock += ' <span class="tag">시간 미확인</span>'
     return clock
 
 
@@ -927,6 +939,13 @@ def _timeline_badges(event: dict[str, Any], *, now: "datetime | None" = None) ->
     date reads COMPLETED regardless of what the engine's own status says
     (_is_past's own docstring explains why); CONFLICT gets its warn tone
     unchanged from the previous card design.
+
+    v0.86.4 (Section 7-11): the "확인 필요" text badge (POSSIBLE/UNKNOWN, and
+    events_api.present()'s own blank-status fallback - all three share that
+    exact label) is gone from here outright, replaced by the "?" indicator
+    right after the event type (`_needs_confirmation()`/`_timeline_line1()`).
+    VERIFIED's "확인됨" and CONFLICT's "정보 충돌" are unrelated status
+    badges, not the removed phrase, and are unchanged.
     """
     if _is_past(event, now=now):
         return f' <span class="status">{E(events_api.STATUS_LABELS[events_api.COMPLETED])}</span>'
@@ -934,12 +953,49 @@ def _timeline_badges(event: dict[str, Any], *, now: "datetime | None" = None) ->
         return ' <span class="status ok">진행 중</span>'
     status = event.get("status")
     label = event.get("status_label")
-    if not label:
+    if not label or label == events_api.STATUS_LABELS["POSSIBLE"]:
         return ""
     tone = " ok" if status == "VERIFIED" else " warn" if status == "CONFLICT" else ""
     title = (f' title="{E(events_api.VERIFIED_EXPLANATION)}"'
              if status == "VERIFIED" else "")
     return f'<span class="status{tone}"{title}>{E(label)}</span>'
+
+
+# v0.86.4 (Section 16-21, 72-75): the "?" confirmation indicator reuses the
+# engine's own existing status vocabulary instead of inventing a confidence
+# score - no such numeric signal exists anywhere in the codebase (confirmed:
+# runtime.candidates.STATUSES/events_api.STATUS_LABELS is the only per-event
+# certainty axis that exists today). VERIFIED is fixed off, not a column in
+# the settings table at all (Section 73: never admin-togglable, so there is
+# no way to configure it back on). CANCELLED/COMPLETED are excluded here too
+# - existing UI (the cancellation banner, the "종료" badge) already owns
+# that signal and takes priority over this one.
+DEFAULT_CONFIRMATION_STATUSES = frozenset({"POSSIBLE", "EXPECTED", "CONFLICT", "UNKNOWN"})
+
+
+def _needs_confirmation(event: dict[str, Any], *, now: "datetime | None" = None,
+                        confirmation_settings: dict[str, Any] | None = None) -> bool:
+    """Whether line 1 shows the small "?" after the event type.
+
+    `confirmation_settings` is the admin-configured `{"enabled": bool,
+    "statuses": set[str]}` from `runtime.timeline_settings.get_settings()`,
+    fetched once per request - never a per-event query (Section 107-112: no
+    N+1). Missing/None reads as "feature on, engine defaults" so existing
+    callers that have not been updated to pass it (if any) keep today's
+    behaviour rather than silently going dark.
+    """
+    if event.get("cancelled") or _is_past(event, now=now):
+        return False
+    status = (event.get("status") or "").upper()
+    if status == "VERIFIED":
+        return False
+    settings = confirmation_settings or {}
+    if not settings.get("enabled", True):
+        return False
+    statuses = settings.get("statuses")
+    if statuses is None:
+        statuses = DEFAULT_CONFIRMATION_STATUSES
+    return status in statuses
 
 
 def _timeline_line1_venue_name(event: dict[str, Any]) -> str | None:
@@ -953,7 +1009,11 @@ def _timeline_line1_venue_name(event: dict[str, Any]) -> str | None:
     return (venue.get("name") or "").strip() or None
 
 
-def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+_CONFIRM_TITLE = "원문 확인이 필요한 행사입니다."
+
+
+def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None,
+                    confirmation_settings: dict[str, Any] | None = None) -> str:
     """[지역] Venue · 날짜 시간 종류 - v0.86.3 moved the resolved venue name
     here from line 2 (Section 1-7; was 행사명 앞, v0.86.2's own Section
     1-7). No venue at all keeps the exact pre-v0.86.3 form, "[지역] 날짜
@@ -962,16 +1022,22 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> 
     Plain inline flow, not flex: an early version of this made the whole
     line a single-line flex row with `overflow:hidden`, which broke on
     real production data the moment the *non-venue* tail alone (date +
-    time + "시간 미확인" + type + the "확인 필요" status badge, all
-    `flex-shrink:0`) was already too wide for a narrow phone viewport -
-    Mi Vida tango studio and 여러 real events measured ~430px of
-    never-shrinking content against a ~310-380px budget, which
-    `overflow:hidden` would have silently clipped rather than wrapped.
-    This instead mirrors line 2's own already-proven `.tl-2-addr` pattern
-    (v0.85.8): only the venue name itself gets a bounded `max-width` +
-    `text-overflow:ellipsis` (Section 14-15, 20); everything else stays
-    normal inline text that wraps onto another visual line exactly as it
-    always safely could, never overflowing the page horizontally.
+    time + type + the status badge, all `flex-shrink:0`) was already too
+    wide for a narrow phone viewport - Mi Vida tango studio and 여러 real
+    events measured ~430px of never-shrinking content against a
+    ~310-380px budget, which `overflow:hidden` would have silently
+    clipped rather than wrapped. This instead mirrors line 2's own
+    already-proven `.tl-2-addr` pattern (v0.85.8): only the venue name
+    itself gets a bounded `max-width` + `text-overflow:ellipsis`
+    (Section 14-15, 20); everything else stays normal inline text that
+    wraps onto another visual line exactly as it always safely could,
+    never overflowing the page horizontally.
+
+    v0.86.4 (Section 7-15, 76-81): a small "?" sits immediately after the
+    event type when `_needs_confirmation()` says so - never its own text
+    badge, never changing the line's width in any meaningful way. A
+    tooltip (`title`, also `aria-label` for anyone who cannot hover)
+    explains itself; nothing else about the line changes.
     """
     day = event.get("date")
     date_label = _human_date(day, now=now) if day else ""
@@ -982,8 +1048,13 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None) -> 
         escaped = E(venue_name)
         venue_html = (f'<span class="tl-1-venue" title="{escaped}" '
                       f'aria-label="{escaped}">{escaped}</span> ·')
+    type_html = E(type_label) if type_label else ""
+    if type_html and _needs_confirmation(event, now=now,
+                                         confirmation_settings=confirmation_settings):
+        type_html += (f' <span class="confirm-flag" title="{_CONFIRM_TITLE}" '
+                      f'aria-label="{_CONFIRM_TITLE}">?</span>')
     parts = [_timeline_region(event), venue_html, E(date_label), _timeline_clock(event),
-             E(type_label) if type_label else ""]
+             type_html]
     return (f'<div class="tl-1">' + " ".join(p for p in parts if p)
             + _timeline_badges(event, now=now) + "</div>")
 
@@ -1220,10 +1291,11 @@ def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> 
     return f'<div class="tl-3">{body}</div>'
 
 
-def _event_item(event: dict[str, Any], *, now: "datetime | None" = None) -> str:
+def _event_item(event: dict[str, Any], *, now: "datetime | None" = None,
+                confirmation_settings: dict[str, Any] | None = None) -> str:
     return (
         f'<li class="event"><a href="/events/{event["id"]}">'
-        f'{_timeline_line1(event, now=now)}'
+        f'{_timeline_line1(event, now=now, confirmation_settings=confirmation_settings)}'
         f'{_timeline_line2(event)}'
         "</a>"
         f"{_timeline_line3(event, now=now)}"
@@ -1259,6 +1331,7 @@ def home(
             monday, sunday = events_api.week_window(0)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
+            confirmation = timeline_settings.get_settings(con)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
 
@@ -1277,10 +1350,11 @@ def home(
     narrowed = _is_narrowed(options, selected) or bool(region)
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
-            _event_item(e) for e in result["events"]
+            _event_item(e, confirmation_settings=confirmation) for e in result["events"]
         ) + "</ul>"
     else:
-        nearest = "".join(_event_item(e) for e in upcoming["events"])
+        nearest = "".join(
+            _event_item(e, confirmation_settings=confirmation) for e in upcoming["events"])
         # The nearest events are still inside the reader's filter -- the search
         # above carries it -- so this widens the dates, never the conditions.
         if narrowed:
@@ -1398,6 +1472,7 @@ def events_page(
             monday, sunday = events_api.week_window(week)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
+            confirmation = timeline_settings.get_settings(con)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except db.DatabaseUnavailable:
@@ -1414,7 +1489,7 @@ def events_page(
     actions = _next_actions(when=when, region=region, genre_query=genre_query)
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
-            _event_item(e) for e in result["events"]
+            _event_item(e, confirmation_settings=confirmation) for e in result["events"]
         ) + "</ul>"
     elif _is_narrowed(options, selected) or region:
         listing = f'<p class="empty">{EMPTY_FILTERED}</p>' + (actions if date is None else "")

@@ -423,6 +423,23 @@ def count_listing(
         return cur.fetchone()[0]
 
 
+def bulk_extracted_text(con, source_item_ids: list[int]) -> dict[int, str | None]:
+    """Batch form of reading `source_item_content.extracted_text` - one
+    query for many items (v0.86.4 Source Audit Workbench, Section 107-112:
+    no N+1 when a source's item list computes review hints for up to 50
+    rows at once)."""
+    ids = [i for i in source_item_ids if i is not None]
+    if not ids:
+        return {}
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT source_item_id, extracted_text FROM source_item_content "
+            "WHERE source_item_id = ANY(%s)",
+            (ids,),
+        )
+        return dict(cur.fetchall())
+
+
 def detail(con, source_item_id: int) -> dict[str, Any] | None:
     """Everything known about one intake item, for /admin/intake/{id}."""
     with con.cursor() as cur:

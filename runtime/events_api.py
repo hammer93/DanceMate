@@ -245,11 +245,26 @@ _HOME_PAGE_FALLBACK = {
 }
 
 
+_GENERIC_API_PATH = re.compile(r"^(https?://[^/]+)/api(?:/|$)")
+
+
 def resolve_public_source_url(url: str | None) -> str | None:
     """The human page a reader should be sent to, never the collector's own
     API endpoint (Section 18-30). Pattern-matches the stored source_url only
     - never fetches anything - so an already-human URL (Daum Cafe, Miltang,
     DanceInfo, TangoClass's own WordPress `link`) passes through unchanged.
+
+    v0.86.4 Source Audit Workbench (Section 82-92): a SOURCE's own top-level
+    `url` (the collector's list/board endpoint, e.g. Tango Calendar Korea's
+    `.../api/events` with no per-event id at all) is not one of the two
+    specific per-item patterns above, and previously fell through unchanged
+    - a JSON endpoint shown as "원문보기", exactly what this section forbids.
+    Caught by this release's own production audit before merge. The generic
+    fallback below only fires when nothing more specific already matched:
+    any other `/api/...` path becomes that host's own home page - the same
+    "no per-event page exists, the honest fallback is the site itself"
+    reasoning the firestore case above already uses, just not hand-written
+    per source.
     """
     if not url:
         return None
@@ -258,6 +273,9 @@ def resolve_public_source_url(url: str | None) -> str | None:
         return f"{match.group(1)}/?eventId={match.group(2)}"
     if _FIRESTORE_DOCUMENT.match(url):
         return _HOME_PAGE_FALLBACK["firestore"]
+    match = _GENERIC_API_PATH.match(url)
+    if match:
+        return f"{match.group(1)}/"
     return url
 
 
@@ -586,6 +604,44 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
             "timezone": "Asia/Seoul",
         },
     }
+
+
+def get_events_by_source_items(con, source_item_ids: "Sequence[int]") -> dict[int, dict[str, Any]]:
+    """Batch form of `get_event_by_source_item()` - one query for many items,
+    never one query per item (Section 107-112: no N+1 on an audit list page
+    that may show up to 50 rows at once)."""
+    ids = [i for i in source_item_ids if i is not None]
+    if not ids:
+        return {}
+    with con.cursor() as cur:
+        cur.execute(_SELECT + "WHERE e.source_item_id = ANY(%s)", (ids,))
+        rows = _rows(cur)
+    by_item: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        item_id = row.get("source_item_id")
+        if item_id is not None and item_id not in by_item:
+            by_item[item_id] = present(row)
+    return by_item
+
+
+def get_event_by_source_item(con, source_item_id: int) -> dict[str, Any] | None:
+    """The event this one source item's post produced, if any.
+
+    v0.86.4 Source Audit Workbench (Section 40-53): no provenance/listing
+    filter, unlike `search()` - an operator auditing a post needs to see
+    the event it actually produced even if a later duplicate scan folded it
+    into another canonical row or delisted it, not just what a reader would
+    currently see. `present()` is the same formatter every other event uses,
+    so the audit's "Extracted"/"Public Display" columns are never a second,
+    parallel reading of the same row (Section 69).
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            _SELECT + "WHERE e.source_item_id = %s ORDER BY e.event_id DESC LIMIT 1",
+            (source_item_id,),
+        )
+        rows = _rows(cur)
+    return present(rows[0]) if rows else None
 
 
 def get_event(con, event_id: int) -> dict[str, Any] | None:

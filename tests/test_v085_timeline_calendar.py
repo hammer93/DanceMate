@@ -143,8 +143,13 @@ def test_unknown_venue_detail_safety():
 
 # 16. POSSIBLE renders
 def test_possible_status_renders():
+    """v0.86.4 (Section 7-11): the "확인 필요" text badge is gone, replaced
+    by the small "?" indicator right after the event type - same meaning,
+    no longer a text phrase that could itself collide with a real value
+    shown elsewhere on the line."""
     line1 = public._timeline_line1(_event(status="POSSIBLE", status_label="확인 필요"), now=NOW)
-    assert "확인 필요" in line1
+    assert "확인 필요" not in line1
+    assert 'class="confirm-flag"' in line1
 
 
 # 17. CONFLICT renders with its warn tone
