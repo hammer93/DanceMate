@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from typing import Any
 
 # Venue aliases are matched after normalisation, so "La Ventana", "la  ventana"
@@ -87,6 +88,37 @@ def set_genre_enabled(con, genre_id: int, enabled: bool) -> dict[str, Any] | Non
         return _row(cur)
 
 
+def genre_usage(con, genre_id: int) -> dict[str, int]:
+    """How many rows in every table with a real FK to `genres` still point
+    at this one (v0.86.7 Section 14, 16) - `organizers`, `sources`,
+    `events`, `venue_genres`, the full set confirmed by reading every
+    migration's own FK clause. None of these FKs carry `ON DELETE CASCADE`
+    (Postgres default NO ACTION), so a plain `DELETE FROM genres` is
+    already blocked by the database itself when any count here is nonzero -
+    this exists to show the operator why, with real numbers, before they
+    ever hit that error."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT "
+            "  (SELECT count(*) FROM venue_genres WHERE genre_id = %s) AS venues, "
+            "  (SELECT count(*) FROM organizers WHERE genre_id = %s) AS organizers, "
+            "  (SELECT count(*) FROM sources WHERE genre_id = %s) AS sources, "
+            "  (SELECT count(*) FROM events WHERE genre_id = %s) AS events",
+            (genre_id, genre_id, genre_id, genre_id),
+        )
+        cols = [c.name for c in cur.description]
+        return dict(zip(cols, cur.fetchone()))
+
+
+def delete_genre(con, genre_id: int) -> None:
+    """The raw delete. Never call directly from a route - `master_edit.
+    delete_genre()` is where the reference-count check and the core-genre
+    guard live; this is just the SQL, kept here so every other master-data
+    write goes through this module the same way."""
+    with con.cursor() as cur:
+        cur.execute("DELETE FROM genres WHERE genre_id = %s", (genre_id,))
+
+
 # --- regions ----------------------------------------------------------------
 
 def list_regions(
@@ -114,6 +146,29 @@ def count_regions(con, *, enabled_only: bool = False) -> int:
         return cur.fetchone()[0]
 
 
+def region_usage(con, region_id: int) -> dict[str, int]:
+    """The region twin of `genre_usage()` - every real FK to `regions`
+    (`venues`, `organizers`, `sources`, `events`; none `ON DELETE CASCADE`)."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT "
+            "  (SELECT count(*) FROM venues WHERE region_id = %s) AS venues, "
+            "  (SELECT count(*) FROM organizers WHERE region_id = %s) AS organizers, "
+            "  (SELECT count(*) FROM sources WHERE region_id = %s) AS sources, "
+            "  (SELECT count(*) FROM events WHERE region_id = %s) AS events",
+            (region_id, region_id, region_id, region_id),
+        )
+        cols = [c.name for c in cur.description]
+        return dict(zip(cols, cur.fetchone()))
+
+
+def delete_region(con, region_id: int) -> None:
+    """The raw delete - see `delete_genre()`'s own docstring for why the
+    check lives in `master_edit`, not here."""
+    with con.cursor() as cur:
+        cur.execute("DELETE FROM regions WHERE region_id = %s", (region_id,))
+
+
 def create_region(
     con, *, code: str, country: str, name: str, city: str | None = None,
     district: str | None = None,
@@ -132,8 +187,31 @@ def create_region(
 
 # --- venues -----------------------------------------------------------------
 
+def _venue_filter_clause(
+    *, region_id: int | None, genre_ids: "Sequence[int] | None"
+) -> tuple[str, list[Any]]:
+    """v0.86.7 Section 2, 4, 7: region is an exact `v.region_id` match (never
+    fuzzy region-name comparison); a genre filter is OR across the given ids
+    ("venue supports at least one of these genres") via `EXISTS` against
+    `venue_genres`; the two conditions are ANDed together when both are set."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    if region_id is not None:
+        conditions.append("v.region_id = %s")
+        params.append(region_id)
+    if genre_ids:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM venue_genres vg2 "
+            "WHERE vg2.venue_id = v.venue_id AND vg2.genre_id = ANY(%s))"
+        )
+        params.append(list(genre_ids))
+    return " AND ".join(conditions), params
+
+
 def list_venues(
-    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+    con, *, enabled_only: bool = False, region_id: int | None = None,
+    genre_ids: "Sequence[int] | None" = None,
+    limit: int | None = None, offset: int = 0
 ) -> list[dict[str, Any]]:
     sql = (
         "SELECT v.*, r.name AS region_name, r.code AS region_code, "
@@ -151,24 +229,40 @@ def list_venues(
         "  WHERE vg.venue_id = v.venue_id"
         ") dg ON TRUE"
     )
-    if enabled_only:
-        sql += " WHERE v.enabled"
+    conditions = ["v.enabled"] if enabled_only else []
+    params: list[Any] = []
+    filter_clause, filter_params = _venue_filter_clause(
+        region_id=region_id, genre_ids=genre_ids)
+    if filter_clause:
+        conditions.append(filter_clause)
+        params.extend(filter_params)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY lower(v.name), v.venue_id"
-    params: tuple[Any, ...] = ()
     if limit is not None:
         sql += " LIMIT %s OFFSET %s"
-        params = (limit, offset)
+        params += [limit, offset]
     with con.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(sql, tuple(params))
         return _rows(cur)
 
 
-def count_venues(con, *, enabled_only: bool = False) -> int:
-    sql = "SELECT count(*) FROM venues"
-    if enabled_only:
-        sql += " WHERE enabled"
+def count_venues(
+    con, *, enabled_only: bool = False, region_id: int | None = None,
+    genre_ids: "Sequence[int] | None" = None,
+) -> int:
+    sql = "SELECT count(*) FROM venues v"
+    conditions = ["v.enabled"] if enabled_only else []
+    params: list[Any] = []
+    filter_clause, filter_params = _venue_filter_clause(
+        region_id=region_id, genre_ids=genre_ids)
+    if filter_clause:
+        conditions.append(filter_clause)
+        params.extend(filter_params)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     with con.cursor() as cur:
-        cur.execute(sql)
+        cur.execute(sql, tuple(params))
         return cur.fetchone()[0]
 
 

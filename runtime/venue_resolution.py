@@ -1059,10 +1059,12 @@ def set_venue_enabled(con, venue_id: int, enabled: bool, *,
 
 
 def venues_with_usage(
-    con, *, limit: int | None = None, offset: int = 0
+    con, *, region_id: int | None = None, genre_ids: "list[int] | None" = None,
+    limit: int | None = None, offset: int = 0
 ) -> list[dict[str, Any]]:
     """The venue list, each row carrying what depends on it."""
-    venues = master_data.list_venues(con, limit=limit, offset=offset)
+    venues = master_data.list_venues(
+        con, region_id=region_id, genre_ids=genre_ids, limit=limit, offset=offset)
     if not venues:
         return []
     with con.cursor() as cur:

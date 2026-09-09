@@ -463,14 +463,68 @@ COMPLETED = "COMPLETED"
 # distinguishes MILONGA from SOCIAL because tango names its social event and
 # the other scenes do not; a reader does not need that distinction spelled out,
 # only what they are turning up to.
+#
+# v0.86.7 Section 25, 27-28: "PRACTICA" reads 쁘렉 - the word this scene
+# actually uses - not the more literal but unfamiliar 쁘락띠까 the label
+# used before. "GENERAL" is new (Section 24, 26): the engine has never
+# emitted it (no classifier code path assigns it - confirmed before adding
+# it), so it exists here purely so the label/format vocabulary already
+# supports it whenever a future release's classifier does. This dict is
+# the one place event_type has ever been translated to Korean; "Event
+# Format" (Section 23-28) reuses this exact field and this exact dict
+# rather than a second, parallel column - investigated first, per
+# Section 27's own instruction not to duplicate an existing structure.
 EVENT_TYPE_LABELS = {
     "MILONGA": "밀롱가",
     "MILONGA_WITH_CLASS": "밀롱가 (강습 포함)",
-    "PRACTICA": "쁘락띠까",
+    "PRACTICA": "쁘렉",
+    "GENERAL": "제너럴",
     "SOCIAL": "소셜",
     "SOCIAL_WITH_CLASS": "소셜 (강습 포함)",
     "PARTY": "파티",
 }
+
+# The four simplified "Event Format" categories the Admin chip selector and
+# Source Audit use (Section 23-32) - a coarser view over the same
+# event_type column, never a second stored value (Section 33: the original
+# event_type/title text is never edited or hidden, only summarised here).
+# UNKNOWN covers CLASS/OTHER/blank on purpose (Section 29: a class is not
+# a social-dance format at all) and is never auto-upgraded to a real
+# format by keyword-matching the title (Section 44 forbids exactly that -
+# this module never reads raw text, only the already-classified column).
+EVENT_FORMAT_MILONGA = "MILONGA"
+EVENT_FORMAT_PRACTICA = "PRACTICA"
+EVENT_FORMAT_GENERAL = "GENERAL"
+EVENT_FORMAT_SOCIAL = "SOCIAL"
+EVENT_FORMAT_UNKNOWN = "UNKNOWN"
+
+EVENT_FORMAT_LABELS = {
+    EVENT_FORMAT_MILONGA: "밀롱가",
+    EVENT_FORMAT_PRACTICA: "쁘렉",
+    EVENT_FORMAT_GENERAL: "제너럴",
+    EVENT_FORMAT_SOCIAL: "소셜",
+    EVENT_FORMAT_UNKNOWN: "미분류",
+}
+
+_EVENT_FORMAT_BY_TYPE = {
+    "MILONGA": EVENT_FORMAT_MILONGA,
+    "MILONGA_WITH_CLASS": EVENT_FORMAT_MILONGA,
+    "PRACTICA": EVENT_FORMAT_PRACTICA,
+    "GENERAL": EVENT_FORMAT_GENERAL,
+    "SOCIAL": EVENT_FORMAT_SOCIAL,
+    "SOCIAL_WITH_CLASS": EVENT_FORMAT_SOCIAL,
+    "PARTY": EVENT_FORMAT_SOCIAL,
+}
+
+
+def format_of(event_type: str | None) -> str:
+    """The one representative Event Format for an event_type value (Section
+    31: single-select, one representative format per event - a real
+    repeated "쁘렉+소셜" hybrid pattern was looked for and not found, so
+    this stays a single value rather than a set). CLASS/OTHER/unrecognised/
+    blank all read UNKNOWN (Section 29: a class is handled elsewhere
+    entirely, never folded into a social-dance format by accident)."""
+    return _EVENT_FORMAT_BY_TYPE.get((event_type or "").upper(), EVENT_FORMAT_UNKNOWN)
 
 
 # A person looked at this and stood by it. Deliberately worded apart from

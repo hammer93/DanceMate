@@ -22,7 +22,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from . import (
@@ -1645,6 +1645,22 @@ def admin_source_detail(
     )
 
 
+def _format_chips(event_type: str | None) -> str:
+    """The read-only Event Format chip row (v0.86.7 Section 30, 38, 45-47):
+    [밀롱가] [쁘렉] [제너럴] [소셜] [미분류], the current one highlighted -
+    never a new write action this release (Section 47: "김프로가 바로 볼 수
+    있어야 함" is about visibility, not an edit workflow; a genuinely
+    repeated hybrid-format case would justify one, and none was found).
+    Plain, muted admin badges - Section 39 explicitly asks for no new
+    strong colour scheme."""
+    current = events_api.format_of(event_type)
+    chips = "".join(
+        f'<span class="badge {"ok" if code == current else "muted"}">{E(label)}</span>'
+        for code, label in events_api.EVENT_FORMAT_LABELS.items()
+    )
+    return f'<span class="note">{chips}</span>'
+
+
 def _extracted_fields_table(event: dict[str, Any] | None) -> str:
     """(C) Extracted - Section 40-53. `event` is already `events_api.present()`'s
     own dict, the same one every other consumer of an event reads - never a
@@ -1669,6 +1685,7 @@ def _extracted_fields_table(event: dict[str, Any] | None) -> str:
         ["End", E(event.get("end_time")) if event.get("end_time")
                 else '<span class="badge muted">NULL</span> (미정)'],
         ["Type", E(event.get("event_type_label") or "-")],
+        ["Format", _format_chips(event.get("event_type"))],
         ["Genre", E(event.get("genre_label") or "-")],
         ["Resolved Venue", E(venue.get("name") or "-")
          + (f' <span class="badge muted">{E(venue.get("status") or "-")}</span>'
@@ -1996,22 +2013,48 @@ def _venue_actions(venue: dict[str, Any]) -> str:
 
 
 @router.get("/admin/venues", response_class=HTMLResponse)
-def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+def admin_venues(request: Request, region: str = "",
+                 genres: list[str] = Query(default=[]),
+                 _: str = Depends(require_admin)) -> HTMLResponse:
+    """v0.86.7 Section 1-11: a region selector (exact `venues.region_id`
+    match, never fuzzy region-name comparison) and a multi-select genre
+    filter (OR across the chosen genres, AND with region) - both kept in
+    the query string (`?region=<code>&genres=<code>,<code>`) so a reload
+    or a shared link keeps the same view. AND/OR toggle UI is deliberately
+    out of scope this release (Section 5) - OR is the only behaviour.
+    """
     from . import pagination, venue_resolution  # local: keeps the v0.75 console import list stable
 
     with _connection() as con:
-        total = master_data.count_venues(con)
+        regions = master_data.list_regions(con)
+        all_genres = master_data.list_genres(con, enabled_only=True)
+
+        region_by_code = {r["code"]: r for r in regions}
+        genre_by_code = {g["code"]: g for g in all_genres}
+        selected_region = region_by_code.get(region.strip().upper()) if region.strip() else None
+        # Accepts either repeated ?genres=TANGO&genres=SALSA (what the
+        # checkbox form below submits) or a single comma-joined
+        # ?genres=TANGO,SALSA (Section 8's own example URL shape) - both
+        # land in the same place.
+        selected_genre_codes = [
+            c.strip().upper() for raw in genres for c in raw.split(",") if c.strip()
+        ]
+        selected_genre_ids = [
+            genre_by_code[c]["genre_id"] for c in selected_genre_codes if c in genre_by_code
+        ]
+        region_id = selected_region["region_id"] if selected_region else None
+
+        total = master_data.count_venues(
+            con, region_id=region_id, genre_ids=selected_genre_ids or None)
         page = pagination.resolve_page(request.query_params.get("page"), total)
         venues = venue_resolution.venues_with_usage(
-            con, limit=pagination.PAGE_SIZE,
-            offset=pagination.sql_offset(page),
+            con, region_id=region_id, genre_ids=selected_genre_ids or None,
+            limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page),
         )
-        regions = master_data.list_regions(con)
         alias_rows = {v["venue_id"]: master_data.venue_aliases(con, v["venue_id"])
                       for v in venues}
         alias_usage = {v["venue_id"]: master_data.venue_alias_usage(con, v["venue_id"])
                        for v in venues}
-        all_genres = master_data.list_genres(con, enabled_only=True)
         observed_genres = {v["venue_id"]: master_data.observed_venue_genres(con, v["venue_id"])
                            for v in venues}
 
@@ -2067,6 +2110,44 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
         '<a href="/admin/venues/import"><button>Import CSV</button></a>'
         "</p>"
     )
+
+    # v0.86.7 Section 1-11: region select + genre multi-select checkboxes,
+    # a plain GET form so the result lands on a shareable, reload-safe
+    # ?region=<code>&genres=<code>,<code> URL (Section 8) - no JS required.
+    filter_region_options = "".join(
+        f'<option value="{E(r["code"])}"'
+        f'{" selected" if selected_region and selected_region["code"] == r["code"] else ""}>'
+        f'{E(r["name"])}</option>'
+        for r in regions
+    )
+    filter_genre_chips = "".join(
+        f'<label class="chip"><input type="checkbox" name="genres" value="{E(g["code"])}"'
+        f'{" checked" if g["code"] in selected_genre_codes else ""}> {E(g["name"])}</label>'
+        for g in all_genres
+    )
+    filter_bar = f"""
+<form method="get" action="/admin/venues" class="filters">
+  <div class="row">
+    <span class="key">지역</span>
+    <select name="region"><option value="">전체</option>{filter_region_options}</select>
+  </div>
+  <div class="row">
+    <span class="key">춤 종류</span>
+    {filter_genre_chips}
+  </div>
+  <div class="row">
+    <button class="apply" type="submit">적용</button>
+    <a href="/admin/venues"><button type="button">초기화</button></a>
+  </div>
+</form>
+<p class="note">Venues: <strong>{total}</strong></p>"""
+
+    filter_query = {}
+    if selected_region:
+        filter_query["region"] = selected_region["code"]
+    if selected_genre_codes:
+        filter_query["genres"] = ",".join(selected_genre_codes)
+
     body = ('<h2>Venues</h2>'
             '<p class="note">Venue strings read from posts that this list does '
             'not recognise are queued at '
@@ -2074,11 +2155,11 @@ def admin_venues(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
             'Deleting a venue removes the link and nothing else — the posts, '
             'the evidence and the events stay, and the strings they were read '
             'from go back in that queue.</p>'
-            ) + csv_bar + add_form + _table(
+            ) + csv_bar + add_form + filter_bar + _table(
         ["Name", "Region", "Address", "Aliases", "Dance Genres", "Events using",
          "State", "Actions"],
         rows, empty="no venue registered yet",
-    ) + pagination.nav("/admin/venues", {}, page, total)
+    ) + pagination.nav("/admin/venues", filter_query, page, total)
     return HTMLResponse(_page("Venues", "/admin/venues", body, flash=_flash(request)))
 
 
@@ -2438,6 +2519,39 @@ def admin_candidates(request: Request, _: str = Depends(require_admin)) -> HTMLR
 
 # --- genres and regions -----------------------------------------------------
 
+def _delete_form(kind: str, entity_id: int, name: str, *, core: bool,
+                 usage: dict[str, int]) -> str:
+    """v0.86.7 Section 15-16, 21: a collapsed confirmation showing exactly
+    what a plain "Delete" button never would - the reference counts an
+    operator needs to see BEFORE the database refuses (or, when nothing
+    references the row, before it actually deletes). No cascade option is
+    offered anywhere in this form (Section 17-18) - a referenced row is
+    blocked, full stop, never unlinked or reassigned this release."""
+    total = sum(usage.values())
+    if core:
+        body = (f'<p class="note">{E(name)}은 핵심 장르라 삭제할 수 없습니다 '
+                "(TANGO/SALSA/SWING는 항상 보호됩니다).</p>")
+    elif total:
+        body = (
+            f'<p class="flash bad">삭제할 수 없습니다 — '
+            f'Venue {usage.get("venues", 0)}건, Organizer {usage.get("organizers", 0)}건, '
+            f'Source {usage.get("sources", 0)}건, Event {usage.get("events", 0)}건</p>'
+        )
+    else:
+        # No client-side confirm() - this console has never used inline JS
+        # for a consequential action anywhere else; the collapsed <details>
+        # a reader has to open first, plus this explicit question, is the
+        # same "you have to mean it" gate every other destructive form here
+        # already uses (venue delete, alias remove).
+        body = (
+            f'<p class="note">참조가 없습니다 - 삭제할 수 있습니다.</p>'
+            f'<p class="note">{E(name)}을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.</p>'
+            f'<form method="post" action="/admin/{kind}/{entity_id}/delete">'
+            '<button class="primary">Delete</button></form>'
+        )
+    return f'<details><summary>Delete</summary>{body}</details>'
+
+
 @router.get("/admin/master", response_class=HTMLResponse)
 def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
     from . import pagination
@@ -2453,6 +2567,13 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
             request.query_params.get("region_page"), region_total)
         regions = master_data.list_regions(
             con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(region_page))
+        # v0.86.7 Section 14-16: reference counts for the Delete confirmation,
+        # computed while still inside the connection - genres/regions are a
+        # handful of rows per page, never worth a batched query here.
+        genre_usage_by_id = {g["genre_id"]: master_data.genre_usage(con, g["genre_id"])
+                             for g in genres}
+        region_usage_by_id = {r["region_id"]: master_data.region_usage(con, r["region_id"])
+                              for r in regions}
 
     from . import master_admin, master_edit
 
@@ -2468,6 +2589,10 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
               master_admin.field("name", "Display name", g["name"])],
          )
          + master_admin.toggle_form(master_edit.GENRE, g["genre_id"], g["enabled"])
+         + _delete_form(
+             "genres", g["genre_id"], g["name"],
+             core=g["code"] in master_edit.CORE_GENRE_CODES,
+             usage=genre_usage_by_id[g["genre_id"]])
          + "</div>"]
         for g in genres
     ]
@@ -2486,6 +2611,9 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
               master_admin.field("district", "District", r.get("district"))],
          )
          + master_admin.toggle_form(master_edit.REGION, r["region_id"], r["enabled"])
+         + _delete_form(
+             "regions", r["region_id"], r["name"], core=False,
+             usage=region_usage_by_id[r["region_id"]])
          + "</div>"]
         for r in regions
     ]
@@ -2581,6 +2709,38 @@ def admin_genre_action(
     with _connection() as con:
         master_data.set_genre_enabled(con, genre_id, action == "enable")
     return _back("/admin/master", f"genre {action}d")
+
+
+@router.post("/admin/genres/{genre_id}/delete")
+def admin_delete_genre(
+    genre_id: int, reviewer: str = Depends(require_admin)
+) -> RedirectResponse:
+    """v0.86.7 Section 13-19: blocked outright (no cascade, no unlink) when
+    anything still references the genre, or when it's one of the three
+    core genres - `master_edit.delete_genre()` does the actual check."""
+    from . import master_edit
+
+    with _connection() as con:
+        try:
+            deleted = master_edit.delete_genre(con, genre_id, reviewer=reviewer)
+        except master_edit.EditError as exc:
+            return _back("/admin/master", str(exc), "bad")
+    return _back("/admin/master", f"{deleted['genre']['name']} 장르를 삭제했습니다")
+
+
+@router.post("/admin/regions/{region_id}/delete")
+def admin_delete_region(
+    region_id: int, reviewer: str = Depends(require_admin)
+) -> RedirectResponse:
+    """The region twin of `admin_delete_genre()`."""
+    from . import master_edit
+
+    with _connection() as con:
+        try:
+            deleted = master_edit.delete_region(con, region_id, reviewer=reviewer)
+        except master_edit.EditError as exc:
+            return _back("/admin/master", str(exc), "bad")
+    return _back("/admin/master", f"{deleted['region']['name']} 지역을 삭제했습니다")
 
 
 # --- Timeline confirmation ("?") settings (v0.86.4 Section 16-21, 72-75) ----
