@@ -677,7 +677,13 @@ def _when_line(event: dict[str, Any]) -> str:
     if start and end:
         clock = f"{start}–{end}" + ("<sup>+1</sup>" if event.get("ends_next_day") else "")
     elif start:
-        clock = start
+        # v0.86.6 (Section 5-9, 21-24): a post that names a start but never
+        # says when the night ends is not the same fact as one that names
+        # neither - DanceMate does not guess an end time (no default
+        # duration, never 21:00~00:00 or 21:00~23:00 invented), so the gap
+        # itself is shown, plainly, rather than silently dropped (a bare
+        # "21:00" reads as if that were the whole answer).
+        clock = f'{start}–<span class="unknown">미정</span>'
     # v0.86.4 (Section 4-6): a bare, am/pm-ambiguous clock (5시30 is very
     # likely half past five in the evening, but the post does not say so)
     # used to append its own "시간 미확인" tag right next to the real value
@@ -896,8 +902,10 @@ def _human_date(day_iso: str, *, now: "datetime | None" = None) -> str:
 
 
 def _timeline_clock(event: dict[str, Any]) -> str:
-    """20:00~23:30 when the post gave an end time, else bare 20:00 - never a
-    blank (Section 16). 미확인 when there is no reading at all.
+    """20:00~23:30 when the post gave an end time, 20:00~미정 when it gave a
+    start and nothing else - never a blank (Section 16), never a bare
+    start that reads as if that were the whole answer. 시간 미확인 only
+    when there is no reading at all.
 
     v0.85.9 (Section 8-10): the Timeline used to show only `start_time`,
     dropping an end time the extractor already had (the detail page's own
@@ -912,14 +920,26 @@ def _timeline_clock(event: dict[str, Any]) -> str:
     the value sitting right next to it - it now folds into the same "?"
     confirmation indicator every other kind of uncertainty already uses
     (`_needs_confirmation()`), not a second, competing signal here.
+
+    v0.86.6 (Section 5-9, 21-24): a start with no end is not the same fact
+    as no time at all - DanceMate never guesses a duration (no default
+    length, never 21:00~00:00 or 21:00~23:00 invented; a source that truly
+    gives neither field stays end_time=NULL in the database, display-only
+    here). Structured on `start`/`end` themselves, not a string patched
+    after the fact, so the no-end case can never silently collide with a
+    real end time the same way the old bare-`start` fallback could read as
+    one.
     """
     start = event.get("start_time")
     if not start:
         return '<span class="unknown">시간 미확인</span>'
     end = event.get("end_time")
-    clock = f"{start}~{end}" if end else start
-    if event.get("ends_next_day"):
-        clock += "<sup>+1</sup>"
+    if not end:
+        clock = f'{start}~<span class="unknown">미정</span>'
+    elif event.get("ends_next_day"):
+        clock = f"{start}~{end}<sup>+1</sup>"
+    else:
+        clock = f"{start}~{end}"
     return clock
 
 

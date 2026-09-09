@@ -1662,7 +1662,12 @@ def _extracted_fields_table(event: dict[str, Any] | None) -> str:
     rows = [
         ["Date", E(event.get("date") or "-")],
         ["Start", E(event.get("start_time") or "-")],
-        ["End", E(event.get("end_time") or "-")],
+        # v0.86.6 Section 12: NULL is the real stored value and "미정" is
+        # what a reader sees - shown together so an operator can tell a
+        # genuinely open-ended event (start known, end never guessed) apart
+        # from an End row that just says "-" for no particular reason.
+        ["End", E(event.get("end_time")) if event.get("end_time")
+                else '<span class="badge muted">NULL</span> (미정)'],
         ["Type", E(event.get("event_type_label") or "-")],
         ["Genre", E(event.get("genre_label") or "-")],
         ["Resolved Venue", E(venue.get("name") or "-")
