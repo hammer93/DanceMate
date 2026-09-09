@@ -1,5 +1,78 @@
 # DanceMate Release Notes
 
+## v0.86.5 Admin Source Dense Layout
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.5
+- Information Engine: 0.85 (unchanged)
+
+### What changed
+
+UI-only density pass over the Admin Source Audit Workbench's list view
+(`/admin/sources`): thirteen columns down to seven. A separate "URL"
+column merges into "Target" - `_source_target()`'s existing collector-
+target display (a URL, or a query-driven source's search queries, with
+its own "Open Source" debug button pointed at the raw collector value)
+now sits above a resolved "↳ 원문보기 ↗" Public URL line, rather than
+repeating the same value under a second "Collector" label the way the
+old URL column did. Content Mode, collector capability (LIVE/SNAPSHOT),
+Health, and Interval fold into one `.metacell`, at most three lines.
+Genre/Region and Tier share a cell. The Decision-recording *form*
+(select + reason input + button) moves into Actions behind its own
+collapsed `<details>` - genuinely never "short metadata" - while the
+current decision itself stays as a small, always-visible badge in
+Status/Last Run. No DB migration, no engine change, no source-
+collection-logic change, no Public Timeline change - purely how the
+Sources list renders.
+
+### A second real defect caught by this release's own tests, before merge
+
+Writing the JSON-endpoint-as-public-link regression tests surfaced a
+second, live gap of the same shape v0.86.4 fixed for Tango Calendar
+Korea: TangoClass's own source-level url is a WordPress REST endpoint
+(`https://tangoclass.co.kr/wp-json/wp/v2/posts?per_page=10`), which
+never matched the v0.86.4 fallback's literal `/api/` path check.
+Confirmed against the real, live value before writing the fix.
+Extended `events_api.resolve_public_source_url()`'s generic fallback
+to also catch `/wp-json/` paths - `https://tangoclass.co.kr/` now
+resolves correctly, verified against all three DIRECTORY/PRIMARY
+sources that previously needed this class of fallback (TangoNOW,
+Tango Calendar Korea, TangoClass).
+
+### Production audit (all 20 real sources, live data)
+
+- Row compactness: every one of the 20 real sources' Target+Meta+Genre/
+  Tier cells rendered 9-10 `<div>` lines - max/avg ratio 1.05, nowhere
+  near a "4-5x taller than the rest" bloat case.
+- Longest source name: "Tango Calendar Korea" (20 chars). Longest
+  collector URL: TangoNOW's Firestore endpoint (106 chars, truncated by
+  the existing `_truncate()` display logic, never expanding the column).
+- Genre filter counts unchanged from v0.86.4: ALL 20 / TANGO 10 / SALSA
+  3 / SWING 2 / 장르 미확인 5.
+- All three named URL regressions (TangoNOW, Tango Calendar Korea,
+  TangoClass) verified live: each source's Target cell keeps its "Open
+  Source" collector-debug link (raw value, on purpose) alongside a
+  correctly resolved Public URL - `ktnow.kr`, `tangocalendar.kr/`,
+  `tangoclass.co.kr/` respectively, never the raw JSON/API endpoint.
+
+### Tests
+
+26 new/changed tests in `tests/test_v0865_admin_source_dense_layout.py`
+(structural checks on the merged cells, genre-filter regressions, the
+two named JSON-endpoint regressions, item-audit-detail reachability,
+source row actions) plus one v0.86.4 test updated because it pinned the
+exact old "Collector"/"Public" text-label structure this release
+deliberately consolidated away. Full suite in the isolated staging
+container: **1736 passed, 0 failed, 18 skipped.**
+
+### Private Alpha Observation
+
+Continues unchanged - the standing recurring observation job was never
+touched by this release.
+
 ## v0.86.4 Admin Source Audit & Public Display Parity
 
 Status: PASS, 2026-09-09.
