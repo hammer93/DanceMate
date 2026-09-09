@@ -1,5 +1,88 @@
 # DanceMate Release Notes
 
+## v0.86.6 Open-ended Event Time Display
+
+Status: PASS, 2026-09-09.
+
+Version split:
+
+- Product Runtime: 0.86.6
+- Information Engine: 0.85 (unchanged - display-only, no extraction change)
+
+### What changed
+
+A post that names a start time and nothing else used to render as a
+bare "20:00" on the Timeline - indistinguishable from a value that
+simply ran out of room, with no signal an end time was ever
+considered. DanceMate does not guess an end time (no default duration,
+never `20:00~23:00` or `20:00~00:00` invented) - now the gap itself is
+shown: `20:00~미정`. Built structured on `start_time`/`end_time`
+themselves in `_timeline_clock()`/`_when_line()`, never a string
+patched after rendering, so a real end time can never collide with the
+open-ended case. A fully-unknown time (neither field present) is
+unchanged - still `시간 미확인`, and a real value is never followed by
+that phrase. The Admin Item Audit Detail's Extracted fields table now
+shows `NULL (미정)` for an absent end time; its Public Display preview
+inherits the new formatting automatically, since it calls the same
+`runtime.public` renderer as the live Timeline - no second formatter.
+
+### Real investigation before writing any code
+
+Went in expecting to find today's Daegu "디디디" event (event_id
+88425) rendering `21:00~`. It doesn't: both its own row and next
+week's occurrence (88378) have `start_time=NULL, end_time=NULL` in
+Postgres, matching their Miltang-sourced body exactly (which states no
+time at all - a genuine source gap, not an engine defect). A full scan
+of the live database found zero events anywhere with a start time and
+no end time - the exact symptom described going in does not currently
+exist in production. Reported honestly rather than forced to match:
+this specific event's own display is unchanged by this release, but
+the underlying policy (never guess an end time; never conflate
+"start known, end unknown" with "nothing known") is still real and
+necessary for whenever a future post gives a start and nothing else.
+
+### Tests
+
+23 new/changed tests in `tests/test_v0866_open_ended_time_display.py`
+(structured start/end cases, no-time unchanged, never both 미정 and
+시간 미확인 shown, midnight-cross unaffected, Admin/Public parity,
+Admin Extracted NULL/미정 pairing, conditional-fee independence,
+277498 multi-program regression) plus one v0.85.9-era test updated
+because it pinned the exact old bare-start behaviour this release
+deliberately changed. Full suite in the isolated staging container:
+**1759 passed, 0 failed, 18 skipped.**
+
+### Production audit (real data)
+
+- Both real 디디디 occurrences confirmed unchanged (still `시간
+  미확인`, matching their genuine no-time source data).
+- 0 of 100 real upcoming events are currently start-only - confirmed
+  live, consistent with the investigation above.
+- 5 full-range events spot-checked live: no `미정` leak.
+- Event 277498 (the known multi-program time case) unaffected: still
+  `20:30~21:20`, no `미정`, no regression from this release's formatter
+  change.
+
+### Also applied this session: 13 new Salsa/Swing candidate sources
+
+A researched CSV (`dancemate_sources_20260909_salsa_swing_expanded.csv`)
+was applied through the existing Admin CSV import preview/confirm flow
+- never raw SQL. Two data-quality issues in the file were caught before
+import: a literal `"None"` string artifact in one URL cell, and 7 rows
+using `authority_level=PRIMARY_COMMUNITY`, a value outside the system's
+real enum. Rather than risk an unintended edit to any of the file's 20
+pre-existing rows (one of which, SRC-D-003, already carries that exact
+grandfathered value in production), the import was scoped to only the
+13 genuinely new candidate rows, with the bad enum value corrected to
+`UNKNOWN` - matching the convention every other COMMUNITY-role source
+already uses. Result: 13 created, 0 updated, 0 unchanged - all new
+sources start disabled, per established policy.
+
+### Private Alpha Observation
+
+Continues unchanged - the standing recurring observation job was never
+touched by this release.
+
 ## v0.86.5 Admin Source Dense Layout
 
 Status: PASS, 2026-09-09.
