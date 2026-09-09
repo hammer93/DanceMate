@@ -479,6 +479,22 @@ def test_primary_representative_source_selection_regression(pg):
     assert source_priority.tier_of("ORGANIZER") == "PRIMARY"
 
 
+def test_source_level_api_list_endpoint_resolves_to_a_home_page():
+    """Caught by this release's own production audit: Tango Calendar
+    Korea's SOURCE-level url (`.../api/events`, the collector's list
+    endpoint - no per-event id, so the two specific per-item patterns
+    never match it) used to fall through unchanged, showing a JSON
+    endpoint as "원문보기" on the Source Audit Workbench (Section 82-92)."""
+    assert (events_api.resolve_public_source_url("https://tangocalendar.kr/api/events")
+            == "https://tangocalendar.kr/")
+
+
+def test_an_already_human_url_is_never_rewritten():
+    for url in ("https://danceinfo.net/lessons?genre=all&category=all",
+               "https://miltang.com/milongas"):
+        assert events_api.resolve_public_source_url(url) == url
+
+
 def test_miltang_and_tangonow_are_directory_tier_regression():
     from runtime import source_priority
 

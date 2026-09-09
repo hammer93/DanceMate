@@ -245,11 +245,26 @@ _HOME_PAGE_FALLBACK = {
 }
 
 
+_GENERIC_API_PATH = re.compile(r"^(https?://[^/]+)/api(?:/|$)")
+
+
 def resolve_public_source_url(url: str | None) -> str | None:
     """The human page a reader should be sent to, never the collector's own
     API endpoint (Section 18-30). Pattern-matches the stored source_url only
     - never fetches anything - so an already-human URL (Daum Cafe, Miltang,
     DanceInfo, TangoClass's own WordPress `link`) passes through unchanged.
+
+    v0.86.4 Source Audit Workbench (Section 82-92): a SOURCE's own top-level
+    `url` (the collector's list/board endpoint, e.g. Tango Calendar Korea's
+    `.../api/events` with no per-event id at all) is not one of the two
+    specific per-item patterns above, and previously fell through unchanged
+    - a JSON endpoint shown as "원문보기", exactly what this section forbids.
+    Caught by this release's own production audit before merge. The generic
+    fallback below only fires when nothing more specific already matched:
+    any other `/api/...` path becomes that host's own home page - the same
+    "no per-event page exists, the honest fallback is the site itself"
+    reasoning the firestore case above already uses, just not hand-written
+    per source.
     """
     if not url:
         return None
@@ -258,6 +273,9 @@ def resolve_public_source_url(url: str | None) -> str | None:
         return f"{match.group(1)}/?eventId={match.group(2)}"
     if _FIRESTORE_DOCUMENT.match(url):
         return _HOME_PAGE_FALLBACK["firestore"]
+    match = _GENERIC_API_PATH.match(url)
+    if match:
+        return f"{match.group(1)}/"
     return url
 
 
