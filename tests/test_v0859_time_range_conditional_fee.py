@@ -59,10 +59,13 @@ def test_timeline_line1_shows_the_end_time_when_known():
     assert "20:00~23:30" in line1
 
 
-def test_timeline_line1_falls_back_to_bare_start_without_an_end_time():
+def test_timeline_line1_shows_an_open_ended_time_without_an_end_time():
+    """v0.86.6 (Section 5-9): a bare start used to render with no
+    indication anything was missing - now it reads 20:00~미정, since
+    DanceMate never guesses when the night ends."""
     line1 = public._timeline_line1(_event(end_time=None), now=_NOW)
-    assert "20:00" in line1
-    assert "~" not in line1
+    assert "20:00~" in line1
+    assert "미정" in line1
 
 
 def test_timeline_line1_marks_next_day_end():
