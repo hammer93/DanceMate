@@ -588,6 +588,44 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
     }
 
 
+def get_events_by_source_items(con, source_item_ids: "Sequence[int]") -> dict[int, dict[str, Any]]:
+    """Batch form of `get_event_by_source_item()` - one query for many items,
+    never one query per item (Section 107-112: no N+1 on an audit list page
+    that may show up to 50 rows at once)."""
+    ids = [i for i in source_item_ids if i is not None]
+    if not ids:
+        return {}
+    with con.cursor() as cur:
+        cur.execute(_SELECT + "WHERE e.source_item_id = ANY(%s)", (ids,))
+        rows = _rows(cur)
+    by_item: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        item_id = row.get("source_item_id")
+        if item_id is not None and item_id not in by_item:
+            by_item[item_id] = present(row)
+    return by_item
+
+
+def get_event_by_source_item(con, source_item_id: int) -> dict[str, Any] | None:
+    """The event this one source item's post produced, if any.
+
+    v0.86.4 Source Audit Workbench (Section 40-53): no provenance/listing
+    filter, unlike `search()` - an operator auditing a post needs to see
+    the event it actually produced even if a later duplicate scan folded it
+    into another canonical row or delisted it, not just what a reader would
+    currently see. `present()` is the same formatter every other event uses,
+    so the audit's "Extracted"/"Public Display" columns are never a second,
+    parallel reading of the same row (Section 69).
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            _SELECT + "WHERE e.source_item_id = %s ORDER BY e.event_id DESC LIMIT 1",
+            (source_item_id,),
+        )
+        rows = _rows(cur)
+    return present(rows[0]) if rows else None
+
+
 def get_event(con, event_id: int) -> dict[str, Any] | None:
     """One event, with every post that mentioned it.
 

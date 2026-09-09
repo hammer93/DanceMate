@@ -85,6 +85,44 @@ def event_breakdown(con, source_id: int) -> dict[str, int]:
     return first
 
 
+def audit_summary(con, source_id: int) -> dict[str, int]:
+    """Items/Events/Date-Missing/Time-Missing/Venue-Missing/Fee-Missing/
+    DJ-Missing counts for one source (v0.86.4 Source Audit Workbench,
+    Section 51-53).
+
+    Counted against the events this source's own items actually produced,
+    not the whole catalogue - "missing" here means the field is absent from
+    the extracted/canonical event row. It is deliberately not the same
+    thing as `review_hints.hints()`'s "potential miss" (the original text
+    *had* something a reviewer should check, extraction did not catch it) -
+    that distinction (Section 53) needs the raw body per item and stays a
+    per-item, on-demand computation (Item Audit Detail), never this
+    source-wide aggregate.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM source_items WHERE source_id = %s",
+            (source_id,),
+        )
+        items = cur.fetchone()[0]
+        cur.execute(
+            "SELECT "
+            "  count(*) AS events, "
+            "  count(*) FILTER (WHERE e.event_date IS NULL) AS date_missing, "
+            "  count(*) FILTER (WHERE e.start_time IS NULL) AS time_missing, "
+            "  count(*) FILTER (WHERE e.venue_id IS NULL) AS venue_missing, "
+            "  count(*) FILTER (WHERE e.fee IS NULL) AS fee_missing, "
+            "  count(*) FILTER (WHERE e.dj IS NULL) AS dj_missing "
+            "FROM events e JOIN source_items i ON i.source_item_id = e.source_item_id "
+            "WHERE i.source_id = %s",
+            (source_id,),
+        )
+        cols = [c.name for c in cur.description]
+        summary = dict(zip(cols, cur.fetchone()))
+    summary["items"] = items
+    return summary
+
+
 def upcoming_yield(con) -> dict[int, int]:
     """Upcoming listed events per source.
 

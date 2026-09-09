@@ -27,8 +27,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from . import (
     acquisition, candidates, collectors, content_store, db, events_api, feedback,
-    health, intake, master_data, quota, review, source_ops, source_priority,
-    sources, usage,
+    health, intake, master_data, public, quota, review, review_hints, source_ops,
+    source_priority, sources, timeline_settings, usage,
 )
 from .admin_auth import require_admin
 from .config import Settings
@@ -169,6 +169,33 @@ text-decoration:none;color:var(--fg);background:var(--card)}
 .pager-link:hover{border-color:var(--accent);color:var(--accent)}
 .pager-link.off{color:var(--muted);border-color:var(--line);opacity:.5}
 .pager-status{font-variant-numeric:tabular-nums}
+/* v0.86.4 Source Audit Workbench: the audit table is wider than a normal
+   admin page and genuinely needs horizontal scroll rather than hiding
+   columns - .tablewrap already scrolls (line 93), this just gives the page
+   itself more room on a desktop viewport. Only pages that opt in with
+   wide=True get it; every other admin page keeps its 1200px column. */
+body.wide header .bar,body.wide nav,body.wide main{max-width:1600px}
+.tierbadge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;
+font-weight:600;border:1px solid var(--line);color:var(--muted)}
+.tierbadge.primary{color:var(--ok);border-color:var(--ok)}
+.tierbadge.promotion_board{color:var(--warn);border-color:var(--warn)}
+.urlcell{font-size:12px;word-break:break-all}
+.urlcell .lbl{color:var(--muted);font-size:10px;text-transform:uppercase;
+letter-spacing:.04em;display:block}
+.compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.compare .col{background:var(--card);border:1px solid var(--line);border-radius:8px;
+padding:12px 14px}
+.compare .col h3{margin:0 0 8px;font-size:13px}
+.compare .col dl{display:grid;grid-template-columns:auto 1fr;gap:.3rem .7rem;margin:0}
+.compare .col dt{color:var(--muted);font-size:11px}
+.compare .col dd{margin:0;word-break:break-word}
+.rawtext{white-space:pre-wrap;word-break:break-word;font-size:12px;max-height:320px;
+overflow-y:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;
+padding:8px 10px;margin:8px 0 0}
+.hint{display:block;font-size:12px;padding:4px 0}
+.hint.WARN{color:var(--bad)}
+.hint.INFO{color:var(--warn)}
+.previewbox{border:1px dashed var(--line);border-radius:8px;padding:10px 12px;margin-top:8px}
 """
 
 NAV = (
@@ -183,13 +210,15 @@ NAV = (
     ("/admin/master", "Genres & Regions"),
     ("/admin/usage", "Usage"),
     ("/admin/system", "System"),
+    ("/admin/settings", "Settings"),
 )
 
 # /admin/candidates predates the Review console. It still works, and the nav
 # points at its replacement; the old URL is not broken for anyone who bookmarked it.
 
 
-def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None = None) -> str:
+def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None = None,
+          wide: bool = False) -> str:
     settings = _settings()
     nav = "".join(
         f'<a href="{href}" class="{"on" if href == current else ""}">{E(label)}</a>'
@@ -199,11 +228,12 @@ def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None 
     if flash:
         tone, message = flash
         banner = f'<p class="flash {tone}">{E(message)}</p>'
+    body_class = ' class="wide"' if wide else ""
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{E(title)} - DanceMate Admin</title><style>{STYLE}</style></head>
-<body>
+<body{body_class}>
 <header><div class="bar">
   <h1>DanceMate Admin</h1>
   <span class="env">runtime v{E(settings.version)} &middot; engine v{E(settings.engine_version)}
@@ -849,6 +879,38 @@ def _source_target(source: dict[str, Any]) -> str:
     return "".join(parts) + open_link
 
 
+def _source_url_cell(source: dict[str, Any]) -> str:
+    """Collector URL vs Public URL, shown distinctly (v0.86.4 Section 82-92).
+
+    A source's own configured `url` is what the collector fetches - for
+    Tango Calendar Korea (an API detail endpoint) and TangoNOW (a raw
+    Firestore document URL) that is never a page a human should be sent to.
+    `events_api.resolve_public_source_url()`/`valid_public_url()` are the
+    exact same functions the live Timeline already calls to pick a real
+    page (Section 69: no separate/duplicate resolution logic here) - the
+    "원문보기 ↗" link only ever points at that resolved result, never at the
+    raw collector URL, and never opens in an iframe (Section 92).
+    """
+    collector_url = source.get("url")
+    public_url = (
+        events_api.valid_public_url(events_api.resolve_public_source_url(collector_url))
+        if collector_url else None
+    )
+    collector_html = (
+        f'<span title="{E(collector_url)}">{E(_truncate(collector_url, 40))}</span>'
+        if collector_url else '<span class="badge muted">-</span>'
+    )
+    public_html = (
+        f'<a href="{E(public_url)}" target="_blank" rel="noopener noreferrer" '
+        f'title="{E(public_url)}">원문보기 &#8599;</a>'
+        if public_url else '<span class="badge warn">no public URL</span>'
+    )
+    return (
+        f'<div class="urlcell"><span class="lbl">Collector</span>{collector_html}'
+        f'<span class="lbl">Public</span>{public_html}</div>'
+    )
+
+
 HEALTH_ACTIVE = "ACTIVE"
 HEALTH_NO_NEW_ITEMS = "NO_NEW_ITEMS"
 HEALTH_FETCH_BLOCKED = "FETCH_BLOCKED"
@@ -919,15 +981,23 @@ def _last_error_text(entry: dict[str, Any] | None) -> str:
 
 
 @router.get("/admin/sources", response_class=HTMLResponse)
-def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+def admin_sources(request: Request, genre: str = "ALL",
+                  _: str = Depends(require_admin)) -> HTMLResponse:
+    """The Source Audit Workbench (v0.86.4 Section 2, 24-36, 54-66, 82-92):
+    a wide, horizontally-scrollable table an operator can actually audit -
+    Genre/Tier/Health/Public-vs-Collector-URL all visible at once, never a
+    "simple CRUD list" that hides the source's own authority behind a click.
+    """
     from . import master_admin, master_edit, pagination
 
+    genre = (genre or "ALL").upper()
     settings = _settings()
     with _connection() as con:
-        total = sources.count_sources(con)
+        total = sources.count_sources(con, genre_code=genre)
         page = pagination.resolve_page(request.query_params.get("page"), total)
         rows = sources.list_sources(
-            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
+            con, genre_code=genre,
+            limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
         )
         genres = master_data.list_genres(con)
         regions = master_data.list_regions(con)
@@ -938,6 +1008,20 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
 
     genre_by_id = {g["genre_id"]: g["code"] for g in genres}
     region_by_id = {r["region_id"]: r["name"] for r in regions}
+
+    genre_filter_bar = (
+        '<div class="filterbar">'
+        + "".join(
+            f'<a class="{"on" if genre == code else ""}" '
+            f'href="/admin/sources?genre={E(code)}">{E(label)}</a>'
+            for code, label in (
+                [("ALL", "ALL")]
+                + [(g["code"], g["code"]) for g in genres]
+                + [("UNKNOWN", "장르 미확인")]
+            )
+        )
+        + "</div>"
+    )
 
     table_rows = []
     for source in rows:
@@ -1006,12 +1090,17 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
                 region_label,
             ) if v
         ) or '<span class="badge muted">-</span>'
+        tier = source_priority.tier_of(source["source_role"])
+        tier_label = source_priority.label_of(source["source_role"])
         table_rows.append([
             f'<a href="/admin/sources/{source["source_id"]}">'
             f'<code>{E(source["source_key"])}</code><br>{E(source["name"])}</a>',
             E(source["platform"]) + "<br>" + f'<span class="badge muted">{E(source["source_role"])}</span>'
             + "<br>" + genre_region,
+            f'<span class="tierbadge {E(tier.lower())}">{E(tier_label)}</span>'
+            f'<div class="note">{E(tier)}</div>',
             _source_target(source),
+            _source_url_cell(source),
             f'<span class="badge muted">{E(collectors.content_mode(source))}</span>',
             _badge(health, _HEALTH_TONE.get(health, "muted")),
             f'<span class="num">{source["collection_interval_minutes"]}m</span>',
@@ -1066,20 +1155,23 @@ def admin_sources(request: Request, _: str = Depends(require_admin)) -> HTMLResp
         "</p>"
     )
     body = (
-        "<h2>Sources</h2>" + add_form + csv_bar
+        "<h2>Sources</h2>" + genre_filter_bar + add_form + csv_bar
         + _table(
-            ["Source", "Platform / Genre / Region", "Target", "Content Mode", "Health",
-             "Interval", "Last Success / Error", "Items / readable", "Decision",
-             "Collector", "Actions"],
+            ["Source", "Platform / Genre / Region", "Tier", "Target", "URL",
+             "Content Mode", "Health", "Interval", "Last Success / Error",
+             "Items / readable", "Decision", "Collector", "Actions"],
             table_rows,
             empty="no source registered yet",
         )
         + f'<p class="note">Engine root: <code>{E(str(settings.engine_root))}</code>. '
           "Live collection needs the platform's API credentials in <code>.env</code>; "
           "without them a source can still be tested against a recorded snapshot.</p>"
-        + pagination.nav("/admin/sources", {}, page, total)
+        + pagination.nav("/admin/sources", {"genre": genre} if genre != "ALL" else {},
+                         page, total)
     )
-    return HTMLResponse(_page("Sources", "/admin/sources", body, flash=_flash(request)))
+    return HTMLResponse(
+        _page("Sources", "/admin/sources", body, flash=_flash(request), wide=True)
+    )
 
 
 # --- source CSV import/export -------------------------------------------------
@@ -1280,7 +1372,15 @@ def admin_source_detail(
         outcomes = sources.acquisition_outcomes(con)
         upcoming = source_ops.upcoming_yield(con)
         breakdown = source_ops.event_breakdown(con, source_id)
-        recent = intake.recent_items(con, source_id=source_id, limit=10)
+        audit = source_ops.audit_summary(con, source_id)
+        # v0.86.4 Section 40-53: up to 50 recent items, never full-body
+        # bulk loading here - the two lookups below are each one batched
+        # query for the whole page (Section 107-112: no N+1), and only the
+        # Item Audit Detail page (a single row, on click) reads a full body.
+        recent = intake.recent_items(con, source_id=source_id, limit=50)
+        item_ids = [item["source_item_id"] for item in recent]
+        events_by_item = events_api.get_events_by_source_items(con, item_ids)
+        bodies_by_item = content_store.bulk_extracted_text(con, item_ids)
         last_success = intake.last_success_per_source(con)
         last_error = intake.last_error_per_source(con)
 
@@ -1289,6 +1389,18 @@ def admin_source_detail(
     capability = collectors.describe_capability(source["platform"])
     outcome = outcomes.get(source_id, {})
     health = _source_health(source, outcome)
+    tier = source_priority.tier_of(source["source_role"])
+    tier_label = source_priority.label_of(source["source_role"])
+
+    audit_cards = _cards([
+        ("Items", audit.get("items", 0) or 0, "collected from this source"),
+        ("Events", audit.get("events", 0) or 0, "produced by those items"),
+        ("Date Missing", audit.get("date_missing", 0) or 0, "of this source's own events"),
+        ("Time Missing", audit.get("time_missing", 0) or 0, "of this source's own events"),
+        ("Venue Missing", audit.get("venue_missing", 0) or 0, "of this source's own events"),
+        ("Fee Missing", audit.get("fee_missing", 0) or 0, "of this source's own events"),
+        ("DJ Missing", audit.get("dj_missing", 0) or 0, "of this source's own events"),
+    ])
 
     facts = _table(
         ["Field", "Value"],
@@ -1297,6 +1409,8 @@ def admin_source_detail(
             ["Source key", f'<code>{E(source["source_key"])}</code>'],
             ["Platform", E(source["platform"])],
             ["Role", E(source["source_role"])],
+            ["Tier", f'<span class="tierbadge {E(tier.lower())}">{E(tier_label)}</span> '
+                     f'<span class="note">({E(tier)}) - PRIMARY 여부만으로 확인 표시가 지워지지 않습니다</span>'],
             ["Authority", E(source["authority_level"])],
             ["Genre", E(genre_by_id.get(source.get("genre_id")) or "-")],
             ["Region", E(
@@ -1304,6 +1418,7 @@ def admin_source_detail(
                 or ("전국" if source.get("source_role") in ("AGGREGATOR", "DIRECTORY") else "-")
             )],
             ["Target", _source_target(source)],
+            ["Collector / Public URL", _source_url_cell(source)],
             ["Parser", f'<code>{E(collectors._config(source).get("parser") or "board")}</code>'
              if source["platform"] == "WEB" else '<span class="badge muted">-</span>'],
             ["Content Mode",
@@ -1343,17 +1458,49 @@ def admin_source_detail(
 
     recent_rows = []
     for item in recent:
+        event = events_by_item.get(item["source_item_id"])
+        body = bodies_by_item.get(item["source_item_id"])
+        candidate = {
+            "start_time": event.get("start_time") if event else None,
+            "end_time": event.get("end_time") if event else None,
+            "fee": event.get("fee") if event else None,
+            "venue": (event.get("venue") or {}).get("name") if event else None,
+        }
+        hint_count = len(review_hints.hints(candidate, body)) if body else 0
+        # A relative link to the runtime's own public Timeline detail page -
+        # not run through valid_public_url() (that guard is for a source's
+        # own external URL, not an internal route this admin console always
+        # serves alongside itself).
+        public_url = f"/events/{event['id']}" if event else None
+        event_cell = (
+            f'event #{event["id"]} '
+            f'<span class="badge muted">{E(event.get("status") or "-")}</span>'
+            if event else '<span class="badge warn">no event</span>'
+        )
+        public_cell = (
+            f'<a href="{E(public_url)}" target="_blank" rel="noopener noreferrer">'
+            f'Timeline &#8599;</a>' if public_url
+            else '<span class="badge muted">-</span>'
+        )
+        hint_cell = (
+            f'<span class="badge warn">{hint_count} hint(s)</span>' if hint_count
+            else '<span class="badge muted">0</span>'
+        )
         recent_rows.append([
             E(str(item.get("collected_at") or "-")[:19]),
-            f'<a href="{E(item["url"])}" target="_blank" rel="noreferrer noopener">'
-            f'{E(str(item.get("title") or "-")[:70])}</a>' if item.get("url")
-            else E(str(item.get("title") or "-")[:70]),
+            f'<a href="/admin/sources/{source_id}/items/{item["source_item_id"]}">'
+            f'{E(str(item.get("title") or "-")[:70])}</a>',
             E(str(item.get("published_at") or "-")[:19]),
             _badge(item.get("ingest_state") or "-",
                    "ok" if item.get("ingest_state") == "INGESTED" else "muted"),
+            event_cell,
+            public_cell,
+            hint_cell,
         ])
     recent_table = _table(
-        ["Collected", "Title", "Published", "Ingest state"], recent_rows,
+        ["Collected", "Title (audit detail)", "Published", "Fetch/Ingest State",
+         "Canonical Event", "Public URL", "Review Hints"],
+        recent_rows,
         empty="nothing collected from this source yet",
     )
 
@@ -1374,12 +1521,171 @@ def admin_source_detail(
         f'<p class="sub"><a href="/admin/sources">&larr; Sources</a></p>'
         f"<h2>{E(source['name'])}</h2>"
         + facts + health_panel + coverage
+        + "<h2>Source Audit Summary</h2>" + audit_cards
+        + '<p class="note">"Missing" is the extracted/canonical event field being empty - '
+          'not the same as a "review hint" (the original text had something extraction did '
+          'not catch; see each item\'s own audit detail).</p>'
         + "<h2>Recent Items</h2>" + recent_table
         + raw_config
         + '<p class="note"><a href="/admin/sources">back to Sources</a></p>'
     )
     return HTMLResponse(
-        _page(f"Source: {source['name']}", "/admin/sources", body, flash=_flash(request))
+        _page(f"Source: {source['name']}", "/admin/sources", body, flash=_flash(request),
+              wide=True)
+    )
+
+
+def _extracted_fields_table(event: dict[str, Any] | None) -> str:
+    """(C) Extracted - Section 40-53. `event` is already `events_api.present()`'s
+    own dict, the same one every other consumer of an event reads - never a
+    second, parallel reading of the row.
+
+    No numeric confidence field exists anywhere in this codebase to show
+    here (investigated first, per Section 18-21: the engine's own Evidence
+    dataclass has no such field, only the enum `status` already shown) -
+    "Confidence"/"Evidence" rows say so plainly rather than a placeholder
+    that implies something is being hidden.
+    """
+    if event is None:
+        return '<p class="note">아직 이 게시물로부터 생성된 canonical event가 없습니다.</p>'
+    venue = event.get("venue") or {}
+    rows = [
+        ["Date", E(event.get("date") or "-")],
+        ["Start", E(event.get("start_time") or "-")],
+        ["End", E(event.get("end_time") or "-")],
+        ["Type", E(event.get("event_type_label") or "-")],
+        ["Genre", E(event.get("genre_label") or "-")],
+        ["Resolved Venue", E(venue.get("name") or "-")
+         + (f' <span class="badge muted">{E(venue.get("status") or "-")}</span>'
+            if venue.get("status") else "")],
+        ["DJ", E(event.get("dj") or "-")],
+        ["Fee", E(event.get("fee_display_text")
+                  or (f'{event["fee"]:,}원' if event.get("fee") is not None else "-"))],
+        ["Region", E(event.get("region") or "-")],
+        ["Status", E(event.get("status") or "-") + " - "
+         + E(event.get("status_label") or "-")],
+        ["Human Reviewed", "예" if event.get("human_reviewed") else "아니오"],
+        ["Confidence (numeric)", '<span class="note">해당 필드 없음 - 엔진은 숫자 confidence를 '
+         "기록하지 않고 위 Status(엔진 상태)만 있습니다</span>"],
+    ]
+    return _table(["Field", "Value"], rows, empty="-")
+
+
+@router.get("/admin/sources/{source_id}/items/{source_item_id}", response_class=HTMLResponse)
+def admin_source_item_detail(
+    source_id: int, source_item_id: int, request: Request,
+    _: str = Depends(require_admin),
+) -> HTMLResponse:
+    """The Item Audit Detail (v0.86.4 Section 40-53, 93-95): Original ->
+    Acquired -> Extracted -> Public, side by side, so an operator can spot
+    "in the original but missing from Extracted" or "shown in Public but
+    different from the original" without cross-referencing four screens by
+    hand. Read-only (Section 107-112): nothing here saves anything."""
+    with _connection() as con:
+        source = sources.get_source(con, source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        item = content_store.detail(con, source_item_id)
+        if item is None or item.get("source_id") != source_id:
+            raise HTTPException(status_code=404, detail="item not found on this source")
+        event = events_api.get_event_by_source_item(con, source_item_id)
+        confirmation = timeline_settings.get_settings(con)
+
+    content = item.get("content") or {}
+    body_text = content.get("extracted_text")
+    collector_url = item.get("url")
+    public_source_url = (
+        events_api.valid_public_url(events_api.resolve_public_source_url(collector_url))
+        if collector_url else None
+    )
+
+    original = _table(["Field", "Value"], [
+        ["Source", E(item.get("source_name") or "-")
+         + f' <span class="tierbadge {E(source_priority.tier_of(item.get("source_role")).lower())}">'
+         f'{E(source_priority.label_of(item.get("source_role")))}</span>'],
+        ["Platform", E(item.get("platform") or "-")],
+        ["Published At", E(str(item.get("published_at") or "-")[:19])],
+        ["Collected At", E(str(item.get("collected_at") or "-")[:19])],
+        ["Collector URL", f'<span title="{E(collector_url)}">{E(_truncate(collector_url, 60))}</span>'
+         if collector_url else "-"],
+        ["Public URL", (
+            f'<a href="{E(public_source_url)}" target="_blank" rel="noopener noreferrer">'
+            f'원문보기 &#8599;</a>'
+        ) if public_source_url else '<span class="badge warn">no public URL</span>'],
+    ], empty="-")
+
+    # (B) Acquired - Section 109: raw stored text is rendered escaped, never
+    # as trusted HTML. This is DanceMate's own stored copy, explicitly
+    # labelled as such - never presented as "the real site's screen"
+    # (Section 88-91): the Public URL above, opened in a new tab, is the
+    # only authoritative view of the original.
+    shown_text = (body_text or "")[:4000]
+    truncated_note = (
+        '<p class="note">(4000자로 잘림 - 전체 원문은 위 Public URL에서 확인)</p>'
+        if body_text and len(body_text) > 4000 else ""
+    )
+    acquired = _table(["Field", "Value"], [
+        ["Fetch/Acquisition Status", E(content.get("acquisition_status") or "-")],
+        ["Acquisition Method", E(content.get("acquisition_method") or "-")],
+        ["HTTP Status", E(str(content.get("http_status") or "-"))],
+        ["Content Length", E(str(content.get("content_length") or "-"))],
+        ["Image Count", E(str(content.get("image_count") or "-"))],
+        ["Title (stored)", E(item.get("title") or "-")],
+    ], empty="-") + (
+        f'<div class="rawtext">{E(shown_text) or "(본문 없음 - 수집된 텍스트가 없습니다)"}</div>'
+        + truncated_note
+    )
+
+    extracted = _extracted_fields_table(event)
+
+    if event is not None:
+        preview = (
+            f'<div class="previewbox"><ul class="events" style="list-style:none;padding:0;margin:0">'
+            f'<li class="event">'
+            f'{public._timeline_line1(event, confirmation_settings=confirmation)}'
+            f'{public._timeline_line2(event)}'
+            f'</li>'
+            f'{public._timeline_line3(event)}'
+            "</ul></div>"
+            '<p class="note">실제 Public Timeline과 동일한 렌더러(runtime/public.py)를 '
+            "그대로 호출한 결과입니다 - 별도로 유지되는 admin 전용 포맷터가 아닙니다.</p>"
+        )
+    else:
+        preview = '<p class="note">canonical event가 없어 Public 화면에 표시되지 않습니다.</p>'
+
+    candidate = {
+        "start_time": event.get("start_time") if event else None,
+        "end_time": event.get("end_time") if event else None,
+        "fee": event.get("fee") if event else None,
+        "venue": (event.get("venue") or {}).get("name") if event else None,
+    }
+    hints = review_hints.hints(candidate, body_text) if body_text else []
+    hints_html = (
+        "".join(
+            f'<span class="hint {E(h["severity"])}">[{E(h["severity"])}] '
+            f'{E(h["field"])}: {E(h["message"])}</span>'
+            for h in hints
+        ) or '<p class="note">아무 힌트도 없습니다 (본문과 추출 결과가 겉보기에 일치합니다).</p>'
+    )
+
+    body = (
+        f'<p class="sub"><a href="/admin/sources/{source_id}">&larr; {E(source["name"])}</a></p>'
+        f'<h2>{E(item.get("title") or f"Item #{source_item_id}")}</h2>'
+        f'<style>{public.STYLE}</style>'
+        '<div class="compare">'
+        f'<div class="col"><h3>(A) Original</h3>{original}</div>'
+        f'<div class="col"><h3>(B) Acquired</h3>{acquired}</div>'
+        f'<div class="col"><h3>(C) Extracted</h3>{extracted}</div>'
+        f'<div class="col"><h3>(D) Public Display</h3>{preview}</div>'
+        "</div>"
+        "<h2>Review Hints</h2>"
+        '<p class="note">추출 결과를 바로잡지 않습니다 - 원문과 다를 수 있는 지점만 알려줍니다 '
+        "(runtime/review_hints.py, 기존 로직 재사용).</p>"
+        f"{hints_html}"
+    )
+    return HTMLResponse(
+        _page(f"Item #{source_item_id}", "/admin/sources", body, flash=_flash(request),
+              wide=True)
     )
 
 
@@ -2160,6 +2466,61 @@ def admin_genre_action(
     with _connection() as con:
         master_data.set_genre_enabled(con, genre_id, action == "enable")
     return _back("/admin/master", f"genre {action}d")
+
+
+# --- Timeline confirmation ("?") settings (v0.86.4 Section 16-21, 72-75) ----
+
+_STATUS_CHECKLIST_LABELS = {
+    "POSSIBLE": "확인 필요 (POSSIBLE)",
+    "EXPECTED": "예정 (EXPECTED)",
+    "CONFLICT": "정보 충돌 (CONFLICT)",
+    "UNKNOWN": "확인 필요 - 상태 미기록 (UNKNOWN)",
+}
+
+
+@router.get("/admin/settings", response_class=HTMLResponse)
+def admin_settings_page(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    """Public Timeline의 "?" 확인 표시를 언제 보여줄지 정하는 화면 (Section
+    16-21). VERIFIED는 체크박스 자체가 없다 - 켜고 끄는 대상이 아니라 항상
+    고정으로 표시하지 않는다(Section 73)."""
+    with _connection() as con:
+        current = timeline_settings.get_settings(con)
+
+    checklist = "".join(
+        f'<label class="chip"><input type="checkbox" name="statuses" value="{code}"'
+        f'{" checked" if code in current["statuses"] else ""}> '
+        f"{E(label)}</label>"
+        for code, label in _STATUS_CHECKLIST_LABELS.items()
+    )
+    body = f"""
+<h2>사용자 Timeline 확인 표시</h2>
+<p class="note">Public Timeline에서 행사 종류 뒤에 붙는 작은 "?" 표시입니다
+(예: "밀롱가 ?"). 예전의 "확인 필요" 텍스트 뱃지를 대체합니다 - 문구가 아니라
+아이콘이고, 실제 시간/장소가 표시되어 있어도 함께 뜰 수 있습니다.</p>
+<form method="post" action="/admin/settings/timeline-confirmation">
+  <label class="chip"><input type="checkbox" name="enabled" value="1"
+    {"checked" if current["enabled"] else ""}> 전체 사용 (끄면 "?" 표시가 전혀 나타나지 않습니다)</label>
+  <div class="filters" style="margin-top:10px">
+    <div class="row">{checklist}</div>
+  </div>
+  <p class="note">확인됨 (VERIFIED)은 목록에 없습니다 - 증거 게이트를 통과한
+  행사는 관리자가 다시 "?"로 켤 수 없도록 고정되어 있습니다. 취소/종료된
+  행사도 각자의 기존 표시가 우선이라 이 설정과 무관합니다.</p>
+  <div class="actions"><button class="primary" type="submit">저장</button></div>
+</form>"""
+    return HTMLResponse(_page("Settings", "/admin/settings", body, flash=_flash(request)))
+
+
+@router.post("/admin/settings/timeline-confirmation")
+def admin_save_timeline_confirmation_settings(
+    enabled: str = Form("0"),
+    statuses: list[str] = Form(default=[]),
+    _: str = Depends(require_admin),
+) -> RedirectResponse:
+    chosen = {s for s in statuses if s in timeline_settings.CONFIGURABLE_STATUSES}
+    with _connection() as con:
+        timeline_settings.set_settings(con, enabled=enabled == "1", statuses=chosen)
+    return _back("/admin/settings", "Timeline 확인 표시 설정을 저장했습니다")
 
 
 # --- JSON API ---------------------------------------------------------------

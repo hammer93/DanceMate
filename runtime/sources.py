@@ -106,8 +106,23 @@ def validate(
         raise SourceValidationError("; ".join(problems))
 
 
+def _genre_filter_clause(genre_code: str | None) -> tuple[str | None, list[Any]]:
+    """A source's own `genre_id` is a single nullable FK (migration 003) -
+    no multi-genre join table exists for sources the way `venue_genres`
+    (migration 028) does for venues, so "multi-genre source counted in
+    multiple buckets" (Section 27) does not apply to today's data model.
+    A source with no genre at all is its own real bucket, `UNKNOWN`
+    (Section 28) - never silently folded into `ALL` or dropped."""
+    if not genre_code or genre_code == "ALL":
+        return None, []
+    if genre_code == "UNKNOWN":
+        return "s.genre_id IS NULL", []
+    return "g.code = %s", [genre_code]
+
+
 def list_sources(
-    con, *, enabled_only: bool = False, limit: int | None = None, offset: int = 0
+    con, *, enabled_only: bool = False, genre_code: str | None = None,
+    limit: int | None = None, offset: int = 0
 ) -> list[dict[str, Any]]:
     sql = (
         "SELECT s.*, g.code AS genre_code, r.name AS region_name, "
@@ -116,24 +131,39 @@ def list_sources(
         "LEFT JOIN genres g ON g.genre_id = s.genre_id "
         "LEFT JOIN regions r ON r.region_id = s.region_id"
     )
+    conditions = []
+    params: list[Any] = []
     if enabled_only:
-        sql += " WHERE s.enabled"
+        conditions.append("s.enabled")
+    clause, clause_params = _genre_filter_clause(genre_code)
+    if clause:
+        conditions.append(clause)
+        params.extend(clause_params)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY s.source_key"
-    params: tuple[Any, ...] = ()
     if limit is not None:
         sql += " LIMIT %s OFFSET %s"
-        params = (limit, offset)
+        params += [limit, offset]
     with con.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(sql, tuple(params))
         return _rows(cur)
 
 
-def count_sources(con, *, enabled_only: bool = False) -> int:
-    sql = "SELECT count(*) FROM sources"
+def count_sources(con, *, enabled_only: bool = False, genre_code: str | None = None) -> int:
+    sql = "SELECT count(*) FROM sources s LEFT JOIN genres g ON g.genre_id = s.genre_id"
+    conditions = []
+    params: list[Any] = []
     if enabled_only:
-        sql += " WHERE enabled"
+        conditions.append("s.enabled")
+    clause, clause_params = _genre_filter_clause(genre_code)
+    if clause:
+        conditions.append(clause)
+        params.extend(clause_params)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     with con.cursor() as cur:
-        cur.execute(sql)
+        cur.execute(sql, tuple(params))
         return cur.fetchone()[0]
 
 

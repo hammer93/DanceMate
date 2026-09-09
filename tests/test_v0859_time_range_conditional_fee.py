@@ -71,10 +71,15 @@ def test_timeline_line1_marks_next_day_end():
     assert "23:00~02:00<sup>+1</sup>" in line1
 
 
-def test_timeline_line1_still_flags_an_unconfirmed_bare_clock():
+def test_timeline_line1_shows_an_unconfirmed_bare_clock_unflagged():
+    """v0.86.4 (Section 4-6): a real clock value is never followed by its
+    own contradicting "시간 미확인" tag - the ambiguity, if it matters, is
+    the "?" indicator's job elsewhere, not a second caveat glued onto the
+    clock itself."""
     line1 = public._timeline_line1(
         _event(end_time=None, time_confirmed=False), now=_NOW)
-    assert "시간 미확인" in line1
+    assert "20:00" in line1
+    assert "시간 미확인" not in line1
 
 
 def test_timeline_shows_the_conditional_fee_text_not_the_bare_amount():

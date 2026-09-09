@@ -353,14 +353,18 @@ def test_a_daum_source_shows_its_own_real_name_not_the_platform_brand(pg, unique
     assert found[0]["source_link"]["label"] != "Daum Cafe"
 
 
-def test_a_time_the_post_did_not_qualify_is_shown_but_flagged():
+def test_a_time_the_post_did_not_qualify_is_shown_unflagged():
     """'5시30' is very likely half past five in the evening. The post does not
-    say so, the engine refused to guess, and neither does the page."""
+    say so and the engine refused to guess - but showing a real value and
+    then telling the reader in the same breath it is unknown is exactly the
+    self-contradiction v0.86.4 (Section 4-6) removed. The value stands,
+    unflagged; the ambiguity, if it matters, is a job for the "?" indicator
+    elsewhere, never a second caveat glued onto the clock itself."""
     rendered = public._when_line({"date": "2026-09-12", "start_time": "05:30",
                                   "end_time": "09:30", "ends_next_day": False,
                                   "time_confirmed": False})
     assert "05:30" in rendered
-    assert "시간 미확인" in rendered
+    assert "시간 미확인" not in rendered
 
 
 def test_a_time_the_post_marked_carries_no_caveat():

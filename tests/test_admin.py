@@ -30,6 +30,7 @@ ADMIN_PAGES = (
     "/admin/intake",
     "/admin/review",
     "/admin/usage",
+    "/admin/settings",
 )
 
 ADMIN_APIS = (
