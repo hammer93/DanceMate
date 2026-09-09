@@ -264,9 +264,13 @@ def test_sources_page_shows_source_tier(client_v0864, pg):
 
 @pytest.mark.postgres
 def test_sources_page_distinguishes_collector_from_public_url(client_v0864, pg):
+    """v0.86.5 merged the separate URL column into the Target cell and
+    dropped the old "Collector"/"Public" text labels (Section 43: no
+    redundant labels) - the distinction survives structurally instead,
+    as two different links inside the same `.targetcell`."""
     body = _admin_get(client_v0864, "/admin/sources")
-    assert '<span class="lbl">Collector</span>' in body
-    assert '<span class="lbl">Public</span>' in body
+    assert 'class="targetcell"' in body
+    assert 'class="target-public"' in body
 
 
 @pytest.mark.postgres
