@@ -44,6 +44,15 @@ ALIAS_ADD = "ALIAS_ADD"
 ALIAS_REMOVE = "ALIAS_REMOVE"
 GENRE_ADD = "GENRE_ADD"
 GENRE_REMOVE = "GENRE_REMOVE"
+DELETE = "DELETE"
+
+# v0.86.7 Section 19: the three genres this product actually supports today
+# are protected from deletion regardless of reference count - no `is_core`/
+# `system` column exists to check instead (investigated first), and adding
+# one for three fixed values would be more machinery than the guarantee
+# needs. A genre a future release wants to retire for real is a schema
+# decision, not a button click.
+CORE_GENRE_CODES = frozenset({"TANGO", "SALSA", "SWING"})
 
 # Fields the console may change, per entity. A code is absent from every list
 # on purpose: see the module docstring.
@@ -317,6 +326,71 @@ def remove_alias(con, venue_alias_id: int, *, reviewer: str = "admin",
             before={"alias": alias["alias"]}, detail=f"removed alias {alias['alias']}",
         )
     return {"alias": alias, "events_affected": in_use}
+
+
+def _usage_total(usage: dict[str, int]) -> int:
+    return sum(usage.values())
+
+
+def delete_genre(con, genre_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
+    """Delete a genre with nothing else taken with it (v0.86.7 Section
+    14-19). Blocks outright when anything still references it - no
+    `unlink`/`force` escape hatch the way `venue_resolution.delete_venue()`
+    has one, and deliberately so (Section 17-18): a genre or region has no
+    single natural "put it back in a queue" fallback the way an unresolved
+    venue string does, so cascading in any form stays out of scope this
+    release. The three core genres are refused unconditionally, reference
+    count or not - see `CORE_GENRE_CODES`'s own docstring for why.
+    """
+    genre = master_data.get_genre(con, genre_id)
+    if genre is None:
+        raise EditError(f"no genre {genre_id}")
+    if genre["code"] in CORE_GENRE_CODES:
+        raise EditError(
+            f"{genre['name']} ({genre['code']})은 핵심 장르라 삭제할 수 없습니다"
+        )
+    usage = master_data.genre_usage(con, genre_id)
+    if _usage_total(usage):
+        raise EditError(
+            f"{genre['name']} 장르는 아직 사용 중이라 삭제할 수 없습니다 — "
+            f"Venue {usage['venues']}건, Organizer {usage['organizers']}건, "
+            f"Source {usage['sources']}건, Event {usage['events']}건"
+        )
+    with con.transaction():
+        master_data.delete_genre(con, genre_id)
+        record(
+            con, entity_type=GENRE, entity_id=genre_id, action=DELETE,
+            reviewer=reviewer, entity_name=genre["name"],
+            before={"code": genre["code"], "name": genre["name"]},
+            detail=f"deleted genre {genre['code']} (0 references)",
+        )
+    return {"genre": genre}
+
+
+def delete_region(con, region_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
+    """The region twin of `delete_genre()`. Regions carry no core-protection
+    list (Section 20) - a region is operational master data, not part of
+    the product's own fixed taxonomy, so an unreferenced one is always
+    deletable."""
+    region = master_data.get_region(con, region_id)
+    if region is None:
+        raise EditError(f"no region {region_id}")
+    usage = master_data.region_usage(con, region_id)
+    if _usage_total(usage):
+        raise EditError(
+            f"{region['name']} 지역은 아직 사용 중이라 삭제할 수 없습니다 — "
+            f"Venue {usage['venues']}건, Organizer {usage['organizers']}건, "
+            f"Source {usage['sources']}건, Event {usage['events']}건"
+        )
+    with con.transaction():
+        master_data.delete_region(con, region_id)
+        record(
+            con, entity_type=REGION, entity_id=region_id, action=DELETE,
+            reviewer=reviewer, entity_name=region["name"],
+            before={"code": region["code"], "name": region["name"]},
+            detail=f"deleted region {region['code']} (0 references)",
+        )
+    return {"region": region}
 
 
 def history(con, *, entity_type: str | None = None, entity_id: int | None = None,

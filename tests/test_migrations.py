@@ -40,8 +40,9 @@ def test_migrations_are_discovered_in_order():
         "028_venue_genres",
         "029_fee_display_text",
         "030_timeline_confirmation_settings",
+        "031_master_data_delete_action",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():
