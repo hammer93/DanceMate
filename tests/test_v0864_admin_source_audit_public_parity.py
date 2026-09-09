@@ -273,13 +273,19 @@ def test_sources_page_distinguishes_collector_from_public_url(client_v0864, pg):
 def test_sources_page_never_links_a_json_api_endpoint_as_the_public_url(client_v0864, pg):
     """TangoNOW's raw source_url is a Firestore REST document; Tango
     Calendar Korea's is an `/api/events/{uuid}` endpoint - neither must
-    ever appear as an `href` (Section 25/85-87). Collector URLs are shown
-    as plain text/`title`, never as a link, so this holds regardless of
-    which sources happen to be seeded on this database."""
+    ever be the target of a "원문보기" Public URL link (Section 25/85-87).
+
+    The pre-existing "Open Source" button in the unrelated Target column
+    (`_source_target()`, untouched this release) deliberately links the raw
+    collector endpoint on purpose - that is what it is for, clearly labelled
+    as the collector's own target, not a claim about a public page - so a
+    blanket "no href anywhere on the page" scan would wrongly fail on it.
+    This checks only the "원문보기" links this release actually added.
+    """
     import re
 
     body = _admin_get(client_v0864, "/admin/sources")
-    for href in re.findall(r'href="([^"]*)"', body):
+    for href in re.findall(r'href="([^"]*)"[^>]*>원문보기', body):
         assert "firestore.googleapis.com" not in href
         assert "/api/events/" not in href
 
@@ -307,13 +313,13 @@ def test_settings_save_round_trips_and_is_reset_afterward(client_v0864, pg):
             auth=_AUTH, follow_redirects=False,
         )
         assert response.status_code == 303
-        con = db.connect(load_settings(), autocommit=True)
-        saved = timeline_settings.get_settings(con)
+        with db.connect(load_settings(), autocommit=True) as con:
+            saved = timeline_settings.get_settings(con)
         assert saved == {"enabled": True, "statuses": {"CONFLICT"}}
     finally:
-        con = db.connect(load_settings(), autocommit=True)
-        timeline_settings.set_settings(
-            con, enabled=True, statuses=set(timeline_settings.CONFIGURABLE_STATUSES))
+        with db.connect(load_settings(), autocommit=True) as con:
+            timeline_settings.set_settings(
+                con, enabled=True, statuses=set(timeline_settings.CONFIGURABLE_STATUSES))
 
 
 @pytest.mark.postgres
@@ -344,14 +350,19 @@ def test_source_detail_page_shows_the_audit_summary(client_v0864, pg):
 
 @pytest.mark.postgres
 def test_source_detail_recent_items_table_has_the_new_columns(client_v0864, pg):
-    from runtime import sources as sources_module
+    """`_table()` renders no `<th>` row at all when a source has zero
+    recent items (its own, pre-existing "empty" placeholder branch) - so
+    this needs a source that has actually collected something, not just
+    the alphabetically-first one, which a bare fresh database may not have."""
+    from runtime import intake, sources as sources_module
 
-    rows = sources_module.list_sources(pg, limit=1)
-    if not rows:
-        pytest.skip("no sources seeded on this database")
-    body = _admin_get(client_v0864, f"/admin/sources/{rows[0]['source_id']}")
-    for header in ("Canonical Event", "Public URL", "Review Hints"):
-        assert header in body
+    for row in sources_module.list_sources(pg, limit=200):
+        if intake.recent_items(pg, source_id=row["source_id"], limit=1):
+            body = _admin_get(client_v0864, f"/admin/sources/{row['source_id']}")
+            for header in ("Canonical Event", "Public URL", "Review Hints"):
+                assert header in body
+            return
+    pytest.skip("no source has collected any items on this database")
 
 
 @pytest.mark.postgres
