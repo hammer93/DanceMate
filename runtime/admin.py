@@ -196,6 +196,24 @@ padding:8px 10px;margin:8px 0 0}
 .hint.WARN{color:var(--bad)}
 .hint.INFO{color:var(--warn)}
 .previewbox{border:1px dashed var(--line);border-radius:8px;padding:10px 12px;margin-top:8px}
+/* v0.86.5 Admin Source Dense Layout: seven columns instead of thirteen,
+   most of the width handed to Source/Target - the two columns whose
+   content can actually be long - and short admin metadata (Content Mode,
+   collector capability, Health, Interval, Decision) folded into compact,
+   at-most-three-line cells (.metacell) instead of one column each. */
+table.sources-dense{table-layout:fixed}
+table.sources-dense th:nth-child(1),table.sources-dense td:nth-child(1){width:15%}
+table.sources-dense th:nth-child(2),table.sources-dense td:nth-child(2){width:9%}
+table.sources-dense th:nth-child(3),table.sources-dense td:nth-child(3){width:30%}
+table.sources-dense th:nth-child(4),table.sources-dense td:nth-child(4){width:14%}
+table.sources-dense th:nth-child(5),table.sources-dense td:nth-child(5){width:12%}
+table.sources-dense th:nth-child(6),table.sources-dense td:nth-child(6){width:12%}
+table.sources-dense th:nth-child(7),table.sources-dense td:nth-child(7){width:8%}
+table.sources-dense td{padding:6px 8px;font-size:12px;line-height:1.35}
+.metacell{display:flex;flex-direction:column;gap:2px}
+.targetcell{word-break:break-all}
+.target-pub-row{color:var(--muted);font-size:11px;margin-top:2px}
+.target-pub-row a{word-break:break-all}
 """
 
 NAV = (
@@ -253,13 +271,15 @@ def _cards(items: list[tuple[str, Any, str]]) -> str:
     return f'<div class="cards">{cells}</div>'
 
 
-def _table(headers: list[str], rows: list[list[str]], *, empty: str) -> str:
+def _table(headers: list[str], rows: list[list[str]], *, empty: str,
+          table_class: str = "") -> str:
+    cls = f' class="{E(table_class)}"' if table_class else ""
     if not rows:
-        return f'<div class="tablewrap"><table><tbody><tr><td>{E(empty)}</td>' \
+        return f'<div class="tablewrap"><table{cls}><tbody><tr><td>{E(empty)}</td>' \
                "</tr></tbody></table></div>"
     head = "".join(f"<th>{E(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
-    return f'<div class="tablewrap"><table><thead><tr>{head}</tr></thead>' \
+    return f'<div class="tablewrap"><table{cls}><thead><tr>{head}</tr></thead>' \
            f"<tbody>{body}</tbody></table></div>"
 
 
@@ -766,14 +786,31 @@ def admin_dashboard(request: Request, _: str = Depends(require_admin)) -> HTMLRe
 
 # --- sources ----------------------------------------------------------------
 
-def _source_decision(op: dict[str, Any]) -> str:
-    """What a person decided, and what the numbers suggest if nobody has.
-
-    The recommendation is offered with its reason attached, so an operator can
-    disagree with the reasoning rather than with a verdict.
-    """
+def _source_decision_badge(op: dict[str, Any]) -> str:
+    """What a person decided, or what the numbers suggest if nobody has -
+    the small, always-visible half of `_source_decision_form()` (v0.86.5
+    Section 3/62: the Decision column is gone, folded into Status/Last Run
+    as a compact badge, with the recording form itself moved into Actions
+    behind its own `<details>` - Section 13/43: a bulky select+input+button
+    form was never "short metadata" and does not belong in a dense cell,
+    but the CURRENT decision is exactly the kind of short status a reader
+    wants at a glance without expanding anything)."""
     if not op:
         return "-"
+    decided = op.get("operational_decision")
+    recommended = op.get("recommended")
+    if decided:
+        return _badge(decided, source_ops.TONES.get(decided, "muted"))
+    return _badge(f"권고: {recommended}", "muted")
+
+
+def _source_decision_form(op: dict[str, Any]) -> str:
+    """The Record-a-decision form - unchanged behaviour, just no longer
+    rendered inline in a dedicated column (v0.86.5). Collapsed behind its
+    own `<details>` in Actions so a row stays compact until an operator
+    actually wants to change something."""
+    if not op:
+        return ""
     decided = op.get("operational_decision")
     recommended = op.get("recommended")
     options = "".join(
@@ -781,12 +818,9 @@ def _source_decision(op: dict[str, Any]) -> str:
         f"{E(source_ops.LABELS[d])}</option>"
         for d in source_ops.DECISIONS
     )
-    current = (
-        _badge(decided, source_ops.TONES.get(decided, "muted"))
-        + f'<div class="note">{E(str(op.get("decision_reason") or ""))[:70]}</div>'
-        if decided else
-        _badge(f"권고: {recommended}", "muted")
-        + f'<div class="note">{E(op.get("recommendation_reason") or "")}</div>'
+    reason_note = (
+        f'<div class="note">{E(str(op.get("decision_reason") or ""))[:70]}</div>' if decided
+        else f'<div class="note">{E(op.get("recommendation_reason") or "")}</div>'
     )
     form = (
         f'<form class="inline" method="post" '
@@ -795,7 +829,10 @@ def _source_decision(op: dict[str, Any]) -> str:
         '<input name="reason" placeholder="이유 (선택)" style="width:150px">'
         "<button>Record</button></form>"
     )
-    return current + form
+    return (
+        '<details><summary>Decision</summary>'
+        f"{reason_note}{form}</details>"
+    )
 
 
 def _source_yield(found: dict[str, Any], op: dict[str, Any] | None = None) -> str:
@@ -879,35 +916,105 @@ def _source_target(source: dict[str, Any]) -> str:
     return "".join(parts) + open_link
 
 
-def _source_url_cell(source: dict[str, Any]) -> str:
-    """Collector URL vs Public URL, shown distinctly (v0.86.4 Section 82-92).
-
-    A source's own configured `url` is what the collector fetches - for
-    Tango Calendar Korea (an API detail endpoint) and TangoNOW (a raw
-    Firestore document URL) that is never a page a human should be sent to.
-    `events_api.resolve_public_source_url()`/`valid_public_url()` are the
-    exact same functions the live Timeline already calls to pick a real
-    page (Section 69: no separate/duplicate resolution logic here) - the
-    "원문보기 ↗" link only ever points at that resolved result, never at the
-    raw collector URL, and never opens in an iframe (Section 92).
-    """
-    collector_url = source.get("url")
+def _public_link_html(collector_url: str | None) -> str:
+    """The "원문보기 ↗" link for a source's own resolved Public URL, or an
+    honest "no public URL" badge - the shared half of `_source_url_cell()`
+    (detail/item-audit pages, unchanged) and the dense list view's merged
+    Target cell (v0.86.5 Section 6-9), so both ever call the one resolver
+    (`events_api.resolve_public_source_url()`/`valid_public_url()`) rather
+    than each keeping their own copy of this logic."""
     public_url = (
         events_api.valid_public_url(events_api.resolve_public_source_url(collector_url))
         if collector_url else None
     )
+    if public_url:
+        return (f'<a class="target-public" href="{E(public_url)}" target="_blank" '
+                f'rel="noopener noreferrer" title="{E(public_url)}">원문보기 &#8599;</a>')
+    return '<span class="badge warn">no public URL</span>'
+
+
+def _source_url_cell(source: dict[str, Any]) -> str:
+    """Collector URL vs Public URL, shown distinctly (v0.86.4 Section 82-92).
+    Used by the source/item detail pages (their own vertical facts tables,
+    untouched by v0.86.5's list-view density work - Section 47).
+
+    A source's own configured `url` is what the collector fetches - for
+    Tango Calendar Korea (an API detail endpoint) and TangoNOW (a raw
+    Firestore document URL) that is never a page a human should be sent to.
+    The "원문보기 ↗" link only ever points at the resolved result, never at
+    the raw collector URL, and never opens in an iframe (Section 92).
+    """
+    collector_url = source.get("url")
     collector_html = (
         f'<span title="{E(collector_url)}">{E(_truncate(collector_url, 40))}</span>'
         if collector_url else '<span class="badge muted">-</span>'
     )
-    public_html = (
-        f'<a href="{E(public_url)}" target="_blank" rel="noopener noreferrer" '
-        f'title="{E(public_url)}">원문보기 &#8599;</a>'
-        if public_url else '<span class="badge warn">no public URL</span>'
-    )
     return (
         f'<div class="urlcell"><span class="lbl">Collector</span>{collector_html}'
-        f'<span class="lbl">Public</span>{public_html}</div>'
+        f'<span class="lbl">Public</span>{_public_link_html(collector_url)}</div>'
+    )
+
+
+def _source_target_and_public(source: dict[str, Any]) -> str:
+    """Target + Public URL merged into one cell (v0.86.5 Section 6-9, 40):
+    the dense list view's replacement for the separate "Target" and "URL"
+    columns v0.86.4 had. `_source_target()` still shows the collector's own
+    target (a URL, or the search queries a query-driven source uses) with
+    its own "Open Source" button pointed at the raw collector value - kept
+    as-is, since for TangoNOW/Tango Calendar Korea that is a genuinely
+    different, separately useful link than the resolved Public URL added
+    below it (Section 2: no information removed). Nothing is shown twice:
+    a WEB/DIRECTORY source's collector URL is not repeated under a second
+    "Collector" label the way the old URL column did (Section 43).
+    """
+    target_html = _source_target(source)
+    public_html = _public_link_html(source.get("url"))
+    return (
+        f'<div class="targetcell">{target_html}'
+        f'<div class="target-pub-row">↳ {public_html}</div></div>'
+    )
+
+
+def _source_meta_cell(source: dict[str, Any], health: str,
+                      capability: dict[str, Any]) -> str:
+    """Content Mode + collector capability + Health + Interval, one cell,
+    at most 3 logical lines (v0.86.5 Section 13-18): four short admin-
+    operational facts that each used to cost their own column width for a
+    value rarely more than a couple of words long."""
+    mode = collectors.content_mode(source)
+    cap_tone = "ok" if capability["live"] else "warn"
+    cap_label = "LIVE" if capability["live"] else "SNAPSHOT"
+    line1 = (f'<span class="badge muted" title="{E(mode)}">{E(mode)}</span> '
+             f'<span class="badge {cap_tone}" title="{E(capability["detail"])}">{cap_label}</span>')
+    line2 = _badge(health, _HEALTH_TONE.get(health, "muted"))
+    line3 = f'<span class="num">{source["collection_interval_minutes"]}m</span>'
+    return f'<div class="metacell"><div>{line1}</div><div>{line2}</div><div>{line3}</div></div>'
+
+
+def _source_genre_tier_cell(genre_region_html: str, tier: str, tier_label: str) -> str:
+    """Genre/Region + Tier, one cell (v0.86.5 Section 5): a source's genre
+    and region badges stay - Section 2 forbids dropping information - the
+    only change is the tier badge now shares this cell instead of its own
+    column."""
+    return (
+        f'<div class="metacell"><div>{genre_region_html}</div>'
+        f'<div><span class="tierbadge {E(tier.lower())}">{E(tier_label)}</span></div></div>'
+    )
+
+
+def _source_status_cell(source_id: int, last_success: dict[int, Any],
+                        last_error: dict[int, dict[str, Any]],
+                        op: dict[str, Any]) -> str:
+    """Last Success/Error + the current Decision badge, one cell (v0.86.5
+    Section 3/62): the bulky Decision *form* moves to Actions behind its
+    own `<details>` (Section 13/43 - a select+input+button was never
+    "short metadata"), but the decision itself is exactly the kind of
+    glanceable status this cell already exists for."""
+    return (
+        '<div class="metacell">'
+        f'<div>{_last_success_text(last_success.get(source_id))}</div>'
+        f'<div>{_last_error_text(last_error.get(source_id))}</div>'
+        f'<div>{_source_decision_badge(op)}</div></div>'
     )
 
 
@@ -984,9 +1091,19 @@ def _last_error_text(entry: dict[str, Any] | None) -> str:
 def admin_sources(request: Request, genre: str = "ALL",
                   _: str = Depends(require_admin)) -> HTMLResponse:
     """The Source Audit Workbench (v0.86.4 Section 2, 24-36, 54-66, 82-92):
-    a wide, horizontally-scrollable table an operator can actually audit -
-    Genre/Tier/Health/Public-vs-Collector-URL all visible at once, never a
-    "simple CRUD list" that hides the source's own authority behind a click.
+    a wide table an operator can actually audit - Genre/Tier/Health/Public-
+    vs-Collector-URL all visible at once, never a "simple CRUD list" that
+    hides the source's own authority behind a click.
+
+    v0.86.5 (Section 1-43): the same information, seven columns instead of
+    thirteen - short, single-fact columns (URL, Content Mode, Health,
+    Interval, Decision) consolidated into a handful of compact, at-most-
+    three-line cells, so one source reads as close to one complete row as
+    its content allows, and the columns that genuinely need width (Source,
+    Target) get more of it. No information removed (Section 2) - the
+    Decision *form* moved into Actions behind its own `<details>`, but the
+    decision itself stayed, as a small badge, right where a reader would
+    look for it.
     """
     from . import master_admin, master_edit, pagination
 
@@ -1071,7 +1188,9 @@ def admin_sources(request: Request, genre: str = "ALL",
             f"<button>{toggle.title()}</button></form>"
             + f'<form class="inline" method="post" '
             f'action="/admin/sources/{source["source_id"]}/test">'
-            "<button>Test</button></form></div>"
+            "<button>Test</button></form>"
+            + _source_decision_form(operations.get(source["source_id"], {}))
+            + "</div>"
         )
         health = _source_health(source, outcomes.get(source["source_id"], {}))
         # A source with no region_id is not "unknown location" the way a
@@ -1092,26 +1211,17 @@ def admin_sources(request: Request, genre: str = "ALL",
         ) or '<span class="badge muted">-</span>'
         tier = source_priority.tier_of(source["source_role"])
         tier_label = source_priority.label_of(source["source_role"])
+        source_id = source["source_id"]
         table_rows.append([
-            f'<a href="/admin/sources/{source["source_id"]}">'
-            f'<code>{E(source["source_key"])}</code><br>{E(source["name"])}</a>',
-            E(source["platform"]) + "<br>" + f'<span class="badge muted">{E(source["source_role"])}</span>'
-            + "<br>" + genre_region,
-            f'<span class="tierbadge {E(tier.lower())}">{E(tier_label)}</span>'
-            f'<div class="note">{E(tier)}</div>',
-            _source_target(source),
-            _source_url_cell(source),
-            f'<span class="badge muted">{E(collectors.content_mode(source))}</span>',
-            _badge(health, _HEALTH_TONE.get(health, "muted")),
-            f'<span class="num">{source["collection_interval_minutes"]}m</span>',
-            "Success: " + _last_success_text(last_success.get(source["source_id"]))
-            + "<br>Error: " + _last_error_text(last_error.get(source["source_id"])),
-            _source_yield(outcomes.get(source["source_id"], {}),
-                          operations.get(source["source_id"], {})),
-            _source_decision(operations.get(source["source_id"], {})),
-            _badge("LIVE" if capability["live"] else "SNAPSHOT",
-                   "ok" if capability["live"] else "warn")
-            + f'<div class="note">{E(capability["detail"])}</div>',
+            f'<a href="/admin/sources/{source_id}">{E(source["name"])}</a>'
+            f'<div class="note"><code>{E(source["source_key"])}</code> · '
+            f'{E(source["platform"])}</div>',
+            _source_genre_tier_cell(genre_region, tier, tier_label),
+            _source_target_and_public(source),
+            _source_meta_cell(source, health, capability),
+            _source_yield(outcomes.get(source_id, {}), operations.get(source_id, {})),
+            _source_status_cell(source_id, last_success, last_error,
+                                operations.get(source_id, {})),
             actions,
         ])
 
@@ -1157,11 +1267,11 @@ def admin_sources(request: Request, genre: str = "ALL",
     body = (
         "<h2>Sources</h2>" + genre_filter_bar + add_form + csv_bar
         + _table(
-            ["Source", "Platform / Genre / Region", "Tier", "Target", "URL",
-             "Content Mode", "Health", "Interval", "Last Success / Error",
-             "Items / readable", "Decision", "Collector", "Actions"],
+            ["Source", "Genre / Tier", "Target", "Meta", "Activity",
+             "Status / Last Run", "Actions"],
             table_rows,
             empty="no source registered yet",
+            table_class="sources-dense",
         )
         + f'<p class="note">Engine root: <code>{E(str(settings.engine_root))}</code>. '
           "Live collection needs the platform's API credentials in <code>.env</code>; "

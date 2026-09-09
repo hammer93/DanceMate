@@ -245,7 +245,14 @@ _HOME_PAGE_FALLBACK = {
 }
 
 
-_GENERIC_API_PATH = re.compile(r"^(https?://[^/]+)/api(?:/|$)")
+# v0.86.5: TangoClass's own SOURCE-level url is a WordPress REST endpoint
+# (".../wp-json/wp/v2/posts?per_page=10") - "wp-json" never contains the
+# literal "/api/" segment the fallback above already catches, so it fell
+# through unchanged too, confirmed against the real, live value while
+# writing this release's own tests (Section 39's own named regression).
+# Same fallback, one broader pattern: any generic REST-shaped API path,
+# not just "/api/" specifically.
+_GENERIC_API_PATH = re.compile(r"^(https?://[^/]+)/(?:api|wp-json)(?:/|$)")
 
 
 def resolve_public_source_url(url: str | None) -> str | None:
