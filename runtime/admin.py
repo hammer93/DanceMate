@@ -301,6 +301,7 @@ NAV = (
     ("/admin/organizers", "Organizers"),
     ("/admin/communities", "Communities"),
     ("/admin/notices", "Notices"),
+    ("/admin/community-discovery", "Discovery"),
     ("/admin/master", "Genres & Regions"),
     ("/admin/usage", "Usage"),
     ("/admin/system", "System"),

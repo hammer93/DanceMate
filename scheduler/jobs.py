@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Callable
 
 from runtime import (
+    community_discovery,
     db,
     duplicates,
     engine_adapter,
@@ -111,6 +112,16 @@ def event_normalization(settings: Settings) -> str:
     return detail
 
 
+def community_discovery_job(settings: Settings) -> str:
+    """v0.89.0: run the oldest queued Community Discovery search, if any.
+
+    Admin queues a run; this job executes it off the request path. It
+    returns at once when nothing is queued, and a provider that is refused
+    or throttled is recorded on the run, never retried in a loop.
+    """
+    return community_discovery.run_pending(settings)
+
+
 REGISTRY: dict[str, Job] = {
     "engine-availability": engine_availability,
     "storage-probe": storage_probe,
@@ -119,6 +130,7 @@ REGISTRY: dict[str, Job] = {
     "engine-ingest": engine_ingest_job,
     "engine-reprocess": engine_reprocess,
     "event-normalization": event_normalization,
+    "community-discovery": community_discovery_job,
 }
 
 

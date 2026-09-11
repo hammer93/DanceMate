@@ -47,8 +47,9 @@ def test_run_forever_exits_cleanly_when_shutdown_is_already_requested(settings, 
 
 def test_registered_jobs():
     """v0.74 self-checks, v0.75 collect-and-ingest, v0.76 acquire-and-reprocess,
-    v0.77 normalise-and-deduplicate."""
+    v0.77 normalise-and-deduplicate, v0.89.0 community discovery."""
     assert sorted(jobs.REGISTRY) == [
+        "community-discovery",  # v0.89.0
         "content-acquisition",
         "engine-availability",
         "engine-ingest",

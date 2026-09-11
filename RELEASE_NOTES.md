@@ -1,5 +1,102 @@
 # DanceMate Release Notes
 
+## v0.89.0 Community Discovery
+
+Status: PASS, 2026-09-12.
+
+Version split:
+
+- Product Runtime: 0.89.0
+- Information Engine: 0.85 (unchanged)
+
+### Community Discovery
+
+A new Admin screen, **/admin/community-discovery** ("Discovery"), finds
+candidate Korean social-dance communities through public search and puts them
+in front of an operator. **Nothing is registered automatically**: a candidate
+becomes a Community only when an operator registers it, through the
+Communities screen's own form and `communities.create_community()`.
+
+- **Providers - the ones DanceMate already had.** NAVER API HUB search (cafe
+  articles, web) and Kakao Daum search (cafe, web), through the Information
+  Engine's own clients and the existing `.env` credentials; no second HTTP
+  stack, no key in code, nothing but credential *names* on screen. A provider
+  that is not configured, refuses (401/403) or throttles (429) is recorded as
+  ACCESS_LIMITED / RATE_LIMITED for that search kind and skipped for the rest
+  of the run - never retried in a loop - while the other provider carries on
+  (run PARTIAL_SUCCESS). Errors are redacted before they are stored.
+- **Six genres**: SALSA, SWING, TANGO, BALBOA, BACHATA, KIZOMBA, from the genre
+  master. Default keywords per genre (27 in all) live in
+  `community_discovery_queries`; an operator can add keywords (with a provider
+  scope) and switch any off. Region narrowing puts a region name in front of
+  the first two keywords of each genre - never every combination. Genres take
+  turns, duplicates are dropped, at most 30 searches per provider per run,
+  15 cafe / 10 web results per search, a pause between calls.
+- **Off the request path.** The screen queues a run; the scheduler's new
+  `community-discovery` job executes it (at most one open run - enforced by a
+  unique index). A run left RUNNING by a restart is closed as FAILED.
+- **One candidate per public identity** - a Naver or Daum cafe, a Band, an
+  Instagram/Facebook page, a Daangn group, a blog, a site host - so the same
+  cafe found by many queries or both providers is one row whose
+  first_seen / last_seen / seen_count / recent activity move. A candidate's
+  name comes from the group itself (the API's cafe name, a cafe or home page
+  title) or stays unresolved - never a post title.
+- **Evidence, not guesses** (deterministic, kept as reason lines): genres from
+  the candidate's own text, never from the query that found it (multi-genre
+  kept); region from the regions master, only when unambiguous; activity
+  ACTIVE only for a dated post that itself shows activity within 12 months
+  (STALE older, INACTIVE when a post says so, else UNVERIFIED); venues,
+  academies, instructors, one-off events, personal blogs and portal pages are
+  NOT_A_COMMUNITY; a registered Community with the same URL is
+  VERIFIED_EXISTING, the same specific name in a compatible region
+  POSSIBLE_DUPLICATE (candidates and communities alike; generic names such as
+  "서울 살사 동호회" are never matched); confidence HIGH / MEDIUM / LOW is an
+  operator hint.
+- **Venues** named in a candidate's text are matched to the registered venues
+  by their own aliases (3+ characters) and recorded by venue ID: VENUE_MATCH
+  when the venue's region or genres agree, VENUE_CANDIDATE otherwise; never by
+  address. The registration form pre-ticks VENUE_MATCH venues only.
+- **Review**: register (form pre-filled for checking, not copied blindly),
+  link to an existing Community, hold, reject, reopen; filters by provider,
+  genre, region, classification and review state. A registered or linked
+  candidate found again stays VERIFIED_EXISTING.
+- **Privacy**: only public group information is kept; snippets are short and
+  redacted (phone numbers, e-mail addresses, account numbers, open-chat links)
+  before storage; no HTML is stored. Candidates are never public - only
+  registered, enabled Communities appear on the public 동호회 tab.
+- **History**: the last 30 runs; pending candidates not seen for 400 days are
+  pruned.
+
+### Migration
+
+`036_community_discovery.sql`: community_discovery_queries, _runs (one-open
+unique index), _items (unique identity), _item_genres, _item_venues. No
+existing table changed.
+
+### Verification
+
+- Focused (both v0.89.0 files, communities/notices, public directory,
+  scheduler, migrations, genre filter, master edit): runtime container, fresh
+  PostgreSQL **316 passed, 0 failed, 2 skipped** (pre-existing KR-BUSAN seed condition)**.
+- Full suite, runtime container: development database **2249 passed, 2 failed, 19 skipped**; freshly
+  created database 2248 passed, 3 failed, 19 skipped - the known failures only
+  (`test_existing_top3_sources_are_preserved`,
+  `test_k_tango_is_preserved_untouched`, and on a fresh database
+  `test_source_row_enable_disable_action_still_works`), identical to v0.88.1.
+  Host 1565+60 = 1625 passed, 0 failed. Engine: 809 passed, 0 failed.
+- Migrations 001-036 on a freshly created database, no checksum drift; 035 ->
+  036 on an existing one.
+- Local discovery smoke (dev database; real providers without local
+  credentials end ACCESS_LIMITED safely; a fake-provider run exercises dedupe,
+  classification, redaction, registration; everything removed afterwards):
+  23/23.
+- The first production discovery run (real providers) is reported in the
+  deployment report.
+
+### Private Alpha Observation
+
+Continues unchanged.
+
 ## v0.88.1 Compact Venue and Source Directory Rows
 
 Status: PASS, 2026-09-11.
