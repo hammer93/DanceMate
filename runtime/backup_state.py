@@ -72,6 +72,24 @@ def prune(backup_dir: Path, retention: int) -> list[str]:
     return [e.name for e in reversed(entries[retention:])]
 
 
+def retention_split(names: "Iterable[str]", retention: int) -> tuple[list[str], list[str]]:
+    """(kept, pruned) exactly as scripts/backup.sh's retention decides it:
+    every `dancemate-backup-*` directory name, newest first by name (the
+    names are timestamps), the first ``retention`` kept - regardless of who
+    owns them. Ownership decides only whether the prune *succeeds*."""
+    if retention < 1:
+        raise ValueError("retention must be at least 1")
+    ordered = sorted((n for n in names if n.startswith(BACKUP_PREFIX + "-")), reverse=True)
+    return ordered[:retention], ordered[retention:]
+
+
+def foreign_owned(owners: "dict[str, str]", owner: str) -> list[str]:
+    """Backup directories not owned by the deployment user - what
+    `scripts/fix-ownership.sh --backups` reclaims (and nothing else)."""
+    return sorted(name for name, who in owners.items()
+                  if name.startswith(BACKUP_PREFIX + "-") and who != owner)
+
+
 def status(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     entries = list_backups(settings.backup_dir)

@@ -23,6 +23,18 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+# v0.86.9: a backup directory belongs to the repository's own user. The two
+# root-owned directories v0.86.8's deploy could not prune were made by this
+# script run in a root session; retention runs as that same user and cannot
+# remove what root created. Run as root, this hands itself to the owner (the
+# same arrangement scripts/board-git.sh uses) instead of writing as root.
+if [[ "$(id -u)" -eq 0 && "$(repo_owner)" != "root" ]]; then
+  command -v sudo >/dev/null 2>&1 \
+    || die "running as root and sudo is not available - run scripts/backup.sh as $(repo_owner)"
+  log "running as root: handing the backup to the repository owner '$(repo_owner)'"
+  exec sudo -u "$(repo_owner)" "$REPO_ROOT/scripts/backup.sh" "$@"
+fi
+
 require_docker
 require_env_file
 require_compose_file
@@ -124,7 +136,7 @@ if (( ${#ALL[@]} > RETENTION )); then
     log "  pruning old backup: $old"
     prune_err="$BACKUP_DIR/.prune.err.$$"
     if ! rm -rf -- "${BACKUP_DIR:?}/$old" 2>"$prune_err"; then
-      warn "could not fully remove $old (likely owned by another user) - left in place, run scripts/fix-ownership.sh as root"
+      warn "could not fully remove $old (likely owned by another user) - left in place, run scripts/fix-ownership.sh as root ('sudo scripts/fix-ownership.sh --backups --yes' reclaims just the backup directories; the next backup then prunes them)"
       cat "$prune_err" >&2 2>/dev/null || true
     fi
     rm -f "$prune_err" 2>/dev/null || true

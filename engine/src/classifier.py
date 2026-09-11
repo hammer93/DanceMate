@@ -1,4 +1,5 @@
 import re
+import unicodedata
 # Tango names its social event; the other scenes call theirs a 소셜 or a 파티.
 # Only these four words, because these are the ones the collected posts use.
 SOCIAL_WORDS = ["소셜", "social", "파티", "party"]
@@ -49,7 +50,35 @@ def social_evidence(title: str, body: str) -> bool:
     return bool(_SOCIAL_BY_CLOCK.search(text))
 
 
-def classify(title: str, body: str, known_event_type=None) -> str:
+# v0.86.9: the words an operator adds in Settings (runtime.event_terms)
+# reach this detection as ``event_terms`` - already normalized, already
+# restricted to terms that stand for a milonga or a practica. They ADD to the
+# built-in words in classify(); they never remove one, so switching a Settings
+# term off can never make a post recognised yesterday stop being an event.
+# The normalization and the matching rule are restated from
+# runtime/event_terms.py (this package is stdlib-only and never imports
+# runtime - the same arrangement as MIN_TEXT_FOR_IMAGE_TRUST below);
+# tests/test_v0869_event_terminology.py holds the two to the same answers.
+_TERM_SPACE = re.compile(r"\s+")
+
+
+def normalize_term_text(text: str) -> str:
+    folded = unicodedata.normalize("NFKC", text or "")
+    return _TERM_SPACE.sub(" ", folded).strip().lower()
+
+
+def term_occurs(normalized_term: str, normalized_text: str) -> bool:
+    """A Latin-script term must stand alone as a word ("practica" is not in
+    "practical"); a Korean one may sit inside a run, as its particles do."""
+    if not normalized_term or not normalized_text:
+        return False
+    escaped = re.escape(normalized_term)
+    if normalized_term.isascii():
+        return re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", normalized_text) is not None
+    return normalized_term in normalized_text
+
+
+def classify(title: str, body: str, known_event_type=None, event_terms=None) -> str:
     if known_event_type:
         # Source Registry / known series context is admissible evidence for type classification.
         return known_event_type
@@ -59,6 +88,9 @@ def classify(title: str, body: str, known_event_type=None) -> str:
     milonga_words = ["milonga", "밀롱가", "쁘롱", "쁘락"]
     has_class = any(w in text for w in class_words)
     has_milonga = any(w in text for w in milonga_words)
+    if not has_milonga and event_terms:
+        folded = normalize_term_text(f"{title} {body}")
+        has_milonga = any(term_occurs(t, folded) for t in event_terms)
     # A post that announces a social and also teaches a class is both. Reading
     # it as a class only -- which is what happened before -- loses the social,
     # and a workshop weekend with a Saturday night party is exactly the shape
@@ -99,7 +131,8 @@ MIN_TEXT_FOR_IMAGE_TRUST = 20
 
 
 def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None,
-                                 known_event_type=None, published=None):
+                                 known_event_type=None, published=None,
+                                 event_terms=None):
     """classify(), then - only when the body itself was too thin to decide -
     a second, stricter look at each trusted poster OCR text (v0.84.4).
 
@@ -132,7 +165,8 @@ def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None
     The first image that clears every gate wins; none of this ever changes
     an already-decided (non-OTHER) classification.
     """
-    classification = classify(title, body, known_event_type=known_event_type)
+    classification = classify(title, body, known_event_type=known_event_type,
+                              event_terms=event_terms)
     if classification != "OTHER":
         return classification, None
     if known_event_type:
@@ -150,7 +184,7 @@ def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None
     for image_ref, image_text in trusted_image_texts:
         if not image_text or len(image_text.strip()) < MIN_TEXT_FOR_IMAGE_TRUST:
             continue
-        image_classification = classify(title, image_text)
+        image_classification = classify(title, image_text, event_terms=event_terms)
         if image_classification not in _SOCIAL_CONTEXT_CLASSIFICATIONS:
             continue
         # More than one distinct date on this one poster - a multi-event

@@ -197,6 +197,25 @@ color:var(--accent);font-weight:600}
 outline-offset:1px}
 .filters label.chip input{width:auto;margin:0;accent-color:var(--accent)}
 .filters a{text-decoration:none}
+/* v0.86.9: a venue's linked events open as one full-width row right under
+   it - the same "one row opened in place" shape as the inline editor. */
+tr.rowdetail>td{background:var(--bg);padding:10px 14px}
+.eventpanel h3{font-size:13px;margin:0 0 8px;display:flex;gap:10px;
+align-items:baseline;flex-wrap:wrap}
+.eventpanel .tablewrap{background:var(--card)}
+tr.pastevent td{color:var(--muted)}
+a.rowbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+/* v0.86.9: an event term's canonical-format checkboxes. Rules of their own,
+   not a second selector on .filters label.chip, so the venue filter bar
+   keeps exactly the rules v0.86.8 shipped. */
+.chipset{display:flex;flex-wrap:wrap;gap:6px}
+.chipset label.chip{display:inline-flex;align-items:center;gap:6px;margin:0;
+padding:3px 11px;border:1px solid var(--line);border-radius:999px;
+background:var(--card);color:var(--fg);font-size:12px;cursor:pointer;
+white-space:nowrap}
+.chipset label.chip:has(input:checked){border-color:var(--accent);
+color:var(--accent);font-weight:600}
+.chipset label.chip input{width:auto;margin:0;accent-color:var(--accent)}
 .qrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
 .qrow:last-child{border-bottom:none}
 .qlabel{width:170px;color:var(--muted);font-size:12px}
@@ -336,9 +355,12 @@ def _cards(items: list[tuple[str, Any, str]]) -> str:
 
 
 def _table(headers: list[str], rows: list[list[str]], *, empty: str,
-          table_class: str = "", row_attrs: list[str] | None = None) -> str:
+          table_class: str = "", row_attrs: list[str] | None = None,
+          row_details: "list[str | None] | None" = None) -> str:
     """`row_attrs` (v0.86.8) is raw attribute text for the matching <tr> - the
-    row's own anchor id, and the class that marks the one being edited."""
+    row's own anchor id, and the class that marks the one being edited.
+    `row_details` (v0.86.9) is optional HTML for a full-width row directly
+    under the matching row - a venue's linked events, opened in place."""
     cls = f' class="{E(table_class)}"' if table_class else ""
     if not rows:
         return f'<div class="tablewrap"><table{cls}><tbody><tr><td>{E(empty)}</td>' \
@@ -346,9 +368,13 @@ def _table(headers: list[str], rows: list[list[str]], *, empty: str,
     head = "".join(f"<th>{E(h)}</th>" for h in headers)
     attrs = list(row_attrs or [])
     attrs += [""] * (len(rows) - len(attrs))
+    details = list(row_details or [])
+    details += [None] * (len(rows) - len(details))
     body = "".join(
         f"<tr{attr}>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
-        for row, attr in zip(rows, attrs)
+        + (f'<tr class="rowdetail"><td colspan="{len(headers)}">{detail}</td></tr>'
+           if detail else "")
+        for row, attr, detail in zip(rows, attrs, details)
     )
     return f'<div class="tablewrap"><table{cls}><thead><tr>{head}</tr></thead>' \
            f"<tbody>{body}</tbody></table></div>"
@@ -2038,6 +2064,107 @@ def _venue_extras(venue: dict[str, Any], aliases: list[dict[str, Any]],
             + "</details>")
 
 
+# --- venue linked events (v0.86.9) -------------------------------------------
+
+VENUE_EVENTS_PARAM = "venue_events"
+VENUE_EVENTS_PAGE_PARAM = "venue_events_page"
+
+
+def _positive_int(raw: Any) -> int | None:
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _venue_events_link(view: str, venue: dict[str, Any], is_open: bool) -> str:
+    """[연결 행사 N] beside [편집]: opens this venue's events under its row,
+    on the same list view - page, filters and any open editor kept."""
+    from . import master_admin
+
+    vid = venue["venue_id"]
+    count = venue.get("events") or 0
+    if is_open:
+        href = master_admin._rebuilt(
+            view, drop=(VENUE_EVENTS_PARAM, VENUE_EVENTS_PAGE_PARAM),
+            anchor=master_admin.row_id("VENUE", vid))
+        return (f'<a class="rowbtn on" href="{E(href)}" aria-expanded="true">'
+                f'연결 행사 {count}</a>')
+    href = master_admin._rebuilt(
+        view, drop=(VENUE_EVENTS_PARAM, VENUE_EVENTS_PAGE_PARAM),
+        add=[(VENUE_EVENTS_PARAM, str(vid))], anchor=f"events-VENUE-{vid}")
+    return f'<a class="rowbtn" href="{E(href)}" aria-expanded="false">연결 행사 {count}</a>'
+
+
+def _event_clock(row: dict[str, Any]) -> str:
+    start, end = row.get("start_time"), row.get("end_time")
+    if not start:
+        return '<span class="muted">-</span>'
+    text = start.strftime("%H:%M")
+    if end:
+        text += "–" + end.strftime("%H:%M") + ("+1" if row.get("end_day_offset") else "")
+    return E(text)
+
+
+def _venue_events_panel(view: str, venue: dict[str, Any], linked: dict[str, Any]) -> str:
+    """One venue's events, in the row directly under it."""
+    from . import master_admin, pagination, venue_resolution
+
+    vid = venue["venue_id"]
+    close = master_admin._rebuilt(view, drop=(VENUE_EVENTS_PARAM, VENUE_EVENTS_PAGE_PARAM),
+                                  anchor=master_admin.row_id("VENUE", vid))
+    title = (f'<h3>{E(venue["name"])} · 연결 행사 {linked["total"]}건 '
+             f'<a class="rowbtn" href="{E(close)}">닫기</a></h3>')
+    if not linked["rows"]:
+        return (f'<div class="eventpanel" id="events-VENUE-{vid}">{title}'
+                '<p class="note">연결된 행사가 없습니다.</p></div>')
+    today = events_api.today()
+    rows, attrs = [], []
+    for row in linked["rows"]:
+        day = row["event_date"]
+        state = [_badge(row.get("engine_status")), _badge(row.get("review_state"))]
+        if row.get("canonical_event_id"):
+            state.append(_badge(f"MERGED #{row['canonical_event_id']}", "warn"))
+        elif row.get("listing_state") != "LISTED":
+            state.append(_badge(row.get("listing_state"), "warn"))
+        links = [f'<a href="/admin/review/{row["candidate_id"]}">검토</a>']
+        if row.get("publicly_visible"):
+            links.append(f'<a href="/events/{row["event_id"]}">공개</a>')
+        rows.append([
+            f"{E(day.isoformat())} ({public.WEEKDAYS[day.weekday()]})",
+            _event_clock(row),
+            E(row.get("event_name") or "-"),
+            E(row.get("genre_name") or "-"),
+            E(events_api.event_kind_label(row.get("event_type"), row.get("event_formats"))),
+            " ".join(state),
+            " · ".join(links),
+        ])
+        attrs.append(' class="pastevent"' if day < today else "")
+    table = _table(["날짜", "시작", "행사", "장르", "분류", "상태", "링크"], rows,
+                   empty="연결된 행사가 없습니다.", row_attrs=attrs)
+    size = venue_resolution.VENUE_EVENTS_PAGE_SIZE
+    last = pagination.total_pages(linked["total"], page_size=size)
+    pager = ""
+    if last > 1:
+        page = linked["page"]
+
+        def step(target: int, label: str, disabled: bool) -> str:
+            if disabled:
+                return f'<span class="pager-link off">{E(label)}</span>'
+            href = master_admin._rebuilt(view, drop=(VENUE_EVENTS_PAGE_PARAM,),
+                                         add=[(VENUE_EVENTS_PAGE_PARAM, str(target))],
+                                         anchor=f"events-VENUE-{vid}")
+            return f'<a class="pager-link" href="{E(href)}">{E(label)}</a>'
+
+        pager = ('<div class="pager"><span class="pager-count">'
+                 f'Total {linked["total"]}</span><span class="pager-nav">'
+                 + step(page - 1, "Previous", page <= 1)
+                 + f'<span class="pager-status">Page {page} / {last}</span>'
+                 + step(page + 1, "Next", page >= last) + "</span></div>")
+    return f'<div class="eventpanel" id="events-VENUE-{vid}">{title}{table}{pager}</div>'
+
+
 def _venue_actions(venue: dict[str, Any]) -> str:
     """Delete, unlink-and-delete or deactivate, whichever this venue allows.
 
@@ -2120,6 +2247,22 @@ def admin_venues(request: Request, region: str = "",
                        for v in venues}
         observed_genres = {v["venue_id"]: master_data.observed_venue_genres(con, v["venue_id"])
                            for v in venues}
+        # v0.86.9: at most one venue's events, and only when asked for - a
+        # list page never renders every venue's events at once.
+        linked = None
+        open_events = _positive_int(request.query_params.get(VENUE_EVENTS_PARAM))
+        if open_events is not None and any(v["venue_id"] == open_events for v in venues):
+            linked_total = venue_resolution.count_venue_events(con, open_events)
+            linked_size = venue_resolution.VENUE_EVENTS_PAGE_SIZE
+            linked_page = pagination.resolve_page(
+                request.query_params.get(VENUE_EVENTS_PAGE_PARAM), linked_total,
+                page_size=linked_size)
+            linked = {
+                "venue_id": open_events, "total": linked_total, "page": linked_page,
+                "rows": venue_resolution.venue_events(
+                    con, open_events, limit=linked_size,
+                    offset=pagination.sql_offset(linked_page, page_size=linked_size)),
+            }
 
     from . import master_admin, master_edit
 
@@ -2145,13 +2288,16 @@ def admin_venues(request: Request, region: str = "",
                 + (f' <span class="muted">({v["listed_events"]} listed)</span>'
                    if v["listed_events"] else ""))
 
-    venue_forms, rows, row_attrs = [], [], []
+    venue_forms, rows, row_attrs, row_details = [], [], [], []
     for v in venues:
         vid = v["venue_id"]
         editing = vid == editing_venue
         row_attrs.append(_row_attrs(master_edit.VENUE, vid, editing))
         extras = _venue_extras(v, alias_rows.get(vid, []), alias_usage.get(vid, {}),
                                all_genres, observed_genres.get(vid, []))
+        events_open = linked is not None and linked["venue_id"] == vid
+        events_link = _venue_events_link(view, v, events_open)
+        row_details.append(_venue_events_panel(view, v, linked) if events_open else None)
         if editing:
             venue_forms.append(master_admin.row_form(master_edit.VENUE, vid, view))
             rows.append([
@@ -2170,7 +2316,8 @@ def admin_venues(request: Request, region: str = "",
                                          kind="textarea"),
                 _alias_cell(v), _genre_cell(v), _events_cell(v),
                 master_admin.enabled_input(master_edit.VENUE, vid, v["enabled"]),
-                master_admin.row_actions(view, master_edit.VENUE, vid) + extras
+                master_admin.row_actions(view, master_edit.VENUE, vid) + events_link
+                + extras
                 + '<p class="note">이름을 바꿔도 같은 장소로 남습니다 — '
                   "연결된 Event는 그대로입니다.</p>",
             ])
@@ -2182,7 +2329,7 @@ def admin_venues(request: Request, region: str = "",
             _badge("ENABLED" if v["enabled"] else "DISABLED",
                    "ok" if v["enabled"] else "muted"),
             '<div class="actionbar">'
-            + master_admin.edit_link(view, master_edit.VENUE, vid)
+            + master_admin.edit_link(view, master_edit.VENUE, vid) + events_link
             + extras + _venue_actions(v) + "</div>"])
     region_options = "".join(
         f'<option value="{r["region_id"]}">{E(r["name"])}</option>' for r in regions
@@ -2265,6 +2412,7 @@ def admin_venues(request: Request, region: str = "",
         ["Name", "Region", "Address", "Aliases", "Dance Genres", "Events using",
          "State", "Actions"],
         rows, empty="no venue registered yet", row_attrs=row_attrs,
+        row_details=row_details,
     ) + pagination.nav("/admin/venues", filter_query, page, total)
     return HTMLResponse(_page("Venues", "/admin/venues", body, flash=_flash(request)))
 
@@ -2923,8 +3071,12 @@ def admin_settings_page(request: Request, _: str = Depends(require_admin)) -> HT
     """Public Timeline의 "?" 확인 표시를 언제 보여줄지 정하는 화면 (Section
     16-21). VERIFIED는 체크박스 자체가 없다 - 켜고 끄는 대상이 아니라 항상
     고정으로 표시하지 않는다(Section 73)."""
+    from . import event_terms  # local: keeps the v0.75 console import list stable
+
     with _connection() as con:
         current = timeline_settings.get_settings(con)
+        terms = event_terms.list_terms(con)
+        genres = master_data.list_genres(con)
 
     checklist = "".join(
         f'<label class="chip"><input type="checkbox" name="statuses" value="{code}"'
@@ -2948,7 +3100,177 @@ def admin_settings_page(request: Request, _: str = Depends(require_admin)) -> HT
   행사도 각자의 기존 표시가 우선이라 이 설정과 무관합니다.</p>
   <div class="actions"><button class="primary" type="submit">저장</button></div>
 </form>"""
+    body += _event_terms_section(request, terms, genres)
     return HTMLResponse(_page("Settings", "/admin/settings", body, flash=_flash(request)))
+
+
+# --- Event terminology (v0.86.9) ---------------------------------------------
+
+TERM_ENTITY = "TERM"
+
+
+def _term_format_chips(selected: "tuple[str, ...] | set[str]", *, form_id: str | None = None) -> str:
+    """One checkbox per canonical Event Format - pick one or several."""
+    from . import event_terms
+
+    bound = f' form="{E(form_id)}"' if form_id else ""
+    return '<div class="chipset">' + "".join(
+        f'<label class="chip"><input type="checkbox" name="formats" value="{code}"{bound}'
+        f'{" checked" if code in selected else ""}> '
+        f'{E(events_api.EVENT_FORMAT_LABELS.get(code, code))} <code>{code}</code></label>'
+        for code in event_terms.FORMAT_CHOICES) + "</div>"
+
+
+def _formats_text(formats: "tuple[str, ...]") -> str:
+    return " + ".join(
+        f'{E(events_api.EVENT_FORMAT_LABELS.get(f, f))} <code>{E(f)}</code>' for f in formats
+    ) or '<span class="muted">-</span>'
+
+
+def _event_terms_section(request: Request, terms: list[dict[str, Any]],
+                         genres: list[dict[str, Any]]) -> str:
+    from . import master_admin
+
+    view = master_admin.current_view(request)
+    editing = master_admin.editing_id(request, TERM_ENTITY)
+    genre_choices = [g for g in genres]
+    forms, rows, attrs = [], [], []
+    for t in terms:
+        tid = t["event_term_id"]
+        is_editing = tid == editing
+        attrs.append(_row_attrs(TERM_ENTITY, tid, is_editing))
+        if is_editing:
+            fid = master_admin.form_id(TERM_ENTITY, tid)
+            forms.append(master_admin.row_form(
+                TERM_ENTITY, tid, view, action=f"/admin/settings/event-terms/{tid}/edit"))
+            rows.append([
+                master_admin.row_input(
+                    TERM_ENTITY, tid, "genre_id", kind="select",
+                    options=master_admin._options(genre_choices, id_key="genre_id",
+                                                  label_key="name", selected=t["genre_id"],
+                                                  blank=None)),
+                master_admin.row_input(TERM_ENTITY, tid, "term", t["term"]),
+                _term_format_chips(t["formats"], form_id=fid),
+                master_admin.enabled_input(TERM_ENTITY, tid, t["enabled"]),
+                master_admin.row_actions(view, TERM_ENTITY, tid),
+            ])
+            continue
+        delete = (
+            f'<details><summary>Delete</summary><p class="note">'
+            f'&#39;{E(t["term"])}&#39; 용어를 삭제합니다. 이미 저장된 행사의 분류는 '
+            "그대로이며, 다음 정규화부터 이 용어가 쓰이지 않습니다.</p>"
+            f'<form method="post" action="/admin/settings/event-terms/{tid}/delete">'
+            f'{master_admin.return_field(view)}'
+            '<button class="primary">Delete</button></form></details>'
+        )
+        rows.append([
+            E(t["genre_name"]), E(t["term"]), _formats_text(t["formats"]),
+            _badge("ENABLED" if t["enabled"] else "DISABLED",
+                   "ok" if t["enabled"] else "muted"),
+            '<div class="actionbar">' + master_admin.edit_link(view, TERM_ENTITY, tid)
+            + delete + "</div>",
+        ])
+    genre_options = "".join(
+        f'<option value="{g["genre_id"]}">{E(g["name"])}</option>' for g in genres)
+    add_form = f"""
+<details><summary>용어 추가</summary>
+<form method="post" action="/admin/settings/event-terms">
+  {master_admin.return_field(view)}
+  <div class="grid">
+    <div><label>장르</label><select name="genre_id" required>
+      <option value="">장르 선택</option>{genre_options}</select></div>
+    <div><label>용어</label><input name="term" required placeholder="게시글에 쓰이는 표현"></div>
+    <div><label>상태</label><select name="enabled">
+      <option value="1" selected>ENABLED</option><option value="0">DISABLED</option></select></div>
+  </div>
+  <label style="margin-top:10px">표준 분류 (하나 이상)</label>{_term_format_chips(())}
+  <div class="actions"><button class="primary">용어 추가</button></div>
+</form></details>"""
+    return (
+        '<h2 id="event-terms">행사 용어 (Event Terminology)</h2>'
+        '<p class="note">게시글에 쓰이는 행사 이름을 DanceMate의 표준 분류로 연결합니다. '
+        "한 용어가 여러 분류를 가질 수 있습니다 - 쁘롱가는 밀롱가이자 쁘렉입니다. "
+        "여기 있는 용어는 다음 수집부터 행사 인식과 분류에 쓰이고, 이미 저장된 행사는 "
+        "정기 정규화가 다시 만들 때 반영됩니다. 목록에 없는 표현은 억지로 분류하지 않습니다. "
+        "대소문자와 공백 차이는 같은 용어로 봅니다.</p>"
+        + add_form + "".join(forms)
+        + _table(["장르", "용어", "표준 분류", "상태", "Actions"], rows,
+                 empty="등록된 용어가 없습니다", row_attrs=attrs)
+    )
+
+
+@router.post("/admin/settings/event-terms")
+def admin_create_event_term(
+    genre_id: str = Form(""),
+    term: str = Form(""),
+    formats: list[str] = Form(default=[]),
+    enabled: str = Form("1"),
+    return_to: str = Form(""),
+    _: str = Depends(require_admin),
+) -> RedirectResponse:
+    from . import event_terms, master_admin
+
+    try:
+        with _connection() as con:
+            created = event_terms.create_term(con, genre_id=genre_id, term=term,
+                                              formats=formats, enabled=enabled == "1")
+    except event_terms.TermError as exc:
+        return master_admin._back_to_view(TERM_ENTITY, 0, return_to,
+                                          f"용어를 추가하지 못했습니다: {exc}", "bad")
+    except Exception as exc:  # a race on the unique index, say
+        return master_admin._back_to_view(TERM_ENTITY, 0, return_to,
+                                          f"용어를 추가하지 못했습니다: {exc}", "bad")
+    return master_admin._back_to_view(
+        TERM_ENTITY, created["event_term_id"], return_to,
+        f"용어 '{created['term']}' 추가됨 ({' + '.join(created['formats'])})")
+
+
+@router.post("/admin/settings/event-terms/{event_term_id}/edit")
+def admin_update_event_term(
+    event_term_id: int,
+    genre_id: str = Form(""),
+    term: str = Form(""),
+    formats: list[str] = Form(default=[]),
+    enabled: str = Form("1"),
+    return_to: str = Form(""),
+    _: str = Depends(require_admin),
+) -> RedirectResponse:
+    from . import event_terms, master_admin
+
+    try:
+        with _connection() as con:
+            updated = event_terms.update_term(con, event_term_id, genre_id=genre_id,
+                                              term=term, formats=formats,
+                                              enabled=enabled == "1")
+    except event_terms.TermError as exc:
+        return master_admin._back_to_view(TERM_ENTITY, event_term_id, return_to,
+                                          f"저장하지 못했습니다: {exc}", "bad",
+                                          keep_editing=True)
+    except Exception as exc:
+        return master_admin._back_to_view(TERM_ENTITY, event_term_id, return_to,
+                                          f"저장하지 못했습니다: {exc}", "bad",
+                                          keep_editing=True)
+    return master_admin._back_to_view(
+        TERM_ENTITY, event_term_id, return_to,
+        f"용어 '{updated['term']}' 저장됨 ({' + '.join(updated['formats'])})")
+
+
+@router.post("/admin/settings/event-terms/{event_term_id}/delete")
+def admin_delete_event_term(
+    event_term_id: int,
+    return_to: str = Form(""),
+    _: str = Depends(require_admin),
+) -> RedirectResponse:
+    from . import event_terms, master_admin
+
+    try:
+        with _connection() as con:
+            removed = event_terms.delete_term(con, event_term_id)
+    except event_terms.TermError as exc:
+        return master_admin._back_to_view(TERM_ENTITY, event_term_id, return_to,
+                                          str(exc), "bad")
+    return master_admin._back_to_view(TERM_ENTITY, event_term_id, return_to,
+                                      f"용어 '{removed['term']}' 삭제됨")
 
 
 @router.post("/admin/settings/timeline-confirmation")

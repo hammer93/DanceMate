@@ -48,6 +48,7 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         trusted_image_texts=trusted_classification_texts,
         known_event_type=getattr(post, "known_event_type", None),
         published=getattr(post, "published_at", None),
+        event_terms=getattr(post, "event_terms", None),
     )
     if classification not in EVENT_CLASSIFICATIONS:
         return {"classification": classification, "events": []}

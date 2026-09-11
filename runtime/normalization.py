@@ -220,9 +220,31 @@ def _region_id(con, venue_id: int | None) -> int | None:
 EVIDENCE_ABSENT = "ABSENT"
 
 
+def _event_formats(con, event_name: str | None, genre_id: int | None,
+                   terms_map: dict[int, list[dict[str, Any]]] | None) -> list[str] | None:
+    """Which canonical formats this event's own title resolves to (v0.86.9).
+
+    Read from the Settings terminology for the event's genre (every genre's
+    when the genre is unknown). None when no enabled term occurs - an
+    unknown word is never forced into a format - and None when the
+    terminology cannot be read at all: building the event matters more.
+    """
+    from . import event_terms  # local: event_terms -> events_api -> venue_resolution
+
+    try:
+        grouped = terms_map if terms_map is not None else event_terms.terms_by_genre(con)
+        hit = event_terms.resolve_event_terms(event_name,
+                                              event_terms.terms_for(grouped, genre_id))
+    except Exception:  # noqa: BLE001 - terminology never blocks normalization
+        return None
+    return list(hit["formats"]) if hit else None
+
+
 def normalize_candidate(con, candidate: dict[str, Any], *,
                         review_state: dict[str, Any] | None = None,
-                        alias_candidates: list[str] | None = None) -> dict[str, Any] | None:
+                        alias_candidates: list[str] | None = None,
+                        terms_map: dict[int, list[dict[str, Any]]] | None = None,
+                        ) -> dict[str, Any] | None:
     """Write one candidate into ``events``. Returns the stored row.
 
     A candidate without a date is not an event instance yet -- it is a post we
@@ -251,6 +273,8 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
     # Which fields a person changed, so the console and the API can say so.
     origin = {field: "HUMAN" for field in (merged.get("corrected_fields") or [])}
 
+    genre_id = _genre_id(con, candidate.get("event_type"),
+                         _as_int(candidate.get("source_item_id")))
     key = venue_key(venue_id, venue_text)
     values = {
         "candidate_id": _as_int(candidate.get("candidate_id")),
@@ -269,8 +293,12 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         "fee": _as_int(merged.get("fee")),
         "fee_display_text": (merged.get("fee_display_text") or "").strip() or None,
         "dj": (merged.get("dj") or "").strip() or None,
-        "genre_id": _genre_id(con, candidate.get("event_type"),
-                              _as_int(candidate.get("source_item_id"))),
+        "genre_id": genre_id,
+        # v0.86.9: the canonical formats this title's own words stand for -
+        # a Pronga is both MILONGA and PRACTICA. event_type above stays the
+        # engine's single classification, untouched.
+        "event_formats": _event_formats(con, merged.get("event_name"), genre_id,
+                                        terms_map),
         "region_id": _region_id(con, venue_id),
         "engine_status": (candidate.get("candidate_status") or "POSSIBLE").upper(),
         "review_state": state,
@@ -504,6 +532,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
     unresolved = 0
     with db.connect(settings, autocommit=True) as con:
         states = review.states(con, ids)
+        terms_map = _terms_map(con)
         for row in rows:
             candidate_id = row.get("candidate_id")
             origin = source_of(con, row.get("source_url"))
@@ -515,6 +544,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
                 con, enriched,
                 review_state=states.get(candidate_id),
                 alias_candidates=aliases.get(candidate_id),
+                terms_map=terms_map,
             )
             if stored is None:
                 skipped += 1
@@ -532,6 +562,18 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
         "unresolved_venues": unresolved,
         "pruned": pruned,
     }
+
+
+def _terms_map(con) -> dict[int, list[dict[str, Any]]] | None:
+    """The Settings terminology once per normalization run, not per event.
+    None when it cannot be read - each event then tries on its own and,
+    failing that, is built without formats."""
+    from . import event_terms  # local, as in _event_formats()
+
+    try:
+        return event_terms.terms_by_genre(con)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _prune_orphans(con, current_ids: set[int] | None) -> int:

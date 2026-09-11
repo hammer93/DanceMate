@@ -139,6 +139,31 @@ def expected_image_tag(repo_root: Path | None = None) -> str:
     return f"dancemate/runtime:{version}"
 
 
+# --- scheduler duplicate guard (v0.86.9) ---------------------------------------
+#
+# scripts/_common.sh counts schedulers from two independent signals merged by
+# container id; this is the same decision, testable without Docker. v0.86.8's
+# guard read a truncated `docker ps` command column and counted 0 with one
+# scheduler running - neither signal here reads that column.
+SCHEDULER_SERVICE_LABEL = "com.docker.compose.service=scheduler"
+SCHEDULER_COMMAND = "python -m scheduler"
+
+
+def scheduler_count_report(label_ids, command_ids) -> dict[str, Any]:
+    """0 = none running (the deploy starts one), 1 = PASS, 2+ = FAIL."""
+    ids = sorted({str(i).strip()[:12] for i in [*label_ids, *command_ids]
+                  if str(i).strip()})
+    count = len(ids)
+    if count == 0:
+        detail = "no scheduler running - the deploy will start one"
+    elif count == 1:
+        detail = "exactly one scheduler running"
+    else:
+        detail = f"{count} schedulers running - duplicate"
+    return {"count": count, "ids": ids, "status": "FAIL" if count > 1 else "PASS",
+            "detail": detail}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import json

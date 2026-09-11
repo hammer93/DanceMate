@@ -23,8 +23,17 @@ set -euo pipefail
 # place, so this script is the fallback, not the routine.
 #
 # Usage: scripts/fix-ownership.sh [--yes]
+#        scripts/fix-ownership.sh --backups [--yes]
 #   Without --yes, prints what would change and exits without touching
 #   anything.
+#
+# --backups (v0.86.9): reclaim backup directories a root session created, so
+#   scripts/backup.sh's own retention (which runs as the repository owner) can
+#   prune them when their turn comes. Scoped to `dancemate-backup-*`
+#   directories directly under DANCEMATE_BACKUP_DIR that are NOT already owned
+#   by the repository owner - never the backup directory itself, never
+#   anything else in it, and it deletes nothing: which backups are old enough
+#   to go is still decided by retention alone.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
@@ -32,6 +41,39 @@ owner_uid="$(stat -c '%u' "$REPO_ROOT")"
 owner_gid="$(stat -c '%g' "$REPO_ROOT")"
 owner_name="$(stat -c '%U' "$REPO_ROOT")"
 owner_group="$(stat -c '%G' "$REPO_ROOT")"
+
+if [[ "${1:-}" == "--backups" ]]; then
+  apply=0
+  [[ "${2:-}" == "--yes" ]] && apply=1
+  backup_dir="$(env_value DANCEMATE_BACKUP_DIR || true)"
+  backup_dir="${backup_dir:-$REPO_ROOT/backup}"
+  [[ "$backup_dir" = /* ]] || backup_dir="$REPO_ROOT/${backup_dir#./}"
+  [[ -d "$backup_dir" ]] || die "no backup directory: $backup_dir"
+  mapfile -t foreign < <(
+    find "$backup_dir" -mindepth 1 -maxdepth 1 -type d -name 'dancemate-backup-*' \
+      -not -uid "$owner_uid" -printf '%f\n' 2>/dev/null | sort
+  )
+  if [[ ${#foreign[@]} -eq 0 ]]; then
+    log "no foreign-owned backup directories under $backup_dir - nothing to do."
+    exit 0
+  fi
+  log "${#foreign[@]} backup director(ies) under $backup_dir not owned by ${owner_name}:${owner_group}:"
+  for name in "${foreign[@]}"; do
+    log "  $name  (owner $(stat -c '%U:%G' "$backup_dir/$name"))"
+  done
+  if (( apply != 1 )); then
+    log ""
+    log "dry run only - re-run as root: scripts/fix-ownership.sh --backups --yes"
+    exit 0
+  fi
+  [[ "$(id -u)" -eq 0 ]] || die "--backups --yes must run as root: only root can take a directory back from root"
+  for name in "${foreign[@]}"; do
+    chown -R "${owner_uid}:${owner_gid}" -- "$backup_dir/$name"
+  done
+  log "reclaimed ${#foreign[@]} backup director(ies) for ${owner_name}. Nothing was deleted -"
+  log "scripts/backup.sh's retention decides which backups are old enough to prune."
+  exit 0
+fi
 
 mapfile -t bad < <(
   git -C "$REPO_ROOT" ls-files -z 2>/dev/null \

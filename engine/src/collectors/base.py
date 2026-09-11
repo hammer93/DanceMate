@@ -21,6 +21,10 @@ class RawPostRecord:
     # (the default) leaves classification exactly as it was for every
     # existing caller.
     known_event_type: Optional[str] = None
+    # v0.86.9: extra normalized words the tango-social detection should
+    # recognise, handed in by the runtime from its Settings terminology.
+    # None (the default) leaves classification exactly as it was.
+    event_terms: Optional[tuple] = None
 
     def to_dict(self):
         return asdict(self)

@@ -1081,3 +1081,47 @@ def venues_with_usage(
         venue.update(counts.get(venue["venue_id"], {"events": 0, "listed_events": 0}))
         venue["in_use"] = bool(venue["events"])
     return venues
+
+
+# v0.86.9: a venue's own events, listed where the venue is. Joined on
+# events.venue_id - the real foreign key, the same one the "Events using"
+# count above has always used - never on a venue name, so renaming a venue
+# keeps every event it had.
+VENUE_EVENTS_PAGE_SIZE = 20
+
+
+def count_venue_events(con, venue_id: int) -> int:
+    with con.cursor() as cur:
+        cur.execute("SELECT count(*) FROM events WHERE venue_id = %s", (venue_id,))
+        return cur.fetchone()[0]
+
+
+def venue_events(con, venue_id: int, *, limit: int = VENUE_EVENTS_PAGE_SIZE,
+                 offset: int = 0, today=None) -> list[dict[str, Any]]:
+    """Upcoming first (soonest first), then past (most recent first).
+
+    Every event the venue carries - hidden and merged ones too, marked as
+    such - because this is the operator's view of what points at the venue,
+    and the count beside the venue counts all of them.
+    """
+    from . import events_api  # local: events_api imports this module
+
+    day = today or events_api.today()
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT e.event_id, e.candidate_id, e.event_name, e.event_type, "
+            "       e.event_formats, e.event_date, e.start_time, e.end_time, "
+            "       e.end_day_offset, e.engine_status, e.review_state, "
+            "       e.listing_state, e.canonical_event_id, e.provenance, "
+            "       g.name AS genre_name, "
+            "       (" + events_api._VISIBLE + ") AS publicly_visible "
+            "FROM events e LEFT JOIN genres g ON g.genre_id = e.genre_id "
+            "WHERE e.venue_id = %s "
+            "ORDER BY (e.event_date < %s), "
+            "         CASE WHEN e.event_date >= %s THEN e.event_date END, "
+            "         e.event_date DESC, e.start_time NULLS LAST, e.event_id "
+            "LIMIT %s OFFSET %s",
+            (venue_id, day, day, limit, offset),
+        )
+        names = [c.name for c in cur.description]
+        return [dict(zip(names, row)) for row in cur.fetchall()]

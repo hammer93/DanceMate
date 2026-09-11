@@ -99,7 +99,8 @@ def _open_engine_store(settings: Settings, engine_db):
     return con
 
 
-def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | None = None):
+def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | None = None,
+                 event_terms: tuple[str, ...] | None = None):
     """Rebuild the engine's RawPostRecord from a stored source item.
 
     When deep acquisition has fetched the original post, its text becomes the
@@ -158,7 +159,37 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         # miltang_discovery.discover()'s own comment) - process_discovered_
         # post() reads it straight off the RawPostRecord it is handed.
         known_event_type=raw.get("known_event_type"),
+        # v0.86.9: the Settings terminology for this source's genre -
+        # see _detection_terms_by_source().
+        event_terms=event_terms,
     )
+
+
+def _detection_terms_by_source(pg):
+    """The Settings words each source's posts should be recognised by (v0.86.9).
+
+    One query for the terms and one for the sources, per batch - never per
+    item. A source's genre scopes its words; a source with no genre gets
+    every genre's. Never raises: if the terminology cannot be read, every
+    post is classified exactly as it was before Settings existed.
+    """
+    from . import event_terms  # noqa: PLC0415 - keeps the import list stable
+
+    try:
+        grouped = event_terms.terms_by_genre(pg)
+        with pg.cursor() as cur:
+            cur.execute("SELECT source_id, genre_id FROM sources")
+            genre_of = dict(cur.fetchall())
+    except Exception as exc:  # noqa: BLE001 - classification must not stop here
+        log.warning("event terminology unavailable, using built-in words only: %s", exc)
+        return lambda source_id: None
+
+    def lookup(source_id):
+        words = event_terms.detection_terms(
+            event_terms.terms_for(grouped, genre_of.get(source_id)))
+        return words or None
+
+    return lookup
 
 
 def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
@@ -172,6 +203,7 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
 
     with db.connect(settings, autocommit=True) as pg:
         items = intake.pending_items(pg, limit=limit)
+        detection = _detection_terms_by_source(pg)
         if not items:
             return {"pending": 0, "ingested": 0, "skipped": 0, "failed": 0, "candidates": 0}
 
@@ -182,7 +214,8 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
             for item in items:
                 try:
                     content = content_store.get(pg, item["source_item_id"])
-                    post = _to_raw_post(RawPostRecord, item, content)
+                    post = _to_raw_post(RawPostRecord, item, content,
+                                        event_terms=detection(item.get("source_id")))
                     if not post.source_url or not post.title:
                         intake.mark_ingested(pg, item["source_item_id"], intake.INGEST_SKIPPED)
                         skipped += 1
@@ -271,6 +304,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
 
     with db.connect(settings, autocommit=True) as pg:
         items = content_store.needing_reprocess(pg, limit=limit, force=force)
+        detection = _detection_terms_by_source(pg)
         if not items:
             return {"pending": 0, "reprocessed": 0, "skipped_reviewed": 0,
                     "skipped_blocked": 0,
@@ -288,7 +322,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
             for item in items:
                 source_item_id = item["source_item_id"]
                 try:
-                    post = _to_raw_post(RawPostRecord, item, item)
+                    post = _to_raw_post(RawPostRecord, item, item,
+                                        event_terms=detection(item.get("source_id")))
                     post_id, _ = engine_db.persist_raw_post(engine_con, post)
 
                     existing = engine_con.execute(

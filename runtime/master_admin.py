@@ -38,6 +38,9 @@ PAGE = {
     master_edit.VENUE: "/admin/venues",
     master_edit.ORGANIZER: "/admin/organizers",
     master_edit.SOURCE: "/admin/sources",
+    # v0.86.9: Settings' event terminology rows use the same inline row
+    # helpers; this is where a save on one of them returns to.
+    "TERM": "/admin/settings",
 }
 
 
@@ -213,11 +216,17 @@ def cancel_url(view: str, entity_type: str, entity_id: int) -> str:
     return _rebuilt(view, drop=(EDIT_PARAM,), anchor=row_id(entity_type, entity_id))
 
 
-def row_form(entity_type: str, entity_id: int, return_to: str) -> str:
-    """The <form> element the row's inputs belong to. Rendered before the table."""
+def row_form(entity_type: str, entity_id: int, return_to: str, *,
+             action: str | None = None) -> str:
+    """The <form> element the row's inputs belong to. Rendered before the table.
+
+    ``action`` (v0.86.9) lets a row that is not master data - a Settings
+    term - post to its own route while reusing every other helper here.
+    """
+    target = action or f"/admin/master-data/{entity_type}/{entity_id}/edit"
     return (
         f'<form id="{E(form_id(entity_type, entity_id))}" class="rowform" method="post" '
-        f'action="/admin/master-data/{E(entity_type)}/{entity_id}/edit">'
+        f'action="{E(target)}">'
         f'{return_field(return_to)}</form>'
     )
 

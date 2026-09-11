@@ -344,14 +344,44 @@ guard_db_identity() {
 # Section 22 calls out: two workers ticking the same jobs against the same
 # database. Counts by container *command*, not by name, so it also catches a
 # stray container from a different compose project/name.
+# v0.86.9: which running containers are a DanceMate scheduler.
+#
+# v0.86.8's deploy found the old count reading `docker ps --format
+# '{{.Command}}'`, which Docker truncates ("/usr/local/bin/dock..."), so
+# grepping it for "python -m scheduler" counted 0 with a scheduler plainly
+# running - a duplicate guard that could never fire. Two independent signals
+# now, merged by container id (first 12 characters, as `docker ps` prints
+# them):
+#   - the compose service label every compose-started scheduler carries,
+#     whatever project it was started under (a second stack from the wrong
+#     compose file - the v0.82.5 incident's shape - carries it too);
+#   - the full, untruncated command, for a scheduler started any other way.
+# runtime/deploy_guard.py's scheduler_count_report() is the same decision in
+# Python, which is what the tests hold this to.
+SCHEDULER_SERVICE_LABEL="com.docker.compose.service=scheduler"
+SCHEDULER_COMMAND="python -m scheduler"
+
+scheduler_container_ids() {
+  {
+    docker ps -q --no-trunc --filter "label=$SCHEDULER_SERVICE_LABEL" 2>/dev/null || true
+    docker ps --no-trunc --format '{{.ID}} {{.Command}}' 2>/dev/null \
+      | awk -v want="$SCHEDULER_COMMAND" 'index($0, want) { print $1 }' || true
+  } | cut -c1-12 | sed '/^$/d' | sort -u
+}
+
+count_scheduler_containers() {
+  scheduler_container_ids | wc -l | tr -d ' '
+}
+
 guard_no_duplicate_scheduler() {
   local count
-  count="$(docker ps --format '{{.Command}}' | grep -c 'python -m scheduler' || true)"
+  count="$(count_scheduler_containers)"
+  log "scheduler guard: $count scheduler container(s) running"
   if (( count > 1 )); then
     warn "more than one scheduler container is running:"
-    docker ps --format '  {{.Names}}\t{{.Image}}\t{{.Command}}\t{{.Status}}' \
-      | grep 'python -m scheduler' >&2 || true
-    die "duplicate scheduler guard failed: $count containers are running 'python -m scheduler' (expected at most 1)"
+    docker ps --no-trunc --format '  {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}' \
+      | grep -F -f <(scheduler_container_ids) >&2 || true
+    die "duplicate scheduler guard failed: $count scheduler containers are running (expected at most 1)"
   fi
 }
 

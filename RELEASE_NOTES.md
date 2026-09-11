@@ -1,5 +1,132 @@
 # DanceMate Release Notes
 
+## v0.86.9 Venue Linked Events + Event Terminology Settings
+
+Status: PASS, 2026-09-11.
+
+Version split:
+
+- Product Runtime: 0.86.9
+- Information Engine: 0.85 (the classifier gains one optional input - Settings
+  words - and is otherwise unchanged; its own suite: 809 passed)
+
+### Venue Linked Events
+
+A venue row on `/admin/venues` now offers **[연결 행사 N]** beside
+**[편집]**. Opening it lists that venue's events in a full-width row
+directly under the venue - the same "one row opened in place" shape as the
+v0.86.8 inline editor, on the same list view: page number, filters and any
+open row editor all stay as they were, and the link lands on the panel.
+
+- **Relation:** `events.venue_id`, the real foreign key the "Events using"
+  count has always used - never a venue name. A renamed venue keeps every
+  event; two venues that share a name never share events
+  (`venue_resolution.venue_events()` / `count_venue_events()`).
+- **Count:** the link shows the same number the panel totals.
+- **Fields:** date and weekday, start (and end) time, title, genre, kind -
+  "밀롱가 + 쁘렉" for a two-format night, else the event_type label - and the
+  engine/review/listing state (hidden and merged events are listed and
+  marked, since they still point at the venue). Links: the admin review page
+  always, the public event page only when the public page would serve it
+  (the same `_VISIBLE` predicate `events_api.get_event()` uses). Organizer is
+  not shown: the schema has no event-to-organizer link, and none was
+  invented for display.
+- **Order:** upcoming soonest-first, then past most-recent-first; past rows
+  are muted.
+- **Paging:** 20 per page, its own `venue_events_page` parameter; only the
+  one open venue's events are ever queried.
+- **Empty state:** "연결된 행사가 없습니다."
+
+### Event Terminology Settings
+
+`/admin/settings` gets a **행사 용어 (Event Terminology)** section: the words
+a scene uses for its events, mapped to the Event Formats DanceMate already
+classifies by. Add, edit (the whole row, in place), enable/disable and
+delete; each term has a genre scope and one or more canonical formats.
+
+- **Canonical types reuse the existing vocabulary** - the Event Format set in
+  `events_api` (MILONGA / PRACTICA / GENERAL / SOCIAL). No new enum.
+- **Genre scope** is a foreign key to the existing genres master. The same
+  word may mean different things in two genres.
+- **Seeds** (TANGO), only what is settled: Milonga / 밀롱가 -> MILONGA;
+  Practica / 쁘락띠까 -> PRACTICA; Pronga / 쁘롱가 -> MILONGA + PRACTICA.
+  쁘렉틸롱가, organizer names and regional aliases are left for an operator.
+- **Matching** (`runtime.event_terms`): NFKC, whitespace collapsed, lower
+  case, never fuzzy. A Latin term must be a whole word ("practica" is not in
+  "practical"); a Korean term may carry its particles ("쁘롱가에서").
+  Overlapping matches keep the longest; separate matches all count. An
+  unknown word maps to nothing - it is never forced into a format.
+- **Validation:** empty term, a normalized duplicate in the same genre, no
+  format, an unknown format or genre are each refused with a reason; a
+  failed row save keeps the row open.
+- **Classification:** the runtime hands the engine the enabled words that
+  stand for a milonga or a practica (per source genre), and the classifier
+  recognises them *in addition to* its built-in words - so "Friday Pronga" or
+  "Practica Night" is now an event where before it was OTHER, while turning
+  a Settings word off can never make a post the engine already recognised
+  stop being an event. The engine's own `event_type` stays its existing
+  single classification.
+- **Storage:** normalization resolves each event's own title against the
+  Settings and stores the canonical set in the new `events.event_formats`
+  array - a Pronga is `{MILONGA, PRACTICA}`, never a single type and never
+  a joined string. Existing events are not rewritten by the migration; the
+  existing scheduled event-normalization fills the column in as it next
+  rebuilds each event, from whatever the Settings say then.
+
+### Deployment Maintenance
+
+- **Scheduler duplicate guard:** v0.86.8's deploy found it counting
+  schedulers by grepping `docker ps --format '{{.Command}}'`, which Docker
+  truncates - it counted 0 with one running, so it could never fire. It now
+  merges two signals that never read that column: the compose service label
+  and the full `--no-trunc` command, de-duplicated by container id. It logs
+  the count it found; 2+ stops the deploy.
+- **Backup retention ownership:** two backup directories made by a root
+  session could not be pruned by retention, which runs as the repository's
+  owner. `scripts/backup.sh` run as root now hands itself to the owner
+  instead of writing as root, and `scripts/fix-ownership.sh --backups [--yes]`
+  reclaims exactly the foreign-owned `dancemate-backup-*` directories -
+  deleting nothing, so retention alone still decides what is old enough to go.
+
+### Migration
+
+`033_event_terminology.sql`: `event_terms` (genre-scoped, unique per genre on
+the normalized term), `event_term_formats` (the many-to-many term -> format
+mapping), the six seeds, and `events.event_formats TEXT[]` added NULL.
+Forward-only; no existing migration touched; no existing row rewritten.
+
+### Compatibility
+
+Public pages, the genre selector, v0.86.8's inline row editing (Genre, Region,
+Organizer, Venue), return_to, row anchors, the submit guard and the Sources
+editor are unchanged. Existing POST routes are unchanged; the Settings term
+routes are new. `events.event_type` and every read of it are unchanged.
+
+### Tests
+
+New: `test_v0869_venue_events.py`, `test_v0869_event_terminology.py`,
+`test_v0869_deploy_maintenance.py`; `test_migrations.py` lists 033.
+
+- Focused, runtime container, real PostgreSQL (the three new files plus
+  v0868, genre_filter, master_edit, migrations): **276 passed, 0 failed,
+  3 skipped** (the pre-existing KR-BUSAN fixture).
+- Full suite, runtime container: **1994 passed, 2 failed,
+  19 skipped** - the two failures are the known fresh-database pair
+  (`test_existing_top3_sources_are_preserved`,
+  `test_k_tango_is_preserved_untouched`, asserting board-only `SRC-W-001`),
+  unchanged since v0.86.8. Host: 1459 passed, 0 failed, 550 skipped.
+- Migrations: 001-033 applied to a freshly created database with no
+  checksum drift; 032 -> 033 applied on an existing one.
+- Local runtime smoke over HTTP: 30/30 - venue panel order and kinds from
+  events built through the real `normalize_candidate` (Pronga stored as
+  MILONGA + PRACTICA), empty state, inline edit alongside the panel, all six
+  seeded mappings, and Settings create / refused edit / duplicate / edit /
+  delete.
+
+### Private Alpha Observation
+
+Continues unchanged.
+
 ## v0.86.8 Public Genre Selector + Admin Inline Row Editing
 
 Status: PASS, 2026-09-11.

@@ -527,6 +527,28 @@ def format_of(event_type: str | None) -> str:
     return _EVENT_FORMAT_BY_TYPE.get((event_type or "").upper(), EVENT_FORMAT_UNKNOWN)
 
 
+_FORMAT_ORDER = (EVENT_FORMAT_MILONGA, EVENT_FORMAT_PRACTICA, EVENT_FORMAT_GENERAL,
+                 EVENT_FORMAT_SOCIAL)
+
+
+def event_kind_label(event_type: str | None,
+                     event_formats: "Sequence[str] | None" = None) -> str:
+    """What an operator reads for an event's kind (v0.86.9).
+
+    The canonical formats its own title resolved to when there are any -
+    "밀롱가 + 쁘렉" for a Pronga - otherwise the engine's event_type label,
+    otherwise 미분류. Computed from the row every time, never stored.
+    """
+    if event_formats:
+        present = set(event_formats)
+        ordered = [f for f in _FORMAT_ORDER if f in present]
+        ordered += sorted(present - set(_FORMAT_ORDER))
+        return " + ".join(EVENT_FORMAT_LABELS.get(f, f) for f in ordered)
+    if event_type:
+        return EVENT_TYPE_LABELS.get(event_type.upper(), event_type)
+    return EVENT_FORMAT_LABELS[EVENT_FORMAT_UNKNOWN]
+
+
 # A person looked at this and stood by it. Deliberately worded apart from
 # 확인됨: a human review is not the engine's evidence gate, and conflating the
 # two would let an approval look like proof.
