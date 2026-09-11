@@ -150,6 +150,25 @@ li.dir-item > a.dir-link { display:block; text-decoration:none; margin:-.85rem -
 .tag.pin { border-color:var(--accent); color:var(--accent); }
 .dir-links { margin:.45rem 0 0; font-size:.875rem; display:flex; gap:.9rem; flex-wrap:wrap; }
 .dir-note { color:var(--muted); font-size:.8rem; margin:0 0 .75rem; }
+/* 장소 and 정보원 read as a list: one entry, one line, never wider than the
+   page. Short of room, the facts give way first (they only get what is left),
+   then the genre list; the name keeps at least a few characters and the link
+   is never cut. Anything cut ends in an ellipsis and stays whole in the DOM
+   (screen readers read all of it) and in the element's title tooltip. */
+ul.dir.rows { gap:0; background:var(--card); border:1px solid var(--line);
+              border-radius:12px; overflow:hidden; }
+li.dir-row { display:flex; align-items:center; gap:.6rem; min-width:0;
+             padding:.55rem .9rem; border-top:1px solid var(--line); white-space:nowrap; }
+li.dir-row:first-child { border-top:none; }
+li.dir-row .dir-name { flex:0 1 auto; min-width:4.5em; max-width:60%; overflow:hidden;
+                       text-overflow:ellipsis; }
+li.dir-row .dir-meta { flex:1 1 0%; min-width:0; margin:0; overflow:hidden;
+                       text-overflow:ellipsis; font-size:.85rem; }
+li.dir-row .tags { display:block; flex:0 3 auto; min-width:0; max-width:35%; margin:0;
+                   overflow:hidden; text-overflow:ellipsis; }
+li.dir-row .tags .tag { display:inline; }
+li.dir-row .tags .tag + .tag { margin-left:.3rem; }
+li.dir-row .dir-go { flex:0 0 auto; font-size:.85rem; }
 .notice-body { margin:1rem 0; overflow-wrap:anywhere; }
 .notice-body p { margin:0 0 .9rem; }
 .back { font-size:.875rem; margin:0 0 .75rem; }
@@ -1873,15 +1892,15 @@ def _directory_nav(current: str, genre_query: dict[str, str]) -> str:
 
 
 def _tags(codes: "list[str] | None", labels: dict[str, str], *, none_label: str,
-          lead: str = "") -> str:
+          lead: str = "", title: bool = False) -> str:
     """Genre labels as small tags - enabled genres only (a disabled genre is not
-    something this product shows), ``none_label`` for a row with no genre."""
-    if codes:
-        items = [f'<li class="tag">{E(labels[c])}</li>' for c in codes if c in labels]
-    else:
-        items = [f'<li class="tag">{E(none_label)}</li>']
-    items = ([lead] if lead else []) + items
-    return f'<ul class="tags">{"".join(items)}</ul>' if items else ""
+    something this product shows), ``none_label`` for a row with no genre.
+    ``title`` puts the whole list in a tooltip, for a one-line row that may
+    cut it short."""
+    names = ([labels[c] for c in codes if c in labels] if codes else [none_label])
+    items = ([lead] if lead else []) + [f'<li class="tag">{E(n)}</li>' for n in names]
+    tip = f' title="{E(", ".join(names))}"' if title and names else ""
+    return f'<ul class="tags"{tip}>{"".join(items)}</ul>' if items else ""
 
 
 def _external(url: str | None, label: str) -> str:
@@ -1889,16 +1908,25 @@ def _external(url: str | None, label: str) -> str:
             f'{E(label)} &#8599;</a>') if url else ""
 
 
-def _venue_card(venue: dict[str, Any], labels: dict[str, str]) -> str:
-    meta = " · ".join(E(x) for x in (venue.get("region_name"), venue.get("address")) if x)
-    links = _external(events_api.build_naver_map_search_url(venue.get("address")), "지도")
+def _dir_row(name: str, facts: "tuple[str | None, ...]", tags: str, link: str) -> str:
+    """One directory entry on one line: name, facts (region, address, platform
+    ...), genre tags, link."""
+    shown = " · ".join(x for x in facts if x)
     return (
-        '<li class="dir-item">'
-        f'<div class="dir-name">{E(venue["name"])}</div>'
-        + (f'<p class="dir-meta">{meta}</p>' if meta else "")
-        + _tags(venue.get("genre_codes"), labels, none_label="장르 미지정")
-        + (f'<p class="dir-links">{links}</p>' if links else "")
+        '<li class="dir-row">'
+        f'<span class="dir-name" title="{E(name)}">{E(name)}</span>'
+        + (f'<span class="dir-meta" title="{E(shown)}">{E(shown)}</span>' if shown else "")
+        + tags
+        + (f'<span class="dir-go">{link}</span>' if link else "")
         + "</li>"
+    )
+
+
+def _venue_card(venue: dict[str, Any], labels: dict[str, str]) -> str:
+    return _dir_row(
+        venue["name"], (venue.get("region_name"), venue.get("address")),
+        _tags(venue.get("genre_codes"), labels, none_label="장르 미지정", title=True),
+        _external(events_api.build_naver_map_search_url(venue.get("address")), "지도"),
     )
 
 
@@ -1920,17 +1948,12 @@ def _community_card(community: dict[str, Any], labels: dict[str, str]) -> str:
 
 
 def _source_card(source: dict[str, Any], labels: dict[str, str]) -> str:
-    meta = " · ".join(E(x) for x in (source["platform_label"], source["tier_label"],
-                                     source.get("region_name")) if x)
-    links = _external(source.get("public_url"), "바로가기")
     code = source.get("genre_code")
-    return (
-        '<li class="dir-item">'
-        f'<div class="dir-name">{E(source["name"])}</div>'
-        f'<p class="dir-meta">{meta}</p>'
-        + _tags([code] if code else [], labels, none_label="장르 미확인")
-        + (f'<p class="dir-links">{links}</p>' if links else "")
-        + "</li>"
+    return _dir_row(
+        source["name"],
+        (source["platform_label"], source["tier_label"], source.get("region_name")),
+        _tags([code] if code else [], labels, none_label="장르 미확인", title=True),
+        _external(source.get("public_url"), "바로가기"),
     )
 
 
@@ -1970,7 +1993,7 @@ def _notice_card(notice: dict[str, Any], labels: dict[str, str]) -> str:
 _DIRECTORY_SPECS: dict[str, dict[str, Any]] = {
     "venues": {
         "title": "장소", "sub": "춤출 수 있는 곳.", "loader": "public_venues",
-        "card": _venue_card,
+        "card": _venue_card, "list_class": "dir rows",
         "empty": "등록된 장소가 없습니다.",
         "empty_filtered": "선택한 춤 종류에 해당하는 장소가 없습니다.",
         "note": "장르가 지정되지 않은 장소는 춤 종류 전체를 볼 때만 표시됩니다.",
@@ -1984,7 +2007,7 @@ _DIRECTORY_SPECS: dict[str, dict[str, Any]] = {
     },
     "sources": {
         "title": "정보원", "sub": "DanceMate가 행사 소식을 모으는 곳.",
-        "loader": "public_sources", "card": _source_card,
+        "loader": "public_sources", "card": _source_card, "list_class": "dir rows",
         "empty": "등록된 정보원이 없습니다.",
         "empty_filtered": "선택한 춤 종류에 해당하는 정보원이 없습니다.",
         "note": "장르가 확인되지 않은 정보원은 춤 종류 전체를 볼 때만 표시됩니다.",
@@ -2017,8 +2040,8 @@ def _directory_page(tab: str, asked: "list[str] | None", declared: bool) -> HTML
     form = _genre_filter("/", None, None, options, selected, tab=tab)
     narrowed = constraint is not None
     if rows:
-        listing = ('<ul class="dir">' + "".join(spec["card"](row, labels) for row in rows)
-                   + "</ul>")
+        listing = (f'<ul class="{spec.get("list_class", "dir")}">'
+                   + "".join(spec["card"](row, labels) for row in rows) + "</ul>")
     elif constraint == []:
         listing = f'<p class="empty">{E(EMPTY_NOTHING_TICKED)}</p>'
     else:

@@ -1,5 +1,69 @@
 # DanceMate Release Notes
 
+## v0.88.1 Compact Venue and Source Directory Rows
+
+Status: PASS, 2026-09-11.
+
+Version split:
+
+- Product Runtime: 0.88.1
+- Information Engine: 0.85 (unchanged)
+
+### Public Directory UI
+
+- **장소 and 정보원 entries are compact single-line rows**: name · facts
+  (region · address for a venue; platform · tier · region for a source) ·
+  genre tags · link (지도 / 바로가기), one `<li class="dir-row">` per entry with
+  no block element inside. The data behind them is unchanged - the same
+  `directory.public_venues()` / `public_sources()` rows and fields as v0.88.0,
+  so nothing new reaches the page (no notes, config, keys or collector
+  settings).
+- **Long content never breaks the layout.** The list clips to its own box, so
+  the page never scrolls sideways. When a line is short of room the facts give
+  way first (they only get the space left over), then the genre list (capped
+  at 35%, shrinking three times faster than the name); the name keeps at least
+  4.5em and may use up to 60% of the line; the link never shrinks. Anything cut
+  ends in an ellipsis.
+- **The full value stays reachable**: the name, the facts and the genre list
+  each carry a `title` tooltip, and the text is whole in the DOM, so screen
+  readers read all of it. A venue's map link searches its full address.
+- Measured in headless Chrome with the 49 production venues and 16 sources at
+  320 / 360 / 414 / 768 / 1280 px: no horizontal page overflow at any width,
+  every row one line (42-43 px), every link inside its row, at least 72 px of
+  every name visible (no venue name cut from 360 px up; no source name cut from
+  414 px up).
+- Unchanged: 동호회 and 게시판 keep their v0.88.0 cards; the shared genre filter
+  (URL state, multi-select, disabled-genre normalization, tab changes) and
+  the events view are untouched.
+
+### Data
+
+- No schema change; migration level stays 035.
+- Existing Venue master data preserved. The Salsa/Swing venue import done
+  earlier today (13 venues, 36 -> 49) is runtime master data written through
+  the Admin CSV import contract with its audit trail - not a migration, and not
+  part of this release.
+
+### Verification
+
+- Focused (`test_v0880_public_directory`, communities/notices, genre filter,
+  public pages, v0.86.8 selector): runtime container, fresh PostgreSQL
+  **266 passed, 0 failed, 2 skipped** (pre-existing KR-BUSAN seed condition);
+  host 139 passed, 0 failed.
+- Full suite, runtime container: development database **2162 passed, 2
+  failed, 19 skipped** - the known pair (`test_existing_top3_sources_are_preserved`,
+  `test_k_tango_is_preserved_untouched`); freshly created database 2161 passed,
+  3 failed, 19 skipped - the same pair plus the known fresh-database
+  `test_source_row_enable_disable_action_still_works` (SRC-D-003's seeded
+  authority_level), identical to v0.88.0. Host 1565 passed, 0 failed.
+  Engine: 809 passed, 0 failed.
+- Migrations 001-035 on a freshly created database, no checksum drift.
+- Local runtime smoke (read-only, DB fingerprints identical before/after): 19/19.
+
+### Private Alpha Observation
+
+Continues unchanged.
+
 ## v0.88.0 Public Directory Tabs, Communities, Sources and Notice Board
 
 Status: PASS, 2026-09-11.

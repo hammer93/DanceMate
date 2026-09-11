@@ -230,6 +230,77 @@ def test_venue_cards(stub, client):
     assert '<li class="tag">장르 미지정</li>' in page      # the venue with no genre
 
 
+@pytest.mark.parametrize("tab, rows", [("venues", VENUES), ("sources", SOURCES)])
+def test_venues_and_sources_are_one_entry_per_line(stub, client, tab, rows):
+    """장소 and 정보원 read as a list: every entry is one <li> line - name,
+    facts, genre tags, link - with no block element inside that could wrap it
+    onto a second line."""
+    page = client.get(f"/?tab={tab}").text
+    assert '<ul class="dir rows">' in page
+    listing = page.split('<ul class="dir rows">', 1)[1].split("<footer>", 1)[0]
+    entries = listing.split('<li class="dir-row">')[1:]
+    assert len(entries) == len(rows)
+    for entry, row in zip(entries, rows):
+        name = public.E(row["name"])
+        assert entry.startswith(f'<span class="dir-name" title="{name}">{name}</span>')
+        assert not re.search(r"<(p|div|br|h\d)\b", entry)
+    assert "li.dir-row { display:flex;" in public.STYLE and "white-space:nowrap;" in public.STYLE
+
+
+def test_the_full_values_stay_readable_when_the_line_is_cut(stub, client):
+    page = client.get("/?tab=venues").text
+    first = page.split('<li class="dir-row">')[1]
+    assert '<span class="dir-name" title="라 벤따나 &lt;b&gt;">라 벤따나 &lt;b&gt;</span>' in first
+    assert ('<span class="dir-meta" title="서울 · 서울 마포구 독막로 1">'
+            "서울 · 서울 마포구 독막로 1</span>") in first
+    assert '<ul class="tags" title="Tango"><li class="tag">Tango</li></ul>' in first
+    assert '<ul class="tags" title="장르 미지정">' in page
+
+
+def test_a_short_line_gives_way_in_order_and_never_overflows_the_page():
+    """Facts first (they only get the space left over), then genres (capped,
+    cut with an ellipsis); the name keeps a minimum and the link never shrinks;
+    the list itself clips anything that still does not fit."""
+    style = public.STYLE
+    assert re.search(r"ul\.dir\.rows \{[^}]*overflow:hidden;", style)
+    assert "li.dir-row { display:flex; align-items:center; gap:.6rem; min-width:0;" in style
+    assert re.search(r"li\.dir-row \.dir-meta \{ flex:1 1 0%; min-width:0;[^}]*"
+                     r"overflow:hidden;[^}]*text-overflow:ellipsis;", style)
+    assert re.search(r"li\.dir-row \.dir-name \{ flex:0 1 auto; min-width:4\.5em; max-width:60%;"
+                     r"[^}]*text-overflow:ellipsis;", style)
+    # Genres give up room three times faster than the name.
+    assert re.search(r"li\.dir-row \.tags \{ display:block; flex:0 3 auto; min-width:0; "
+                     r"max-width:35%;[^}]*text-overflow:ellipsis;", style)
+    assert "li.dir-row .dir-go { flex:0 0 auto;" in style
+
+
+def test_venue_rows_carry_the_map_link_inside_the_line(stub, client):
+    first = client.get("/?tab=venues").text.split('<li class="dir-row">')[1].split("</li><li", 1)[0]
+    assert re.search(r'<span class="dir-go"><a href="https://map\.naver\.com/p/search/[^"]+" '
+                     r'target="_blank" rel="noopener noreferrer">지도 &#8599;</a></span></li>$', first)
+
+
+def test_source_rows_show_name_genre_and_only_public_fields(stub, client):
+    """Even if a loader ever handed the page more than it should, a source row
+    renders only its public fields - never keys, config, queries or notes."""
+    stub["rows"]["sources"] = [dict(
+        SOURCES[0], source_key="SRC-SECRET-1", config={"api_key": "SECRETCONF"},
+        queries=["SECRETQUERY"], notes="SECRETNOTE", last_detail="SECRETDETAIL",
+        url="https://collector.example/api?token=SECRETTOKEN")] + SOURCES[1:]
+    page = client.get("/?tab=sources").text
+    first = page.split('<li class="dir-row">')[1]
+    assert first.startswith('<span class="dir-name" title="탱고 카페">탱고 카페</span>')
+    assert '<ul class="tags" title="Tango"><li class="tag">Tango</li></ul>' in first
+    assert 'href="https://cafe.daum.net/tango"' in first
+    assert "SECRET" not in page and "collector.example" not in page
+
+
+def test_communities_and_notices_keep_their_cards(stub, client):
+    for tab in ("communities", "notices"):
+        page = client.get(f"/?tab={tab}").text
+        assert '<ul class="dir">' in page and 'class="dir-row"' not in page
+
+
 def test_community_cards_escape_everything(stub, client):
     page = client.get("/?tab=communities").text
     assert "<script>alert(1)</script>" not in page
