@@ -143,7 +143,148 @@ def resolve_event_terms(text: str | None,
         "terms": [row["term"] for row in in_order],
         "formats": formats,
         "event_term_ids": [row.get("event_term_id") for row in in_order],
+        # v0.87.0: each counted match with its own formats - what decides
+        # whether the title's words agree (classify_kind).
+        "matches": [{"term": row["term"], "formats": ordered_formats(row["formats"]),
+                     "event_term_id": row.get("event_term_id")} for row in in_order],
     }
+
+
+# --- the kind an event is shown as (v0.87.0) -----------------------------------------
+#
+# What a reader sees beside an event is the word its own title uses - "쁘락",
+# "Pronga" - when a Settings term matched; the canonical formats stay the
+# classification underneath. The "?" beside it means one thing only: the kind
+# could not be settled. classify_kind() returns the evidence it decided on as
+# reason codes, and kind_reason_lines() only translates those codes - the
+# popover never invents a reason the decision did not use.
+
+CONFIRMED = "CONFIRMED"      # the title's matched terms agree
+AMBIGUOUS = "AMBIGUOUS"      # they disagree, or contradict the engine's type
+STORED = "STORED"            # no term matches now; the formats normalization stored
+ENGINE = "ENGINE"            # no term; the engine's own type stands
+UNRESOLVED = "UNRESOLVED"    # no term and no usable type at all
+
+
+def terms_for_genre_code(terms: Iterable[dict[str, Any]] | None,
+                         genre_code: str | None) -> list[dict[str, Any]]:
+    """An event's genre's own terms; every genre's when the genre is unknown -
+    the same scope normalization uses (terms_for), keyed by code."""
+    rows = list(terms or ())
+    if not genre_code:
+        return rows
+    return [row for row in rows if row.get("genre_code") == genre_code]
+
+
+def _engine_agrees(engine_format: str, formats: tuple[str, ...]) -> bool:
+    """Does the engine's own single classification leave room for these formats?
+
+    UNKNOWN is no evidence either way. The engine files every tango social -
+    practicas included - as MILONGA (it never emits PRACTICA), so MILONGA
+    agrees with any milonga/practica reading; SOCIAL against a milonga term,
+    say, does not.
+    """
+    if engine_format == events_api.EVENT_FORMAT_UNKNOWN or engine_format in formats:
+        return True
+    return (engine_format == events_api.EVENT_FORMAT_MILONGA
+            and set(formats) <= DETECTION_FORMATS)
+
+
+def classify_kind(title: str | None, terms: Iterable[dict[str, Any]] | None, *,
+                  event_type: str | None = None,
+                  stored_formats: Iterable[str] | None = None) -> dict[str, Any]:
+    """Settle an event's kind from its title's own words, in a fixed order:
+
+    1. a matched Settings term - the word shown is the term the title used
+       (the one covering all the evidence), the formats are its canonical
+       ones. Settled unless the matched words point at different formats
+       with no registered mixed term covering them (밀롱가 + 쁘락), or
+       contradict the engine's own type;
+    2. the formats normalization stored for the event, when no term matches
+       now (a term changed since);
+    3. the engine's own type label - no word to go on, but a real type;
+    4. nothing usable: the engine's fallback label, unsettled.
+
+    Returns ``{"display", "formats", "certainty", "uncertain", "matched",
+    "reasons"}`` - ``reasons`` are the codes the decision actually used.
+    """
+    engine_type = (event_type or "").strip().upper() or None
+    engine_format = events_api.format_of(engine_type)
+    hit = resolve_event_terms(title, terms or ())
+    if hit:
+        matches = hit["matches"]
+        union = hit["formats"]
+        reasons = [{"code": "TERM_MATCH", "term": m["term"], "formats": list(m["formats"])}
+                   for m in matches]
+        coverers = [m for m in matches if set(m["formats"]) == set(union)]
+        doubts: list[dict[str, Any]] = []
+        if not coverers:
+            doubts.append({"code": "TERMS_DISAGREE"})
+            if len(union) > 1:
+                doubts.append({"code": "NO_MIXED_TERM", "formats": list(union)})
+        if not _engine_agrees(engine_format, union):
+            doubts.append({"code": "ENGINE_DISAGREES", "event_type": engine_type,
+                           "formats": list(union)})
+        if doubts:
+            return {"display": " · ".join(m["term"] for m in matches), "formats": union,
+                    "certainty": AMBIGUOUS, "uncertain": True, "matched": matches,
+                    "reasons": reasons + doubts}
+        display = hit["term"] if any(m["term"] == hit["term"] for m in coverers) \
+            else coverers[0]["term"]
+        return {"display": display, "formats": union, "certainty": CONFIRMED,
+                "uncertain": False, "matched": matches, "reasons": reasons}
+    stored = ordered_formats(stored_formats or ())
+    if stored:
+        return {"display": " + ".join(events_api.EVENT_FORMAT_LABELS.get(f, f) for f in stored),
+                "formats": stored, "certainty": STORED, "uncertain": False, "matched": [],
+                "reasons": [{"code": "STORED_FORMATS", "formats": list(stored)}]}
+    if engine_format != events_api.EVENT_FORMAT_UNKNOWN:
+        return {"display": events_api.EVENT_TYPE_LABELS.get(engine_type, engine_type),
+                "formats": (engine_format,), "certainty": ENGINE, "uncertain": False,
+                "matched": [],
+                "reasons": [{"code": "NO_TERM"}, {"code": "ENGINE_TYPE", "event_type": engine_type}]}
+    fallback = events_api.EVENT_TYPE_LABELS.get(engine_type or "", None) \
+        or events_api.EVENT_FORMAT_LABELS[events_api.EVENT_FORMAT_UNKNOWN]
+    reasons = [{"code": "NO_TERM"}]
+    reasons.append({"code": "ENGINE_NOT_A_FORMAT", "event_type": engine_type} if engine_type
+                   else {"code": "ENGINE_NONE"})
+    return {"display": fallback, "formats": (), "certainty": UNRESOLVED, "uncertain": True,
+            "matched": [], "reasons": reasons}
+
+
+def _format_labels(formats: Iterable[str]) -> str:
+    return " + ".join(events_api.EVENT_FORMAT_LABELS.get(f, f) for f in formats)
+
+
+def kind_reason_lines(kind: dict[str, Any]) -> list[str]:
+    """The popover's sentences - one per reason code classify_kind() used."""
+    lines: list[str] = []
+    for reason in kind.get("reasons") or ():
+        code = reason.get("code")
+        if code == "TERM_MATCH":
+            lines.append(f'제목에서 발견: "{reason["term"]}" ({_format_labels(reason["formats"])})')
+        elif code == "TERMS_DISAGREE":
+            lines.append("발견된 용어들이 서로 다른 행사 형식을 가리킴")
+        elif code == "NO_MIXED_TERM":
+            labels = " · ".join(events_api.EVENT_FORMAT_LABELS.get(f, f)
+                                for f in reason["formats"])
+            lines.append(f"{labels} 성격이 함께 감지됨 - 등록된 혼합 용어와 정확히 일치하지 않음")
+        elif code == "ENGINE_DISAGREES":
+            et = reason.get("event_type") or "-"
+            lines.append(f"기존 분류기 판정: {et} "
+                         f"({events_api.EVENT_TYPE_LABELS.get(et, et)}) - 제목의 용어와 다름")
+        elif code == "NO_TERM":
+            lines.append("제목에서 등록된 행사 용어를 찾지 못함")
+        elif code == "ENGINE_TYPE":
+            et = reason.get("event_type") or "-"
+            lines.append(f"기존 분류기 판정: {et} ({events_api.EVENT_TYPE_LABELS.get(et, et)})")
+        elif code == "ENGINE_NOT_A_FORMAT":
+            lines.append(f"기존 분류기 판정: {reason.get('event_type')} - 행사 형식으로 볼 수 없음")
+        elif code == "ENGINE_NONE":
+            lines.append("기존 분류기의 판정도 없음")
+        elif code == "STORED_FORMATS":
+            lines.append(f"이전 분류에서 기록된 형식: {_format_labels(reason['formats'])}")
+    return lines
 
 
 def detection_terms(terms: Iterable[dict[str, Any]]) -> tuple[str, ...]:

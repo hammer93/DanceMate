@@ -351,28 +351,32 @@ def test_public_timeline_shows_practica_and_general_labels():
         assert label in line1
 
 
-# 28. ? indicator still works alongside the format label
-def test_confirm_flag_still_appears_next_to_format_label():
+# 28. v0.87.0: a "?" sits next to the kind only when the kind is unsettled
+def test_kind_question_mark_appears_only_for_an_unsettled_kind():
     from datetime import datetime
 
-    from runtime import public
+    from runtime import event_terms, public
 
     now = datetime.fromisoformat("2026-09-09T10:00:00+09:00")
-    event = {
-        "id": 1, "name": "x", "date": "2026-09-09", "start_time": "20:00",
+    terms = [{"event_term_id": n, "genre_code": "TANGO", "term": t,
+              "normalized_term": event_terms.normalize_term(t), "enabled": True, "formats": f}
+             for n, (t, f) in enumerate([("밀롱가", ("MILONGA",)), ("쁘락", ("PRACTICA",))], 1)]
+    base = {
+        "id": 1, "date": "2026-09-09", "start_time": "20:00",
         "end_time": "22:00", "ends_next_day": False, "time_confirmed": True,
-        "event_type_label": "쁘렉", "region": "서울", "region_confirmed": True,
+        "event_type": "MILONGA", "genre": "TANGO", "region": "서울", "region_confirmed": True,
         "venue": {"name": None, "status": "ABSENT", "aliases": []},
         "fee": None, "dj": None, "status": "POSSIBLE", "status_label": "확인 필요",
         "cancelled": False, "source_link": {"url": None, "label": None},
         "last_checked": None,
     }
-    line1 = public._timeline_line1(event, now=now)
-    assert "쁘렉" in line1
-    assert 'class="confirm-flag"' in line1
+    settled = public._timeline_line1({**base, "name": "목요 쁘락"}, now=now, terms=terms)
+    unsettled = public._timeline_line1({**base, "name": "쁘락 & 밀롱가"}, now=now, terms=terms)
+    assert '<span class="kind">쁘락</span>' in settled and "kind-why" not in settled
+    assert "쁘락" in unsettled and 'class="kind-why"' in unsettled
 
 
-# 29. VERIFIED -> no ?
+# 29. VERIFIED or not, a settled kind shows no ?
 def test_verified_format_shows_no_question_mark():
     from datetime import datetime
 
@@ -390,7 +394,7 @@ def test_verified_format_shows_no_question_mark():
     }
     line1 = public._timeline_line1(event, now=now)
     assert "제너럴" in line1
-    assert "confirm-flag" not in line1
+    assert "kind-why" not in line1
 
 
 # 30. Admin/Public parity - one dict, no second formatter

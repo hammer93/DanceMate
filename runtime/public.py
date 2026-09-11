@@ -183,10 +183,32 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .status.warn { border-color:#c0392b; color:#c0392b; font-weight:600; }
 @media (prefers-color-scheme: dark) { .status.warn { border-color:#ff6b5e; color:#ff6b5e; } }
 .status + .status { margin-left:.3rem; }
-/* v0.86.4: the "?" confirmation indicator - small, warning-token colour
-   only, deliberately not a bordered/background badge like .status. */
-.confirm-flag { color:#c0392b; cursor:help; margin-left:.15em; }
-@media (prefers-color-scheme: dark) { .confirm-flag { color:#ff6b5e; } }
+/* v0.87.0: the "?" beside an event's kind means one thing only - the kind
+   itself could not be settled from the title (v0.86.4's "unverified post"
+   meaning is retired). A real button, opening a native popover with the
+   reasons the decision actually used - no script, keyboard and Esc work. */
+.kind-why { font:inherit; font-size:.78em; font-weight:700; line-height:1;
+            color:#c0392b; background:none; border:1px solid currentColor;
+            border-radius:999px; width:1.4em; height:1.4em; padding:0;
+            margin-left:.2em; cursor:pointer; vertical-align:.08em; }
+.kind-why:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (prefers-color-scheme: dark) { .kind-why { color:#ff6b5e; } }
+.why-pop { max-width:min(22rem, 90vw); border:1px solid var(--line); border-radius:12px;
+           padding:.9rem 1rem; background:var(--card); color:var(--fg);
+           box-shadow:0 8px 24px rgba(0,0,0,.18); font-size:.88rem; font-weight:400;
+           font-variant-numeric:normal; text-align:left; }
+.why-pop p { margin:0 0 .3rem; }
+.why-pop ul { margin:.3rem 0 .8rem; padding-left:1.1rem; }
+.why-pop button { font:inherit; font-size:.8rem; border:1px solid var(--line);
+                  border-radius:999px; padding:.2rem .8rem; background:var(--card);
+                  color:var(--fg); cursor:pointer; }
+/* A card whose kind carries a "?" cannot keep its body inside one <a> - a
+   button inside a link is invalid and would navigate. That card's link
+   becomes an overlay (a stretched link) with the button above it. */
+li.event.has-why { position:relative; }
+li.event.has-why .card-body { padding:.55rem .8rem; }
+li.event a.card-link { position:absolute; inset:0; padding:0; z-index:0; border-radius:12px; }
+li.event.has-why .kind-why, li.event.has-why .tl-3 a { position:relative; z-index:1; }
 .checked { color:var(--muted); font-size:.75rem; }
 .cancelled { text-decoration: line-through; }
 /* A card's <a> is the whole event; the source link sits outside it as a
@@ -998,9 +1020,9 @@ def _timeline_clock(event: dict[str, Any]) -> str:
     "20:30~23:30 시간 미확인", self-contradictory the moment a reader has
     just been shown the time and is then told it is unknown. That ambiguity
     is real and still worth surfacing, but never as text that contradicts
-    the value sitting right next to it - it now folds into the same "?"
-    confirmation indicator every other kind of uncertainty already uses
-    (`_needs_confirmation()`), not a second, competing signal here.
+    the value sitting right next to it - the clock is shown as read, and
+    the original post is a click away (v0.87.0: the "?" beside the kind now
+    speaks only to the kind, never to the clock).
 
     v0.86.6 (Section 5-9, 21-24): a start with no end is not the same fact
     as no time at all - DanceMate never guesses a duration (no default
@@ -1044,7 +1066,8 @@ def _timeline_badges(event: dict[str, Any], *, now: "datetime | None" = None) ->
     v0.86.4 (Section 7-11): the "확인 필요" text badge (POSSIBLE/UNKNOWN, and
     events_api.present()'s own blank-status fallback - all three share that
     exact label) is gone from here outright, replaced by the "?" indicator
-    right after the event type (`_needs_confirmation()`/`_timeline_line1()`).
+    right after the event type (retired in v0.87.0: that "?" is now the
+    kind's own - see `_event_kind()`).
     VERIFIED's "확인됨" and CONFLICT's "정보 충돌" are unrelated status
     badges, not the removed phrase, and are unchanged.
     """
@@ -1062,41 +1085,63 @@ def _timeline_badges(event: dict[str, Any], *, now: "datetime | None" = None) ->
     return f'<span class="status{tone}"{title}>{E(label)}</span>'
 
 
-# v0.86.4 (Section 16-21, 72-75): the "?" confirmation indicator reuses the
-# engine's own existing status vocabulary instead of inventing a confidence
-# score - no such numeric signal exists anywhere in the codebase (confirmed:
-# runtime.candidates.STATUSES/events_api.STATUS_LABELS is the only per-event
-# certainty axis that exists today). VERIFIED is fixed off, not a column in
-# the settings table at all (Section 73: never admin-togglable, so there is
-# no way to configure it back on). CANCELLED/COMPLETED are excluded here too
-# - existing UI (the cancellation banner, the "종료" badge) already owns
-# that signal and takes priority over this one.
-DEFAULT_CONFIRMATION_STATUSES = frozenset({"POSSIBLE", "EXPECTED", "CONFLICT", "UNKNOWN"})
+# v0.87.0: the "?" beside an event's kind is about the kind alone. v0.86.4's
+# "?" meant an unverified post (engine status POSSIBLE/EXPECTED/CONFLICT/
+# UNKNOWN, switched in Settings); it read as doubt about the kind - "밀롱가?"
+# on a plain milonga - and is retired. VERIFIED/CONFLICT keep their badges.
 
 
-def _needs_confirmation(event: dict[str, Any], *, now: "datetime | None" = None,
-                        confirmation_settings: dict[str, Any] | None = None) -> bool:
-    """Whether line 1 shows the small "?" after the event type.
+def _enabled_terms(con) -> "list[dict[str, Any]] | None":
+    """The Settings terminology, once per request. None when it cannot be
+    read: the kind then shows exactly as it did before v0.87.0, with no "?"."""
+    from . import event_terms
 
-    `confirmation_settings` is the admin-configured `{"enabled": bool,
-    "statuses": set[str]}` from `runtime.timeline_settings.get_settings()`,
-    fetched once per request - never a per-event query (Section 107-112: no
-    N+1). Missing/None reads as "feature on, engine defaults" so existing
-    callers that have not been updated to pass it (if any) keep today's
-    behaviour rather than silently going dark.
-    """
-    if event.get("cancelled") or _is_past(event, now=now):
-        return False
-    status = (event.get("status") or "").upper()
-    if status == "VERIFIED":
-        return False
-    settings = confirmation_settings or {}
-    if not settings.get("enabled", True):
-        return False
-    statuses = settings.get("statuses")
-    if statuses is None:
-        statuses = DEFAULT_CONFIRMATION_STATUSES
-    return status in statuses
+    try:
+        return event_terms.list_terms(con, enabled_only=True)
+    except Exception:  # noqa: BLE001 - a page is worth more than a label
+        return None
+
+
+def _event_kind(event: dict[str, Any],
+                terms: "list[dict[str, Any]] | None") -> "dict[str, Any] | None":
+    """How this event's kind is shown, settled from its own title
+    (runtime.event_terms.classify_kind). None when no terminology was given -
+    the caller then shows the plain type label, as before."""
+    if terms is None:
+        return None
+    from . import event_terms
+
+    return event_terms.classify_kind(
+        event.get("name"), event_terms.terms_for_genre_code(terms, event.get("genre")),
+        event_type=event.get("event_type"), stored_formats=event.get("event_formats"))
+
+
+def _kind_why(kind: dict[str, Any], element_id: str) -> str:
+    """The "?" and what it opens: the reasons the kind decision actually used."""
+    from . import event_terms
+
+    items = "".join(f"<li>{E(line)}</li>" for line in event_terms.kind_reason_lines(kind))
+    return (
+        f'<button type="button" class="kind-why" popovertarget="{E(element_id)}" '
+        'aria-label="행사 유형 판정 이유 보기" title="행사 유형 판정 이유 보기">?</button>'
+        f'<div class="why-pop" id="{E(element_id)}" popover role="dialog" '
+        'aria-label="행사 유형 판정 이유">'
+        "<p><strong>행사 유형을 확정하지 못했습니다.</strong></p>"
+        f"<p>이유:</p><ul>{items}</ul>"
+        f'<button type="button" popovertarget="{E(element_id)}" '
+        'popovertargetaction="hide">닫기</button></div>'
+    )
+
+
+def _kind_html(event: dict[str, Any], kind: "dict[str, Any] | None", element_id: str) -> str:
+    """The kind segment: the word the title used, and a "?" only when unsettled."""
+    if kind is None:
+        label = event.get("event_type_label") or ""
+        return E(label) if label else ""
+    html = f'<span class="kind">{E(kind["display"])}</span>' if kind.get("display") else ""
+    if kind.get("uncertain"):
+        html += " " + _kind_why(kind, element_id)
+    return html
 
 
 def _timeline_line1_venue_name(event: dict[str, Any]) -> str | None:
@@ -1110,11 +1155,9 @@ def _timeline_line1_venue_name(event: dict[str, Any]) -> str | None:
     return (venue.get("name") or "").strip() or None
 
 
-_CONFIRM_TITLE = "원문 확인이 필요한 행사입니다."
-
-
 def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None,
-                    confirmation_settings: dict[str, Any] | None = None) -> str:
+                    terms: "list[dict[str, Any]] | None" = None,
+                    kind: "dict[str, Any] | None" = None) -> str:
     """[지역] Venue · 날짜 시간 종류 - v0.86.3 moved the resolved venue name
     here from line 2 (Section 1-7; was 행사명 앞, v0.86.2's own Section
     1-7). No venue at all keeps the exact pre-v0.86.3 form, "[지역] 날짜
@@ -1134,26 +1177,23 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None,
     wraps onto another visual line exactly as it always safely could,
     never overflowing the page horizontally.
 
-    v0.86.4 (Section 7-15, 76-81): a small "?" sits immediately after the
-    event type when `_needs_confirmation()` says so - never its own text
-    badge, never changing the line's width in any meaningful way. A
-    tooltip (`title`, also `aria-label` for anyone who cannot hover)
-    explains itself; nothing else about the line changes.
+    v0.87.0: the kind is the word the title itself uses when a Settings term
+    matched ("쁘락", "Pronga"), else the stored formats, else the engine's
+    type label (`_event_kind()`); a "?" follows it only when that could not
+    be settled, as a button opening the actual reasons. Without terminology
+    (`terms` and `kind` both None) the plain type label shows, as before.
     """
+    if kind is None and terms is not None:
+        kind = _event_kind(event, terms)
     day = event.get("date")
     date_label = _human_date(day, now=now) if day else ""
-    type_label = event.get("event_type_label") or ""
     venue_name = _timeline_line1_venue_name(event)
     venue_html = ""
     if venue_name:
         escaped = E(venue_name)
         venue_html = (f'<span class="tl-1-venue" title="{escaped}" '
                       f'aria-label="{escaped}">{escaped}</span> ·')
-    type_html = E(type_label) if type_label else ""
-    if type_html and _needs_confirmation(event, now=now,
-                                         confirmation_settings=confirmation_settings):
-        type_html += (f' <span class="confirm-flag" title="{_CONFIRM_TITLE}" '
-                      f'aria-label="{_CONFIRM_TITLE}">?</span>')
+    type_html = _kind_html(event, kind, f"kind-why-{event.get('id')}")
     parts = [_timeline_region(event), venue_html, E(date_label), _timeline_clock(event),
              type_html]
     return (f'<div class="tl-1">' + " ".join(p for p in parts if p)
@@ -1393,10 +1433,24 @@ def _timeline_line3(event: dict[str, Any], *, now: "datetime | None" = None) -> 
 
 
 def _event_item(event: dict[str, Any], *, now: "datetime | None" = None,
-                confirmation_settings: dict[str, Any] | None = None) -> str:
+                terms: "list[dict[str, Any]] | None" = None) -> str:
+    kind = _event_kind(event, terms)
+    line1 = _timeline_line1(event, now=now, kind=kind)
+    if kind is not None and kind.get("uncertain"):
+        # v0.87.0: the "?" is a button, which may not sit inside the card's
+        # <a>; this card's link becomes an overlay instead (see .card-link).
+        name = event.get("name") or ""
+        return (
+            f'<li class="event has-why"><div class="card-body">{line1}'
+            f"{_timeline_line2(event)}</div>"
+            f'<a class="card-link" href="/events/{event["id"]}" '
+            f'aria-label="{E(name)} 상세 보기"></a>'
+            f"{_timeline_line3(event, now=now)}"
+            "</li>"
+        )
     return (
         f'<li class="event"><a href="/events/{event["id"]}">'
-        f'{_timeline_line1(event, now=now, confirmation_settings=confirmation_settings)}'
+        f"{line1}"
         f'{_timeline_line2(event)}'
         "</a>"
         f"{_timeline_line3(event, now=now)}"
@@ -1432,7 +1486,7 @@ def home(
             monday, sunday = events_api.week_window(0)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
-            confirmation = timeline_settings.get_settings(con)
+            terms = _enabled_terms(con)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
 
@@ -1451,11 +1505,11 @@ def home(
     narrowed = _is_narrowed(options, selected) or bool(region)
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
-            _event_item(e, confirmation_settings=confirmation) for e in result["events"]
+            _event_item(e, terms=terms) for e in result["events"]
         ) + "</ul>"
     else:
         nearest = "".join(
-            _event_item(e, confirmation_settings=confirmation) for e in upcoming["events"])
+            _event_item(e, terms=terms) for e in upcoming["events"])
         # The nearest events are still inside the reader's filter -- the search
         # above carries it -- so this widens the dates, never the conditions.
         if narrowed:
@@ -1573,7 +1627,7 @@ def events_page(
             monday, sunday = events_api.week_window(week)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
-            confirmation = timeline_settings.get_settings(con)
+            terms = _enabled_terms(con)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except db.DatabaseUnavailable:
@@ -1590,7 +1644,7 @@ def events_page(
     actions = _next_actions(when=when, region=region, genre_query=genre_query)
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
-            _event_item(e, confirmation_settings=confirmation) for e in result["events"]
+            _event_item(e, terms=terms) for e in result["events"]
         ) + "</ul>"
     elif _is_narrowed(options, selected) or region:
         listing = f'<p class="empty">{EMPTY_FILTERED}</p>' + (actions if date is None else "")
@@ -1642,6 +1696,7 @@ def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLRespons
     try:
         with _connection() as con:
             event = events_api.get_event(con, event_id)
+            terms = _enabled_terms(con)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
     if event is None:
@@ -1659,7 +1714,7 @@ def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLRespons
     if event.get("dj"):
         rows.append(("DJ", E(event["dj"])))
     rows += [
-        ("종류", E(event.get("event_type_label") or "")
+        ("종류", _kind_html(event, _event_kind(event, terms), "kind-why-detail")
                  or '<span class="unknown">-</span>'),
         ("장르", E(event.get("genre_label") or "")
                  or '<span class="unknown">-</span>'),

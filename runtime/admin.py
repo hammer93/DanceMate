@@ -216,6 +216,17 @@ white-space:nowrap}
 .chipset label.chip:has(input:checked){border-color:var(--accent);
 color:var(--accent);font-weight:600}
 .chipset label.chip input{width:auto;margin:0;accent-color:var(--accent)}
+/* v0.87.0: the "?" beside an event's kind (shared markup from public.py's
+   _kind_why) - a real button opening a native popover with the reasons. */
+.kind-why{font:inherit;font-size:11px;font-weight:700;line-height:1;color:var(--bad);
+background:none;border:1px solid currentColor;border-radius:999px;width:18px;height:18px;
+padding:0;margin-left:4px;cursor:pointer;vertical-align:1px}
+.kind-why:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.why-pop{max-width:min(360px,90vw);border:1px solid var(--line);border-radius:8px;
+padding:12px 14px;background:var(--card);color:var(--fg);box-shadow:0 8px 24px rgba(0,0,0,.18);
+font-size:12px;font-weight:400}
+.why-pop p{margin:0 0 4px}
+.why-pop ul{margin:4px 0 10px;padding-left:18px}
 .qrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
 .qrow:last-child{border-bottom:none}
 .qlabel{width:170px;color:var(--muted);font-size:12px}
@@ -1820,7 +1831,7 @@ def admin_source_item_detail(
         if item is None or item.get("source_id") != source_id:
             raise HTTPException(status_code=404, detail="item not found on this source")
         event = events_api.get_event_by_source_item(con, source_item_id)
-        confirmation = timeline_settings.get_settings(con)
+        terms = public._enabled_terms(con)
 
     content = item.get("content") or {}
     body_text = content.get("extracted_text")
@@ -1873,7 +1884,7 @@ def admin_source_item_detail(
         preview = (
             f'<div class="previewbox"><ul class="events" style="list-style:none;padding:0;margin:0">'
             f'<li class="event">'
-            f'{public._timeline_line1(event, confirmation_settings=confirmation)}'
+            f'{public._timeline_line1(event, terms=terms)}'
             f'{public._timeline_line2(event)}'
             f'</li>'
             f'{public._timeline_line3(event)}'
@@ -2114,11 +2125,15 @@ def _venue_events_panel(view: str, venue: dict[str, Any], linked: dict[str, Any]
     vid = venue["venue_id"]
     close = master_admin._rebuilt(view, drop=(VENUE_EVENTS_PARAM, VENUE_EVENTS_PAGE_PARAM),
                                   anchor=master_admin.row_id("VENUE", vid))
-    title = (f'<h3>{E(venue["name"])} · 연결 행사 {linked["total"]}건 '
-             f'<a class="rowbtn" href="{E(close)}">닫기</a></h3>')
+    groups = linked.get("groups", len(linked["rows"]))
+    title = (f'<h3>{E(venue["name"])} · 연결 행사 {linked["total"]}건'
+             + (f" · 반복 행사 {groups}개" if linked["total"] else "")
+             + f' <a class="rowbtn" href="{E(close)}">닫기</a></h3>')
     if not linked["rows"]:
         return (f'<div class="eventpanel" id="events-VENUE-{vid}">{title}'
                 '<p class="note">연결된 행사가 없습니다.</p></div>')
+    note = ('<p class="note">같은 이름·같은 요일의 행사는 한 줄로 묶고 가장 최근 회차를 '
+            f'보여줍니다 - 연결 행사 {linked["total"]}건이 {groups}줄로 정리되었습니다.</p>')
     today = events_api.today()
     rows, attrs = [], []
     for row in linked["rows"]:
@@ -2131,20 +2146,27 @@ def _venue_events_panel(view: str, venue: dict[str, Any], linked: dict[str, Any]
         links = [f'<a href="/admin/review/{row["candidate_id"]}">검토</a>']
         if row.get("publicly_visible"):
             links.append(f'<a href="/events/{row["event_id"]}">공개</a>')
+        shown = {"id": row["event_id"], "name": row.get("event_name"),
+                 "genre": row.get("genre_code"), "event_type": row.get("event_type"),
+                 "event_formats": row.get("event_formats"),
+                 "event_type_label": events_api.event_kind_label(
+                     row.get("event_type"), row.get("event_formats"))}
+        kind = public._event_kind(shown, linked.get("terms"))
         rows.append([
             f"{E(day.isoformat())} ({public.WEEKDAYS[day.weekday()]})",
             _event_clock(row),
             E(row.get("event_name") or "-"),
             E(row.get("genre_name") or "-"),
-            E(events_api.event_kind_label(row.get("event_type"), row.get("event_formats"))),
+            public._kind_html(shown, kind, f"kind-why-v{row['event_id']}"),
+            f'{row.get("occurrences", 1)}회',
             " ".join(state),
             " · ".join(links),
         ])
         attrs.append(' class="pastevent"' if day < today else "")
-    table = _table(["날짜", "시작", "행사", "장르", "분류", "상태", "링크"], rows,
+    table = _table(["날짜", "시작", "행사", "장르", "분류", "회차", "상태", "링크"], rows,
                    empty="연결된 행사가 없습니다.", row_attrs=attrs)
     size = venue_resolution.VENUE_EVENTS_PAGE_SIZE
-    last = pagination.total_pages(linked["total"], page_size=size)
+    last = pagination.total_pages(groups, page_size=size)
     pager = ""
     if last > 1:
         page = linked["page"]
@@ -2158,11 +2180,11 @@ def _venue_events_panel(view: str, venue: dict[str, Any], linked: dict[str, Any]
             return f'<a class="pager-link" href="{E(href)}">{E(label)}</a>'
 
         pager = ('<div class="pager"><span class="pager-count">'
-                 f'Total {linked["total"]}</span><span class="pager-nav">'
+                 f'반복 행사 {groups}개</span><span class="pager-nav">'
                  + step(page - 1, "Previous", page <= 1)
                  + f'<span class="pager-status">Page {page} / {last}</span>'
                  + step(page + 1, "Next", page >= last) + "</span></div>")
-    return f'<div class="eventpanel" id="events-VENUE-{vid}">{title}{table}{pager}</div>'
+    return f'<div class="eventpanel" id="events-VENUE-{vid}">{title}{note}{table}{pager}</div>'
 
 
 def _venue_actions(venue: dict[str, Any]) -> str:
@@ -2252,16 +2274,21 @@ def admin_venues(request: Request, region: str = "",
         linked = None
         open_events = _positive_int(request.query_params.get(VENUE_EVENTS_PARAM))
         if open_events is not None and any(v["venue_id"] == open_events for v in venues):
+            # v0.87.0: every linked event is grouped first (same title, same
+            # weekday), then the groups are paged - never page first and
+            # group after, which would let one repeating event push another
+            # off the page.
             linked_total = venue_resolution.count_venue_events(con, open_events)
+            groups = venue_resolution.venue_event_groups(con, open_events)
             linked_size = venue_resolution.VENUE_EVENTS_PAGE_SIZE
             linked_page = pagination.resolve_page(
-                request.query_params.get(VENUE_EVENTS_PAGE_PARAM), linked_total,
+                request.query_params.get(VENUE_EVENTS_PAGE_PARAM), len(groups),
                 page_size=linked_size)
+            first = pagination.sql_offset(linked_page, page_size=linked_size)
             linked = {
-                "venue_id": open_events, "total": linked_total, "page": linked_page,
-                "rows": venue_resolution.venue_events(
-                    con, open_events, limit=linked_size,
-                    offset=pagination.sql_offset(linked_page, page_size=linked_size)),
+                "venue_id": open_events, "total": linked_total, "groups": len(groups),
+                "page": linked_page, "rows": groups[first:first + linked_size],
+                "terms": public._enabled_terms(con),
             }
 
     from . import master_admin, master_edit
@@ -3056,51 +3083,26 @@ def admin_delete_region(
     return _back("/admin/master", f"{deleted['region']['name']} 지역을 삭제했습니다")
 
 
-# --- Timeline confirmation ("?") settings (v0.86.4 Section 16-21, 72-75) ----
-
-_STATUS_CHECKLIST_LABELS = {
-    "POSSIBLE": "확인 필요 (POSSIBLE)",
-    "EXPECTED": "예정 (EXPECTED)",
-    "CONFLICT": "정보 충돌 (CONFLICT)",
-    "UNKNOWN": "확인 필요 - 상태 미기록 (UNKNOWN)",
-}
-
-
 @router.get("/admin/settings", response_class=HTMLResponse)
 def admin_settings_page(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
-    """Public Timeline의 "?" 확인 표시를 언제 보여줄지 정하는 화면 (Section
-    16-21). VERIFIED는 체크박스 자체가 없다 - 켜고 끄는 대상이 아니라 항상
-    고정으로 표시하지 않는다(Section 73)."""
+    """Admin settings.
+
+    v0.87.0: the v0.86.4 "사용자 Timeline 확인 표시" checklist is retired. Its
+    "?" meant an unverified post but sat after the event's kind and read as
+    doubt about the kind; the "?" now means the kind itself could not be
+    settled, and what settles it is the terminology below. The old table and
+    its row are left in the database untouched - nothing reads them now.
+    """
     from . import event_terms  # local: keeps the v0.75 console import list stable
 
     with _connection() as con:
-        current = timeline_settings.get_settings(con)
         terms = event_terms.list_terms(con)
         genres = master_data.list_genres(con)
 
-    checklist = "".join(
-        f'<label class="chip"><input type="checkbox" name="statuses" value="{code}"'
-        f'{" checked" if code in current["statuses"] else ""}> '
-        f"{E(label)}</label>"
-        for code, label in _STATUS_CHECKLIST_LABELS.items()
-    )
-    body = f"""
-<h2>사용자 Timeline 확인 표시</h2>
-<p class="note">Public Timeline에서 행사 종류 뒤에 붙는 작은 "?" 표시입니다
-(예: "밀롱가 ?"). 예전의 "확인 필요" 텍스트 뱃지를 대체합니다 - 문구가 아니라
-아이콘이고, 실제 시간/장소가 표시되어 있어도 함께 뜰 수 있습니다.</p>
-<form method="post" action="/admin/settings/timeline-confirmation">
-  <label class="chip"><input type="checkbox" name="enabled" value="1"
-    {"checked" if current["enabled"] else ""}> 전체 사용 (끄면 "?" 표시가 전혀 나타나지 않습니다)</label>
-  <div class="filters" style="margin-top:10px">
-    <div class="row">{checklist}</div>
-  </div>
-  <p class="note">확인됨 (VERIFIED)은 목록에 없습니다 - 증거 게이트를 통과한
-  행사는 관리자가 다시 "?"로 켤 수 없도록 고정되어 있습니다. 취소/종료된
-  행사도 각자의 기존 표시가 우선이라 이 설정과 무관합니다.</p>
-  <div class="actions"><button class="primary" type="submit">저장</button></div>
-</form>"""
-    body += _event_terms_section(request, terms, genres)
+    body = ('<p class="note">행사 종류 옆의 "?"는 이제 행사 유형을 제목만으로 확정하지 못했을 '
+            "때만 표시됩니다 - 이전의 \"원문 확인 필요\"(검증 전 상태) 표시는 v0.87.0에서 "
+            "제거되었습니다. 유형은 아래 행사 용어로 판정합니다.</p>"
+            + _event_terms_section(request, terms, genres))
     return HTMLResponse(_page("Settings", "/admin/settings", body, flash=_flash(request)))
 
 
@@ -3271,18 +3273,6 @@ def admin_delete_event_term(
                                           str(exc), "bad")
     return master_admin._back_to_view(TERM_ENTITY, event_term_id, return_to,
                                       f"용어 '{removed['term']}' 삭제됨")
-
-
-@router.post("/admin/settings/timeline-confirmation")
-def admin_save_timeline_confirmation_settings(
-    enabled: str = Form("0"),
-    statuses: list[str] = Form(default=[]),
-    _: str = Depends(require_admin),
-) -> RedirectResponse:
-    chosen = {s for s in statuses if s in timeline_settings.CONFIGURABLE_STATUSES}
-    with _connection() as con:
-        timeline_settings.set_settings(con, enabled=enabled == "1", statuses=chosen)
-    return _back("/admin/settings", "Timeline 확인 표시 설정을 저장했습니다")
 
 
 # --- JSON API ---------------------------------------------------------------

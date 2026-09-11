@@ -1,5 +1,108 @@
 # DanceMate Release Notes
 
+## v0.87.0 Event Kind Certainty + Venue Repeating Events
+
+Status: PASS, 2026-09-11.
+
+Version split:
+
+- Product Runtime: 0.87.0
+- Information Engine: 0.85 (unchanged - no classifier change this release)
+
+### The "?" now means one thing
+
+Until now the "?" beside an event's kind was v0.86.4's *unverified post*
+signal (engine status POSSIBLE/EXPECTED/CONFLICT/UNKNOWN, switched per status
+in Settings). Sitting right after the kind, it read as doubt about the kind -
+"밀롱가?" on a plain milonga. By the user's decision it is retired: the "?"
+now appears only when the event's **kind** could not be settled from its
+title. VERIFIED/CONFLICT keep their own badges. The Settings checklist and its
+save route are removed; the old table and its row are left in the database
+untouched.
+
+### Kind: the title's own word, the canonical type underneath
+
+`event_terms.classify_kind()` settles an event's kind from the v0.86.9
+terminology, in a fixed order:
+
+1. **A matched Settings term** - shown as the word the title used ("쁘락",
+   "Pronga", "밀롱가"), with its canonical formats kept underneath
+   (PRACTICA; MILONGA + PRACTICA). Settled when one matched term covers all
+   the evidence - "금요일 밀롱가" is 밀롱가, "쁘롱가" is MILONGA + PRACTICA, and
+   "쁘롱가 & 밀롱가" is still 쁘롱가. **Unsettled** when the matched words point
+   at different formats with no registered mixed term covering them
+   ("밀롱가 & 쁘락"), or contradict the engine's own type (a milonga term on an
+   event the engine filed as SOCIAL; the engine's MILONGA covers practicas,
+   since it files every tango social that way).
+2. The formats normalization stored, when no term matches now.
+3. The engine's own type label - no word to go on, but a real type, no "?".
+4. Nothing usable (e.g. CLASS/OTHER, or no type): the fallback label, with "?".
+
+No term is written into the decision - every word comes from Settings.
+**쁘락 -> PRACTICA** is added as a seed (migration 034), the one new term this
+release defines; where it overlaps the longer 쁘락띠까, the longer term wins.
+
+### The "?" explains itself
+
+The "?" is a real `<button>` (`aria-label="행사 유형 판정 이유 보기"`) opening a
+native HTML popover - no script, no framework; keyboard, Esc and a 닫기 button
+all close it. Its lines are translated from the reason codes the decision
+actually used (matched terms and their formats, disagreeing formats, no
+registered mixed term, the engine's conflicting or unusable type) - never
+composed on the page. A button may not sit inside a link, so only a card
+whose kind carries a "?" switches to a stretched-link layout (the whole card
+still opens the event); every other card's markup is unchanged. The event
+detail page's 종류 row and the Admin Item Audit preview use the same renderer.
+
+### Venue: repeating events shown once
+
+`/admin/venues`' linked-events panel groups each venue's events by the
+project's own title key (`normalization.name_key()` - NFKC, dates/weekday
+words and decoration removed, never fuzzy: "Friday Milonga" and "Friday
+Special Milonga" stay apart) and the weekday of the real event_date. Each
+group shows its latest occurrence (date, start time, event_id) and a **회차**
+count. The header keeps the raw total and names the grouping - "연결 행사 47건
+· 반복 행사 6개" - and [연결 행사 N] on the row stays the raw linked count.
+Grouping runs over every linked event before paging, so one weekly series can
+never push another group off a page.
+
+### Migration
+
+`034_event_term_practica_alias.sql`: seeds 쁘락 -> PRACTICA for TANGO.
+Idempotent; an operator's own 쁘락 row is left as it is. No schema change.
+
+### Tests
+
+New: `test_v0870_event_kind_and_venue_groups.py` (kind decisions and reasons,
+popover and card markup, grouping, paging after grouping, the panel). The
+v0.86.4-era tests that pinned the retired status "?" (`test_v0864`,
+`test_v0866`, `test_v0867`, `test_v085`) were rewritten to the new contract,
+not dropped; the v0.86.9 venue-panel tests now stub the full fetch the
+grouping needs; `test_migrations.py` lists 034.
+
+- Focused, runtime container, real PostgreSQL (new file plus v0864, v0866,
+  v0867, v085, v0868, v0869 x2, genre_filter, master_edit, public_pages,
+  migrations): **516 passed, 0 failed, 5 skipped** (pre-existing KR-BUSAN and
+  no-collected-items data conditions).
+- Full suite, runtime container: **2034 passed, 2 failed, 19 skipped** - the
+  two failures are the known fresh-database pair
+  (`test_existing_top3_sources_are_preserved`,
+  `test_k_tango_is_preserved_untouched`, asserting board-only `SRC-W-001`),
+  unchanged since v0.86.8. Host: 1496 passed, 0 failed, 553 skipped.
+- Migrations: 001-034 on a freshly created database with no checksum drift;
+  033 -> 034 on an existing one.
+- Local runtime smoke over HTTP, events built through the real
+  `normalize_candidate`: 30/30 (the two popover-quote checks confirmed in their HTML-escaped
+  form, &quot;...&quot;, as a browser receives them) - only the "밀롱가 & 쁘락" card carries a "?", as a
+  labelled button outside any link with its popover reasons; 목요 쁘락 shows
+  쁘락, Friday Milonga shows Milonga, a title with no term shows the engine's
+  label; the detail page; four weekly Friday Milongas as one row with 4회
+  under "연결 행사 7건 · 반복 행사 4개"; the retired checklist and route gone.
+
+### Private Alpha Observation
+
+Continues unchanged.
+
 ## v0.86.9 Venue Linked Events + Event Terminology Settings
 
 Status: PASS, 2026-09-11.

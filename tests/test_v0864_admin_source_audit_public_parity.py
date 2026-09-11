@@ -81,79 +81,59 @@ def test_detail_page_when_line_has_the_same_fix():
     assert "시간 미확인" not in line
 
 
-def test_verified_status_shows_no_question_mark():
-    event = _event(status="VERIFIED", status_label="확인됨", time_confirmed=True)
-    line1 = public._timeline_line1(event, now=_NOW)
-    assert "confirm-flag" not in line1
+# v0.87.0: the user retired v0.86.4's status-driven "?" - it meant "unverified
+# post" but sat after the event's kind and read as doubt about the kind
+# ("밀롱가?" on a plain milonga). The "?" now means only that the kind could
+# not be settled from the title's words; these tests hold that contract.
+
+def _terms():
+    from runtime import event_terms
+
+    rows = [("밀롱가", ("MILONGA",)), ("쁘락", ("PRACTICA",)),
+            ("쁘롱가", ("MILONGA", "PRACTICA"))]
+    return [{"event_term_id": n, "genre_code": "TANGO", "term": t,
+             "normalized_term": event_terms.normalize_term(t), "enabled": True,
+             "formats": f} for n, (t, f) in enumerate(rows, 1)]
 
 
-def test_possible_status_shows_question_mark_by_default():
-    line1 = public._timeline_line1(_event(), now=_NOW)
-    assert 'class="confirm-flag"' in line1
+def test_no_engine_status_puts_a_question_mark_on_the_kind_any_more():
+    for status in ("POSSIBLE", "EXPECTED", "CONFLICT", "UNKNOWN", "VERIFIED"):
+        line1 = public._timeline_line1(_event(status=status, status_label="x"), now=_NOW)
+        assert "kind-why" not in line1 and "confirm-flag" not in line1, status
 
 
-def test_conflict_status_shows_question_mark():
+def test_a_plain_milonga_is_settled_whatever_its_status():
+    for status in ("POSSIBLE", "CONFLICT", "VERIFIED"):
+        event = _event(name="금요일 밀롱가", event_type="MILONGA", genre="TANGO",
+                       status=status, status_label="x")
+        line1 = public._timeline_line1(event, now=_NOW, terms=_terms())
+        assert '<span class="kind">밀롱가</span>' in line1, status
+        assert "kind-why" not in line1, status
+
+
+def test_conflict_status_keeps_its_own_badge():
     event = _event(status="CONFLICT", status_label="정보 충돌")
     line1 = public._timeline_line1(event, now=_NOW)
-    assert 'class="confirm-flag"' in line1
-    # CONFLICT's own warn badge is unrelated to the removed phrase and stays.
+    # CONFLICT's own warn badge is unrelated to the retired "?" and stays.
     assert '<span class="status warn">정보 충돌</span>' in line1
 
 
-def test_unknown_status_shows_question_mark():
-    event = _event(status="UNKNOWN", status_label="확인 필요")
-    line1 = public._timeline_line1(event, now=_NOW)
-    assert 'class="confirm-flag"' in line1
+def test_disagreeing_words_put_the_question_mark_right_after_the_kind():
+    event = _event(name="밀롱가 & 쁘락", event_type="MILONGA", genre="TANGO")
+    line1 = public._timeline_line1(event, now=_NOW, terms=_terms())
+    kind_at = line1.index('<span class="kind">밀롱가 · 쁘락</span>')
+    after = line1[kind_at + len('<span class="kind">밀롱가 · 쁘락</span>'):]
+    assert after.startswith(' <button type="button" class="kind-why"')
 
 
-def test_settings_disabled_shows_no_question_mark_for_any_status():
-    off = {"enabled": False, "statuses": timeline_settings.CONFIGURABLE_STATUSES}
-    for status in ("POSSIBLE", "EXPECTED", "CONFLICT", "UNKNOWN"):
-        event = _event(status=status, status_label="x")
-        line1 = public._timeline_line1(event, now=_NOW, confirmation_settings=off)
-        assert "confirm-flag" not in line1, status
-
-
-def test_settings_configured_statuses_is_a_real_subset():
-    only_conflict = {"enabled": True, "statuses": {"CONFLICT"}}
-    possible = public._timeline_line1(_event(status="POSSIBLE"), now=_NOW,
-                                      confirmation_settings=only_conflict)
-    conflict = public._timeline_line1(_event(status="CONFLICT"), now=_NOW,
-                                      confirmation_settings=only_conflict)
-    assert "confirm-flag" not in possible
-    assert "confirm-flag" in conflict
-
-
-def test_verified_ignores_settings_entirely():
-    """Section 73: VERIFIED has no column to switch back on - not even a
-    settings dict that names it explicitly can turn the "?" on for it."""
-    everything_on = {"enabled": True, "statuses": {"VERIFIED", "POSSIBLE", "EXPECTED",
-                                                    "CONFLICT", "UNKNOWN"}}
-    event = _event(status="VERIFIED", status_label="확인됨")
-    line1 = public._timeline_line1(event, now=_NOW, confirmation_settings=everything_on)
-    assert "confirm-flag" not in line1
-
-
-def test_cancelled_shows_no_question_mark():
-    event = _event(status="POSSIBLE", cancelled=True)
-    line1 = public._timeline_line1(event, now=_NOW)
-    assert "confirm-flag" not in line1
-
-
-def test_completed_past_event_shows_no_question_mark_by_default():
+def test_cancelled_and_past_events_follow_the_same_kind_rule():
     past = datetime.fromisoformat("2026-09-08T10:00:00+09:00")
-    event = _event(date="2026-09-01", status="POSSIBLE")
-    line1 = public._timeline_line1(event, now=past)
-    assert "confirm-flag" not in line1
-
-
-def test_question_mark_sits_immediately_after_the_event_type():
-    line1 = public._timeline_line1(_event(), now=_NOW)
-    type_pos = line1.index("밀롱가")
-    flag_pos = line1.index('<span class="confirm-flag"')
-    assert type_pos < flag_pos
-    between = line1[type_pos + len("밀롱가"):flag_pos]
-    assert between == " "
+    for event in (_event(name="금요일 밀롱가", event_type="MILONGA", genre="TANGO",
+                         cancelled=True),
+                  _event(name="금요일 밀롱가", event_type="MILONGA", genre="TANGO",
+                         date="2026-09-01")):
+        line1 = public._timeline_line1(event, now=past, terms=_terms())
+        assert "kind-why" not in line1
 
 
 def test_old_confirmation_needed_text_badge_is_gone():
@@ -172,38 +152,42 @@ def test_verified_badge_text_is_unaffected():
     assert "확인됨" in line1
 
 
-def test_confirm_flag_has_a_tooltip_and_aria_label():
+def test_the_kind_question_mark_is_a_labelled_button_with_a_popover():
+    event = _event(name="밀롱가 & 쁘락", event_type="MILONGA", genre="TANGO")
+    line1 = public._timeline_line1(event, now=_NOW, terms=_terms())
+    assert 'aria-label="행사 유형 판정 이유 보기"' in line1
+    assert 'popovertarget="kind-why-1"' in line1
+    assert 'id="kind-why-1" popover role="dialog"' in line1
+
+
+def test_the_kind_question_mark_css_is_a_button_not_the_retired_flag():
+    assert ".confirm-flag" not in public.STYLE
+    rule = public.STYLE.split(".kind-why {", 1)[1].split("}", 1)[0]
+    assert "cursor:pointer" in rule
+
+
+def test_without_terminology_the_plain_label_shows_with_no_question_mark():
+    """A caller that passes no terminology keeps the plain type label - the
+    "?" never appears without the evidence that would justify it."""
     line1 = public._timeline_line1(_event(), now=_NOW)
-    assert 'title="원문 확인이 필요한 행사입니다."' in line1
-    assert 'aria-label="원문 확인이 필요한 행사입니다."' in line1
-
-
-def test_confirm_flag_css_is_small_and_not_a_bordered_badge():
-    rule = public.STYLE.split(".confirm-flag {", 1)[1].split("}", 1)[0]
-    assert "border" not in rule
-    assert "background" not in rule
-
-
-def test_missing_settings_defaults_to_engine_defaults_not_silently_off():
-    """A caller that has not been updated to pass settings keeps today's
-    behaviour rather than the indicator silently disappearing everywhere."""
-    line1 = public._timeline_line1(_event(), now=_NOW, confirmation_settings=None)
-    assert "confirm-flag" in line1
+    assert "밀롱가" in line1 and "kind-why" not in line1
 
 
 # === Group 2: Admin/Public parity ===========================================
 
-def test_needs_confirmation_is_a_pure_function_with_no_db_access():
-    params = inspect.signature(public._needs_confirmation).parameters
+def test_the_kind_decision_is_a_pure_function_with_no_db_access():
+    from runtime import event_terms
+
+    params = inspect.signature(event_terms.classify_kind).parameters
     assert not any(name in ("con", "cursor", "pg") for name in params)
 
 
-def test_timeline_settings_module_has_no_admin_only_shadow_copy():
-    """admin.py must read/write through `timeline_settings`, never keep its
-    own parallel notion of the configurable statuses (Section 69)."""
+def test_admin_no_longer_reads_or_writes_the_retired_timeline_setting():
+    """v0.87.0 retired the checklist - the console neither reads nor writes
+    it, and keeps no shadow notion of configurable statuses either."""
     source = inspect.getsource(admin)
-    assert "timeline_settings.get_settings(" in source
-    assert "timeline_settings.set_settings(" in source
+    assert "timeline_settings.get_settings(" not in source
+    assert "timeline_settings.set_settings(" not in source
     assert "DEFAULT_CONFIRMATION_STATUSES" not in source
 
 
@@ -220,16 +204,16 @@ def test_admin_item_detail_calls_the_shared_public_renderer():
 def test_admin_module_defines_no_duplicate_timeline_formatter():
     source = inspect.getsource(admin)
     for banned in ("_timeline_line1", "_timeline_line2", "_timeline_line3",
-                  "_needs_confirmation"):
+                  "_event_kind", "_kind_why", "_kind_html"):
         assert f"def {banned}" not in source
 
 
 def test_line1_rendering_is_deterministic_given_the_same_inputs():
     """Same event + same settings -> byte-identical HTML, whether it is the
     live Timeline or an admin preview calling it a moment later."""
-    settings_ = {"enabled": True, "statuses": {"POSSIBLE"}}
-    first = public._timeline_line1(_event(), now=_NOW, confirmation_settings=settings_)
-    second = public._timeline_line1(_event(), now=_NOW, confirmation_settings=settings_)
+    event = _event(name="밀롱가 & 쁘락", event_type="MILONGA", genre="TANGO")
+    first = public._timeline_line1(event, now=_NOW, terms=_terms())
+    second = public._timeline_line1(event, now=_NOW, terms=_terms())
     assert first == second
 
 
@@ -295,35 +279,32 @@ def test_sources_page_never_links_a_json_api_endpoint_as_the_public_url(client_v
 
 
 @pytest.mark.postgres
-def test_settings_page_shows_the_configurable_statuses(client_v0864, pg):
+def test_settings_page_no_longer_shows_the_retired_checklist(client_v0864, pg):
     body = _admin_get(client_v0864, "/admin/settings")
-    for label in admin._STATUS_CHECKLIST_LABELS.values():
-        assert label in body
+    assert "사용자 Timeline 확인 표시" not in body
+    assert 'name="statuses"' not in body
+    assert '<h2 id="event-terms">' in body
 
 
-def test_settings_page_has_no_checkbox_for_verified():
-    assert "VERIFIED" not in admin._STATUS_CHECKLIST_LABELS
+def test_the_retired_checklist_labels_are_gone():
+    assert not hasattr(admin, "_STATUS_CHECKLIST_LABELS")
 
 
 @pytest.mark.postgres
-def test_settings_save_round_trips_and_is_reset_afterward(client_v0864, pg):
+def test_the_retired_save_route_is_gone_and_its_data_left_alone(client_v0864, pg):
     from runtime import db
     from runtime.config import load_settings
 
-    try:
-        response = client_v0864.post(
-            "/admin/settings/timeline-confirmation",
-            data={"enabled": "1", "statuses": ["CONFLICT"]},
-            auth=_AUTH, follow_redirects=False,
-        )
-        assert response.status_code == 303
-        with db.connect(load_settings(), autocommit=True) as con:
-            saved = timeline_settings.get_settings(con)
-        assert saved == {"enabled": True, "statuses": {"CONFLICT"}}
-    finally:
-        with db.connect(load_settings(), autocommit=True) as con:
-            timeline_settings.set_settings(
-                con, enabled=True, statuses=set(timeline_settings.CONFIGURABLE_STATUSES))
+    with db.connect(load_settings(), autocommit=True) as con:
+        before = timeline_settings.get_settings(con)
+    response = client_v0864.post(
+        "/admin/settings/timeline-confirmation",
+        data={"enabled": "1", "statuses": ["CONFLICT"]},
+        auth=_AUTH, follow_redirects=False,
+    )
+    assert response.status_code in (404, 405)
+    with db.connect(load_settings(), autocommit=True) as con:
+        assert timeline_settings.get_settings(con) == before
 
 
 @pytest.mark.postgres

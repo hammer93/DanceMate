@@ -345,6 +345,9 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "event_type": row.get("event_type"),
         "event_type_label": EVENT_TYPE_LABELS.get(
             (row.get("event_type") or "").upper()),
+        # v0.86.9's stored canonical formats, additive - what the kind shown
+        # beside the event falls back to when no Settings term matches now.
+        "event_formats": list(row.get("event_formats") or []),
         # The code is the API's contract and what ?genre= filters on; the
         # label is what a page shows a reader. Both, rather than a choice.
         "genre": row.get("genre_code"),

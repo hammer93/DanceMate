@@ -209,14 +209,15 @@ def test_naver_map_regression():
     assert "map.naver.com/p/search/" in line3
 
 
-def test_confirmation_indicator_is_untouched_by_open_ended_time():
-    """Section 13: an open-ended time must never, by itself, force the "?"
-    indicator on or off - it still follows only status/verification."""
-    possible = public._timeline_line1(_event(status="POSSIBLE"), now=_NOW)
-    verified = public._timeline_line1(
+def test_the_kind_question_mark_is_untouched_by_open_ended_time():
+    """Section 13, under v0.87.0's contract: an open-ended time never forces
+    the "?" on or off - it follows only whether the event's kind could be
+    settled from its title, never the clock or the engine status."""
+    open_ended = public._timeline_line1(_event(status="POSSIBLE"), now=_NOW)
+    closed = public._timeline_line1(
         _event(status="VERIFIED", status_label="확인됨", end_time="23:30"), now=_NOW)
-    assert 'class="confirm-flag"' in possible
-    assert 'class="confirm-flag"' not in verified
+    assert "kind-why" not in open_ended
+    assert "kind-why" not in closed
 
 
 @pytest.mark.postgres

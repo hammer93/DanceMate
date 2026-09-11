@@ -367,11 +367,11 @@ def _settings_page(url):
     return admin.admin_settings_page(req, _="tester").body.decode()
 
 
-def test_settings_has_a_terminology_section_beside_the_existing_one(stub_settings):
+def test_settings_has_a_terminology_section(stub_settings):
+    """v0.87.0 retired the Timeline checklist that used to sit above it."""
     html = _settings_page("/admin/settings")
-    assert "사용자 Timeline 확인 표시" in html                   # the existing section
+    assert "사용자 Timeline 확인 표시" not in html
     assert '<h2 id="event-terms">행사 용어 (Event Terminology)</h2>' in html
-    assert html.index("사용자 Timeline 확인 표시") < html.index('id="event-terms"')
 
 
 def test_a_dual_mapping_is_shown_as_two_formats(stub_settings):

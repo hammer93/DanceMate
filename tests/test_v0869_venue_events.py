@@ -80,7 +80,8 @@ def stub_venues(monkeypatch):
 
     def _venue_events(con, venue_id, *, limit, offset, today=None):
         calls.append((venue_id, limit, offset))
-        return events.get(venue_id, [])[offset:offset + limit]
+        rows = events.get(venue_id, [])
+        return rows[offset:] if limit is None else rows[offset:offset + limit]
 
     monkeypatch.setattr(admin, "_settings", lambda: _Settings())
     monkeypatch.setattr(admin, "_connection", _connection)
@@ -208,7 +209,9 @@ def test_a_long_list_is_paged_and_keeps_its_place(stub_venues):
         _event(200 + n, name=f"Night {n}", day=TODAY + dt.timedelta(days=n)) for n in range(45)]
     html = _page("/admin/venues?page=1&venue_events=11&venue_events_page=2")
     panel = _panel(html, 11)
-    assert stub_venues["calls"][-1] == (11, venue_resolution.VENUE_EVENTS_PAGE_SIZE, 20)
+    # v0.87.0: every linked event is fetched and grouped first; the page is
+    # cut from the groups, never from the raw rows.
+    assert stub_venues["calls"][-1] == (11, None, 0)
     assert "Page 2 / 3" in panel
     assert panel.count("<tr>") + panel.count('<tr class="pastevent">') == 20 + 1  # + header
     for link in re.findall(r'class="pager-link" href="([^"]+)"', panel):
@@ -218,7 +221,8 @@ def test_a_long_list_is_paged_and_keeps_its_place(stub_venues):
 
 
 def test_an_out_of_range_panel_page_is_corrected_not_a_500(stub_venues):
-    stub_venues["events"][11] = [_event(300 + n) for n in range(45)]
+    stub_venues["events"][11] = [_event(300 + n, name=f"Night {n}",
+                                        day=TODAY + dt.timedelta(days=n)) for n in range(45)]
     html = _page("/admin/venues?venue_events=11&venue_events_page=99")
     assert "Page 3 / 3" in _panel(html, 11)
 

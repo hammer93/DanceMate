@@ -1113,7 +1113,7 @@ def venue_events(con, venue_id: int, *, limit: int = VENUE_EVENTS_PAGE_SIZE,
             "       e.event_formats, e.event_date, e.start_time, e.end_time, "
             "       e.end_day_offset, e.engine_status, e.review_state, "
             "       e.listing_state, e.canonical_event_id, e.provenance, "
-            "       g.name AS genre_name, "
+            "       g.code AS genre_code, g.name AS genre_name, "
             "       (" + events_api._VISIBLE + ") AS publicly_visible "
             "FROM events e LEFT JOIN genres g ON g.genre_id = e.genre_id "
             "WHERE e.venue_id = %s "
@@ -1125,3 +1125,41 @@ def venue_events(con, venue_id: int, *, limit: int = VENUE_EVENTS_PAGE_SIZE,
         )
         names = [c.name for c in cur.description]
         return [dict(zip(names, row)) for row in cur.fetchall()]
+
+
+def venue_event_groups(con, venue_id: int, *, today=None) -> list[dict[str, Any]]:
+    """A venue's events with each repeating event shown once (v0.87.0).
+
+    Same venue (it is one venue's list), same title and same weekday of the
+    real event_date make one group. "Same title" is the project's own
+    normalization.name_key() - NFKC, dates/weekday words and decoration
+    removed, the same key series_key() groups a weekly milonga by - never a
+    fuzzy similarity: "Friday Milonga" and "Friday Special Milonga" stay two
+    groups. A title that normalizes to nothing is never merged with anything.
+
+    Each group is its latest occurrence (date, then start time, then
+    event_id) with the number of events in it. Groups are ordered like the
+    events used to be - upcoming soonest-first, then past most-recent-first -
+    by that latest occurrence. Grouping happens over *every* linked event
+    before any paging, so a repeating event can never push another group off
+    a page.
+    """
+    from datetime import time as time_type
+
+    from . import events_api, normalization  # local: both import this module's callers
+
+    day = today or events_api.today()
+    grouped: dict[Any, list[dict[str, Any]]] = {}
+    for row in venue_events(con, venue_id, limit=None, offset=0, today=day):
+        key = normalization.name_key(row.get("event_name"))
+        group = (row["event_date"].weekday(), key) if key else ("event", row["event_id"])
+        grouped.setdefault(group, []).append(row)
+    groups = []
+    for members in grouped.values():
+        latest = max(members, key=lambda r: (r["event_date"], r.get("start_time") or time_type.min,
+                                             r["event_id"]))
+        groups.append({**latest, "occurrences": len(members),
+                       "first_date": min(r["event_date"] for r in members)})
+    groups.sort(key=lambda g: (g["event_date"] < day, abs((g["event_date"] - day).days),
+                               g.get("start_time") or time_type.min, g["event_id"]))
+    return groups
