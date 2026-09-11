@@ -467,9 +467,11 @@ COMPLETED = "COMPLETED"
 # the other scenes do not; a reader does not need that distinction spelled out,
 # only what they are turning up to.
 #
-# v0.86.7 Section 25, 27-28: "PRACTICA" reads 쁘렉 - the word this scene
-# actually uses - not the more literal but unfamiliar 쁘락띠까 the label
-# used before. "GENERAL" is new (Section 24, 26): the engine has never
+# v0.88.0: "PRACTICA" reads 프락티카 - DanceMate's own standard word for
+# it (the original term is Práctica), replacing the field spelling v0.86.7
+# had adopted as the label. The words posts actually use are Settings
+# terms (event_terms) and a card still shows the title's own word; this is
+# only the canonical label underneath. "GENERAL" is new (Section 24, 26): the engine has never
 # emitted it (no classifier code path assigns it - confirmed before adding
 # it), so it exists here purely so the label/format vocabulary already
 # supports it whenever a future release's classifier does. This dict is
@@ -480,7 +482,7 @@ COMPLETED = "COMPLETED"
 EVENT_TYPE_LABELS = {
     "MILONGA": "밀롱가",
     "MILONGA_WITH_CLASS": "밀롱가 (강습 포함)",
-    "PRACTICA": "쁘렉",
+    "PRACTICA": "프락티카",
     "GENERAL": "제너럴",
     "SOCIAL": "소셜",
     "SOCIAL_WITH_CLASS": "소셜 (강습 포함)",
@@ -503,7 +505,7 @@ EVENT_FORMAT_UNKNOWN = "UNKNOWN"
 
 EVENT_FORMAT_LABELS = {
     EVENT_FORMAT_MILONGA: "밀롱가",
-    EVENT_FORMAT_PRACTICA: "쁘렉",
+    EVENT_FORMAT_PRACTICA: "프락티카",
     EVENT_FORMAT_GENERAL: "제너럴",
     EVENT_FORMAT_SOCIAL: "소셜",
     EVENT_FORMAT_UNKNOWN: "미분류",
@@ -523,7 +525,7 @@ _EVENT_FORMAT_BY_TYPE = {
 def format_of(event_type: str | None) -> str:
     """The one representative Event Format for an event_type value (Section
     31: single-select, one representative format per event - a real
-    repeated "쁘렉+소셜" hybrid pattern was looked for and not found, so
+    repeated "프락티카+소셜" hybrid pattern was looked for and not found, so
     this stays a single value rather than a set). CLASS/OTHER/unrecognised/
     blank all read UNKNOWN (Section 29: a class is handled elsewhere
     entirely, never folded into a social-dance format by accident)."""
@@ -539,7 +541,7 @@ def event_kind_label(event_type: str | None,
     """What an operator reads for an event's kind (v0.86.9).
 
     The canonical formats its own title resolved to when there are any -
-    "밀롱가 + 쁘렉" for a Pronga - otherwise the engine's event_type label,
+    "밀롱가 + 프락티카" for a Pronga - otherwise the engine's event_type label,
     otherwise 미분류. Computed from the row every time, never stored.
     """
     if event_formats:

@@ -299,6 +299,8 @@ NAV = (
     ("/admin/sources", "Sources"),
     ("/admin/venues", "Venues"),
     ("/admin/organizers", "Organizers"),
+    ("/admin/communities", "Communities"),
+    ("/admin/notices", "Notices"),
     ("/admin/master", "Genres & Regions"),
     ("/admin/usage", "Usage"),
     ("/admin/system", "System"),
@@ -1757,7 +1759,7 @@ def admin_source_detail(
 
 def _format_chips(event_type: str | None) -> str:
     """The read-only Event Format chip row (v0.86.7 Section 30, 38, 45-47):
-    [밀롱가] [쁘렉] [제너럴] [소셜] [미분류], the current one highlighted -
+    [밀롱가] [프락티카] [제너럴] [소셜] [미분류], the current one highlighted -
     never a new write action this release (Section 47: "김프로가 바로 볼 수
     있어야 함" is about visibility, not an edit workflow; a genuinely
     repeated hybrid-format case would justify one, and none was found).
@@ -2842,7 +2844,11 @@ def _delete_form(kind: str, entity_id: int, name: str, *, core: bool,
         body = (
             f'<p class="flash bad">삭제할 수 없습니다 — '
             f'Venue {usage.get("venues", 0)}건, Organizer {usage.get("organizers", 0)}건, '
-            f'Source {usage.get("sources", 0)}건, Event {usage.get("events", 0)}건</p>'
+            f'Source {usage.get("sources", 0)}건, Event {usage.get("events", 0)}건'
+            + "".join(f", {label} {usage[key]}건" for key, label in
+                      (("communities", "Community"), ("notices", "Notice"))
+                      if key in usage)
+            + "</p>"
         )
     else:
         # No client-side confirm() - this console has never used inline JS
@@ -3191,7 +3197,7 @@ def _event_terms_section(request: Request, terms: list[dict[str, Any]],
     return (
         '<h2 id="event-terms">행사 용어 (Event Terminology)</h2>'
         '<p class="note">게시글에 쓰이는 행사 이름을 DanceMate의 표준 분류로 연결합니다. '
-        "한 용어가 여러 분류를 가질 수 있습니다 - 쁘롱가는 밀롱가이자 쁘렉입니다. "
+        "한 용어가 여러 분류를 가질 수 있습니다 - 쁘롱가는 밀롱가이자 프락티카입니다. "
         "여기 있는 용어는 다음 수집부터 행사 인식과 분류에 쓰이고, 이미 저장된 행사는 "
         "정기 정규화가 다시 만들 때 반영됩니다. 목록에 없는 표현은 억지로 분류하지 않습니다. "
         "대소문자와 공백 차이는 같은 용어로 봅니다.</p>"

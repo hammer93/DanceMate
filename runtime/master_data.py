@@ -103,8 +103,11 @@ def genre_usage(con, genre_id: int) -> dict[str, int]:
             "  (SELECT count(*) FROM venue_genres WHERE genre_id = %s) AS venues, "
             "  (SELECT count(*) FROM organizers WHERE genre_id = %s) AS organizers, "
             "  (SELECT count(*) FROM sources WHERE genre_id = %s) AS sources, "
-            "  (SELECT count(*) FROM events WHERE genre_id = %s) AS events",
-            (genre_id, genre_id, genre_id, genre_id),
+            "  (SELECT count(*) FROM events WHERE genre_id = %s) AS events, "
+            # v0.88.0: community and notice genre links (migration 035).
+            "  (SELECT count(*) FROM community_genres WHERE genre_id = %s) AS communities, "
+            "  (SELECT count(*) FROM board_post_genres WHERE genre_id = %s) AS notices",
+            (genre_id,) * 6,
         )
         cols = [c.name for c in cur.description]
         return dict(zip(cols, cur.fetchone()))
@@ -155,8 +158,10 @@ def region_usage(con, region_id: int) -> dict[str, int]:
             "  (SELECT count(*) FROM venues WHERE region_id = %s) AS venues, "
             "  (SELECT count(*) FROM organizers WHERE region_id = %s) AS organizers, "
             "  (SELECT count(*) FROM sources WHERE region_id = %s) AS sources, "
-            "  (SELECT count(*) FROM events WHERE region_id = %s) AS events",
-            (region_id, region_id, region_id, region_id),
+            "  (SELECT count(*) FROM events WHERE region_id = %s) AS events, "
+            # v0.88.0: a community's region (migration 035).
+            "  (SELECT count(*) FROM communities WHERE region_id = %s) AS communities",
+            (region_id,) * 5,
         )
         cols = [c.name for c in cur.description]
         return dict(zip(cols, cur.fetchone()))

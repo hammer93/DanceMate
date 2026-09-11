@@ -89,7 +89,7 @@ def term_spans(normalized_term: str, normalized_text: str) -> list[tuple[int, in
 
 
 def ordered_formats(formats: Iterable[str]) -> tuple[str, ...]:
-    """Formats in the canonical order, so "밀롱가 + 쁘렉" never reads backwards."""
+    """Formats in the canonical order, so "밀롱가 + 프락티카" never reads backwards."""
     wanted = set(formats or ())
     known = tuple(f for f in FORMAT_CHOICES if f in wanted)
     return known + tuple(sorted(wanted - set(FORMAT_CHOICES)))

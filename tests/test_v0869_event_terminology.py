@@ -324,7 +324,7 @@ def test_a_terminology_failure_never_stops_an_event_being_built(monkeypatch):
 
 
 def test_the_kind_label_reads_the_stored_formats_first():
-    assert events_api.event_kind_label("MILONGA", [PRACTICA, MILONGA]) == "밀롱가 + 쁘렉"
+    assert events_api.event_kind_label("MILONGA", [PRACTICA, MILONGA]) == "밀롱가 + 프락티카"
     assert events_api.event_kind_label("MILONGA", None) == "밀롱가"
     assert events_api.event_kind_label("MILONGA", []) == "밀롱가"
     assert events_api.event_kind_label(None, None) == "미분류"
@@ -378,7 +378,7 @@ def test_a_dual_mapping_is_shown_as_two_formats(stub_settings):
     html = _settings_page("/admin/settings")
     row = html.split('id="row-TERM-5"', 1)[1].split("</tr>", 1)[0]
     assert "Pronga" in row
-    assert "밀롱가 <code>MILONGA</code> + 쁘렉 <code>PRACTICA</code>" in row
+    assert "밀롱가 <code>MILONGA</code> + 프락티카 <code>PRACTICA</code>" in row
 
 
 def test_editing_a_term_opens_the_whole_row_with_every_format_selectable(stub_settings):

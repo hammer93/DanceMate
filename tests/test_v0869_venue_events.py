@@ -166,7 +166,7 @@ def test_one_event_shows_every_field_the_schema_has(stub_venues):
     assert "20:00–23:30" in panel                           # start (and end)
     assert "Friday Pronga" in panel                         # title
     assert "<td>Tango</td>" in panel                        # genre
-    assert "밀롱가 + 쁘렉" in panel                          # canonical formats
+    assert "밀롱가 + 프락티카" in panel                          # canonical formats
     assert "VERIFIED" in panel and "PENDING" in panel       # status
     assert 'href="/admin/review/9101"' in panel             # admin detail
 

@@ -41,6 +41,9 @@ PAGE = {
     # v0.86.9: Settings' event terminology rows use the same inline row
     # helpers; this is where a save on one of them returns to.
     "TERM": "/admin/settings",
+    # v0.88.0: rows with their own screens that share the audit trail.
+    master_edit.COMMUNITY: "/admin/communities",
+    master_edit.BOARD_POST: "/admin/notices",
 }
 
 

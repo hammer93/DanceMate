@@ -83,9 +83,9 @@ def test_milonga_with_a_different_term_is_ambiguous_with_its_real_reasons():
     assert codes == ["TERM_MATCH", "TERM_MATCH", "TERMS_DISAGREE", "NO_MIXED_TERM"]
     lines = event_terms.kind_reason_lines(k)
     assert '제목에서 발견: "밀롱가" (밀롱가)' in lines
-    assert '제목에서 발견: "쁘락" (쁘렉)' in lines
+    assert '제목에서 발견: "쁘락" (프락티카)' in lines
     assert "발견된 용어들이 서로 다른 행사 형식을 가리킴" in lines
-    assert "밀롱가 · 쁘렉 성격이 함께 감지됨 - 등록된 혼합 용어와 정확히 일치하지 않음" in lines
+    assert "밀롱가 · 프락티카 성격이 함께 감지됨 - 등록된 혼합 용어와 정확히 일치하지 않음" in lines
 
 
 def test_a_mixed_term_already_covers_a_milonga_beside_it():
@@ -133,7 +133,7 @@ def test_no_word_and_no_usable_type_is_unresolved_with_reasons():
 def test_stored_formats_stand_when_no_term_matches_now():
     k = kind("Tango O Nada", stored=[PRACTICA, MILONGA])
     assert (k["display"], k["certainty"], k["uncertain"]) == \
-        ("밀롱가 + 쁘렉", event_terms.STORED, False)
+        ("밀롱가 + 프락티카", event_terms.STORED, False)
 
 
 def test_a_disabled_term_is_no_evidence():

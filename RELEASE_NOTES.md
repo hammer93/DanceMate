@@ -1,5 +1,148 @@
 # DanceMate Release Notes
 
+## v0.88.0 Public Directory Tabs, Communities, Sources and Notice Board
+
+Status: PASS, 2026-09-11.
+
+Version split:
+
+- Product Runtime: 0.88.0
+- Information Engine: 0.85 (unchanged)
+
+### Public Navigation
+
+- The first screen carries five tabs: **행사** (the events view exactly as it
+  was, still the default - no `?tab=` at all) and the directory: **장소 /
+  동호회 / 정보원 / 게시판**. A small tab row above everything else; on a narrow
+  screen it scrolls sideways instead of wrapping or being cut off.
+- **One shared genre filter.** Every tab reads the same v0.86.8 selector
+  through the same functions (`_selected_genres`, `_genre_constraint`,
+  `_genre_query`): multi-select, disabled or unknown genres in a link
+  normalised away, one enabled genre means no selector, unticking everything
+  is an answer. Each tab link carries the selection and nothing else.
+- **URL state.** `?tab=venues&genres=TANGO` (or the canonical
+  `genres=TANGO,SALSA&genres_set=1`) restores the same tab and the same
+  genres on a reload or a shared link; a genre change submitted on a tab stays
+  on that tab. An unknown `tab` value is the events view.
+- The event search, the date tabs, the weekly calendar and the region filter
+  are untouched.
+
+### Venues
+
+- Public venue list from the existing `venues` table and the v0.86.7
+  `venue_genres` relation (genre FK, never a name match): name, region,
+  address with a Naver Map link, genre tags. Enabled venues only; notes and
+  coordinates are not selected.
+
+### Communities
+
+- New canonical master data `communities`, many-to-many to venues
+  (`community_venues`) and genres (`community_genres`) by id - a renamed
+  venue keeps every link.
+- Admin **Communities** screen: list, add, edit (its own edit page, returning
+  to the exact list view), enable/disable, and a two-step safe delete - only a
+  disabled community can be deleted, and a delete removes the community and
+  its own links, never a venue or a genre. Genre and venue multi-select;
+  disabled genres/venues stay visible to the operator, marked.
+- Public list: name, region, short description, venues, genres, homepage
+  link. Disabled communities and the operator's notes never appear. Nothing
+  is seeded - no real community names were given, so none are invented.
+
+### Sources
+
+- The existing `sources` table, reused as a public directory: name, platform,
+  tier (공식 / 홍보게시판 / 일정모음), genre, region, and a link to the
+  source's human page through the event pages' own resolver.
+- **Never exposed:** config, queries, notes, status/detail, source keys,
+  authority/access state. The query does not select them. A URL with a
+  credential-shaped parameter (key, token, secret, serviceKey...), user:password,
+  or an API host/`.json` endpoint is not linked. Sources have no public
+  description column; `notes` is operator-only and stays hidden.
+- Enabled sources only, most direct tier first.
+
+### Board
+
+- `boards` + `board_posts` + `board_post_genres`. One board is seeded:
+  **NOTICE (공지사항)**. The shape is general - board type and write policy on
+  the board, author kind and a reserved `author_user_id` on the post - so more
+  boards and a member login are additions later. Neither is built.
+- Admin **Notices** screen: list, add, edit, delete, status (게시 / 임시저장 /
+  숨김), pin, genre scope. A second identical submit within two minutes is
+  stored once.
+- Public: pinned first, then newest; title, date (Seoul), a one-line summary,
+  genre tags; a detail page at `/notices/{id}`. Only published posts; a draft,
+  hidden post or garbage id is a 404. The body is plain text - escaped, line
+  breaks kept, bare http(s) addresses linked - never rendered as HTML.
+
+### Genre policy (fixed by tests)
+
+- Every genre ticked narrows nothing; rows with no genre are listed too.
+- A narrowed selection lists rows having one of the chosen genres. A venue,
+  community or source with **no genre** is left out (its genre is unknown -
+  "장르 미확인" - and listing it under Tango would be a guess); a note under the
+  list says so.
+- Nothing ticked lists nothing.
+- **A notice with no genre is a global notice** and is listed under every
+  selection, the empty one included.
+
+### Terminology
+
+- DanceMate's standard Korean label for **PRACTICA** is now **프락티카**
+  (original term *Práctica*). The canonical code `PRACTICA` is unchanged.
+  Changed in the label dictionaries, the Settings note ("쁘롱가는 밀롱가이자
+  프락티카입니다"), reason lines ("제목에서 발견: "쁘락" (프락티카)") and code
+  comments. A test keeps the old spelling out of `runtime/` entirely.
+- Source terms are untouched: a Settings term or a title using a field
+  spelling is still shown as written; only the canonical label underneath
+  changed. Historical release-note entries are left as written.
+
+### Admin security
+
+Every new POST: return address limited to the screen's own list
+(absolute, protocol-relative, backslash and other paths refused), the
+console's submit guard, input and FK validation with a sentence instead of a
+500 (a failed save shows the form again with what was typed), malformed ids a
+404, everything escaped. Changes are written to `master_data_actions`
+(`COMMUNITY` / `BOARD_POST`, new `CREATE` action). Genre and region deletes
+now count communities and notices and refuse while they are used; a deleted
+venue only drops out of its communities.
+
+### Migration
+
+`035_public_directory.sql`: communities, community_genres, community_venues,
+boards (+ NOTICE seed), board_posts, board_post_genres; audit CHECK
+constraints extended. Forward-only; no existing migration changed.
+
+### Verification
+
+- New: `test_v0880_public_directory.py` (tabs, URL state, genre contract,
+  empty states, cards, notice rendering, link rules, the policy against real
+  PostgreSQL rows, every tab against the migrated schema) and
+  `test_v0880_communities_notices.py` (schema, CRUD rules, audit, safe
+  delete, usage counts, the Admin routes end to end incl. open redirect,
+  duplicate submit, malformed ids and XSS). The v0.86.7/v0.86.9/v0.87.0 tests
+  that pinned the old label were rewritten to 프락티카; `test_migrations.py`
+  lists 035.
+- Migrations 001-035 on a freshly created database, no checksum drift; 034 ->
+  035 on an existing one.
+- Focused, runtime container, fresh PostgreSQL: **510 passed, 0 failed, 3
+  skipped** (pre-existing KR-BUSAN seed condition).
+- Full suite, runtime container: **2155 passed, 2 failed, 19 skipped** on the
+  development database - the known pair (`test_existing_top3_sources_are_preserved`,
+  `test_k_tango_is_preserved_untouched`), unchanged since v0.86.8. On a
+  freshly created database: 2154 passed, 3 failed, 19 skipped - the same pair
+  plus `test_source_row_enable_disable_action_still_works`, which picks the
+  first source and on a fresh database meets SRC-D-003's seeded
+  `authority_level = PRIMARY_COMMUNITY` (rejected by `sources.validate`); the
+  v0.87.0 code fails it identically against the same database.
+- Host: 1558 passed, 0 failed, 612 skipped. Engine: 809 passed.
+- Local runtime smoke over HTTP (real UTF-8 forms through the Admin routes,
+  every row created and deleted again): 33/33.
+
+### Private Alpha Observation
+
+Continues unchanged.
+
 ## v0.87.0 Event Kind Certainty + Venue Repeating Events
 
 Status: PASS, 2026-09-11.

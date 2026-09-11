@@ -129,6 +129,30 @@ nav { display:flex; gap:.5rem; flex-wrap:wrap; margin: 0 0 1.5rem; }
 nav a { border:1px solid var(--line); border-radius:999px; padding:.3rem .85rem;
         text-decoration:none; font-size:.875rem; background:var(--card); }
 nav a[aria-current="page"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+/* v0.88.0: the first screen's directory tabs - one row that scrolls sideways
+   on a narrow screen rather than wrapping into a second row of pills. */
+nav.dirtabs { flex-wrap:nowrap; overflow-x:auto; gap:.15rem; margin:0 0 1rem;
+              border-bottom:1px solid var(--line); -webkit-overflow-scrolling:touch; }
+nav.dirtabs a { border:none; border-radius:0; background:none; white-space:nowrap;
+                padding:.5rem .8rem; font-size:.95rem; border-bottom:2px solid transparent; }
+nav.dirtabs a[aria-current="page"] { border-bottom-color:var(--accent); }
+ul.dir { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.6rem; }
+li.dir-item { background:var(--card); border:1px solid var(--line); border-radius:12px;
+              padding:.85rem 1rem; overflow-wrap:anywhere; }
+li.dir-item > a.dir-link { display:block; text-decoration:none; margin:-.85rem -1rem;
+                           padding:.85rem 1rem; }
+.dir-name { font-weight:600; }
+.dir-meta { color:var(--muted); font-size:.875rem; margin:.1rem 0 0; }
+.dir-desc { margin:.35rem 0 0; font-size:.925rem; white-space:pre-line; }
+.tags { display:flex; flex-wrap:wrap; gap:.3rem; margin:.45rem 0 0; padding:0; list-style:none; }
+.tag { font-size:.75rem; border:1px solid var(--line); border-radius:999px;
+       padding:.05rem .55rem; color:var(--muted); }
+.tag.pin { border-color:var(--accent); color:var(--accent); }
+.dir-links { margin:.45rem 0 0; font-size:.875rem; display:flex; gap:.9rem; flex-wrap:wrap; }
+.dir-note { color:var(--muted); font-size:.8rem; margin:0 0 .75rem; }
+.notice-body { margin:1rem 0; overflow-wrap:anywhere; }
+.notice-body p { margin:0 0 .9rem; }
+.back { font-size:.875rem; margin:0 0 .75rem; }
 ul.events { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.6rem; }
 li.event { background:var(--card); border:1px solid var(--line); border-radius:12px; }
 li.event a { display:block; padding:.9rem 1rem; text-decoration:none; }
@@ -343,6 +367,19 @@ BASELINE_GENRES = (("TANGO", "Tango"), ("SALSA", "Salsa"), ("SWING", "Swing"))
 # quietly re-ticking something to make the page look fuller.
 EMPTY_FILTERED = "선택한 조건에 해당하는 행사가 없습니다."
 EMPTY_TODAY = "오늘 확인된 행사가 없습니다. 수집된 글에서 확인된 것만 보여드립니다."
+
+# v0.88.0: the first screen's tabs. "행사" is the page exactly as it was and
+# stays the default (no ?tab= at all); the other four are the directory.
+EVENTS_TAB = "events"
+DIRECTORY_TABS = (
+    (EVENTS_TAB, "행사"),
+    ("venues", "장소"),
+    ("communities", "동호회"),
+    ("sources", "정보원"),
+    ("notices", "게시판"),
+)
+DIRECTORY_TAB_KEYS = frozenset(key for key, _ in DIRECTORY_TABS)
+EMPTY_NOTHING_TICKED = "선택한 춤 종류가 없습니다. 춤 종류를 하나 이상 골라 주세요."
 
 
 def _next_actions(*, when: str | None, region: str | None,
@@ -667,7 +704,8 @@ def _genre_query(selected: list[str], options: list[dict[str, str]]) -> dict[str
 
 
 def _genre_filter(action: str, when: str | None, region: str | None,
-                  options: list[dict[str, str]], selected: list[str]) -> str:
+                  options: list[dict[str, str]], selected: list[str], *,
+                  tab: str | None = None) -> str:
     """Dance styles, every enabled one, always showing which are on.
 
     Real checkboxes rather than styled links: the checked state is carried by
@@ -694,6 +732,9 @@ def _genre_filter(action: str, when: str | None, region: str | None,
         hidden += f'<input type="hidden" name="when" value="{E(when)}">'
     if region:
         hidden += f'<input type="hidden" name="region" value="{E(region)}">'
+    if tab:
+        # v0.88.0: a genre change on a directory tab stays on that tab.
+        hidden += f'<input type="hidden" name="tab" value="{E(tab)}">'
     return (
         f'<form class="row genres" method="get" action="{E(action)}">'
         f'{hidden}<span class="key">춤 종류</span>'
@@ -1468,9 +1509,17 @@ def home(
     genres: list[str] | None = Query(None),
     genres_set: str | None = Query(None),
     region: str | None = None,
+    tab: str | None = None,
 ) -> HTMLResponse:
-    """Tonight, with the dance styles on screen before anything is scrolled."""
+    """Tonight, with the dance styles on screen before anything is scrolled.
+
+    v0.88.0: the same page carries the directory tabs. No ``tab`` (or one
+    this page does not know) is the events view, unchanged.
+    """
     asked = _split_genres(genres)
+    current_tab = _directory_tab(tab)
+    if current_tab != EVENTS_TAB:
+        return _directory_page(current_tab, asked, bool(genres_set))
     try:
         with _connection() as con:
             options = _genre_options(con)
@@ -1527,6 +1576,7 @@ def home(
     body = (
         "<h1>DanceMate</h1>"
         '<p class="sub">오늘 어디서 출까.</p>'
+        + _directory_nav(EVENTS_TAB, genre_query)
         + _nav("today", genre_query=genre_query)
         + _filter_bar("/", None, facets, options, selected, region)
         + calendar
@@ -1793,6 +1843,264 @@ def submit_feedback(event_id: int, kind: str = Form(...)) -> RedirectResponse:
         raise HTTPException(status_code=400, detail="unknown feedback kind") from None
     return RedirectResponse(
         f"/events/{event_id}?feedback={quote(kind)}", status_code=303)
+
+
+# --- directory tabs (v0.88.0) -------------------------------------------------
+#
+# 장소 / 동호회 / 정보원 / 게시판 beside the events. Every tab reads the genre
+# choice through the same functions the event list uses (_selected_genres,
+# _genre_constraint, _genre_query), so a selection survives a tab change, a
+# reload and a shared link. What a tab does with a row that has no genre is
+# runtime/directory.py's documented policy, not decided here.
+
+def _directory_tab(raw: str | None) -> str:
+    key = (raw or "").strip().lower()
+    return key if key in DIRECTORY_TAB_KEYS else EVENTS_TAB
+
+
+def _directory_nav(current: str, genre_query: dict[str, str]) -> str:
+    """The five tabs. Each link keeps the genre choice and nothing else."""
+    from urllib.parse import urlencode
+
+    links = []
+    for key, label in DIRECTORY_TABS:
+        params = dict(genre_query) if key == EVENTS_TAB else {"tab": key, **genre_query}
+        href = "/" + (f"?{urlencode(params)}" if params else "")
+        mark = ' aria-current="page"' if key == current else ""
+        links.append(f'<a href="{E(href)}"{mark}>{E(label)}</a>')
+    return ('<nav class="dirtabs" aria-label="DanceMate 둘러보기">'
+            + "".join(links) + "</nav>")
+
+
+def _tags(codes: "list[str] | None", labels: dict[str, str], *, none_label: str,
+          lead: str = "") -> str:
+    """Genre labels as small tags - enabled genres only (a disabled genre is not
+    something this product shows), ``none_label`` for a row with no genre."""
+    if codes:
+        items = [f'<li class="tag">{E(labels[c])}</li>' for c in codes if c in labels]
+    else:
+        items = [f'<li class="tag">{E(none_label)}</li>']
+    items = ([lead] if lead else []) + items
+    return f'<ul class="tags">{"".join(items)}</ul>' if items else ""
+
+
+def _external(url: str | None, label: str) -> str:
+    return (f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">'
+            f'{E(label)} &#8599;</a>') if url else ""
+
+
+def _venue_card(venue: dict[str, Any], labels: dict[str, str]) -> str:
+    meta = " · ".join(E(x) for x in (venue.get("region_name"), venue.get("address")) if x)
+    links = _external(events_api.build_naver_map_search_url(venue.get("address")), "지도")
+    return (
+        '<li class="dir-item">'
+        f'<div class="dir-name">{E(venue["name"])}</div>'
+        + (f'<p class="dir-meta">{meta}</p>' if meta else "")
+        + _tags(venue.get("genre_codes"), labels, none_label="장르 미지정")
+        + (f'<p class="dir-links">{links}</p>' if links else "")
+        + "</li>"
+    )
+
+
+def _community_card(community: dict[str, Any], labels: dict[str, str]) -> str:
+    places = community.get("venue_names") or []
+    links = _external(community.get("homepage_url"), "홈페이지")
+    return (
+        '<li class="dir-item">'
+        f'<div class="dir-name">{E(community["name"])}</div>'
+        + (f'<p class="dir-meta">{E(community["region_name"])}</p>'
+           if community.get("region_name") else "")
+        + (f'<p class="dir-desc">{E(community["description"])}</p>'
+           if community.get("description") else "")
+        + (f'<p class="dir-meta">장소: {E(", ".join(places))}</p>' if places else "")
+        + _tags(community.get("genre_codes"), labels, none_label="장르 미지정")
+        + (f'<p class="dir-links">{links}</p>' if links else "")
+        + "</li>"
+    )
+
+
+def _source_card(source: dict[str, Any], labels: dict[str, str]) -> str:
+    meta = " · ".join(E(x) for x in (source["platform_label"], source["tier_label"],
+                                     source.get("region_name")) if x)
+    links = _external(source.get("public_url"), "바로가기")
+    code = source.get("genre_code")
+    return (
+        '<li class="dir-item">'
+        f'<div class="dir-name">{E(source["name"])}</div>'
+        f'<p class="dir-meta">{meta}</p>'
+        + _tags([code] if code else [], labels, none_label="장르 미확인")
+        + (f'<p class="dir-links">{links}</p>' if links else "")
+        + "</li>"
+    )
+
+
+def _notice_date(value) -> str:
+    if not value:
+        return ""
+    day = value.astimezone(events_api.SEOUL)
+    return f"{day.year}.{day.month:02d}.{day.day:02d}"
+
+
+NOTICE_EXCERPT_CHARS = 100
+
+
+def _notice_excerpt(text: str | None) -> str:
+    """One line of the body under a notice's title - whitespace collapsed,
+    cut at NOTICE_EXCERPT_CHARS, escaped like everything else."""
+    line = " ".join((text or "").split())
+    if not line:
+        return ""
+    if len(line) > NOTICE_EXCERPT_CHARS:
+        line = line[:NOTICE_EXCERPT_CHARS].rstrip() + "…"
+    return f'<p class="dir-desc">{E(line)}</p>'
+
+
+def _notice_card(notice: dict[str, Any], labels: dict[str, str]) -> str:
+    pin = '<li class="tag pin">고정</li>' if notice.get("pinned") else ""
+    return (
+        f'<li class="dir-item"><a class="dir-link" href="/notices/{int(notice["post_id"])}">'
+        f'<div class="dir-name">{E(notice["title"])}</div>'
+        f'<p class="dir-meta">{E(_notice_date(notice.get("published_at")))}</p>'
+        + _notice_excerpt(notice.get("excerpt"))
+        + _tags(notice.get("genre_codes"), labels, none_label="전체 공지", lead=pin)
+        + "</a></li>"
+    )
+
+
+_DIRECTORY_SPECS: dict[str, dict[str, Any]] = {
+    "venues": {
+        "title": "장소", "sub": "춤출 수 있는 곳.", "loader": "public_venues",
+        "card": _venue_card,
+        "empty": "등록된 장소가 없습니다.",
+        "empty_filtered": "선택한 춤 종류에 해당하는 장소가 없습니다.",
+        "note": "장르가 지정되지 않은 장소는 춤 종류 전체를 볼 때만 표시됩니다.",
+    },
+    "communities": {
+        "title": "동호회", "sub": "함께 추는 사람들.", "loader": "public_communities",
+        "card": _community_card,
+        "empty": "등록된 동호회가 없습니다.",
+        "empty_filtered": "선택한 춤 종류에 해당하는 동호회가 없습니다.",
+        "note": "장르가 지정되지 않은 동호회는 춤 종류 전체를 볼 때만 표시됩니다.",
+    },
+    "sources": {
+        "title": "정보원", "sub": "DanceMate가 행사 소식을 모으는 곳.",
+        "loader": "public_sources", "card": _source_card,
+        "empty": "등록된 정보원이 없습니다.",
+        "empty_filtered": "선택한 춤 종류에 해당하는 정보원이 없습니다.",
+        "note": "장르가 확인되지 않은 정보원은 춤 종류 전체를 볼 때만 표시됩니다.",
+    },
+    "notices": {
+        "title": "게시판", "sub": "DanceMate 공지사항.", "loader": "public_notices",
+        "card": _notice_card,
+        "empty": "등록된 공지가 없습니다.",
+        "empty_filtered": "선택한 춤 종류에 해당하는 공지사항이 없습니다.",
+        "note": "장르를 정하지 않은 전체 공지는 어떤 춤 종류를 골라도 함께 보입니다.",
+    },
+}
+
+
+def _directory_page(tab: str, asked: "list[str] | None", declared: bool) -> HTMLResponse:
+    from . import directory
+
+    spec = _DIRECTORY_SPECS[tab]
+    try:
+        with _connection() as con:
+            options = _genre_options(con)
+            selected = _selected_genres(options, asked, declared)
+            constraint = _genre_constraint(options, selected)
+            rows = getattr(directory, spec["loader"])(con, constraint)
+    except db.DatabaseUnavailable:
+        return _unavailable_page("DanceMate")
+
+    genre_query = _genre_query(selected, options)
+    labels = {o["code"]: o["label"] for o in options}
+    form = _genre_filter("/", None, None, options, selected, tab=tab)
+    narrowed = constraint is not None
+    if rows:
+        listing = ('<ul class="dir">' + "".join(spec["card"](row, labels) for row in rows)
+                   + "</ul>")
+    elif constraint == []:
+        listing = f'<p class="empty">{E(EMPTY_NOTHING_TICKED)}</p>'
+    else:
+        listing = f'<p class="empty">{E(spec["empty_filtered"] if narrowed else spec["empty"])}</p>'
+    body = (
+        "<h1>DanceMate</h1>"
+        f'<p class="sub">{E(spec["sub"])}</p>'
+        + _directory_nav(tab, genre_query)
+        + (f'<div class="filters">{form}</div>{AUTO_SUBMIT}' if form else "")
+        + (f'<p class="dir-note">{E(spec["note"])}</p>' if narrowed else "")
+        + listing
+        + _footer()
+    )
+    return HTMLResponse(_page(f"{spec['title']} - DanceMate", body))
+
+
+# A bare web address inside a notice's plain-text body.
+_NOTICE_URL = re.compile(r"https?://[^\s<>\"']+")
+_URL_TRAILING = ".,;:!?)]}'\"。、」』）"
+
+
+def _linkify(line: str) -> str:
+    """Escape a line of text, turning each bare http(s) address into a link.
+    Nothing else in the text is ever markup."""
+    out, last = [], 0
+    for match in _NOTICE_URL.finditer(line):
+        url = match.group(0).rstrip(_URL_TRAILING)
+        start, end = match.start(), match.start() + len(url)
+        out.append(E(line[last:start]))
+        safe = events_api.valid_public_url(url)
+        out.append(f'<a href="{E(safe)}" target="_blank" rel="nofollow noopener noreferrer">'
+                   f'{E(url)}</a>' if safe else E(url))
+        last = end
+    out.append(E(line[last:]))
+    return "".join(out)
+
+
+def _notice_body_html(body: str | None) -> str:
+    """Plain text to HTML: paragraphs at blank lines, <br> at single breaks."""
+    text = (body or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return ""
+    return ('<div class="notice-body">' + "".join(
+        "<p>" + "<br>".join(_linkify(line) for line in p.split("\n")) + "</p>"
+        for p in paragraphs) + "</div>")
+
+
+def _notice_missing() -> HTMLResponse:
+    body = ('<p class="back"><a href="/?tab=notices">← 게시판</a></p>'
+            '<h1>공지를 찾을 수 없습니다</h1>'
+            '<p class="empty">삭제되었거나 아직 게시되지 않은 공지입니다.</p>' + _footer())
+    return HTMLResponse(_page("DanceMate", body), status_code=404)
+
+
+@router.get("/notices/{post_id}", response_class=HTMLResponse)
+def notice_page(post_id: str) -> HTMLResponse:
+    """One published notice. A draft, a hidden post or a garbage id is a 404."""
+    from . import directory
+
+    text = (post_id or "").strip()
+    if not (text.isascii() and text.isdigit()) or len(text) > 18 or int(text) == 0:
+        return _notice_missing()
+    try:
+        with _connection() as con:
+            options = _genre_options(con)
+            notice = directory.public_notice(con, int(text))
+    except db.DatabaseUnavailable:
+        return _unavailable_page("DanceMate")
+    if notice is None:
+        return _notice_missing()
+    labels = {o["code"]: o["label"] for o in options}
+    pin = '<li class="tag pin">고정</li>' if notice.get("pinned") else ""
+    body = (
+        '<p class="back"><a href="/?tab=notices">← 게시판</a></p>'
+        f'<h1>{E(notice["title"])}</h1>'
+        f'<p class="sub">{E(_notice_date(notice.get("published_at")))}</p>'
+        + _tags(notice.get("genre_codes"), labels, none_label="전체 공지", lead=pin)
+        + _notice_body_html(notice.get("body"))
+        + _footer()
+    )
+    return HTMLResponse(_page(f"{notice['title']} - DanceMate", body))
 
 
 def _footer() -> str:

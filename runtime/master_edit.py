@@ -37,6 +37,13 @@ SOURCE = "SOURCE"
 
 ENTITIES = (GENRE, REGION, VENUE, ORGANIZER, SOURCE)
 
+# v0.88.0: communities and notices have screens of their own, but write to
+# the same audit trail. Not in ENTITIES - the generic master-data edit
+# route is not how either one is edited.
+COMMUNITY = "COMMUNITY"
+BOARD_POST = "BOARD_POST"
+AUDITED = ENTITIES + (COMMUNITY, BOARD_POST)
+
 EDIT = "EDIT"
 ENABLE = "ENABLE"
 DISABLE = "DISABLE"
@@ -45,6 +52,8 @@ ALIAS_REMOVE = "ALIAS_REMOVE"
 GENRE_ADD = "GENRE_ADD"
 GENRE_REMOVE = "GENRE_REMOVE"
 DELETE = "DELETE"
+# v0.88.0: a community or a notice created in the console.
+CREATE = "CREATE"
 
 # v0.86.7 Section 19: the three genres this product actually supports today
 # are protected from deletion regardless of reference count - no `is_core`/
@@ -138,7 +147,7 @@ def record(con, *, entity_type: str, entity_id: int, action: str, reviewer: str,
            after: dict[str, Any] | None = None,
            detail: str | None = None) -> dict[str, Any]:
     """Write one master-data change to the audit trail."""
-    if entity_type not in ENTITIES:
+    if entity_type not in AUDITED:
         raise EditError(f"unknown entity {entity_type!r}")
     with con.cursor() as cur:
         cur.execute(
@@ -332,6 +341,14 @@ def _usage_total(usage: dict[str, int]) -> int:
     return sum(usage.values())
 
 
+def _extra_usage(usage: dict[str, int]) -> str:
+    """v0.88.0: communities and notices point at genres (and communities at
+    regions) too - named in the refusal whenever they are counted."""
+    return "".join(f", {label} {usage[key]}건" for key, label in
+                   (("communities", "Community"), ("notices", "Notice"))
+                   if key in usage)
+
+
 def delete_genre(con, genre_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
     """Delete a genre with nothing else taken with it (v0.86.7 Section
     14-19). Blocks outright when anything still references it - no
@@ -355,6 +372,7 @@ def delete_genre(con, genre_id: int, *, reviewer: str = "admin") -> dict[str, An
             f"{genre['name']} 장르는 아직 사용 중이라 삭제할 수 없습니다 — "
             f"Venue {usage['venues']}건, Organizer {usage['organizers']}건, "
             f"Source {usage['sources']}건, Event {usage['events']}건"
+            + _extra_usage(usage)
         )
     with con.transaction():
         master_data.delete_genre(con, genre_id)
@@ -381,6 +399,7 @@ def delete_region(con, region_id: int, *, reviewer: str = "admin") -> dict[str, 
             f"{region['name']} 지역은 아직 사용 중이라 삭제할 수 없습니다 — "
             f"Venue {usage['venues']}건, Organizer {usage['organizers']}건, "
             f"Source {usage['sources']}건, Event {usage['events']}건"
+            + _extra_usage(usage)
         )
     with con.transaction():
         master_data.delete_region(con, region_id)

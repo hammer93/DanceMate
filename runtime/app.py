@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import admin, admin_pages, events_admin, health, master_admin, public
+from . import directory_admin  # v0.88.0: Communities and Notices
 from .config import PRODUCT_VERSION, Settings, load_settings
 
 app = FastAPI(
@@ -52,6 +53,7 @@ app.include_router(events_admin.router)
 app.include_router(events_admin.api)
 app.include_router(master_admin.router)
 app.include_router(master_admin.api)
+app.include_router(directory_admin.router)
 
 # The alpha user surface: / , /events , /events/{id} and /api/events. Mounted
 # last so it can never shadow an operator route.

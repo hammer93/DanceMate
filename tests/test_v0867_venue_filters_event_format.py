@@ -295,7 +295,7 @@ def test_milonga_label():
 
 
 def test_practica_label_is_ppeurek_not_the_old_transliteration():
-    assert events_api.EVENT_TYPE_LABELS["PRACTICA"] == "쁘렉"
+    assert events_api.EVENT_TYPE_LABELS["PRACTICA"] == "프락티카"
 
 
 def test_general_label():
@@ -345,7 +345,7 @@ def test_public_timeline_shows_practica_and_general_labels():
         "cancelled": False, "source_link": {"url": None, "label": None},
         "last_checked": None,
     }
-    for event_type, label in (("PRACTICA", "쁘렉"), ("GENERAL", "제너럴")):
+    for event_type, label in (("PRACTICA", "프락티카"), ("GENERAL", "제너럴")):
         line1 = public._timeline_line1(
             {**base, "event_type_label": events_api.EVENT_TYPE_LABELS[event_type]}, now=now)
         assert label in line1
