@@ -8,6 +8,11 @@ between today, tomorrow and the week.
 
 These tests drive the rendering and selection functions directly. The two that
 need real events use the rolled-back PostgreSQL fixture.
+
+v0.86.8 narrowed one of these promises: "all three" means all three *enabled*
+genres. A disabled one leaves the list entirely, and a list with one genre in
+it is not a question, so it is not asked - see
+tests/test_v0868_genre_selector_inline_edit.py.
 """
 
 from __future__ import annotations
@@ -174,15 +179,17 @@ def test_the_markup_wraps_rather_than_overflowing_a_phone():
 # --- 12: a disabled genre is not offered ------------------------------------
 
 def test_only_enabled_genres_are_offered(pg):
-    """Read from the master, so admin stays the one place genres are decided."""
+    """Read from the master, so admin stays the one place genres are decided.
+
+    v0.86.8: exactly the enabled ones, with no baseline top-up - a genre an
+    admin disabled is off the first screen, not shown as a dead chip.
+    """
     from runtime import master_data
 
     options = public._genre_options(pg)
-    codes = [o["code"] for o in options]
+    codes = {o["code"] for o in options}
     enabled = {g["code"] for g in master_data.list_genres(pg, enabled_only=True)}
-    assert set(codes) <= enabled or set(codes) - enabled <= set(ALL)
-    for code in ALL:
-        assert code in codes, code
+    assert codes == enabled
 
 
 def test_the_three_survive_a_master_that_says_nothing():

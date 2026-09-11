@@ -1,5 +1,201 @@
 # DanceMate Release Notes
 
+## v0.86.8 Public Genre Selector + Admin Inline Row Editing
+
+Status: PASS, 2026-09-11.
+
+Version split:
+
+- Product Runtime: 0.86.8
+- Information Engine: 0.85 (unchanged - no classifier change, no schema
+  change; one data-only migration, 032)
+
+### Public Genre Selector
+
+The first screen only asks questions it can answer. The style picker is
+built from the genre master's own `enabled` flag and nothing else:
+
+**Disabled genre filtering.** `_genre_options()` reads every genre row
+and keeps the ones `_is_enabled()` says are live - a disabled genre
+leaves the list entirely rather than rendering as a dead, greyed-out
+chip. Nothing on the reader's side asks "is this the salsa one?"; flip
+the flags in the master and the answer flips with them.
+
+**Baseline forced-fill removed.** The real cause of Salsa and Swing
+still showing after an admin disabled them: `_genre_options()` used to
+top the list back up from `BASELINE_GENRES` for any of the three that
+were missing, which is exactly what "disabled" makes them.
+`BASELINE_GENRES` is now what it always claimed to be - a floor for an
+*unreachable* master (a database hiccup must not silently remove the
+filter), plus the chip ordering. A master that answers "these are
+disabled" is not a hiccup and is obeyed.
+
+**Selector shown only for 2+ enabled genres.** `_shows_selector()` is
+`len(options) > 1`. A control whose only option is already the answer
+is furniture occupying the whole width of the first screen's most
+valuable row, so with one enabled genre `_genre_filter()` renders
+nothing at all (and its auto-submit script is not shipped either).
+
+**Single enabled genre applied automatically.** With no selector on
+screen the enabled genre simply *is* the current genre - the event
+query, the region chips, the week calendar and every link on the page
+carry on unchanged.
+
+**Zero enabled genres handled gracefully.** No selector, no constraint,
+no crash: the page lists what there is.
+
+**URL genre normalization.** What a link asks for is checked against
+what the master currently enables, so a shared or bookmarked
+`?genres=SALSA` cannot strand a reader on a filtered-to-nothing page
+they have no control to undo. With no selector the enabled set is
+applied regardless of the query string; with the selector up, unknown
+codes are dropped and an ask that survives none of them falls back to
+everything. Unticking every box by hand stays what it always was - an
+answer, not a mistake to be corrected.
+
+**Compact responsive width.** `.filters form.genres` is `inline-flex` +
+`width:fit-content` with `min-width:min(100%, 12rem)` and
+`max-width:100%`, so the control is as wide as its chips instead of as
+wide as the screen - a floor and a ceiling rather than a fixed narrow
+width that would clip a long genre name, and the chips still wrap
+inside the box on a phone. Chip spacing, border radius and type are
+untouched.
+
+### Admin Master Data
+
+**Inline row editing** on Genres, Regions, Organizers and Venues.
+Clicking 편집 turns *that row* into inputs in place - every editable
+column at once, the row's own `<form>` sitting outside the table and
+joined to the cells by the HTML5 `form="..."` attribute (a form cannot
+legally span `<td>`s, and this is also what lets the row's toggle,
+delete and the venue's alias/genre sub-editors keep working beside it
+without ever being nested inside it). Which row is open is a query
+parameter (`?edit=GENRE:5`), not client-side state, so it survives the
+redirect a POST has to end with. Editable fields with no column of
+their own (Region's District, Organizer's and Venue's Notes) ride in
+the neighbouring cell under their own small label rather than being
+the one field the row editor leaves behind. State is a `<select>`, not
+a checkbox: an unticked checkbox is not submitted at all, which would
+read as "unchanged" and silently ignore an operator who meant to
+disable the row.
+
+**Page/search/filter/sort preservation.** `return_to` carries the list
+URL the operator is actually looking at into the save, and
+`_back_to_view()` hands it straight back - so finishing an edit never
+resets the list to its first page, drops a genre/region filter or
+loses a page number. The one-shot flash parameters are stripped on the
+way in, so messages do not stack across saves.
+
+**Row anchor restoration.** The redirect ends in `#row-GENRE-5`, so the
+browser lands back on the row that was edited rather than at the top of
+a long table.
+
+**Safe return_to handling.** Only a path on this console is ever
+followed: anything absolute, protocol-relative, backslashed or outside
+`/admin` falls back to the entity's own list page.
+
+**Duplicate submit guard.** One console-wide script drops a second
+submit of a form already on its way and marks its buttons busy,
+including the buttons attached by `form="..."` from outside. Progressive
+enhancement only - with no JavaScript every form still submits exactly
+as it always did.
+
+**Failed saves keep the row open.** A rejected edit comes back with
+`?edit=` intact and the error above the row, so the operator corrects it
+where they are instead of the row closing as if the edit had gone
+through.
+
+### Admin Venues (final fix before push)
+
+**Genre filter on one line.** The v0.86.7 `/admin/venues` filter bar was
+written with the public stylesheet's class names (`.filters`, `.key`,
+`label.chip`, `.apply`), none of which exist in the admin stylesheet - so
+admin's own `label{display:block}` put every genre on its own line, and
+`select{width:100%}` gave the region picker the full page width.
+Admin-side flex rules for exactly those classes put `춤 종류 [Salsa]
+[Swing] [Tango] [적용] [초기화]` on one line on a desktop, wrapping on a
+narrow window or a longer genre list. CSS only: the markup, the
+`?region=`/`?genres=` contract, Apply/Reset and the table are unchanged,
+and the chips are still whatever the genre master returns.
+
+**Synthetic seed Notes removed.** Eight studios created by migration 022
+(the v0.82 cross-source alias seed - PISTA, EN PAZ Tango Studio, Tango
+Andante, Tango O Nada, OCHO, La Ventana, Amigo Studio, Cafe de Tango)
+opened in the editor with `v0.82 seed: known cross-source venue alias
+group` in Notes - a note about the migration, not about the venue. 022
+itself is left untouched: `runtime/migrate.py` checksums applied
+migrations and reports drift, and migrations here are forward-only (as
+031 was). New data-only migration 032 sets `notes = NULL` where the value
+is exactly that string - whole-value equality, no pattern, never the
+column - so an operator's own note on the same venues is left alone, and
+a fresh database ends the chain with those notes empty. Verified on the
+local stack: 8 rows cleared, a real note written afterwards survives a
+re-run, and a second run matches nothing.
+
+**Notes stays an editable field.** Empty is not absent: the venue row
+editor still renders the Notes label and control with no value in it.
+It is now a two-line `textarea` in the same cell - same width, so the
+table does not grow - where a one-line input clipped the text.
+
+### Compatibility
+
+- Sources keeps its existing expanded editor (ten editable fields
+  against seven dense columns - a row-wide swap would make that screen
+  worse, not better); it gains `return_to` only, so its genre filter and
+  page number now survive a save too.
+- Existing POST endpoints preserved: `/admin/master-data/{type}/{id}/
+  edit` and `/enabled` are the same routes with the same fields.
+  `return_to` is optional, so a form that never sends one still lands on
+  the entity's own list page exactly as before.
+- No DB schema change: `genres.enabled` already existed and is only
+  read. The one new migration, 032, is data-only (see Admin Venues).
+
+### A defect this release's own container run caught
+
+The three new route tests that must see their own writes were skipping
+silently with `password authentication failed`: the fixture read only
+`TEST_POSTGRES_*`, so the `env` fixture's deterministic fake password
+stayed in place, and holding only the connection (not the context
+manager `db.connect()` returns) let the generator be collected and the
+connection closed out from under teardown. Both fixed; the three now
+run for real, and the throwaway genre they create - disabled from the
+moment it exists, so it can never reach a reader's first screen - is
+verified deleted afterwards.
+
+### Tests
+
+61 new tests in `tests/test_v0868_genre_selector_inline_edit.py`
+(selector width, disabled-genre exclusion, flag-not-name filtering,
+one/zero enabled genre, URL normalization, whole-row edit mode, other
+rows untouched, list-context preservation, cancel, failed save, submit
+guard, return_to safety, no nested forms, the venue filter bar's
+one-line layout, Notes provenance/cleanup/rendering) plus
+`tests/test_genre_filter.py`'s disabled-genre contract narrowed to
+"exactly the enabled ones, no baseline top-up", and
+`tests/test_migrations.py` listing 032 in its expected discovery order.
+
+Focused run in the runtime container against a real PostgreSQL
+(`test_v0868_genre_selector_inline_edit.py`, `test_genre_filter.py`,
+`test_master_edit.py`, `test_migrations.py`): **143 passed, 0 failed,
+2 skipped** - the two
+skips are the pre-existing `busan_name` fixture, since KR-BUSAN was
+added through the admin console on the real board and no migration
+seeds it into a fresh database.
+
+Full suite in the container: **1861 passed, 2 failed, 18 skipped.**
+Both failures are `test_miltang_source_migration.py` and
+`test_tango_source_expansion_migration.py` asserting that source
+`SRC-W-001` (K-Tango) already exists - a row migration 021's own header
+notes was "added through the admin console at runtime", never by a
+migration. Verified pre-existing and unrelated: the identical two
+failures reproduce on unmodified v0.86.7 HEAD against the same fresh
+database. Nothing in this release touches source seeding.
+
+### Private Alpha Observation
+
+Continues unchanged - the standing recurring observation job was never
+touched by this release.
+
 ## v0.86.7 Admin Venue Filters + Genre/Region Management + Social Event Format
 
 Status: PASS, 2026-09-09.

@@ -83,17 +83,22 @@ def field(name: str, label: str, value: Any = "", *, kind: str = "text",
 
 def edit_form(entity_type: str, entity_id: int, fields: list[str], *,
               summary: str = "Edit", extra: str = "",
-              note: str | None = None) -> str:
+              note: str | None = None, return_to: str | None = None) -> str:
     """An inline edit form, opened where the row is listed.
 
     ``Cancel`` is the browser's own close on a <details> block: nothing has been
     sent, so nothing has to be undone.
+
+    ``return_to`` (v0.86.8, Section 4) is the list URL the operator is looking
+    at right now - page number, filters and search included - so saving lands
+    back on it instead of on a bare first page.
     """
     hint = f'<p class="note">{note}</p>' if note else ""
     return f"""
 <details class="editrow">
   <summary>{E(summary)}</summary>
   <form method="post" action="/admin/master-data/{E(entity_type)}/{entity_id}/edit">
+    {return_field(return_to)}
     <div class="grid">{''.join(fields)}</div>
     {hint}
     <div class="actions">
@@ -105,12 +110,180 @@ def edit_form(entity_type: str, entity_id: int, fields: list[str], *,
 </details>"""
 
 
-def toggle_form(entity_type: str, entity_id: int, enabled: bool) -> str:
+# --- inline row editing (v0.86.8, Section 4) --------------------------------
+#
+# Clicking Edit on a list row turns *that row* into inputs, in place: same
+# page, same route, same page number, same filters, same scroll position.
+# Which row is open is a query parameter (`?edit=GENRE:5`) rather than
+# client-side state, so it survives the redirect a POST has to end with, and
+# a save that fails comes back with the row still open, the error above it,
+# and the row's stored values back in the inputs.
+#
+# The inputs live in the row's own cells while the <form> element itself sits
+# outside the table (a form cannot legally span <td>s); they are tied together
+# with the HTML5 `form="..."` attribute, which is also what lets the row's
+# other forms - toggle, delete, the venue's alias editor - keep working beside
+# it without ever being nested inside it.
+
+EDIT_PARAM = "edit"
+
+
+def form_id(entity_type: str, entity_id: int) -> str:
+    return f"edit-{entity_type}-{entity_id}"
+
+
+def row_id(entity_type: str, entity_id: int) -> str:
+    return f"row-{entity_type}-{entity_id}"
+
+
+def _split_url(url: str) -> tuple[str, list[tuple[str, str]]]:
+    from urllib.parse import parse_qsl, urlsplit
+
+    parts = urlsplit(url)
+    return parts.path, list(parse_qsl(parts.query))
+
+
+def _rebuilt(url: str, *, drop: tuple[str, ...] = (),
+             add: list[tuple[str, str]] | None = None, anchor: str = "") -> str:
+    from urllib.parse import urlencode
+
+    path, params = _split_url(url)
+    kept = [(k, v) for k, v in params if k not in drop]
+    kept.extend(add or [])
+    query = urlencode(kept)
+    out = f"{path}?{query}" if query else path
+    return f"{out}#{anchor}" if anchor else out
+
+
+def current_view(request) -> str:
+    """The list URL exactly as the operator is looking at it.
+
+    Page number, filters, search and sort all ride along; the one-shot flash
+    parameters do not, so a save after a save does not stack old messages.
+    """
+    url = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    return _rebuilt(url, drop=("msg", "tone"))
+
+
+def safe_view(raw: str | None, fallback: str) -> str:
+    """A return URL is only ever a path on this console.
+
+    Anything absolute, protocol-relative or outside /admin is not somewhere a
+    save is allowed to send a browser, so it falls back to the entity's own
+    list page rather than being followed.
+    """
+    candidate = (raw or "").strip()
+    if (not candidate or candidate.startswith("//") or "\\" in candidate
+            or not candidate.startswith("/admin")):
+        return fallback
+    return candidate
+
+
+def return_field(return_to: str | None) -> str:
+    if not return_to:
+        return ""
+    return f'<input type="hidden" name="return_to" value="{E(return_to)}">'
+
+
+def editing_id(request, entity_type: str) -> int | None:
+    """Which row of this entity the list has been asked to open, if any."""
+    raw = request.query_params.get(EDIT_PARAM) if request is not None else None
+    if not raw or ":" not in raw:
+        return None
+    kind, _, ident = raw.partition(":")
+    if kind.strip().upper() != entity_type:
+        return None
+    try:
+        return int(ident)
+    except ValueError:
+        return None
+
+
+def edit_link(view: str, entity_type: str, entity_id: int, *,
+              label: str = "편집") -> str:
+    """Open this row for editing: same page, same filters, one row different."""
+    href = _rebuilt(view, drop=(EDIT_PARAM,),
+                    add=[(EDIT_PARAM, f"{entity_type}:{entity_id}")],
+                    anchor=row_id(entity_type, entity_id))
+    return f'<a class="rowbtn" href="{E(href)}">{E(label)}</a>'
+
+
+def cancel_url(view: str, entity_type: str, entity_id: int) -> str:
+    """Back to the same list, same page, nothing sent and nothing changed."""
+    return _rebuilt(view, drop=(EDIT_PARAM,), anchor=row_id(entity_type, entity_id))
+
+
+def row_form(entity_type: str, entity_id: int, return_to: str) -> str:
+    """The <form> element the row's inputs belong to. Rendered before the table."""
+    return (
+        f'<form id="{E(form_id(entity_type, entity_id))}" class="rowform" method="post" '
+        f'action="/admin/master-data/{E(entity_type)}/{entity_id}/edit">'
+        f'{return_field(return_to)}</form>'
+    )
+
+
+def row_input(entity_type: str, entity_id: int, name: str, value: Any = "", *,
+              kind: str = "text", options: str | None = None,
+              label: str | None = None, placeholder: str = "") -> str:
+    """One editable cell of a row that is currently in edit mode."""
+    fid = form_id(entity_type, entity_id)
+    shown = "" if value is None else str(value)
+    tag = f'<span class="celllabel">{E(label)}</span>' if label else ""
+    if kind == "select":
+        return (f'{tag}<select class="cellinput" name="{E(name)}" form="{E(fid)}">'
+                f'{options or ""}</select>')
+    if kind == "textarea":
+        # Free text in a narrow column (v0.86.8): the same cell and the same
+        # width, but two visible lines, so a note is readable where a
+        # single-line input clipped it. An empty one still renders - a field
+        # with no value is not a field that has gone away.
+        return (f'{tag}<textarea class="cellinput" name="{E(name)}" '
+                f'form="{E(fid)}" rows="2" '
+                f'placeholder="{E(placeholder)}">{E(shown)}</textarea>')
+    return (f'{tag}<input class="cellinput" name="{E(name)}" form="{E(fid)}" '
+            f'value="{E(shown)}" placeholder="{E(placeholder)}">')
+
+
+def enabled_input(entity_type: str, entity_id: int, enabled: bool) -> str:
+    """State as a real field of the row, not a button beside it.
+
+    A <select> rather than a checkbox on purpose: an unticked checkbox is not
+    submitted at all, which would read as "unchanged" and silently ignore an
+    operator who meant to disable the row.
+    """
+    return row_input(
+        entity_type, entity_id, "enabled", kind="select",
+        options=(f'<option value="1"{" selected" if enabled else ""}>ENABLED</option>'
+                 f'<option value="0"{"" if enabled else " selected"}>DISABLED</option>'),
+    )
+
+
+def row_actions(view: str, entity_type: str, entity_id: int) -> str:
+    """Save and Cancel, on the row being edited.
+
+    Save submits the row's form; Cancel is a plain link back to the same list
+    view with the row closed - nothing has been sent, so nothing has to be
+    undone. `data-busy` is what the console's one submit guard reads to stop a
+    second click sending the same edit twice.
+    """
+    fid = form_id(entity_type, entity_id)
+    return (
+        '<div class="rowactions">'
+        f'<button class="primary" type="submit" form="{E(fid)}" '
+        f'data-busy="저장 중...">완료</button>'
+        f'<a class="rowbtn" href="{E(cancel_url(view, entity_type, entity_id))}">취소</a>'
+        "</div>"
+    )
+
+
+def toggle_form(entity_type: str, entity_id: int, enabled: bool,
+                return_to: str | None = None) -> str:
     """Enable or disable, which is not the same button as delete."""
     return (
         f'<form class="inline" method="post" '
         f'action="/admin/master-data/{E(entity_type)}/{entity_id}/enabled">'
         f'<input type="hidden" name="enabled" value="{"0" if enabled else "1"}">'
+        f'{return_field(return_to)}'
         f'<button>{"Disable" if enabled else "Enable"}</button></form>'
     )
 
@@ -198,6 +371,28 @@ def _back(entity_type: str, message: str, tone: str = "ok") -> RedirectResponse:
     return admin._back(PAGE.get(entity_type, "/admin"), message, tone)
 
 
+def _back_to_view(entity_type: str, entity_id: int, raw_return_to: str | None,
+                  message: str, tone: str = "ok", *,
+                  keep_editing: bool = False) -> RedirectResponse:
+    """Back to the list the operator was actually looking at (Section 4).
+
+    The page number, the filters, the search box and the sort all came along
+    in ``return_to`` and go straight back out again, so finishing an edit
+    never resets the list to its first page. The row that was edited is the
+    fragment, so the browser restores the same place in a long table.
+
+    ``keep_editing`` is what a *failed* save does: the row stays open with the
+    error above it, so the operator can correct it where they were, rather
+    than the row closing as if the edit had gone through.
+    """
+    view = safe_view(raw_return_to, PAGE.get(entity_type, "/admin"))
+    drop = ("msg", "tone") if keep_editing else ("msg", "tone", EDIT_PARAM)
+    add = [("msg", message), ("tone", tone)]
+    target = _rebuilt(view, drop=drop, add=add,
+                      anchor=row_id(entity_type, entity_id))
+    return RedirectResponse(target, status_code=303)
+
+
 def _form_values(entity_type: str, raw: dict[str, Any]) -> dict[str, Any]:
     """Turn form strings into the types the update helpers expect."""
     wanted: dict[str, Any] = {}
@@ -231,6 +426,7 @@ async def admin_edit_master_row(
         raise HTTPException(status_code=404, detail="unknown entity")
 
     raw = dict(await request.form())
+    return_to = raw.get("return_to")
     with db.connect(admin._settings()) as con:
         try:
             wanted = _form_values(entity_type, raw)
@@ -239,15 +435,18 @@ async def admin_edit_master_row(
             )
             con.commit()
         except master_edit.EditError as exc:
-            return _back(entity_type, f"저장하지 못했습니다: {exc}", "bad")
+            return _back_to_view(entity_type, entity_id, return_to,
+                                 f"저장하지 못했습니다: {exc}", "bad", keep_editing=True)
         except Exception as exc:  # pragma: no cover - defensive
-            return _back(entity_type, f"저장하지 못했습니다: {exc}", "bad")
+            return _back_to_view(entity_type, entity_id, return_to,
+                                 f"저장하지 못했습니다: {exc}", "bad", keep_editing=True)
 
     if not result["changed"]:
-        return _back(entity_type, "변경된 내용이 없습니다")
+        return _back_to_view(entity_type, entity_id, return_to, "변경된 내용이 없습니다")
     fields = ", ".join(result["changed"])
-    return _back(entity_type,
-                 f"{result['entity'].get('name') or entity_id} 수정됨 ({fields})")
+    return _back_to_view(
+        entity_type, entity_id, return_to,
+        f"{result['entity'].get('name') or entity_id} 수정됨 ({fields})")
 
 
 @router.post("/admin/master-data/{entity_type}/{entity_id}/enabled")
@@ -255,6 +454,7 @@ def admin_toggle_master_row(
     entity_type: str,
     entity_id: int,
     enabled: str = Form("1"),
+    return_to: str = Form(""),
     reviewer: str = Depends(require_admin),
 ) -> RedirectResponse:
     entity_type = entity_type.upper()
@@ -268,9 +468,11 @@ def admin_toggle_master_row(
             )
             con.commit()
         except master_edit.EditError as exc:
-            return _back(entity_type, f"변경하지 못했습니다: {exc}", "bad")
+            return _back_to_view(entity_type, entity_id, return_to,
+                                 f"변경하지 못했습니다: {exc}", "bad")
     name = result["entity"].get("name") or entity_id
-    return _back(entity_type, f"{name} {'enabled' if wanted else 'disabled'}")
+    return _back_to_view(entity_type, entity_id, return_to,
+                         f"{name} {'enabled' if wanted else 'disabled'}")
 
 
 @router.post("/admin/master-data/VENUE/{venue_id}/alias-add")

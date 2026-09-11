@@ -155,12 +155,21 @@ footer { margin-top:3rem; color:var(--muted); font-size:.8rem; border-top:1px so
 .filters a { border:1px solid var(--line); border-radius:999px; padding:.2rem .7rem;
              text-decoration:none; font-size:.8rem; background:var(--card); color:var(--muted); }
 .filters a[aria-current="true"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
-.filters form.genres { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center;
-                       margin:0 0 .5rem; }
+/* v0.86.8 (Section 1): the style picker is a short row of chips, not a
+   page-wide band. `inline-flex` + `width:fit-content` makes it exactly as
+   wide as the chips it holds; `min-width` keeps a single short chip from
+   collapsing into a sliver, and `max-width:100%` means a long genre name
+   (or a lot of them) wraps inside the same box instead of pushing the
+   page sideways on a phone. Spacing, border radius and type are the ones
+   the chips already had - nothing about the design system moves here. */
+.filters form.genres { display:inline-flex; gap:.4rem; flex-wrap:wrap; align-items:center;
+                       margin:0 0 .5rem; width:fit-content;
+                       min-width:min(100%, 12rem); max-width:100%; }
 .filters label.chip { display:inline-flex; align-items:center; gap:.35rem;
                       border:1px solid var(--line); border-radius:999px;
                       padding:.25rem .7rem; font-size:.8rem; background:var(--card);
-                      color:var(--muted); cursor:pointer; }
+                      color:var(--muted); cursor:pointer;
+                      max-width:100%; overflow-wrap:anywhere; }
 .filters label.chip:has(input:checked) { border-color:var(--accent); color:var(--accent);
                                          font-weight:600; }
 .filters label.chip:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
@@ -363,32 +372,61 @@ def _split_genres(values: list[str] | None) -> list[str] | None:
     return codes
 
 
-def _genre_options(con) -> list[dict[str, str]]:
-    """Every genre a reader may filter by: the enabled ones in the master.
+def _is_enabled(row: dict[str, Any]) -> bool:
+    """Is this master row live? Read from the row's own state, never its name.
 
-    A genre with no events today still gets a chip. Hiding it would make the
-    first screen change shape from day to day, and "is there any swing on?" is
-    a question the page should answer with an empty list, not by removing the
-    question.
+    v0.86.8 (Section 2): a genre is hidden because the master says it is
+    disabled, and for no other reason - nothing here, or anywhere else on
+    the reader's side, may ask "is this the salsa one?". A row that does not
+    carry the flag at all is treated as enabled: an unknown state is not a
+    reason to take a working filter off the page.
     """
-    from . import master_data
+    return bool(row.get("enabled", True))
 
+
+def _baseline_options() -> list[dict[str, str]]:
+    """The floor, used only when the master cannot be read at all."""
+    return [{"code": code, "label": label} for code, label in BASELINE_GENRES]
+
+
+def _enabled_genre_options(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """The chips, built from master rows: enabled ones only, in a fixed order.
+
+    A genre with no events today still gets a chip - "is there any swing on?"
+    is a question the page should answer with an empty list rather than by
+    removing the question. A *disabled* genre is a different case entirely
+    (v0.86.8, Section 2): it is not a question this product is answering at
+    all right now, so it is left out of the list rather than shown greyed
+    out, which would only invite a click that goes nowhere.
+    """
     options: list[dict[str, str]] = []
-    try:
-        rows = master_data.list_genres(con, enabled_only=True)
-    except Exception:  # noqa: BLE001 - the filter is not worth a 500
-        rows = []
-    for row in rows:
+    for row in rows or []:
+        if not _is_enabled(row):
+            continue
         code = (row.get("code") or "").strip().upper()
-        if code:
+        if code and code not in {o["code"] for o in options}:
             options.append({"code": code, "label": row.get("name") or code.title()})
-    known = {o["code"] for o in options}
-    for code, label in BASELINE_GENRES:
-        if code not in known:
-            options.append({"code": code, "label": label})
     order = {code: n for n, (code, _) in enumerate(BASELINE_GENRES)}
     options.sort(key=lambda o: (order.get(o["code"], len(order)), o["label"]))
     return options
+
+
+def _genre_options(con) -> list[dict[str, str]]:
+    """Every genre a reader may filter by: the enabled ones in the master.
+
+    The master is the only authority. When it can be read, what it says goes -
+    including "nothing is enabled", which is a real answer and leaves the page
+    without a style filter rather than inventing one. The baseline is a floor
+    for an *unreachable* master only, so a database hiccup never silently
+    removes the filter from the first screen.
+    """
+    from . import master_data
+
+    try:
+        rows = master_data.list_genres(con)
+    except Exception:  # noqa: BLE001 - the filter is not worth a 500
+        return _baseline_options()
+    return _enabled_genre_options(rows)
 
 
 def _region_options(con, counted: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -426,12 +464,44 @@ def _region_options(con, counted: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return options
 
 
+def _shows_selector(options: list[dict[str, str]]) -> bool:
+    """Is there a choice to offer? (v0.86.8, Section 3)
+
+    Two or more enabled genres is a question. One is not - a control whose
+    only option is already the answer is furniture, and it is the whole width
+    of the first screen's most valuable row. Zero is not a question either.
+    """
+    return len(options) > 1
+
+
 def _selected_genres(options: list[dict[str, str]], asked: list[str] | None,
                      declared: bool) -> list[str]:
-    """Which chips are ticked. Everything, until the reader says otherwise."""
+    """Which chips are ticked. Everything, until the reader says otherwise.
+
+    v0.86.8 (Section 3): what a link asks for is checked against what the
+    master currently enables, so a shared or bookmarked URL naming a genre
+    that has since been disabled (or never existed) cannot leave a reader
+    looking at a filtered-to-nothing page they have no control to undo:
+
+    * with no selector on screen, the enabled genres are simply applied -
+      there is nothing for the reader to change, so a stale parameter is
+      corrected rather than obeyed;
+    * with the selector on screen, unknown codes are dropped, and an ask
+      that survives none of them falls back to everything;
+    * ticking every box off by hand stays exactly what it was - an answer,
+      not a mistake to be corrected.
+    """
+    codes = [o["code"] for o in options]
     if asked is None and not declared:
-        return [o["code"] for o in options]
-    return list(asked or [])
+        return list(codes)
+    picked = [code for code in (asked or []) if code in codes]
+    if not _shows_selector(options):
+        # One enabled genre (or none): that is the current genre, whatever
+        # the query string still says.
+        return list(codes)
+    if asked and not picked:
+        return list(codes)
+    return picked
 
 
 def _genre_constraint(options: list[dict[str, str]], selected: list[str]) -> list[str] | None:
@@ -576,7 +646,7 @@ def _genre_query(selected: list[str], options: list[dict[str, str]]) -> dict[str
 
 def _genre_filter(action: str, when: str | None, region: str | None,
                   options: list[dict[str, str]], selected: list[str]) -> str:
-    """Dance styles, always all of them, always showing which are on.
+    """Dance styles, every enabled one, always showing which are on.
 
     Real checkboxes rather than styled links: the checked state is carried by
     the control itself, so it survives a reader who cannot see the colour and
@@ -584,6 +654,11 @@ def _genre_filter(action: str, when: str | None, region: str | None,
     is what makes it work with no JavaScript at all; the script below hides it
     and submits on change, which is what "immediately" means for everyone else.
     """
+    if not _shows_selector(options):
+        # v0.86.8 (Section 3): one enabled genre is not a choice, and zero
+        # is not one either. The genre still applies - _selected_genres()
+        # has already made it the current one - it just is not asked about.
+        return ""
     chosen = set(selected)
     boxes = []
     for option in options:
@@ -637,14 +712,20 @@ AUTO_SUBMIT = (
 def _filter_bar(action: str, when: str | None, facets: dict[str, list[dict[str, Any]]],
                 options: list[dict[str, str]], selected: list[str],
                 region: str | None) -> str:
-    """Dance style first, then where. Both above the list, both without scrolling."""
+    """Dance style first, then where. Both above the list, both without scrolling.
+
+    The style row is only here when there is more than one enabled genre to
+    choose between (v0.86.8, Section 3); the region row, the counts and every
+    link on the page carry on unchanged either way.
+    """
+    genre_form = _genre_filter(action, when, region, options, selected)
     return (
         '<div class="filters">'
-        + _genre_filter(action, when, region, options, selected)
+        + genre_form
         + _region_chips(action, when, facets["region_options"], region,
                         _genre_query(selected, options))
         + "</div>"
-        + AUTO_SUBMIT
+        + (AUTO_SUBMIT if genre_form else "")
     )
 
 

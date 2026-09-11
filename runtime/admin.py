@@ -153,6 +153,50 @@ details.editrow>summary:hover{background:var(--accent);color:#fff}
 details.editrow[open]{display:block;width:100%;border:1px solid var(--line);
 border-radius:8px;padding:12px 14px;background:var(--bg);margin-top:6px}
 details.editrow input[disabled]{background:var(--bg);color:var(--muted)}
+/* v0.86.8 Section 4: inline row editing. The row being edited keeps its
+   place in the table - same columns, same order - and only swaps its cells
+   for inputs, so nothing moves under the operator's cursor. The <form>
+   itself lives outside the table (a form cannot span <td>s) and the inputs
+   join it with the HTML5 form="..." attribute; .rowform is that element,
+   which has nothing to show. */
+form.rowform{display:none}
+tr.editing{background:var(--bg)}
+tr.editing td{vertical-align:middle}
+.cellinput{width:100%;min-width:110px;font-size:13px;padding:4px 6px}
+/* v0.86.8: Notes is free text in a narrow column - a one-line input clipped
+   it. Same cell, same width, two visible lines instead of one, so nothing
+   about the table's own width changes. */
+textarea.cellinput{min-height:3.4em;resize:vertical;line-height:1.35}
+.celllabel{display:block;font-size:11px;color:var(--muted);margin:6px 0 2px}
+.rowactions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+a.rowbtn{display:inline-block;padding:4px 10px;border:1px solid var(--line);
+border-radius:6px;text-decoration:none;color:var(--fg);background:var(--card);
+font-size:13px;line-height:1.4}
+a.rowbtn:hover{border-color:var(--accent);color:var(--accent)}
+button[disabled]{opacity:.6;cursor:progress}
+/* v0.86.8: the v0.86.7 venue filter bar was written with the PUBLIC
+   stylesheet's class names (.filters/.key/label.chip/.apply) - none of which
+   exist here, so admin's own `label{display:block}` put every genre on its
+   own line and `select{width:100%}` gave the region picker the full page
+   width. These are those rules, in this console's tokens: one flex line on a
+   desktop, wrapping rather than overflowing when the window (or the genre
+   list) grows. Nothing about the markup, the query parameters or the table
+   changes - the genres are still whatever the master returns. */
+.filters{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;
+margin:0 0 12px}
+.filters .row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0}
+.filters .key{color:var(--muted);font-size:12px;white-space:nowrap}
+.filters select{width:auto;min-width:140px;max-width:100%}
+.filters label.chip{display:inline-flex;align-items:center;gap:6px;margin:0;
+padding:3px 11px;border:1px solid var(--line);border-radius:999px;
+background:var(--card);color:var(--fg);font-size:12px;cursor:pointer;
+white-space:nowrap}
+.filters label.chip:has(input:checked){border-color:var(--accent);
+color:var(--accent);font-weight:600}
+.filters label.chip:focus-within{outline:2px solid var(--accent);
+outline-offset:1px}
+.filters label.chip input{width:auto;margin:0;accent-color:var(--accent)}
+.filters a{text-decoration:none}
 .qrow{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)}
 .qrow:last-child{border-bottom:none}
 .qlabel{width:170px;color:var(--muted);font-size:12px}
@@ -235,6 +279,25 @@ NAV = (
 # points at its replacement; the old URL is not broken for anyone who bookmarked it.
 
 
+# v0.86.8 Section 4: a save is sent once. A second click on a button whose
+# form is already on its way is dropped, and the button says so instead of
+# looking untouched. Progressive enhancement only - with no JavaScript the
+# forms still submit exactly as they always did, and the edit routes stay
+# safe to repeat (an unchanged edit writes nothing and records nothing).
+SUBMIT_ONCE = """<script>(function(){
+document.addEventListener('submit',function(e){
+var f=e.target;if(!f||f.tagName!=='FORM')return;
+if(f.dataset.sent){e.preventDefault();return;}
+f.dataset.sent='1';
+var id=f.getAttribute('id');
+var buttons=[].slice.call(f.querySelectorAll('button'));
+if(id){buttons=buttons.concat([].slice.call(
+document.querySelectorAll('button[form="'+id+'"]')));}
+buttons.forEach(function(b){var busy=b.getAttribute('data-busy');
+if(busy){b.textContent=busy;}b.disabled=true;});
+},true);})();</script>"""
+
+
 def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None = None,
           wide: bool = False) -> str:
     settings = _settings()
@@ -258,6 +321,7 @@ def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None 
   &middot; {E(settings.env)} &middot; LAN only</span>
 </div><nav>{nav}</nav></header>
 <main>{banner}{body}</main>
+{SUBMIT_ONCE}
 </body></html>"""
 
 
@@ -272,13 +336,20 @@ def _cards(items: list[tuple[str, Any, str]]) -> str:
 
 
 def _table(headers: list[str], rows: list[list[str]], *, empty: str,
-          table_class: str = "") -> str:
+          table_class: str = "", row_attrs: list[str] | None = None) -> str:
+    """`row_attrs` (v0.86.8) is raw attribute text for the matching <tr> - the
+    row's own anchor id, and the class that marks the one being edited."""
     cls = f' class="{E(table_class)}"' if table_class else ""
     if not rows:
         return f'<div class="tablewrap"><table{cls}><tbody><tr><td>{E(empty)}</td>' \
                "</tr></tbody></table></div>"
     head = "".join(f"<th>{E(h)}</th>" for h in headers)
-    body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
+    attrs = list(row_attrs or [])
+    attrs += [""] * (len(rows) - len(attrs))
+    body = "".join(
+        f"<tr{attr}>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
+        for row, attr in zip(rows, attrs)
+    )
     return f'<div class="tablewrap"><table{cls}><thead><tr>{head}</tr></thead>' \
            f"<tbody>{body}</tbody></table></div>"
 
@@ -1107,6 +1178,7 @@ def admin_sources(request: Request, genre: str = "ALL",
     """
     from . import master_admin, master_edit, pagination
 
+    view = master_admin.current_view(request)
     genre = (genre or "ALL").upper()
     settings = _settings()
     with _connection() as con:
@@ -1182,6 +1254,7 @@ def admin_sources(request: Request, genre: str = "ALL",
                 ],
                 note="API Key와 Secret은 .env에만 있고 이 화면에 표시되지 않습니다. "
                      "검색어와 수집기 설정은 Test/Enable 흐름에서 관리합니다.",
+                return_to=view,
             )
             + f'<form class="inline" method="post" '
             f'action="/admin/sources/{source["source_id"]}/{toggle}">'
@@ -1948,31 +2021,21 @@ def _source_test_report(source: dict[str, Any], report: dict[str, Any]) -> str:
 
 # --- venues -----------------------------------------------------------------
 
-def _venue_edit(venue: dict[str, Any], regions: list[dict[str, Any]],
-                aliases: list[dict[str, Any]], usage: dict[int, int],
-                all_genres: list[dict[str, Any]],
-                observed_genres: list[dict[str, Any]] | None = None) -> str:
-    """The venue's own record, opened where it is listed and already filled in."""
-    from . import master_admin, master_edit
+def _venue_extras(venue: dict[str, Any], aliases: list[dict[str, Any]],
+                  usage: dict[int, int], all_genres: list[dict[str, Any]],
+                  observed_genres: list[dict[str, Any]] | None = None) -> str:
+    """Aliases and confirmed genres: their own records, their own forms.
 
-    return master_admin.edit_form(
-        master_edit.VENUE, venue["venue_id"],
-        [
-            master_admin.field("name", "Name", venue["name"]),
-            master_admin.field(
-                "region_id", "Region", kind="select",
-                options=master_admin._options(
-                    regions, id_key="region_id", label_key="name",
-                    selected=venue.get("region_id"),
-                ),
-            ),
-            master_admin.field("address", "Address", venue.get("address")),
-            master_admin.field("notes", "Notes", venue.get("notes")),
-        ],
-        extra=(master_admin.alias_editor(venue, aliases, usage)
-              + master_admin.genre_editor(venue, all_genres, observed_genres)),
-        note="이름을 바꿔도 같은 장소로 남습니다 — 연결된 Event는 그대로입니다.",
-    )
+    Neither is a single value with a cell to sit in - an alias is added and
+    removed one at a time, and the genre set is a checkbox group - so both
+    stay the sub-editors they always were, beside the row rather than in it.
+    """
+    from . import master_admin
+
+    return ('<details><summary>Aliases &amp; Dance Genres</summary>'
+            + master_admin.alias_editor(venue, aliases, usage)
+            + master_admin.genre_editor(venue, all_genres, observed_genres)
+            + "</details>")
 
 
 def _venue_actions(venue: dict[str, Any]) -> str:
@@ -2058,26 +2121,69 @@ def admin_venues(request: Request, region: str = "",
         observed_genres = {v["venue_id"]: master_data.observed_venue_genres(con, v["venue_id"])
                            for v in venues}
 
+    from . import master_admin, master_edit
+
+    view = master_admin.current_view(request)
+    editing_venue = master_admin.editing_id(request, master_edit.VENUE)
+
     genre_names = {g["code"]: g["name"] for g in all_genres}
-    rows = [
-        [E(v["name"]), E(str(v.get("region_name") or "-")), E(str(v.get("address") or "-")),
-         ", ".join(E(a) for a in (v.get("aliases") or [])) or "-",
-         # v0.85.7 (Section 21): "Tango" / "Tango · Salsa" - a real name per
-         # genre, not the raw code, same convention as everywhere else this
-         # console shows a genre to an operator.
-         " · ".join(E(genre_names.get(code, code)) for code in (v.get("genre_codes") or [])) or "-",
-         (f'<strong>{v["events"]}</strong>'
-          + (f' <span class="muted">({v["listed_events"]} listed)</span>'
-             if v["listed_events"] else "")
-          if v["events"] else '<span class="muted">0</span>'),
-         _badge("ENABLED" if v["enabled"] else "DISABLED", "ok" if v["enabled"] else "muted"),
-         '<div class="actionbar">'
-         + _venue_edit(v, regions, alias_rows.get(v["venue_id"], []),
-                       alias_usage.get(v["venue_id"], {}), all_genres,
-                       observed_genres.get(v["venue_id"], []))
-         + _venue_actions(v) + "</div>"]
-        for v in venues
-    ]
+
+    def _alias_cell(v: dict[str, Any]) -> str:
+        return ", ".join(E(a) for a in (v.get("aliases") or [])) or "-"
+
+    def _genre_cell(v: dict[str, Any]) -> str:
+        # v0.85.7 (Section 21): "Tango" / "Tango · Salsa" - a real name per
+        # genre, not the raw code, same convention as everywhere else this
+        # console shows a genre to an operator.
+        return " · ".join(
+            E(genre_names.get(code, code)) for code in (v.get("genre_codes") or [])) or "-"
+
+    def _events_cell(v: dict[str, Any]) -> str:
+        if not v["events"]:
+            return '<span class="muted">0</span>'
+        return (f'<strong>{v["events"]}</strong>'
+                + (f' <span class="muted">({v["listed_events"]} listed)</span>'
+                   if v["listed_events"] else ""))
+
+    venue_forms, rows, row_attrs = [], [], []
+    for v in venues:
+        vid = v["venue_id"]
+        editing = vid == editing_venue
+        row_attrs.append(_row_attrs(master_edit.VENUE, vid, editing))
+        extras = _venue_extras(v, alias_rows.get(vid, []), alias_usage.get(vid, {}),
+                               all_genres, observed_genres.get(vid, []))
+        if editing:
+            venue_forms.append(master_admin.row_form(master_edit.VENUE, vid, view))
+            rows.append([
+                master_admin.row_input(master_edit.VENUE, vid, "name", v["name"]),
+                master_admin.row_input(
+                    master_edit.VENUE, vid, "region_id", kind="select",
+                    options=master_admin._options(
+                        regions, id_key="region_id", label_key="name",
+                        selected=v.get("region_id"))),
+                # Notes is editable and has no column of its own; it rides
+                # beside the address rather than being left out of the row.
+                master_admin.row_input(master_edit.VENUE, vid, "address",
+                                       v.get("address"))
+                + master_admin.row_input(master_edit.VENUE, vid, "notes",
+                                         v.get("notes"), label="Notes",
+                                         kind="textarea"),
+                _alias_cell(v), _genre_cell(v), _events_cell(v),
+                master_admin.enabled_input(master_edit.VENUE, vid, v["enabled"]),
+                master_admin.row_actions(view, master_edit.VENUE, vid) + extras
+                + '<p class="note">이름을 바꿔도 같은 장소로 남습니다 — '
+                  "연결된 Event는 그대로입니다.</p>",
+            ])
+            continue
+        rows.append([
+            E(v["name"]), E(str(v.get("region_name") or "-")),
+            E(str(v.get("address") or "-")),
+            _alias_cell(v), _genre_cell(v), _events_cell(v),
+            _badge("ENABLED" if v["enabled"] else "DISABLED",
+                   "ok" if v["enabled"] else "muted"),
+            '<div class="actionbar">'
+            + master_admin.edit_link(view, master_edit.VENUE, vid)
+            + extras + _venue_actions(v) + "</div>"])
     region_options = "".join(
         f'<option value="{r["region_id"]}">{E(r["name"])}</option>' for r in regions
     )
@@ -2155,10 +2261,10 @@ def admin_venues(request: Request, region: str = "",
             'Deleting a venue removes the link and nothing else — the posts, '
             'the evidence and the events stay, and the strings they were read '
             'from go back in that queue.</p>'
-            ) + csv_bar + add_form + filter_bar + _table(
+            ) + csv_bar + add_form + filter_bar + "".join(venue_forms) + _table(
         ["Name", "Region", "Address", "Aliases", "Dance Genres", "Events using",
          "State", "Actions"],
-        rows, empty="no venue registered yet",
+        rows, empty="no venue registered yet", row_attrs=row_attrs,
     ) + pagination.nav("/admin/venues", filter_query, page, total)
     return HTMLResponse(_page("Venues", "/admin/venues", body, flash=_flash(request)))
 
@@ -2381,36 +2487,50 @@ def admin_organizers(request: Request, _: str = Depends(require_admin)) -> HTMLR
 
     from . import master_admin, master_edit
 
-    rows = [
-        [E(o["name"]), E(str(o.get("genre_code") or "-")), E(str(o.get("region_name") or "-")),
-         E(str(o.get("contact_url") or "-")),
-         _badge("ENABLED" if o["enabled"] else "DISABLED", "ok" if o["enabled"] else "muted"),
-         '<div class="actionbar">'
-         + master_admin.edit_form(
-             master_edit.ORGANIZER, o["organizer_id"],
-             [
-                 master_admin.field("name", "Name", o["name"]),
-                 master_admin.field(
-                     "genre_id", "Genre", kind="select",
-                     options=master_admin._options(
-                         genres, id_key="genre_id", label_key="code",
-                         selected=o.get("genre_id")),
-                 ),
-                 master_admin.field(
-                     "region_id", "Region", kind="select",
-                     options=master_admin._options(
-                         regions, id_key="region_id", label_key="name",
-                         selected=o.get("region_id")),
-                 ),
-                 master_admin.field("contact_url", "Contact URL", o.get("contact_url")),
-                 master_admin.field("notes", "Notes", o.get("notes")),
-             ],
-             note="이름을 바꿔도 같은 주최자로 남습니다 — 연결된 Event는 그대로입니다.",
-         )
-         + master_admin.toggle_form(master_edit.ORGANIZER, o["organizer_id"], o["enabled"])
-         + "</div>"]
-        for o in organizers
-    ]
+    view = master_admin.current_view(request)
+    editing_organizer = master_admin.editing_id(request, master_edit.ORGANIZER)
+
+    forms, rows, row_attrs = [], [], []
+    for o in organizers:
+        oid = o["organizer_id"]
+        editing = oid == editing_organizer
+        row_attrs.append(_row_attrs(master_edit.ORGANIZER, oid, editing))
+        if editing:
+            forms.append(master_admin.row_form(master_edit.ORGANIZER, oid, view))
+            rows.append([
+                master_admin.row_input(master_edit.ORGANIZER, oid, "name", o["name"]),
+                master_admin.row_input(
+                    master_edit.ORGANIZER, oid, "genre_id", kind="select",
+                    options=master_admin._options(
+                        genres, id_key="genre_id", label_key="code",
+                        selected=o.get("genre_id"))),
+                master_admin.row_input(
+                    master_edit.ORGANIZER, oid, "region_id", kind="select",
+                    options=master_admin._options(
+                        regions, id_key="region_id", label_key="name",
+                        selected=o.get("region_id"))),
+                # Notes has no column; it is editable, so it rides here rather
+                # than being the one field left behind by the row editor.
+                master_admin.row_input(master_edit.ORGANIZER, oid, "contact_url",
+                                       o.get("contact_url"))
+                + master_admin.row_input(master_edit.ORGANIZER, oid, "notes",
+                                         o.get("notes"), label="Notes"),
+                master_admin.enabled_input(master_edit.ORGANIZER, oid, o["enabled"]),
+                master_admin.row_actions(view, master_edit.ORGANIZER, oid)
+                + '<p class="note">이름을 바꿔도 같은 주최자로 남습니다 — '
+                  "연결된 Event는 그대로입니다.</p>",
+            ])
+            continue
+        rows.append([
+            E(o["name"]), E(str(o.get("genre_code") or "-")),
+            E(str(o.get("region_name") or "-")),
+            E(str(o.get("contact_url") or "-")),
+            _badge("ENABLED" if o["enabled"] else "DISABLED",
+                   "ok" if o["enabled"] else "muted"),
+            '<div class="actionbar">'
+            + master_admin.edit_link(view, master_edit.ORGANIZER, oid)
+            + master_admin.toggle_form(master_edit.ORGANIZER, oid, o["enabled"], view)
+            + "</div>"])
     genre_options = "".join(
         f'<option value="{g["genre_id"]}">{E(g["code"])}</option>' for g in genres
     )
@@ -2433,9 +2553,9 @@ def admin_organizers(request: Request, _: str = Depends(require_admin)) -> HTMLR
 
     body = ("<h2>Organizers</h2>"
             '<p class="note">주최자는 삭제하지 않고 Disable 합니다 — 이미 연결된 '
-            "Event가 계속 해석되어야 합니다.</p>" + add_form) + _table(
+            "Event가 계속 해석되어야 합니다.</p>" + add_form) + "".join(forms) + _table(
         ["Name", "Genre", "Region", "Contact", "State", "Actions"], rows,
-        empty="no organizer registered yet",
+        empty="no organizer registered yet", row_attrs=row_attrs,
     ) + pagination.nav("/admin/organizers", {}, page, total)
     return HTMLResponse(_page("Organizers", "/admin/organizers", body, flash=_flash(request)))
 
@@ -2519,6 +2639,18 @@ def admin_candidates(request: Request, _: str = Depends(require_admin)) -> HTMLR
 
 # --- genres and regions -----------------------------------------------------
 
+def _row_attrs(entity_type: str, entity_id: int, editing: bool) -> str:
+    """A list row's anchor, and whether it is the one being edited (v0.86.8).
+
+    The anchor is what a save redirects to, so a browser lands back on the
+    same row of a long table rather than at the top of it.
+    """
+    from . import master_admin
+
+    cls = ' class="editing"' if editing else ""
+    return f' id="{master_admin.row_id(entity_type, entity_id)}"{cls}'
+
+
 def _delete_form(kind: str, entity_id: int, name: str, *, core: bool,
                  usage: dict[str, int]) -> str:
     """v0.86.7 Section 15-16, 21: a collapsed confirmation showing exactly
@@ -2577,46 +2709,76 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
 
     from . import master_admin, master_edit
 
+    # v0.86.8 Section 4: the list URL as it stands right now - both page
+    # numbers, and anything else in the query string - so an edit comes back
+    # to this exact view instead of a bare /admin/master.
+    view = master_admin.current_view(request)
+    editing_genre = master_admin.editing_id(request, master_edit.GENRE)
+    editing_region = master_admin.editing_id(request, master_edit.REGION)
+
     code_note = "code는 다른 레코드가 이 행을 가리키는 이름이라 수정할 수 없습니다"
-    genre_rows = [
-        [f'<code>{E(g["code"])}</code>', E(g["name"]),
-         _badge("ENABLED" if g["enabled"] else "DISABLED", "ok" if g["enabled"] else "muted"),
-         '<div class="actionbar">'
-         + master_admin.edit_form(
-             master_edit.GENRE, g["genre_id"],
-             [master_admin.field("code", "Code", g["code"], kind="readonly",
-                                 note=code_note),
-              master_admin.field("name", "Display name", g["name"])],
-         )
-         + master_admin.toggle_form(master_edit.GENRE, g["genre_id"], g["enabled"])
-         + _delete_form(
-             "genres", g["genre_id"], g["name"],
-             core=g["code"] in master_edit.CORE_GENRE_CODES,
-             usage=genre_usage_by_id[g["genre_id"]])
-         + "</div>"]
-        for g in genres
-    ]
-    region_rows = [
-        [f'<code>{E(r["code"])}</code>', E(r["name"]), E(r["country"]),
-         E(str(r.get("city") or "-")),
-         _badge("ENABLED" if r["enabled"] else "DISABLED", "ok" if r["enabled"] else "muted"),
-         '<div class="actionbar">'
-         + master_admin.edit_form(
-             master_edit.REGION, r["region_id"],
-             [master_admin.field("code", "Code", r["code"], kind="readonly",
-                                 note=code_note),
-              master_admin.field("name", "Display name", r["name"]),
-              master_admin.field("country", "Country", r["country"]),
-              master_admin.field("city", "City", r.get("city")),
-              master_admin.field("district", "District", r.get("district"))],
-         )
-         + master_admin.toggle_form(master_edit.REGION, r["region_id"], r["enabled"])
-         + _delete_form(
-             "regions", r["region_id"], r["name"], core=False,
-             usage=region_usage_by_id[r["region_id"]])
-         + "</div>"]
-        for r in regions
-    ]
+    genre_forms, genre_rows, genre_attrs = [], [], []
+    for g in genres:
+        gid = g["genre_id"]
+        editing = gid == editing_genre
+        genre_attrs.append(_row_attrs(master_edit.GENRE, gid, editing))
+        if editing:
+            genre_forms.append(master_admin.row_form(master_edit.GENRE, gid, view))
+            genre_rows.append([
+                f'<code>{E(g["code"])}</code>',
+                master_admin.row_input(master_edit.GENRE, gid, "name", g["name"]),
+                master_admin.enabled_input(master_edit.GENRE, gid, g["enabled"]),
+                master_admin.row_actions(view, master_edit.GENRE, gid)
+                + f'<p class="note">{E(code_note)}</p>',
+            ])
+            continue
+        genre_rows.append([
+            f'<code>{E(g["code"])}</code>', E(g["name"]),
+            _badge("ENABLED" if g["enabled"] else "DISABLED",
+                   "ok" if g["enabled"] else "muted"),
+            '<div class="actionbar">'
+            + master_admin.edit_link(view, master_edit.GENRE, gid)
+            + master_admin.toggle_form(master_edit.GENRE, gid, g["enabled"], view)
+            + _delete_form(
+                "genres", gid, g["name"],
+                core=g["code"] in master_edit.CORE_GENRE_CODES,
+                usage=genre_usage_by_id[gid])
+            + "</div>"])
+
+    region_forms, region_rows, region_attrs = [], [], []
+    for r in regions:
+        rid = r["region_id"]
+        editing = rid == editing_region
+        region_attrs.append(_row_attrs(master_edit.REGION, rid, editing))
+        if editing:
+            region_forms.append(master_admin.row_form(master_edit.REGION, rid, view))
+            region_rows.append([
+                f'<code>{E(r["code"])}</code>',
+                master_admin.row_input(master_edit.REGION, rid, "name", r["name"]),
+                master_admin.row_input(master_edit.REGION, rid, "country", r["country"]),
+                # District has no column of its own; it is still editable, so
+                # it rides in the cell next to the city it belongs to rather
+                # than being the one field an operator has to go elsewhere for.
+                master_admin.row_input(master_edit.REGION, rid, "city", r.get("city"))
+                + master_admin.row_input(master_edit.REGION, rid, "district",
+                                         r.get("district"), label="District"),
+                master_admin.enabled_input(master_edit.REGION, rid, r["enabled"]),
+                master_admin.row_actions(view, master_edit.REGION, rid)
+                + f'<p class="note">{E(code_note)}</p>',
+            ])
+            continue
+        region_rows.append([
+            f'<code>{E(r["code"])}</code>', E(r["name"]), E(r["country"]),
+            E(str(r.get("city") or "-")),
+            _badge("ENABLED" if r["enabled"] else "DISABLED",
+                   "ok" if r["enabled"] else "muted"),
+            '<div class="actionbar">'
+            + master_admin.edit_link(view, master_edit.REGION, rid)
+            + master_admin.toggle_form(master_edit.REGION, rid, r["enabled"], view)
+            + _delete_form(
+                "regions", rid, r["name"], core=False,
+                usage=region_usage_by_id[rid])
+            + "</div>"])
 
     body = (
         "<h2>Genres</h2>"
@@ -2627,7 +2789,9 @@ def admin_master(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
 </div><div class="actions"><button class="primary">Add Genre</button></div>
 <p class="note">Genres are disabled, never deleted - events already tagged with
 one still have to resolve.</p></form></details>"""
-        + _table(["Code", "Name", "State", "Actions"], genre_rows, empty="no genre")
+        + "".join(genre_forms)
+        + _table(["Code", "Name", "State", "Actions"], genre_rows, empty="no genre",
+                 row_attrs=genre_attrs)
         + pagination.nav("/admin/master", {"region_page": region_page}, genre_page,
                          genre_total, page_param="genre_page")
         + "<h2>Regions</h2>"
@@ -2644,8 +2808,9 @@ one still have to resolve.</p></form></details>"""
 필터로 보이면서 아무것도 돌려주지 않습니다.</p></form></details>"""
         + '<p class="note">지역도 삭제하지 않고 Disable 합니다. code는 Source와 '
           "Region filter가 사용하므로 수정할 수 없습니다.</p>"
+        + "".join(region_forms)
         + _table(["Code", "Name", "Country", "City", "State", "Actions"], region_rows,
-                 empty="no region")
+                 empty="no region", row_attrs=region_attrs)
         + pagination.nav("/admin/master", {"genre_page": genre_page}, region_page,
                          region_total, page_param="region_page")
     )
