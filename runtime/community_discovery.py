@@ -21,6 +21,23 @@ line, so an operator can see why a candidate got its label. The genre a query
 was written for is a search hint only: a candidate's genres come from its own
 text. Snippets are shortened and redacted (phone numbers, e-mail addresses,
 account numbers, open-chat links) before they are stored.
+
+v0.89.1 (Reliability Patch): two Production reviews found that a provider's
+own search-result date can outrun what its content actually shows - a
+search-index or last-modified timestamp standing in for a real post date. So
+``activity_date`` now has its own ``activity_date_confidence``
+(CONFIRMED/INFERRED/UNKNOWN, see ``assess_activity``) and, when the evidence
+came from automation, an ``activity_evidence_*`` url/title/source an operator
+can open and check before trusting it - CONFIRMED is never set by a run
+itself, only by ``confirm_activity_evidence()`` after a human looks. A
+POSSIBLE_DUPLICATE pair is never auto-merged and never hides its stronger
+half: both candidates stay their own row (``list_duplicate_groups``), ranked
+by evidence quality, not by which one happened to be found first
+(``duplicate_cleared``/``mark_independent`` lets an operator say two
+candidates are genuinely different organisations). A human's review_state
+(APPROVED/LINKED/HELD/REJECTED) is never touched by a later run; when a held
+or rejected candidate is seen again with a newer date, ``has_new_evidence``
+flags it for a fresh look rather than changing anything on its own.
 """
 
 from __future__ import annotations
@@ -38,7 +55,7 @@ from datetime import date, datetime
 from typing import Any, Callable, Iterable, Sequence
 
 from . import acquisition, collector_errors, collectors, communities, events_api, master_data
-from .directory import DirectoryError, clean_line, parse_id
+from .directory import DirectoryError, clean_line, parse_id, public_link
 
 # --- vocabulary --------------------------------------------------------------------
 
@@ -102,6 +119,16 @@ CLASSIFICATION_LABELS = {
 
 ACTIVE = "ACTIVE"
 
+# Activity date provenance (v0.89.1). An automated run only ever sets
+# CONFIRMED never - it can set INFERRED (a real activity word and a real date
+# both written in the same collected text) or UNKNOWN (no usable date). Only
+# a human, through confirm_activity_evidence() after actually checking the
+# page, can make it CONFIRMED.
+CONFIRMED = "CONFIRMED"
+INFERRED = "INFERRED"
+UNKNOWN_DATE = "UNKNOWN"
+ACTIVITY_DATE_CONFIDENCES = (CONFIRMED, INFERRED, UNKNOWN_DATE)
+
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
 LOW = "LOW"
@@ -142,7 +169,10 @@ MAX_EXTRA_KEYWORDS = 3
 KEYWORD_MAX = 40
 RESULTS_PER_CALL = {"cafe": 15, "web": 10}
 CALL_DELAY_SECONDS = 0.5
-ACTIVE_WINDOW_DAYS = 365
+# Calendar months, not a fixed day count - so "12 months ago" lands on the
+# same day next year regardless of which months it spans (28/29/30/31-day
+# months, leap years). See months_ago().
+ACTIVE_WINDOW_MONTHS = 12
 KEEP_RUNS = 30
 PENDING_ITEM_RETENTION_DAYS = 400
 STALE_RUN_MINUTES = 60
@@ -295,6 +325,21 @@ def text_dates(text: str, today: date) -> list[date]:
 def _contains_any(text: str, words: Iterable[str]) -> str | None:
     lowered = text.lower()
     return next((w for w in words if w in lowered), None)
+
+
+def months_ago(d: date, months: int) -> date:
+    """``d``, shifted back by whole calendar months - the same day-of-month
+    next/last year, clamped to a real day when the target month is shorter
+    (Aug 31 minus 6 months is Feb 28, never Mar 3). Used for the 12-month
+    activity window so the boundary is a calendar year, not a fixed 365/366
+    day count that drifts across leap years."""
+    import calendar
+
+    month_index = d.month - 1 - months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
 
 
 # --- queries ------------------------------------------------------------------------------
@@ -855,35 +900,108 @@ def detect_region(text: str, regions) -> tuple[int | None, str | None]:
     return None, None
 
 
+@dataclass(frozen=True)
+class ActivityResult:
+    verdict: str                       # ACTIVE / STALE / INACTIVE / UNVERIFIED
+    activity_date: date | None
+    confidence: str                    # CONFIRMED / INFERRED / UNKNOWN_DATE
+    evidence_url: str | None
+    evidence_title: str | None
+    evidence_source: str | None
+    reasons: list[str]
+
+
+def _hit_date_evidence(hit: "Hit", today: date) -> tuple[list[date], str | None]:
+    """The date(s) this one hit is worth trusting, and which kind of
+    evidence they are.
+
+    A date written out inside the post's own title/snippet is preferred over
+    the provider's own ``published``/``datetime`` metadata: a search result's
+    date field can reflect when it was last indexed, re-crawled or (for a
+    pinned notice) re-saved, not when the content was actually posted - this
+    is the exact failure a Production review of a real candidate found (a
+    genre match and an activity word looked current; the real page's newest
+    post was over a year old). Metadata is used only when the text itself
+    names no date at all.
+    """
+    embedded = text_dates(f"{hit.title} {hit.snippet}", today)
+    if embedded:
+        return embedded, "text"
+    if hit.published:
+        return [hit.published], "provider_index"
+    return [], None
+
+
+# How trustworthy a source of dates is, most to least - used only to pick
+# which evidence to report when several hits disagree, never to invent a
+# CONFIRMED an automated run has no way to actually know.
+_SOURCE_RANK = {"confirmed": 0, "text": 1, "provider_index": 2}
+
+
 def assess_activity(hits: Sequence[Hit], today: date, *,
-                    previous: date | None = None) -> tuple[str, date | None, list[str]]:
-    """ACTIVE needs a dated post that itself shows activity, within a year; a
-    result's date alone is not enough. INACTIVE when a post says so."""
-    activity_dates: list[date] = [previous] if previous else []
-    all_dates: list[date] = list(activity_dates)
+                    previous_date: date | None = None,
+                    previous_confidence: str = UNKNOWN_DATE) -> ActivityResult:
+    """ACTIVE needs a dated post that itself shows activity, within
+    ACTIVE_WINDOW_MONTHS; a result's date alone is not enough. INACTIVE when a
+    post says so. A previously CONFIRMED date (an operator checked the real
+    page) is always kept in the running and re-judged against *today* - a
+    fact that was confirmed once does not expire, but whether it still falls
+    inside the window does.
+    """
+    candidates: list[tuple[date, str, Hit | None, str | None]] = []
+    all_dates: list[date] = []
     inactive = None
-    word_seen = None
+    if previous_date is not None:
+        if previous_confidence == CONFIRMED:
+            candidates.append((previous_date, "confirmed", None, None))
+        else:
+            all_dates.append(previous_date)
     for hit in hits:
         text = f"{hit.title} {hit.snippet}"
-        dates = ([hit.published] if hit.published else []) + text_dates(text, today)
+        dates, source = _hit_date_evidence(hit, today)
         all_dates.extend(dates)
         word = _contains_any(text, ACTIVITY_WORDS)
-        if word:
-            word_seen = word_seen or word
-            activity_dates.extend(dates)
         inactive = inactive or _contains_any(text, INACTIVE_WORDS)
-    recent = max(activity_dates) if activity_dates else None
-    latest = max(all_dates) if all_dates else None
+        if word and dates:
+            candidates.append((max(dates), source, hit, word))
+
     if inactive:
-        return INACTIVE, recent, [f"activity: '{inactive}'"]
-    if recent and (today - recent).days <= ACTIVE_WINDOW_DAYS:
-        return ACTIVE, recent, [f"activity: {recent.isoformat()} ('{word_seen}')"
-                                if word_seen else f"activity: {recent.isoformat()}"]
-    if latest and (today - latest).days > ACTIVE_WINDOW_DAYS:
-        return STALE, recent or latest, [f"latest evidence {latest.isoformat()} (over a year old)"]
-    reason = ("no dated activity" if not word_seen
-              else f"activity word '{word_seen}' but no dated post")
-    return UNVERIFIED, recent, [reason]
+        return ActivityResult(INACTIVE, None, UNKNOWN_DATE, None, None, None,
+                              [f"activity: '{inactive}'"])
+
+    if candidates:
+        best_date, source, hit, word = min(
+            candidates, key=lambda c: (_SOURCE_RANK[c[1]], -c[0].toordinal()))
+        confidence = CONFIRMED if source == "confirmed" else INFERRED
+        evidence_url = hit.url if hit else None
+        evidence_title = hit.title[:TITLE_MAX] if hit else None
+        evidence_source = hit.provider if hit else "ADMIN"
+        window_note = "" if source != "provider_index" else " (검색 결과 날짜, 본문에 날짜 없음)"
+        if best_date >= months_ago(today, ACTIVE_WINDOW_MONTHS):
+            reason = (f"activity: {best_date.isoformat()} ('{word}'){window_note}" if word
+                      else f"activity: {best_date.isoformat()}{window_note}")
+            return ActivityResult(ACTIVE, best_date, confidence, evidence_url, evidence_title,
+                                  evidence_source, [reason])
+        return ActivityResult(
+            STALE, best_date, confidence, evidence_url, evidence_title, evidence_source,
+            [f"latest {'confirmed' if confidence == CONFIRMED else 'known'} activity "
+             f"{best_date.isoformat()} (over {ACTIVE_WINDOW_MONTHS} months old)"])
+
+    if all_dates:
+        # A date without a confirming activity word: still real, known
+        # evidence (a text-embedded date, a provider's own metadata date, or
+        # a carried-over previous finding) - INFERRED, not UNKNOWN, and never
+        # dropped just because nothing else in this run's hits mentioned it.
+        latest = max(all_dates)
+        if latest < months_ago(today, ACTIVE_WINDOW_MONTHS):
+            return ActivityResult(
+                STALE, latest, INFERRED, None, None, None,
+                [f"latest evidence {latest.isoformat()} (over {ACTIVE_WINDOW_MONTHS} months old, "
+                 "no activity word)"])
+        return ActivityResult(
+            UNVERIFIED, latest, INFERRED, None, None, None,
+            [f"latest evidence {latest.isoformat()}, no activity word confirms it"])
+    return ActivityResult(UNVERIFIED, None, UNKNOWN_DATE, None, None, None, ["no dated activity"])
 
 
 def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context) -> tuple[str, str]:
@@ -944,12 +1062,20 @@ def match_venues(text: str, region_id: int | None, genre_codes: Iterable[str],
 
 
 def confidence_for(item: dict[str, Any], genres: Iterable[str]) -> str:
-    """Operator hint, not a verdict."""
+    """Operator hint, not a verdict.
+
+    v0.89.1: HIGH now also requires the activity date itself to be CONFIRMED
+    - a human actually checked the real page - not merely INFERRED by
+    automation. An automated run can still classify a candidate VERIFIED_NEW
+    on inferred evidence (useful, keeps recall), it just never gets to call
+    that MEDIUM-strength evidence HIGH on its own; only a person can.
+    """
+    confirmed = item.get("activity_date_confidence") == CONFIRMED
     if item["classification"] == VERIFIED_EXISTING:
         return HIGH
     official = item["platform"] in GROUP_PLATFORMS or item["platform"] == "WEB"
     if (item["classification"] == VERIFIED_NEW and official and item.get("candidate_name")
-            and item.get("region_id") and list(genres)):
+            and item.get("region_id") and list(genres) and confirmed):
         return HIGH
     if item["kind"] == KIND_COMMUNITY and (item["activity"] == ACTIVE or item["seen_count"] >= 2
                                           or len(item.get("providers") or []) >= 2):
@@ -1144,8 +1270,10 @@ def _upsert(con, ident: Identity, hits: Sequence[Hit], ctx: Context,
     region_id, region_text = detect_region(f"{text} {candidate or ''}", ctx.regions)
     if old and region_id is None and old.get("region_id"):
         region_id, region_text = old["region_id"], old.get("region_candidate")
-    activity, recent, activity_reasons = assess_activity(
-        hits, ctx.today, previous=(old or {}).get("recent_activity_date"))
+    result = assess_activity(
+        hits, ctx.today, previous_date=(old or {}).get("activity_date"),
+        previous_confidence=(old or {}).get("activity_date_confidence") or UNKNOWN_DATE)
+    activity, recent, activity_reasons = result.verdict, result.activity_date, result.reasons
     kind, kind_reason = detect_kind(ident, candidate, text, ctx)
     if old and kind == KIND_UNKNOWN and old.get("kind") != KIND_UNKNOWN:
         kind = old["kind"]
@@ -1167,33 +1295,43 @@ def _upsert(con, ident: Identity, hits: Sequence[Hit], ctx: Context,
         "region_candidate": region_text,
         "recent_activity_date": recent, "activity": activity, "kind": kind, "reasons": reasons,
     }
+    # recent_activity_date/activity stay in sync with the new, provenance-aware
+    # activity_date/confidence - existing code and tests that read the old
+    # names keep working; activity_date is the one with real provenance.
+    evidence = (result.evidence_url, result.evidence_title, result.evidence_source)
     with con.cursor() as cur:
         if old is None:
             cur.execute(
                 "INSERT INTO community_discovery_items (identity_key, platform, community_url, title, "
                 "  candidate_name, normalized_name, observed_names, snippet, region_id, "
-                "  region_candidate, providers, queries, recent_activity_date, activity, kind, "
-                "  reasons, last_run_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "  %s, %s, %s, %s, %s) RETURNING item_id",
+                "  region_candidate, providers, queries, recent_activity_date, activity, "
+                "  activity_date, activity_date_confidence, activity_evidence_url, "
+                "  activity_evidence_title, activity_evidence_source, kind, reasons, last_run_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "  %s, %s, %s, %s) RETURNING item_id",
                 (ident.key, values["platform"], values["community_url"], values["title"],
                  values["candidate_name"], values["normalized_name"], names, values["snippet"],
                  region_id, region_text, providers, _merge_list([], queries, KEEP_QUERIES),
-                 recent, activity, kind, reasons, run_id))
+                 recent, activity, result.activity_date, result.confidence, *evidence,
+                 kind, reasons, run_id))
             item_id, is_new = cur.fetchone()[0], True
         else:
             cur.execute(
                 "UPDATE community_discovery_items SET platform = %s, community_url = %s, title = %s, "
                 "  candidate_name = %s, normalized_name = %s, observed_names = %s, snippet = %s, "
                 "  region_id = %s, region_candidate = %s, providers = %s, queries = %s, "
-                "  recent_activity_date = %s, activity = %s, kind = %s, reasons = %s, "
-                "  last_seen = now(), seen_count = seen_count + 1, last_run_id = %s, "
+                "  recent_activity_date = %s, activity = %s, activity_date = %s, "
+                "  activity_date_confidence = %s, activity_evidence_url = %s, "
+                "  activity_evidence_title = %s, activity_evidence_source = %s, kind = %s, "
+                "  reasons = %s, last_seen = now(), seen_count = seen_count + 1, last_run_id = %s, "
                 "  updated_at = now() WHERE item_id = %s",
                 (values["platform"], values["community_url"], values["title"],
                  values["candidate_name"], values["normalized_name"],
                  _merge_list(old["observed_names"], names, KEEP_NAMES), values["snippet"],
                  region_id, region_text, sorted(set(old["providers"] or []) | set(providers)),
-                 _merge_list(old["queries"], queries, KEEP_QUERIES), recent, activity, kind,
-                 reasons, run_id, old["item_id"]))
+                 _merge_list(old["queries"], queries, KEEP_QUERIES), recent, activity,
+                 result.activity_date, result.confidence, *evidence, kind, reasons, run_id,
+                 old["item_id"]))
             item_id, is_new = old["item_id"], False
         for code, word in genres.items():
             cur.execute("INSERT INTO community_discovery_item_genres (item_id, genre_id, evidence) "
@@ -1242,15 +1380,27 @@ def reclassify(con, item_id: int, ctx: Context) -> dict[str, Any]:
     elif item["kind"] in NOT_COMMUNITY_KINDS:
         classification = NOT_A_COMMUNITY
     else:
-        name_match = next((c for c in ctx.communities if specific and c["normalized"]
-                           and c["normalized"] == item["normalized_name"]
-                           and _regions_agree(c["region_id"], item["region_id"])), None)
-        twin = None
-        if not name_match and specific:
-            twins = _rows(con, "SELECT item_id, region_id FROM community_discovery_items "
-                               "WHERE normalized_name = %s AND item_id < %s ORDER BY item_id",
-                          (item["normalized_name"], item_id))
-            twin = next((t for t in twins if _regions_agree(t["region_id"], item["region_id"])), None)
+        # v0.89.1: an operator who has looked at both and decided they are
+        # genuinely different organisations clears this flag, and the
+        # duplicate-matching below is skipped for good - it is judged on its
+        # own evidence instead, never silently re-flagged by the next run.
+        name_match = twin = None
+        if not item.get("duplicate_cleared"):
+            name_match = next((c for c in ctx.communities if specific and c["normalized"]
+                               and c["normalized"] == item["normalized_name"]
+                               and _regions_agree(c["region_id"], item["region_id"])), None)
+            if not name_match and specific:
+                # Still "earlier item is the anchor" - a deterministic,
+                # order-independent-to-compute grouping key, not a claim that
+                # the earlier one is the better candidate (list_duplicate_
+                # groups()/the Admin screen rank the two on their actual
+                # evidence, never on which was found first).
+                twins = _rows(con, "SELECT item_id, region_id FROM community_discovery_items "
+                                   "WHERE normalized_name = %s AND item_id < %s AND "
+                                   "  duplicate_cleared = FALSE ORDER BY item_id",
+                              (item["normalized_name"], item_id))
+                twin = next((t for t in twins if _regions_agree(t["region_id"], item["region_id"])),
+                           None)
         if name_match:
             classification, existing_id = POSSIBLE_DUPLICATE, name_match["community_id"]
             extra.append(f"match: same name as community #{existing_id}")
@@ -1302,9 +1452,34 @@ def get_item(con, item_id: int) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+# v0.89.1 review queues (Section 17) - each a shorthand for a combination of
+# review_state/classification/relationship that would otherwise need several
+# filter dropdowns set at once.
+QUEUE_NEEDS_REVIEW = "needs_review"
+QUEUE_DUPLICATE = "duplicate"
+QUEUE_NEW_EVIDENCE = "new_evidence"
+QUEUE_STALE = "stale"
+QUEUE_UNVERIFIED = "unverified"
+QUEUE_REJECTED = "rejected"
+QUEUE_APPROVED = "approved"
+QUEUES = (QUEUE_NEEDS_REVIEW, QUEUE_DUPLICATE, QUEUE_NEW_EVIDENCE, QUEUE_STALE, QUEUE_UNVERIFIED,
+         QUEUE_REJECTED, QUEUE_APPROVED)
+QUEUE_LABELS = {
+    QUEUE_NEEDS_REVIEW: "검토 필요", QUEUE_DUPLICATE: "중복 의심", QUEUE_NEW_EVIDENCE: "새 근거 발견",
+    QUEUE_STALE: "오래된 자료", QUEUE_UNVERIFIED: "확인 필요", QUEUE_REJECTED: "제외됨",
+    QUEUE_APPROVED: "등록/연결됨",
+}
+# Sentinel for "no region resolved at all" - kept separate from a real region
+# code so a filter can ask for exactly that (Section 20/21).
+REGION_UNRESOLVED = "UNRESOLVED"
+
+_NEW_EVIDENCE_SQL = ("i.review_state IN ('HELD', 'REJECTED') AND i.reviewed_at IS NOT NULL "
+                     "AND i.last_seen > i.reviewed_at")
+
+
 def list_items(con, *, provider: str | None = None, genre: str | None = None,
                region: str | None = None, classification: str | None = None,
-               review_state: str | None = None, limit: int = 50,
+               review_state: str | None = None, queue: str | None = None, limit: int = 50,
                offset: int = 0) -> tuple[list[dict[str, Any]], int]:
     where, params = [], []
     if provider:
@@ -1314,7 +1489,9 @@ def list_items(con, *, provider: str | None = None, genre: str | None = None,
         where.append("EXISTS (SELECT 1 FROM community_discovery_item_genres ig JOIN genres g "
                      "USING (genre_id) WHERE ig.item_id = i.item_id AND g.code = %s)")
         params.append(genre)
-    if region:
+    if region == REGION_UNRESOLVED:
+        where.append("i.region_id IS NULL")
+    elif region:
         where.append("i.region_id = (SELECT region_id FROM regions WHERE code = %s)")
         params.append(region)
     if classification:
@@ -1323,15 +1500,47 @@ def list_items(con, *, provider: str | None = None, genre: str | None = None,
     if review_state:
         where.append("i.review_state = %s")
         params.append(review_state)
+    if queue == QUEUE_NEEDS_REVIEW:
+        where.append("i.review_state IN ('PENDING', 'HELD')")
+    elif queue == QUEUE_DUPLICATE:
+        where.append("(i.classification = 'POSSIBLE_DUPLICATE' OR i.duplicate_of_item_id IS NOT NULL "
+                     "OR EXISTS (SELECT 1 FROM community_discovery_items t "
+                     "           WHERE t.duplicate_of_item_id = i.item_id))")
+    elif queue == QUEUE_NEW_EVIDENCE:
+        where.append(_NEW_EVIDENCE_SQL)
+    elif queue == QUEUE_STALE:
+        where.append("i.classification = 'STALE'")
+    elif queue == QUEUE_UNVERIFIED:
+        where.append("i.classification = 'UNVERIFIED'")
+    elif queue == QUEUE_REJECTED:
+        where.append("i.review_state = 'REJECTED'")
+    elif queue == QUEUE_APPROVED:
+        where.append("i.review_state IN ('APPROVED', 'LINKED')")
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     total = _rows(con, "SELECT count(*) AS n FROM community_discovery_items i" + clause, params)[0]["n"]
-    rows = _rows(con, _ITEM_SELECT + clause +
-                 " ORDER BY CASE i.review_state WHEN 'PENDING' THEN 0 WHEN 'HELD' THEN 1 ELSE 2 END, "
-                 "  CASE i.confidence WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, "
-                 "  CASE WHEN i.classification = 'NOT_A_COMMUNITY' THEN 1 ELSE 0 END, "
-                 "  i.last_seen DESC, i.item_id DESC LIMIT %s OFFSET %s",
+    # needs_review sorts by evidence quality (Section 18) - confirmed dates
+    # first, then the most recently and most confidently active - never by
+    # item_id, and never a hint that it should be auto-approved.
+    if queue == QUEUE_NEEDS_REVIEW:
+        order = (" ORDER BY CASE i.activity_date_confidence WHEN 'CONFIRMED' THEN 0 ELSE 1 END, "
+                "  CASE i.confidence WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, "
+                "  i.activity_date DESC NULLS LAST, i.first_seen DESC, i.item_id DESC")
+    else:
+        order = (" ORDER BY CASE i.review_state WHEN 'PENDING' THEN 0 WHEN 'HELD' THEN 1 ELSE 2 END, "
+                "  CASE i.confidence WHEN 'HIGH' THEN 0 WHEN 'MEDIUM' THEN 1 ELSE 2 END, "
+                "  CASE WHEN i.classification = 'NOT_A_COMMUNITY' THEN 1 ELSE 0 END, "
+                "  i.last_seen DESC, i.item_id DESC")
+    rows = _rows(con, _ITEM_SELECT + clause + order + " LIMIT %s OFFSET %s",
                  params + [int(limit), int(offset)])
     return rows, total
+
+
+def has_new_evidence(item: dict[str, Any]) -> bool:
+    """A HELD/REJECTED candidate that a later run has seen again since the
+    operator's own review - never changes review_state by itself, only says
+    "look again, something moved"."""
+    return bool(item.get("review_state") in (HELD, REJECTED) and item.get("reviewed_at")
+               and item.get("last_seen") and item["last_seen"] > item["reviewed_at"])
 
 
 # --- review actions ----------------------------------------------------------------------------------
@@ -1407,3 +1616,157 @@ def set_review_state(con, item_id: int, state: str, *, reviewer: str = "admin") 
                         "  reviewed_at = now(), updated_at = now() WHERE item_id = %s",
                         (state, reviewer, item_id))
     return {**item, "review_state": state}
+
+
+def confirm_activity_evidence(con, item_id: int, *, activity_date: Any, evidence_url: str | None = None,
+                              evidence_title: str | None = None,
+                              reviewer: str = "admin") -> dict[str, Any]:
+    """Record that an operator actually opened the page and found this date
+    themselves (Section 6/15/16) - the only way ``activity_date_confidence``
+    ever becomes CONFIRMED. Recomputes the ACTIVE/STALE verdict against
+    *today* from that date and reclassifies, but never touches review_state:
+    a HELD or REJECTED candidate stays exactly that until the operator
+    separately reopens it - this only upgrades the evidence they see.
+    """
+    when = as_date(activity_date)
+    if when is None:
+        raise DiscoveryError("활동 날짜: 올바른 날짜가 아닙니다 (YYYY-MM-DD)")
+    url = events_api.valid_public_url((evidence_url or "").strip()) if evidence_url else None
+    title = clean_snippet(evidence_title or "", TITLE_MAX) or None
+    with con.transaction():
+        item = _locked_item(con, item_id)
+        today = date.today()
+        verdict = STALE if when < months_ago(today, ACTIVE_WINDOW_MONTHS) else ACTIVE
+        reason = (f"activity: {when.isoformat()} (관리자 확인)" if verdict == ACTIVE else
+                 f"latest confirmed activity {when.isoformat()} (over {ACTIVE_WINDOW_MONTHS} months old)")
+        base = [r for r in (item["reasons"] or []) if not r.startswith("activity:")
+               and not r.startswith("latest ") and not r.startswith("no dated")
+               and not r.startswith("a date exists")]
+        with con.cursor() as cur:
+            cur.execute(
+                "UPDATE community_discovery_items SET activity_date = %s, "
+                "  activity_date_confidence = 'CONFIRMED', activity_evidence_url = %s, "
+                "  activity_evidence_title = %s, activity_evidence_source = 'ADMIN', "
+                "  recent_activity_date = %s, activity = %s, reasons = %s, updated_at = now() "
+                "WHERE item_id = %s",
+                (when, url, title, when, verdict, base + [reason], item_id))
+        ctx = load_context(con, today)
+    return reclassify(con, item_id, ctx)
+
+
+def mark_independent(con, item_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
+    """"서로 다른 Community" (Section 11): an operator has looked at a
+    POSSIBLE_DUPLICATE pair and decided the two are genuinely different
+    organisations, not one hiding behind the other. Judged on its own
+    evidence from here on; a future run never re-flags it against this same
+    twin (duplicate_cleared), though a *different* twin can still surface."""
+    with con.transaction():
+        item = _locked_item(con, item_id)
+        if item["review_state"] in DONE_STATES:
+            raise DiscoveryError("이미 동호회로 등록되었거나 연결된 후보입니다")
+        with con.cursor() as cur:
+            cur.execute("UPDATE community_discovery_items SET duplicate_cleared = TRUE, "
+                        "  updated_at = now() WHERE item_id = %s", (item_id,))
+        ctx = load_context(con, date.today())
+    return reclassify(con, item_id, ctx)
+
+
+# --- duplicate groups (v0.89.1, Section 8-11) ------------------------------------------------
+
+def _duplicate_rank(item: dict[str, Any]) -> tuple:
+    """Lower sorts first = the recommended candidate to review first
+    (Section 10) - never an automatic choice, only a display order:
+    a confirmed date beats an inferred one, active beats stale beats
+    unverified, a more recent date beats an older one, HIGH confidence beats
+    MEDIUM beats LOW, having any public URL beats having none, and more
+    recorded evidence beats less."""
+    confidence_rank = {CONFIRMED: 0, INFERRED: 1, UNKNOWN_DATE: 2}
+    activity_rank = {ACTIVE: 0, STALE: 1, UNVERIFIED: 2, INACTIVE: 3}
+    strength_rank = {HIGH: 0, MEDIUM: 1, LOW: 2}
+    activity_date = item.get("activity_date")
+    return (
+        confidence_rank.get(item.get("activity_date_confidence"), 2),
+        activity_rank.get(item.get("activity"), 2),
+        -(activity_date.toordinal() if activity_date else 0),
+        strength_rank.get(item.get("confidence"), 2),
+        0 if public_link(item.get("community_url")) else 1,
+        -len(item.get("reasons") or []),
+        item["item_id"],
+    )
+
+
+def _group_members(con, root_id: int, seen: set[int]) -> list[int]:
+    """Every item connected to ``root_id`` through duplicate_of_item_id, in
+    either direction, transitively - a chain of three or more stays one
+    group (Section 9: "3개 이상도 지원")."""
+    if root_id in seen:
+        return []
+    seen.add(root_id)
+    members = [root_id]
+    with con.cursor() as cur:
+        cur.execute("SELECT duplicate_of_item_id FROM community_discovery_items WHERE item_id = %s",
+                    (root_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            members.extend(_group_members(con, row[0], seen))
+        cur.execute("SELECT item_id FROM community_discovery_items WHERE duplicate_of_item_id = %s",
+                    (root_id,))
+        for (other_id,) in cur.fetchall():
+            members.extend(_group_members(con, other_id, seen))
+    return members
+
+
+def duplicate_group(con, item_id: int) -> list[dict[str, Any]]:
+    """This candidate and every other candidate linked to it as a possible
+    duplicate, ranked (never re-ordered by picking a "winner" - see
+    _duplicate_rank). Empty when the candidate has no such link."""
+    ids = sorted(set(_group_members(con, item_id, set())) - {None})
+    if len(ids) <= 1:
+        return []
+    items = [get_item(con, i) for i in ids]
+    items = [i for i in items if i is not None]
+    items.sort(key=_duplicate_rank)
+    return items
+
+
+def list_duplicate_groups(con) -> list[list[dict[str, Any]]]:
+    """Every duplicate group currently on file, each already ranked. Used by
+    the Admin screen so a strong candidate is shown next to the weaker twin
+    it might otherwise be read as "just" a duplicate of, not hidden behind
+    it (Section 8-9)."""
+    with con.cursor() as cur:
+        cur.execute("SELECT DISTINCT duplicate_of_item_id FROM community_discovery_items "
+                    "WHERE duplicate_of_item_id IS NOT NULL")
+        roots = [r[0] for r in cur.fetchall()]
+    seen: set[int] = set()
+    groups = []
+    for root_id in roots:
+        if root_id in seen:
+            continue
+        group = duplicate_group(con, root_id)
+        seen.update(i["item_id"] for i in group)
+        if group:
+            groups.append(group)
+    return groups
+
+
+def register_item_and_link_group(con, item_id: int, fields: dict[str, Any],
+                                 sibling_item_ids: Sequence[int], *,
+                                 reviewer: str = "admin") -> dict[str, Any]:
+    """"이 후보를 대표로 사용" (Section 11): register ``item_id`` as the new
+    Community exactly as register_item() would, then link every candidate in
+    ``sibling_item_ids`` to that same Community in the same action - the
+    admin picks which one is the representative; nothing here decides that
+    on its own. A sibling already APPROVED/LINKED is left untouched rather
+    than raising, so a partially-reviewed group never blocks the rest."""
+    community = register_item(con, item_id, fields, reviewer=reviewer)
+    linked = []
+    for sibling_id in sibling_item_ids:
+        if sibling_id == item_id:
+            continue
+        sibling = get_item(con, sibling_id)
+        if sibling is None or sibling["review_state"] in DONE_STATES:
+            continue
+        link_item(con, sibling_id, str(community["community_id"]), reviewer=reviewer)
+        linked.append(sibling_id)
+    return {"community": community, "linked": linked}

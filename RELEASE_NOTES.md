@@ -1,5 +1,160 @@
 # DanceMate Release Notes
 
+## v0.89.1 Community Discovery Reliability
+
+Status: PASS, 2026-09-14.
+
+Version split:
+
+- Product Runtime: 0.89.1
+- Information Engine: 0.85 (unchanged)
+
+Two manual Production reviews of v0.89.0 Community Discovery found four
+trust problems in the Admin screen, all with real examples: a "recent
+activity" date that could really be a search-index/crawl date rather than a
+real post date (대구 탱고카니발 #291 looked recently active from search
+metadata; the real newest post was from 2024); a stronger duplicate
+candidate hidden behind a weaker one that only had a lower item_id (스위티
+스윙, hidden behind #171 and missing from the first VERIFIED_NEW export); no
+visible reason for a classification; and a review queue ordered by item_id
+instead of evidence quality. **This release does not add search volume** -
+it makes Discovery's "recent" / "duplicate" / "verified" / "stale" / "not a
+community" judgments something an operator can trust and check. Admin-only:
+the public 동호회 tab and Community card are unchanged.
+
+### Activity date provenance
+
+- Four new columns on `community_discovery_items`: `activity_date` (the
+  provenance-aware date - text-embedded dates in a post are always preferred
+  over a provider's own search-result metadata date, since metadata can
+  reflect a re-crawl/re-index/re-save rather than a real post date),
+  `activity_date_confidence` (`CONFIRMED` / `INFERRED` / `UNKNOWN`),
+  `activity_evidence_url`/`activity_evidence_title`/`activity_evidence_source`.
+  The existing `recent_activity_date`/`activity` columns are kept in sync as
+  legacy mirrors - nothing that already reads them breaks.
+- `CONFIRMED` is set only one way: a new `confirm_activity_evidence()`
+  action, wired to a "근거 확인" form on each candidate row, that records an
+  operator having actually opened the real page. An automated run's own
+  matches - however complete - are always `INFERRED` at most; `HIGH`
+  confidence now additionally requires a `CONFIRMED` activity date.
+- The 12-month activity window is calendar-month arithmetic (`months_ago()`),
+  not a fixed day count, so it does not drift across leap years; a
+  previously `CONFIRMED` date is never dropped by a later run that finds
+  nothing new, but is re-judged against today's date each time (it can age
+  from ACTIVE into STALE).
+- Migration 037's backfill copies every existing row's `recent_activity_date`
+  into the new `activity_date` column but leaves `activity_date_confidence`
+  at its default `UNKNOWN` for all 425 existing rows - none of them is
+  upgraded to a false certainty by the migration itself.
+
+### Duplicate candidate visibility
+
+- The existing duplicate-detection logic (same specific name, compatible
+  region, earlier item is the anchor) is unchanged - Section 8/9 asked only
+  for its *display* to change, never for an automatic winner. New
+  `duplicate_group()`/`list_duplicate_groups()` walk the
+  `duplicate_of_item_id` chain (three or more candidates supported) and rank
+  the group for display by evidence quality (confirmed date, then activity
+  recency, then confidence tier, then having a public URL, then evidence
+  completeness) - never by item_id. The Admin screen now shows every member
+  of a candidate's duplicate group inline, with the best-ranked one marked
+  as a hint, so a stronger candidate can never again be invisible behind a
+  weaker one that merely arrived first.
+- New review actions: "서로 다른 Community" (`mark_independent()`) sets a new
+  `duplicate_cleared` flag so a pair an operator has actually compared is
+  never re-flagged against each other by a later run (judged on its own
+  evidence from then on); and duplicate-group-aware registration
+  (`register_item_and_link_group()`) lets an operator register one candidate
+  as the representative Community and link every other candidate in its
+  group to that same Community in one action.
+
+### Classification transparency and review queues
+
+- The Admin candidate table now shows the activity date, its confidence
+  badge, its evidence link/title, and the classification's reason lines
+  directly - no more guessing why a candidate landed where it did.
+- `NOT_A_COMMUNITY` remains reserved for something that plainly is not a
+  community (venue/academy/instructor/event/news/aggregator/personal
+  account); age alone is `STALE`, never `NOT_A_COMMUNITY` - the exact
+  correction already applied to #291 in the prior review round is now
+  enforced by the classifier itself, not a one-off manual fix.
+- Seven review queues (`needs_review`, `duplicate`, `new_evidence`, `stale`,
+  `unverified`, `rejected`, `approved`) as a quick filter on the Admin
+  screen; `needs_review` sorts by evidence quality (confirmed date first,
+  then confidence, then activity recency) rather than item_id. A new
+  "지역 미확정" region filter value finds candidates with no resolved region
+  (Chungnam/천안세븐 stays unresolved in this release - DanceMate's region
+  master has no Chungnam entry, and none is added here; the Admin UI simply
+  makes that unresolved state visible, as a candidate for a future
+  region-master expansion).
+- A passive "새 근거 발견" badge (`has_new_evidence()`) flags a HELD/REJECTED
+  candidate that a later run has seen again since the operator's own review
+  - it never changes `review_state` by itself. Manual review decisions
+  (`APPROVED`/`REJECTED`/`HELD`/`LINKED`) are never overwritten by an
+  automated run: `reclassify()` already only ever touched
+  classification/confidence/evidence fields, never `review_state`, and this
+  release does not bulk-reclassify any of the 425 existing candidates -
+  only new activity found by future runs moves their evidence forward.
+
+### Migration
+
+`037_community_discovery_reliability.sql`: adds `activity_date`,
+`activity_date_confidence`, `activity_evidence_url`,
+`activity_evidence_title`, `activity_evidence_source`, `duplicate_cleared`
+to `community_discovery_items`, plus an index on `duplicate_of_item_id`. No
+existing table changed, no existing column dropped or renamed.
+
+### Verification
+
+- New focused tests: `tests/test_v0891_discovery_reliability.py` (18 tests -
+  months_ago boundaries incl. the exact "12 months", "12 months + 1 day" and
+  "11 months 30 days" cases, activity provenance/Case B regression fixture,
+  duplicate grouping/Case A regression fixture, mark_independent,
+  confirm_activity_evidence, manual-review preservation, review queues,
+  region-unresolved filter, needs-review evidence-quality ordering) and
+  `tests/test_v0891_discovery_admin.py` (7 tests - duplicate group display,
+  activity provenance/reason display, confirm-evidence form, separate
+  action, queue/region filters, group registration, new-evidence badge), all
+  against a real, rolled-back PostgreSQL connection with only mock/fixture
+  hits - no real Naver/Kakao API call anywhere in the suite.
+- `tests/test_v0890_community_discovery.py` updated for the new
+  `assess_activity()` return type and confidence rule (59 non-postgres +
+  28 postgres tests) and `tests/test_v0890_community_discovery_admin.py`
+  (10 tests) both still pass unchanged in behavior.
+- A real engine bug found and fixed by this work while writing the above:
+  `assess_activity()`'s fallback branch (a known date with no confirming
+  activity word) was silently discarding the date instead of returning it as
+  `INFERRED` evidence - caught by
+  `test_the_same_group_found_again_is_one_candidate` failing against the
+  real PostgreSQL fixture; fixed before any other work continued.
+- Runtime container, dev database: discovery-focused files **112 passed, 0
+  failed**; full suite **2264 passed, 18 failed (pre-existing - see below), 13
+  skipped**.
+- Runtime container, freshly created and migrated database (001-037, no
+  checksum drift): full suite **2273 passed, 3 failed, 19 skipped** - the 3
+  known fresh-DB failures only (`test_existing_top3_sources_are_preserved`,
+  `test_k_tango_is_preserved_untouched`,
+  `test_source_row_enable_disable_action_still_works`), identical in cause
+  to v0.88.1/v0.89.0.
+- Dev-DB baseline check: `git stash` of every v0.89.1 change, same 18
+  failing tests re-run against unmodified v0.89.0 (commit 4155748) -
+  reproduce identically, confirming zero regressions. (This baseline has
+  grown from the 2 known at v0.88.0: the shared dev database has
+  accumulated enough real event/venue data since then that several
+  zero-count-window assertions in unrelated event/venue tests no longer
+  hold - not a code defect; see `dancemate-known-test-failures` for the
+  full list.)
+- Host: 1634 passed, 0 failed, 655 skipped. Engine: 809 passed, 0 failed (no
+  engine code changed).
+- Local Admin smoke (dev database, HTTP against the running container):
+  `/admin/community-discovery` 200 with 활동 근거/중복 그룹/검토 큐/지역
+  미확정/근거 확인 all present; `?queue=stale`, `?region=UNRESOLVED` and an
+  invalid `?queue=bogus` all 200 (ignored, never a 500); public `/?tab=
+  communities` unaffected at 200.
+- The 27 existing Communities and both prior manual review rounds' Discovery
+  decisions are verified preserved in the Production pre/post deploy check
+  below.
+
 ## v0.89.0 Community Discovery
 
 Status: PASS, 2026-09-12.

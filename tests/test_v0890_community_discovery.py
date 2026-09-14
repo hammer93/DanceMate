@@ -271,13 +271,22 @@ def test_region_resolves_only_when_unambiguous():
     ([hit("https://x.example/1", title="9/13 정모")], cd.UNVERIFIED),          # no year, no date
 ])
 def test_activity_needs_a_dated_post_that_shows_activity(hits, expected):
-    assert cd.assess_activity(hits, TODAY)[0] == expected
+    assert cd.assess_activity(hits, TODAY).verdict == expected
 
 
-def test_activity_keeps_the_previous_date():
-    state, recent, _ = cd.assess_activity([hit("https://x/1", title="사진")], TODAY,
-                                          previous=date(2026, 6, 1))
-    assert (state, recent) == (cd.ACTIVE, date(2026, 6, 1))
+def test_a_confirmed_date_persists_and_is_rejudged_against_today():
+    """v0.89.1: a previously CONFIRMED date (an operator actually checked the
+    page) is never silently dropped by a later run that found nothing new -
+    but it is not a permanent ACTIVE stamp either: re-judged against the
+    current date, it correctly ages into STALE once the window has passed."""
+    no_hits = [hit("https://x/1", title="사진")]           # no activity word, no date of its own
+    fresh = cd.assess_activity(no_hits, TODAY, previous_date=date(2026, 6, 1),
+                               previous_confidence=cd.CONFIRMED)
+    assert (fresh.verdict, fresh.activity_date, fresh.confidence) == \
+        (cd.ACTIVE, date(2026, 6, 1), cd.CONFIRMED)
+    later = cd.assess_activity(no_hits, date(2028, 1, 1), previous_date=date(2026, 6, 1),
+                               previous_confidence=cd.CONFIRMED)
+    assert (later.verdict, later.confidence) == (cd.STALE, cd.CONFIRMED)
 
 
 @pytest.mark.parametrize("url, name, text, kind", [
@@ -324,13 +333,19 @@ def test_venues_match_by_their_own_names_with_corroboration():
 
 
 def test_confidence_is_a_hint_with_fixed_rules():
+    """v0.89.1: HIGH also needs the activity date itself to be CONFIRMED - an
+    automated run's own INFERRED evidence, however complete otherwise, never
+    reaches HIGH on its own (Section 13/6: "INFERRED만으로 강하게 확정하지 마라")."""
     item = {"classification": cd.VERIFIED_NEW, "platform": "DAUM_CAFE", "candidate_name": "살사포유",
             "region_id": 2, "kind": cd.KIND_COMMUNITY, "activity": cd.ACTIVE, "seen_count": 1,
-            "providers": ["KAKAO"]}
-    assert cd.confidence_for(item, ["SALSA"]) == cd.HIGH
-    assert cd.confidence_for({**item, "region_id": None}, ["SALSA"]) == cd.MEDIUM
+            "providers": ["KAKAO"], "activity_date_confidence": cd.INFERRED}
+    assert cd.confidence_for(item, ["SALSA"]) == cd.MEDIUM
+    assert cd.confidence_for({**item, "activity_date_confidence": cd.CONFIRMED}, ["SALSA"]) == cd.HIGH
+    assert cd.confidence_for({**item, "activity_date_confidence": cd.CONFIRMED, "region_id": None},
+                             ["SALSA"]) == cd.MEDIUM
     assert cd.confidence_for({**item, "classification": cd.UNVERIFIED, "activity": cd.UNVERIFIED,
                               "kind": cd.KIND_UNKNOWN}, []) == cd.LOW
+    assert cd.confidence_for({**item, "classification": cd.VERIFIED_EXISTING}, ["SALSA"]) == cd.HIGH
 
 
 # === 5. PostgreSQL: storing, dedupe, classification, runs =====================================
