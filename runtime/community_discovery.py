@@ -150,11 +150,12 @@ KIND_ACADEMY = "ACADEMY"
 KIND_INSTRUCTOR = "INSTRUCTOR"
 KIND_EVENT = "EVENT"
 KIND_AGGREGATOR = "AGGREGATOR"       # v0.89.2: an event/information aggregator (Section 12)
+KIND_NEWS = "NEWS_OR_MEDIA"          # v0.89.3: a publisher/news page covering a community (Section 13-18)
 KIND_BLOG = "BLOG"
 KIND_OTHER = "OTHER"
 KIND_UNKNOWN = "UNKNOWN"
 NOT_COMMUNITY_KINDS = frozenset({KIND_VENUE, KIND_ACADEMY, KIND_INSTRUCTOR, KIND_EVENT,
-                                 KIND_AGGREGATOR, KIND_BLOG, KIND_OTHER})
+                                 KIND_AGGREGATOR, KIND_NEWS, KIND_BLOG, KIND_OTHER})
 
 VENUE_MATCH = "VENUE_MATCH"
 VENUE_CANDIDATE = "VENUE_CANDIDATE"
@@ -272,6 +273,62 @@ GENRE_CONTEXT_WINDOW = 18
 AD_BOARD_WORDS = ("광고방", "외부홍보", "타동호회홍보", "타동호회 홍보", "행사홍보")
 EXTERNAL_PROMOTION_PHRASES = ("홍보합니다", "공유합니다", "외부 강사", "타 학원", "타학원",
                               "다른 카페의", "다른 동호회의", "제휴 홍보")
+
+# v0.89.3 (Evidence Attribution Patch): a Production validation run found the
+# real CASINO RUEDA row's collected snippet never contains any AD_BOARD_WORDS
+# or EXTERNAL_PROMOTION_PHRASES at all - the Naver/Kakao search API simply
+# does not return the board name a human sees by opening the real page. Its
+# actual instructor-bio phrase ("20여년 강습경력") is exactly the shape of
+# language a for-profit academy/instructor uses to advertise themselves, on
+# whatever cafe happens to host the post - a peer-run community's own event
+# announcement essentially never brags about an instructor's tenure this
+# way. Neither list is trusted alone, though (Section 12: an academy word by
+# itself never forces NOT_A_COMMUNITY - a real Community teaches classes
+# too): hit_is_external only acts on these when the SAME text also lacks
+# the host's own community language AND names a differently-branded academy
+# (see _mentions_other_entity below).
+INSTRUCTOR_BIO_PHRASES = ("년 강습경력", "년경력", "년째 강습", "전임강사", "대표강사", "수석강사", "원장")
+ENROLLMENT_PHRASES = ("수강생", "수강신청", "수강 신청", "등록문의", "등록 문의", "강습 신청",
+                      "입문반", "초급반 모집", "class registration")
+# Section 6's override: a real Community that also runs paid classes keeps
+# its HOST reading when its own text carries its own community-activity
+# language - deliberately narrower than COMMUNITY_WORDS/ACTIVITY_WORDS
+# (which an academy ad's incidental hashtags can trip: the real CASINO RUEDA
+# text contains a bare "모임" and "#2040동호회" hashtag despite being someone
+# else's ad) so this check only recognizes language that actually describes
+# the host's own regular gathering, not a passing mention.
+HOST_COMMUNITY_SIGNAL_WORDS = ("정모", "회원", "우리 동호회", "이번 주 모임", "정기 소셜", "기 모집", "번개")
+# A hashtag or bracketed name naming the promoted academy/course, found
+# alongside the phrases above - never a single hardcoded organization name
+# (Section 10 explicitly forbids a CASINO-RUEDA-specific rule); any mention
+# containing one of these generic academy words and differing from the
+# host's own name is treated as "a different organizer is being promoted
+# here" (Section 5).
+_MENTION_ACADEMY_HINTS = ACADEMY_WORDS
+_HASHTAG = re.compile(r"#([^\s#\[\]()]{2,20})")
+_BRACKETED_MENTION = re.compile(r"[\[(]([^\])]{2,20})[\])]")
+
+# v0.89.3 (Section 13-18): a news/media page that merely mentions a dance
+# community in its coverage is not itself a community. "news." is an
+# unambiguous Korean publisher-subdomain convention (news.kbs.co.kr,
+# news.sbs.co.kr, news.jtbc.co.kr, ...) and counts alone; a bare top-level
+# wire-service domain is more ambiguous on its own (Section 18: "domain만으로
+# 전부 판단하지 않는다" - a Naver Blog can host a media article, a community's
+# own site can sit on a plain .com), so those require in-text journalism
+# language too. Deliberately excludes the bare word "뉴스" itself: a
+# Community's own post proudly saying "우리 동호회가 KBS 뉴스에 소개됐습니다"
+# must never flip the COMMUNITY's own cafe into NEWS_OR_MEDIA (Section 21).
+NEWS_KNOWN_HOSTS = frozenset({"yna.co.kr", "yonhapnews.co.kr", "chosun.com", "joongang.co.kr",
+                              "hani.co.kr", "khan.co.kr", "mk.co.kr", "sbs.co.kr", "mbc.co.kr",
+                              "kbs.co.kr", "ytn.co.kr", "newsis.com", "edaily.co.kr", "hankyung.com",
+                              "donga.com", "seoul.co.kr", "koreaherald.com", "yonhap.co.kr"})
+NEWS_CONTEXT_WORDS = ("기자", "보도", "취재", "앵커", "특파원", "무단전재", "재배포 금지", "제보")
+# Section 14's URL-path signal - never body text alone for an ambiguous
+# (non-"news.") domain: a community's own cafe URL structurally never
+# contains one of these, so this is a safe co-signal where NEWS_KNOWN_HOSTS
+# membership by itself would not be (Section 18).
+NEWS_PATH_HINTS = ("/news/", "/article/", "/articles/", "newsview", "articleview", "/read/")
+
 # Hosts that are never a community's own page.
 OTHER_HOSTS = frozenset({"youtube.com", "youtu.be", "namu.wiki", "wikipedia.org", "news.naver.com",
                          "n.news.naver.com", "v.daum.net", "tv.naver.com", "map.naver.com",
@@ -1125,22 +1182,102 @@ def assess_activity(hits: Sequence[Hit], today: date, *,
     return ActivityResult(UNVERIFIED, None, UNKNOWN_DATE, None, None, None, ["no dated activity"])
 
 
-def hit_is_external(hit: "Hit") -> str | None:
-    """The external-promotion word this ONE hit's own title/snippet carries,
-    or None (Section 6/18). Not a verdict about the whole candidate by
-    itself - a board name alone is never treated as 100% proof (Section 18);
-    _upsert only excludes a hit from the host's own genre/activity evidence
-    when its own text carries one of these, and only calls the candidate
-    'external promotion evidence only' (detect_kind's external_only) when
-    EVERY hit collected for it does."""
+def _mentions_other_entity(text: str, host_name: str | None) -> str | None:
+    """A hashtag or bracketed phrase naming an academy/studio that is not
+    the host's own name (Section 5-6, 10) - the closest thing to a named-
+    entity comparison this rule-based classifier can do without an NLP
+    model. Never a single hardcoded organization name: any mention
+    containing a generic academy word (ACADEMY_WORDS) that does not match
+    the host is treated as evidence a different organizer is being
+    promoted here. Returns None when there is nothing to compare (no
+    academy-flavoured mention at all)."""
+    host_key = master_data.normalize_alias(host_name) if host_name else None
+    for pattern in (_HASHTAG, _BRACKETED_MENTION):
+        for match in pattern.finditer(text):
+            raw = match.group(1)
+            if not _contains_any(raw.lower(), _MENTION_ACADEMY_HINTS):
+                continue
+            key = master_data.normalize_alias(raw)
+            if not key or (host_key and key == host_key):
+                continue
+            return raw
+    return None
+
+
+def hit_is_external(hit: "Hit", host_name: str | None = None) -> str | None:
+    """The external-promotion signal this ONE hit's own title/snippet
+    carries, or None (Section 4-6, 18). Not a verdict about the whole
+    candidate by itself - a board name alone is never treated as 100% proof
+    (Section 18); _upsert only excludes a hit from the host's own genre/
+    activity evidence when its own text carries one of these, and only
+    calls the candidate 'external promotion evidence only' (detect_kind's
+    external_only) when EVERY hit collected for it does.
+
+    v0.89.3: when the search API gives no explicit ad-board name at all (a
+    real, confirmed Production gap - CASINO RUEDA's collected snippet never
+    says "광고방"), fall back to instructor-bio OR enrollment language
+    (Section 4-6, 12) naming a differently-branded academy/course - but only
+    when the SAME text does not also carry the host's own community-
+    activity language (HOST_COMMUNITY_SIGNAL_WORDS), so a real Community
+    that also teaches classes is never mistaken for someone else's ad.
+    """
     text = f"{hit.title} {hit.snippet}"
-    return _contains_any(text, AD_BOARD_WORDS) or _contains_any(text, EXTERNAL_PROMOTION_PHRASES)
+    strong = _contains_any(text, AD_BOARD_WORDS)
+    if strong:
+        return strong
+    phrase = _contains_any(text, EXTERNAL_PROMOTION_PHRASES)
+    if phrase:
+        return phrase
+    # v0.89.3 real-world calibration: the actual CASINO RUEDA snippet has an
+    # instructor-bio phrase ("20여년 강습경력") but no separate enrollment
+    # phrase at all (its only recruitment language is the generic "모집해요",
+    # deliberately excluded from ENROLLMENT_PHRASES - a real community
+    # recruiting new members says this too). Requiring BOTH missed the real
+    # row entirely; either phrase alone, still gated by the absence of the
+    # host's own community language AND a differently-named academy mention,
+    # is precise enough (confirmed by the read-only Production preview).
+    bio = _contains_any(text, INSTRUCTOR_BIO_PHRASES)
+    enroll = _contains_any(text, ENROLLMENT_PHRASES)
+    if (bio or enroll) and not _contains_any(text, HOST_COMMUNITY_SIGNAL_WORDS):
+        marker = bio or enroll
+        other = _mentions_other_entity(text, host_name)
+        if other:
+            return f"instructor/academy self-promotion ('{marker}', mentions '{other}')"
+        if not host_name:
+            return f"instructor/academy self-promotion ('{marker}')"
+    return None
+
+
+def _looks_like_news(host: str, urls: Iterable[str], text: str) -> str | None:
+    """A generalized publisher/news-page signal (Section 13-18) - never a
+    single hardcoded outlet. "news." is an unambiguous Korean publisher-
+    subdomain convention and counts alone; a bare wire-service domain is
+    more ambiguous by itself (a Naver Blog can host a media article, a
+    community's own site can sit on a plain .com - Section 18), so those
+    need a URL-path hint too (Section 14) - never in-text words alone,
+    since a real Community's own post can easily say it "was covered by"
+    the news (Section 21) without that page becoming a news page itself; a
+    community's own cafe URL structurally never contains "/news/"/
+    "/article/" in its own path, so the path co-signal is safe where a
+    bare NEWS_KNOWN_HOSTS match would not be.
+    """
+    if host.startswith("news."):
+        return f"news subdomain ({host})"
+    known_host = any(host == h or host.endswith("." + h) for h in NEWS_KNOWN_HOSTS)
+    if not known_host:
+        return None
+    path_hint = any(p in (u or "").lower() for u in urls for p in NEWS_PATH_HINTS)
+    word = _contains_any(text, NEWS_CONTEXT_WORDS)
+    if path_hint or word:
+        return f"known news domain ({host})" + (f" + '{word}'" if word else " + article URL path")
+    return None
 
 
 def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context, *,
-                external_only: bool = False) -> tuple[str, str]:
+                external_only: bool = False, external_reason: str | None = None,
+                news_reason: str | None = None) -> tuple[str, str]:
     """What this is: a group, or a venue/academy/instructor/event/
-    aggregator/blog/other.
+    aggregator/news page/blog/other.
 
     v0.89.2: ``external_only`` (Section 6-8) means every hit collected for
     this identity was itself someone else's promotion (an ad-board post, a
@@ -1150,9 +1287,19 @@ def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context, *
     be a cafe/group platform. This is the exact CASINO RUEDA production
     failure: a third-party tango academy's ad, read as CASINO RUEDA's own
     TANGO community signal purely because CASINO RUEDA is a Daum cafe.
+
+    v0.89.3: ``news_reason`` (Section 13-18) means the identity's own host/
+    URL and collected text look like a publisher/news page - checked first,
+    since a news article that happens to also mention "동호회" is not a
+    community candidate no matter what else its text contains (Production
+    candidate #442, a KBS article describing a court case about a Salsa
+    club's bylaws).
     """
+    if news_reason:
+        return KIND_NEWS, f"publisher/news page ({news_reason}); the page itself is not the community"
     if external_only:
-        return KIND_UNKNOWN, "external promotion evidence only; no host activity"
+        detail = f" ({external_reason})" if external_reason else ""
+        return KIND_UNKNOWN, f"external promotion evidence only{detail}; no host activity"
     if identity.platform == "OTHER":
         return KIND_OTHER, f"not a group's own site ({identity.url})"
     if identity.platform == "BLOG":
@@ -1433,11 +1580,16 @@ def _upsert(con, ident: Identity, hits: Sequence[Hit], ctx: Context,
     # is no host evidence at all (external_only) and kind can only be
     # UNKNOWN - never the confident COMMUNITY a bare cafe/group platform
     # would otherwise imply (the CASINO RUEDA production failure).
-    host_hits = [h for h in hits if not hit_is_external(h)]
-    external_only = not host_hits
-    host_text = " ".join(f"{h.title} {h.snippet} {h.source_name or ''}" for h in host_hits)
     name, names = extract_name(ident, hits)
     candidate = (old or {}).get("candidate_name") or name
+    # v0.89.3: name comparison in hit_is_external needs the host's own name
+    # decided first - reordered from v0.89.2, where host_hits was computed
+    # before candidate existed.
+    external_flags = [hit_is_external(h, host_name=candidate) for h in hits]
+    host_hits = [h for h, flag in zip(hits, external_flags) if not flag]
+    external_only = not host_hits
+    external_reason = next((f for f in external_flags if f), None)
+    host_text = " ".join(f"{h.title} {h.snippet} {h.source_name or ''}" for h in host_hits)
     genres = detect_genres(f"{host_text} {candidate or ''}", ctx.genre_ids)
     genre_suppressed = genre_negative_context(f"{host_text} {candidate or ''}", ctx.genre_ids)
     region_id, region_text = detect_region(f"{text} {candidate or ''}", ctx.regions)
@@ -1447,8 +1599,20 @@ def _upsert(con, ident: Identity, hits: Sequence[Hit], ctx: Context,
         host_hits, ctx.today, previous_date=(old or {}).get("activity_date"),
         previous_confidence=(old or {}).get("activity_date_confidence") or UNKNOWN_DATE)
     activity, recent, activity_reasons = result.verdict, result.activity_date, result.reasons
-    kind, kind_reason = detect_kind(ident, candidate, host_text, ctx, external_only=external_only)
-    if old and kind == KIND_UNKNOWN and old.get("kind") != KIND_UNKNOWN:
+    ident_parts = _split(ident.url)
+    news_reason = _looks_like_news(_host(ident_parts) if ident_parts else "",
+                                   [h.url for h in hits], host_text)
+    kind, kind_reason = detect_kind(ident, candidate, host_text, ctx, external_only=external_only,
+                                    external_reason=external_reason, news_reason=news_reason)
+    # v0.89.3: the sticky-kind carryover below exists so a single weak,
+    # uninformative hit (a bare photo, no text at all) never downgrades an
+    # already-established kind. It must NOT apply when this hit was
+    # confidently read as news/external-promotion evidence - that is a
+    # positive, evidence-based negative finding, not an absence of signal,
+    # and is exactly what Section 19 requires actually correcting a
+    # previously-wrong COMMUNITY kind (the CASINO RUEDA case) instead of
+    # leaving it stuck.
+    if old and kind == KIND_UNKNOWN and not external_only and old.get("kind") != KIND_UNKNOWN:
         kind = old["kind"]
     venues = match_venues(f"{text} {candidate or ''}", region_id,
                           list(genres) + _item_genre_codes(con, (old or {}).get("item_id")),

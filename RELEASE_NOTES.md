@@ -1,5 +1,145 @@
 # DanceMate Release Notes
 
+## v0.89.3 Community Discovery Evidence Attribution
+
+Status: PASS, 2026-09-14.
+
+Version split:
+
+- Product Runtime: 0.89.3
+- Information Engine: 0.85 (unchanged)
+- Migration: 037 (unchanged - no schema change was needed)
+
+v0.89.2's own real-world Production validation run (Precision Run #3)
+found two false-negative gaps its own board-name-based external-promotion
+logic and its kind detection could not close: CASINO RUEDA's (#437)
+collected snippet never contains "광고방" or any other board-name word at
+all - the Naver/Kakao search API simply does not return the board name a
+human sees by opening the real page - so its third-party tango academy ad
+still read as CASINO RUEDA's own TANGO activity; and a KBS news article
+(#442) describing a court case about a Salsa club's bylaws was picked up as
+a COMMUNITY candidate purely because its text contains the word "동호회".
+**This release does not expand search** - no new queries, providers,
+regions, or result limits. It adds a snippet-only signal for third-party
+promotion that does not depend on a board name being present, and a
+generalized publisher/news-page kind - neither hardcoded to CASINO RUEDA or
+KBS specifically. **No automatic Production master-data change**, and no
+existing candidate's manual review state is ever rewritten by the new
+engine - see the Reclassification Preview below for what the new engine
+*would* say about the existing 442 candidates, checked read-only, never
+applied.
+
+### Snippet-only third-party promotion (Section 4-12, 19, 23)
+
+- `hit_is_external()` now falls back, when no ad-board name or explicit
+  promotion phrase is present, to instructor-bio language (`INSTRUCTOR_BIO_
+  PHRASES`: "N년 강습경력", "전임강사", "원장", ...) or enrollment language
+  (`ENROLLMENT_PHRASES`: "수강생", "수강신청", "입문반", ...) - either alone
+  is enough, calibrated against the real CASINO RUEDA row, whose only
+  recruitment language turned out to be the generic "모집해요" (deliberately
+  excluded: a real community recruiting new members says this too).
+- Neither list is trusted by itself. The signal only fires when the SAME
+  text also (a) does **not** carry the host's own community-activity
+  language (`HOST_COMMUNITY_SIGNAL_WORDS`: "정모", "회원", "우리 동호회",
+  "이번 주 모임", "정기 소셜", "N기 모집", "번개" - deliberately narrower than
+  COMMUNITY_WORDS/ACTIVITY_WORDS, which an ad's own incidental hashtags can
+  trip), and (b) names a differently-branded academy/course: new
+  `_mentions_other_entity()` reads hashtags and bracketed phrases
+  (`#대구탱고학원`, `(대구탱고카니발)`) for a generic academy word
+  (ACADEMY_WORDS) that does not match the host's own name - never a single
+  hardcoded organization name (Section 10 explicitly forbids a CASINO-RUEDA-
+  specific rule).
+- Everything this excludes flows through v0.89.2's existing host_hits
+  filtering unchanged - genre, activity date, and kind for the whole
+  candidate never come from an excluded hit (Section 8-9, 23): ten real
+  host posts plus one foreign-genre ad still read as the host's own ten
+  posts' genre, never the ad's.
+- The v0.89.2 "sticky kind" carryover (a single weak, uninformative hit
+  must never downgrade an already-established kind) is narrowed to exclude
+  this case specifically: a confident external-promotion finding is
+  positive evidence, not an absence of signal, and is exactly what lets a
+  previously-wrong `COMMUNITY` kind (CASINO RUEDA) actually get corrected
+  instead of staying stuck (Section 19).
+- `detect_kind()`'s `external_only` reason now names the specific signal
+  that fired (board name, phrase, or instructor/academy self-promotion)
+  instead of one generic message - visible on the existing Admin candidate
+  row with no UI change (reasons were already rendered there).
+
+### Publisher/news-page classification (Section 13-18, 20-22)
+
+- New `KIND_NEWS` ("NEWS_OR_MEDIA"), added to `NOT_COMMUNITY_KINDS` - no
+  migration: `kind` is an unconstrained text column already.
+- New `_looks_like_news()`: a "news."-prefixed host (news.kbs.co.kr,
+  news.sbs.co.kr, ...) is an unambiguous Korean publisher-subdomain
+  convention and counts alone; a bare wire-service domain
+  (`NEWS_KNOWN_HOSTS`: chosun.com, mk.co.kr, ...) is more ambiguous by
+  itself (Section 18: a Naver Blog can host a media article, a community's
+  own site can sit on a plain .com) and needs a co-signal - an article-
+  shaped URL path (`NEWS_PATH_HINTS`: `/news/`, `/article/`, ...) or in-text
+  journalism language (`NEWS_CONTEXT_WORDS`: 기자/보도/취재/앵커/...),
+  never in-text words alone for an unknown domain.
+- Deliberately never triggered by the bare word "뉴스" itself, and the
+  journalism-language co-signal is gated behind an already-known news
+  domain, never available on its own: a Community's own cafe post proudly
+  saying "우리 동호회가 KBS 뉴스에 소개됐습니다" (Section 21) or linking to a
+  news article about itself must never flip its own page to NEWS_OR_MEDIA -
+  the host's own domain is what is evaluated, never a domain or word merely
+  mentioned inside its post.
+
+### Reclassification Preview (Section 31-32) - read-only, nothing written
+
+Run against the real 442 Production candidates through a throwaway
+container with the new module mounted read-only, never against the live
+`dancemate-runtime-1` service and never writing to the database:
+
+- 442 candidates examined; 102 would get a different genre/kind reading.
+- **#437 CASINO RUEDA**: `COMMUNITY`/`TANGO` → `UNKNOWN`/no genre, reason
+  `"external promotion evidence only (instructor/academy self-promotion
+  ('년 강습경력', mentions '대구탱고학원')); no host activity"` - the exact
+  fix Section 19 asked for, on the real row, confirmed read-only.
+- **#442 KBS article**: `COMMUNITY` → `NEWS_OR_MEDIA`/`NOT_A_COMMUNITY`,
+  reason `"publisher/news page (news subdomain (news.kbs.co.kr)); the page
+  itself is not the community"` - the exact fix Section 20 asked for.
+- 4 external-ad corrections and 1 news/media correction overall, all on
+  candidates already `PENDING` or `REJECTED` - manual review state
+  untouched either way.
+- 0 `APPROVED`/`LINKED` (i.e. actually registered) candidates have their
+  kind flipped to a non-community kind or their genre set emptied by the
+  new engine - checked explicitly, not merely assumed.
+
+### Migration
+
+No schema change. `KIND_NEWS` reuses the existing unconstrained `kind`
+column and the evidence signals are carried entirely in `reasons` (text
+array) - Section 30's preference to skip an unneeded migration applied.
+Still migration **037**.
+
+### Tests
+
+`tests/test_v0893_evidence_attribution.py` (11 tests: instructor-bio/
+enrollment detection with and without a board name, host-name-vs-mentioned-
+entity comparison, a real academy+community hybrid staying HOST evidence,
+a bare academy word never forcing external, multi-hit evidence, external-
+only, external-date-never-becomes-host-activity, plus SWING/SALSA/TANGO
+context-precision regression spot-checks) and
+`tests/test_v0893_news_media_classification.py` (13 tests: news-subdomain
+and known-outlet detection with and without a co-signal, the real KBS-
+shaped domain caught by the general rule, a Community's own domain and its
+own "featured in the news" post both staying `COMMUNITY`, real per-genre
+positives, and manual-state/CONFIRMED-provenance/duplicate-grouping
+regression checks).
+
+Full regression, three ways, all against the exact same 18 (shared dev DB)
+/ 3 (fresh DB) pre-existing failures already known from prior releases
+(this exact baseline, against this exact commit, was already verified via
+`git stash` in the immediately preceding v0.89.2 session) - **0 new
+failures** in every run:
+
+- Focused (27 new tests): 27 passed.
+- Container, shared dev DB: 2315 passed, 18 pre-existing failures, 13 skipped.
+- Container, fresh migrated DB: 2324 passed, 3 pre-existing failures, 19 skipped.
+- Information Engine suite: 809 passed.
+
 ## v0.89.2 Community Discovery Classification Precision
 
 Status: PASS, 2026-09-14.
