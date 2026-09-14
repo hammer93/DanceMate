@@ -346,7 +346,30 @@ REGION_HINTS: dict[str, tuple[str, ...]] = {
     "KR-DAEGU": ("대구", "동성로"),
     "KR-GWANGJU": ("광주",),
     "KR-ULSAN": ("울산",),
-    "KR-JEJU": ("제주",),
+    "KR-JEJU": ("제주", "서귀포"),
+    # v0.89.4 (Region Master Coverage & Resolution): DanceMate's own Region
+    # master is not one consistent granularity - mostly province/metro level
+    # (경기/충북/경북/경남/...), but four cities (청주/진주/창원/포항) already
+    # have their OWN dedicated Region rows from earlier ad hoc additions.
+    # Kept exactly as-is (Section 22: no deletion, no restructuring) - a
+    # province's hints below never repeat a city that already has its own
+    # row, or "청주"/"진주"/"창원"/"포항" text would match two Regions at
+    # once and go unresolved by the existing (correct) ambiguity rule
+    # instead of resolving to that city's own row as it already does today.
+    "KR-CHUNGBUK": ("충북", "충청북도", "충주", "제천"),
+    "KR-GYEONGBUK": ("경북", "경상북도", "경주", "구미", "안동", "영주"),
+    "KR-GYEONGNAM": ("경남", "경상남도", "김해", "거제", "통영", "양산"),
+    # New Regions (Section 5-6): provinces with real Production Community
+    # evidence (전주 #30, 여수 #33, 천안+서산+당진 #23/#35) but no Region row
+    # at all until this release - see migrations/runtime/038_region_master_
+    # coverage.sql. 서산 and 당진 both under KR-CHUNGNAM is exactly Section
+    # 18's safe case: two different cities that share one canonical parent
+    # resolve to that one Region without picking between them (detect_region
+    # de-duplicates by Region code, never by which hint matched).
+    "KR-JEONBUK": ("전북", "전라북도", "전주", "군산", "익산"),
+    "KR-JEONNAM": ("전남", "전라남도", "여수", "순천", "목포"),
+    "KR-CHUNGNAM": ("충남", "충청남도", "천안", "아산", "서산", "당진"),
+    "KR-GANGWON": ("강원", "강원도", "강원특별자치도", "춘천", "원주", "강릉"),
 }
 GENERIC_NAME_WORDS = ("동호회", "모임", "커뮤니티", "동아리", "카페", "클럽", "club", "cafe", "댄스",
                       "dance", "초보", "소셜", "social", "korea", "코리아", "한국", "스튜디오")

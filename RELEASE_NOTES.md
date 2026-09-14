@@ -1,5 +1,133 @@
 # DanceMate Release Notes
 
+## v0.89.4 Region Master Coverage & Resolution
+
+Status: PASS, 2026-09-14.
+
+Version split:
+
+- Product Runtime: 0.89.4
+- Information Engine: 0.85 (unchanged)
+- Migration: **038** (new - `regions` master seed only, no other schema change)
+
+Four real Production Communities had no Region to resolve to at all:
+전주살사 바차타 라틴크루즈 (Jeonju), 여수 엘카리베라틴클럽 (Yeosu), 천안세븐
+(Cheonan), and 서당탱고 (Seosan/Dangjin). Investigating DanceMate's own
+Region master first (Section 2 of the v0.89.4 task explicitly warned
+against assuming its granularity) found it is **not** one consistent
+administrative level: mostly province/metro (서울/경기/충북/경북/경남/...),
+but four individual cities (청주/진주/창원/포항, migration 024) already have
+their own dedicated Region rows from earlier ad hoc additions. Jeonju,
+Yeosu, Cheonan and Seosan/Dangjin sit in **provinces that had no Region row
+at all** (전북/전남/충남) - not a resolver text-matching gap, a genuine
+master-data gap. **This release does not redesign the Region model** - it
+adds the missing provinces at the SAME granularity the existing master
+already mostly uses, and widens `REGION_HINTS` coverage so city names
+resolve to the right existing bucket, without ever picking a "nearest"
+Region for something genuinely ambiguous.
+
+### Region master (Section 2-7, 20-22)
+
+- New Regions, all province-level, matching the existing short-name
+  convention (충북/경북/경남, never 충청북도/경상북도/경상남도 - Section 7):
+  `KR-JEONBUK`(전북), `KR-JEONNAM`(전남), `KR-CHUNGNAM`(충남),
+  `KR-GANGWON`(강원) - `migrations/runtime/038_region_master_coverage.sql`,
+  `ON CONFLICT (code) DO NOTHING` (safe against Production, which may add
+  these by hand before this migration ever runs there).
+  KR-SEJONG - a fifth code `runtime/venue_resolution.py`'s
+  `_REGION_BY_ADMIN` also already names - is deliberately **not** added: no
+  current Production row has ever needed it (the Admin "Add Region" form's
+  own guidance: "실제로 행사가 확인된 지역만 추가하세요").
+- No existing Region row renamed, disabled, or deleted (Section 19, 22).
+  청주/진주/창원/포항 keep their own dedicated rows exactly as they are -
+  their province's new/expanded hints deliberately never repeat a city
+  that already has its own row, or that city's own text would suddenly
+  match two Regions at once and go unresolved by the existing (correct)
+  ambiguity rule instead of resolving the way it already does today.
+- `runtime/venue_resolution.py`'s address-based resolver
+  (`suggested_region_id()`/`guess_region_label()`) needed **no code
+  change at all**: its `_REGION_BY_ADMIN` table already named all four new
+  codes - written ahead of this release, dormant until the row existed.
+  Confirmed 0 Venues currently need this (all 53 already have a Region -
+  Section 15's audit came back empty).
+
+### Community Discovery resolution (Section 8-14)
+
+- `REGION_HINTS` (`runtime/community_discovery.py`) widened: the three
+  existing provinces that had no hints at all beyond their own bare name
+  (충북/경북/경남) gained their non-city-level cities (충주/제천,
+  경주/구미/안동/영주, 김해/거제/통영/양산); the four new provinces gained
+  their real cities (전주/군산/익산; 여수/순천/목포; 천안/아산/서산/당진;
+  춘천/원주/강릉) plus their official long-form name as an additional
+  alias (전라북도, 전라남도, 충청남도, 강원도/강원특별자치도); 제주 gained
+  서귀포. No new subsystem, no `region_aliases` table (Section 8 -
+  investigated first: none exists) - this is the exact same
+  code→hint-list resolver v0.89.0 already shipped, only wider.
+- `detect_region()` itself is unchanged: exactly one Region matched
+  resolves; several matched (e.g. two cities that happen to be in
+  different provinces) stays unresolved with both named; zero matched
+  stays fully unresolved. This is what already makes 서산+당진 safely
+  resolve to the single shared 충남 without picking between them (both
+  hints map to the same Region code - Section 18) while "Boston",
+  "전국", "서울/부산", "수도권 전체" and similar all correctly stay
+  unresolved (Section 10-11, 37) - proven by regression tests, not new
+  logic.
+
+### Community/Venue region audit (Section 15-19) - read-only, preview before write
+
+- 37 Communities examined: 32 already had a Region (untouched - Section 19,
+  no unnecessary re-save), 5 did not. Of those 5, 4 have real, specific
+  evidence (their own name/registration evidence names the exact city) and
+  are remapped **after** this release deploys, through the existing
+  `communities.update_community()` Admin contract, each one audited:
+  #23 천안세븐 → 충남, #30 전주살사 바차타 라틴크루즈 → 전북, #33 여수
+  엘카리베라틴클럽 → 전남, #35 서당탱고 → 충남 (서산+당진, one shared
+  Region). The 5th, #22 보스톤(Boston), stays unresolved - no Korean
+  region evidence exists for it at all (Section 10, 37's own named
+  negative case).
+- 53 Venues examined: 0 with a null Region - no remap needed or performed.
+
+### Tests
+
+`tests/test_v0894_region_resolution.py` (39 tests): resolver positive
+cases for every city named in Section 36 (전주/전주시/전라북도 전주시,
+여수, 천안/천안시/충남 천안/충청남도 천안시, 서산, 당진, 청주, 포항, 진주,
+제주/서귀포, 서울 강남/마포), the 서산+당진→single-충남 case, the three
+existing province gaps (충북/경북/경남 without their own city), negative
+cases (Boston/전국/서울-부산/수도권 전체/전국모임/온라인/지역 없음 - Section
+37), and two `@pytest.mark.postgres` Discovery-integration tests proving
+resolution works through the real `store_hits()` pipeline, not just the
+pure function. Also fixed one existing, now-outdated test
+(`tests/test_venue_resolution.py::test_a_region_hint_only_selects_a_region_it_actually_matches`,
+which asserted 전남 stays unregistered - now correctly points at 세종
+instead) and updated `tests/test_migrations.py`'s hardcoded migration list
+to include 038.
+
+Full regression, three ways, all against the exact same pre-existing
+failures already known from prior releases - **0 new failures**:
+
+- Focused (40 new/changed tests): 40 passed.
+- Container, shared dev DB: 2354 passed, 18 pre-existing failures, 13 skipped.
+- Container, fresh migrated DB: 2363 passed, 3 pre-existing failures, 19 skipped
+  (confirmed migration 038 applies cleanly on a truly empty database).
+- Information Engine suite: unaffected (no engine code touched).
+
+### A related gap found, deliberately not fixed here
+
+`KR-BUSAN` has substantial real Production evidence but - like Incheon
+before it - was only ever added by hand through the Admin console, never
+migration-seeded (migration 024's own comment: "the master only ever
+seeded KR/KR-SEOUL/KR-BUSAN", yet Busan was never actually one of them). A
+fresh install genuinely has no Busan Region today. Adding it in this
+release's own migration was tried and reverted: doing so unmasks two
+already-dev-DB-documented, pre-existing test failures in
+`tests/test_genre_filter.py` (a stale assertion from before `_region_options()`'s
+own v0.85.7 zero-count-exclusion change) that a missing-Busan fixture skip
+happens to hide on a fresh DB today. Fixing that unrelated defect is out of
+this release's scope (Section 4/60: this release is not "add every gap
+found") - documented here as a follow-up for whichever release addresses
+it, alongside the Busan gap itself.
+
 ## v0.89.3 Community Discovery Evidence Attribution
 
 Status: PASS, 2026-09-14.
