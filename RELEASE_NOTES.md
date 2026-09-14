@@ -1,5 +1,148 @@
 # DanceMate Release Notes
 
+## v0.89.2 Community Discovery Classification Precision
+
+Status: PASS, 2026-09-14.
+
+Version split:
+
+- Product Runtime: 0.89.2
+- Information Engine: 0.85 (unchanged)
+- Migration: 037 (unchanged - no schema change was needed, see below)
+
+Three manual Production Discovery reviews found the same shape of false
+positive over and over, plus one attribution failure worse than any single
+false positive: a genre keyword that pattern-matches for a reason that has
+nothing to do with dance (stock-market "swing" - SwingLog, 815머니톡; a food
+"salsa" - 살사소스, chili salsa; a cross-branded "tango" - 망고탱고 ice
+cream, a poem quoting tango's music history); a dance event aggregator
+(Dancehive) that is not itself a community; and CASINO RUEDA, a Daum cafe
+whose only collected evidence was a third-party tango academy's class
+enrollment ad posted to the cafe's own advertisement board - the old
+classifier read that ad's TANGO genre and its date as CASINO RUEDA's own
+activity, purely because being a Daum cafe was, by itself, enough to call it
+a confident community. **This release does not expand search** - no new
+queries, providers, regions, or result limits. It makes context, not a bare
+keyword match, decide a genre; it stops an external advertisement from ever
+being read as the host's own activity; and it tells an aggregator/academy
+apart from a member community more carefully. **No automatic Production
+master-data change**: `communities`/`community_genres`/`community_venues`/
+`venues` are untouched by this release, and no existing candidate's manual
+review state (APPROVED/HELD/LINKED/REJECTED) is ever rewritten by the new
+engine - see the Reclassification Preview below for what the new engine
+*would* say about the existing 441 candidates, checked read-only, never
+applied.
+
+### Context-aware genre detection (Section 3-5)
+
+- `detect_genres()` no longer counts a genre word just because it appears -
+  a same-genre false-positive neighbour within a short local window (스윙매매,
+  스윙자켓, 스윙도어, 살사소스, 칠리살사, 망고탱고, `swing door`/`trading`,
+  `salsa sauce`/`chili salsa`, ...) suppresses that one occurrence
+  (`GENRE_NEGATIVE_WORDS`, `GENRE_CONTEXT_WINDOW`). A genre still counts when
+  the same text also carries its own clean, independent occurrence - a
+  single stray off-topic word (a Salsa community's own "이번 뒤풀이에
+  살사소스 제공") never erases a genre that has real evidence.
+- A genre word with no local negative neighbour but sitting in a document
+  with no community/activity evidence of its own (no 동호회/모임/정모/강습/...
+  anywhere) and a genre-specific cultural/product negative word present
+  (시인/문학/가사/앨범/... for TANGO) is still not trusted - the exact "poem
+  that name-drops tango" shape a local-window check alone cannot catch. A
+  bare mention of "음악" never triggers this on its own: a real Tango
+  community talks about music too.
+- New `genre_negative_context()` reports *why* a genre keyword did not
+  count, surfaced as a `"genre X not counted: ..."` reason - visible on the
+  existing Admin candidate row without any UI change (reasons were already
+  rendered there).
+
+### Cross-post / external-promotion attribution (Section 6-8, 14)
+
+- New `hit_is_external()`: a search hit whose own title/snippet names an
+  unambiguous ad board (광고방/외부홍보/타동호회홍보/행사홍보) or an explicit
+  promotion phrase (홍보합니다/공유합니다/외부 강사/타 학원/...) is excluded
+  from the host candidate's own genre and activity evidence. A generic board
+  name a real community could just as easily use for its own posts
+  (정보공유, 자유게시판, 홍보방, ...) is deliberately **not** enough on its
+  own (Section 18) - only the unambiguous names, or an explicit phrase, do.
+- `_upsert()` now computes `host_hits` (every hit that is not external) and
+  feeds genre detection, activity assessment, and kind detection from those
+  alone - an external hit's date can never freshen the host's own
+  `activity_date`, and its genre never becomes the host's own genre.
+- When *every* hit collected for an identity is external (the exact CASINO
+  RUEDA shape: the only hit found is someone else's ad), `detect_kind()`
+  returns `UNKNOWN` with the reason `"external promotion evidence only; no
+  host activity"` - never the confident `COMMUNITY` a bare cafe/group
+  platform identity used to produce on its own.
+
+### Entity kind refinement (Section 9-12)
+
+- New `KIND_AGGREGATOR`: an event/information aggregator (Dancehive - "이
+  모든 정보를 한 곳에 모아") is recognized and added to `NOT_COMMUNITY_KINDS`
+  - dance relevance alone no longer promotes it to a community candidate.
+- An academy-style name (학원/아카데미/스튜디오) no longer defaults straight
+  to `KIND_ACADEMY` when the collected text also carries its own, separate
+  community evidence (a community word **and** an activity word - not
+  merely one, per Section 10's "복수 evidence"): the read-only
+  reclassification preview below found 6 real Production candidates
+  (academy-branded names that also run a real 동호회/정모) this fixes.
+
+### Reclassification Preview (Section 16, 29) - read-only, nothing written
+
+Run against the real 441 Production candidates through a throwaway
+container with the new module mounted read-only, never against the live
+`dancemate-runtime-1` service and never writing to the database:
+
+- 441 candidates examined; 105 would get a different genre/kind reading.
+- 2 real false positives would now be caught automatically:
+  `NOT_A_COMMUNITY`/`AGGREGATOR` for Dancehive (#430, already manually
+  rejected) and `EVENT` for a one-off contest post (#337, already manually
+  rejected) - both already-settled manual decisions, untouched.
+- 6 academy-named-but-community candidates (Section 11) would newly read as
+  `COMMUNITY` instead of `NOT_A_COMMUNITY`/`ACADEMY` - all still `PENDING`,
+  no manual decision disturbed.
+- 0 of the 13 candidates whose kind would change are `APPROVED`/`LINKED`
+  (i.e. an actual registered Community) - zero risk to anything already on
+  the public site.
+- The preview also flagged 25 `APPROVED`/`LINKED` candidates where a
+  *secondary* genre (e.g. `KIZOMBA` on a Salsa/Bachata community) would not
+  be re-detected from today's single stored title/snippet snapshot alone.
+  This is a limitation of the preview method, not a real risk: the
+  preview can only see each candidate's current single stored
+  title/snippet, not the fuller set of hits collected across every run that
+  originally built up its genre tags, and - independent of this release -
+  `_upsert()` has only ever *added* genre relations (`ON CONFLICT DO
+  NOTHING`), never removed one. No `APPROVED`/`LINKED` candidate's genre set
+  would go fully empty, and no Production row's genre relation is touched by
+  this release either way (it changes code, not data).
+
+### Migration
+
+No schema change. Evidence scope and the aggregator/academy-ambiguity
+reasoning are carried entirely in the existing `kind` (unconstrained text)
+and `reasons` (text array) columns - Section 27's preference to skip an
+unneeded migration applied. Still migration **037**.
+
+### Tests
+
+`tests/test_v0892_discovery_context_precision.py` (18 pure-function tests:
+context-aware genre detection, aggregator/academy `detect_kind` refinement)
+and `tests/test_v0892_discovery_external_promotion.py` (6
+`@pytest.mark.postgres` tests: the CASINO RUEDA cross-post shape end to end,
+a generic board name never wiping a real genre, an external ad's date never
+becoming host activity, and the v0.89.1 guarantees - manual review
+preservation, `INFERRED`-only automation, duplicate grouping, multi-genre
+relations - still holding with the new filtering in place).
+
+Full regression, three ways, all against the exact same 18 (shared dev DB)
+/ 3 (fresh DB) pre-existing failures already known from prior releases
+(confirmed identical via `git stash` against unmodified v0.89.1, same
+procedure as always) - **0 new failures** in every run:
+
+- Focused (24 new tests): 24 passed.
+- Container, shared dev DB: 2288 passed, 18 pre-existing failures, 13 skipped.
+- Container, fresh migrated DB: 2297 passed, 3 pre-existing failures, 19 skipped.
+- Information Engine suite: 809 passed.
+
 ## v0.89.1 Community Discovery Reliability
 
 Status: PASS, 2026-09-14.

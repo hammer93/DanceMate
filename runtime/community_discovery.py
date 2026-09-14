@@ -149,11 +149,12 @@ KIND_VENUE = "VENUE"
 KIND_ACADEMY = "ACADEMY"
 KIND_INSTRUCTOR = "INSTRUCTOR"
 KIND_EVENT = "EVENT"
+KIND_AGGREGATOR = "AGGREGATOR"       # v0.89.2: an event/information aggregator (Section 12)
 KIND_BLOG = "BLOG"
 KIND_OTHER = "OTHER"
 KIND_UNKNOWN = "UNKNOWN"
 NOT_COMMUNITY_KINDS = frozenset({KIND_VENUE, KIND_ACADEMY, KIND_INSTRUCTOR, KIND_EVENT,
-                                 KIND_BLOG, KIND_OTHER})
+                                 KIND_AGGREGATOR, KIND_BLOG, KIND_OTHER})
 
 VENUE_MATCH = "VENUE_MATCH"
 VENUE_CANDIDATE = "VENUE_CANDIDATE"
@@ -218,6 +219,59 @@ ACADEMY_WORDS = ("학원", "아카데미", "academy", "스튜디오", "studio")
 INSTRUCTOR_WORDS = ("강사", "쌤", "선생님", "개인레슨", "개인 레슨", "lesson")
 EVENT_WORDS = ("페스티벌", "festival", "워크샵", "워크숍", "workshop", "캠프", "camp", "위켄드",
                "weekend", "대회", "competition")
+# v0.89.2 (Classification Precision Patch): an event/information aggregator
+# (Dancehive - "이 모든 정보를 한 곳에 모아") is dance-related but is not
+# itself a community (Section 12) - checked only when no COMMUNITY_WORDS is
+# also present, same guard as EVENT_WORDS/VENUE_WORDS above.
+AGGREGATOR_WORDS = ("한 곳에 모아", "한곳에 모아", "이벤트를 모아", "행사를 모아", "일정을 모아",
+                    "정보를 모아", "한눈에 보는", "한눈에 확인", "어플리케이션", "디렉토리",
+                    "directory", "aggregator", "플랫폼", "platform")
+
+# v0.89.2: a genre word that pattern-matches only because of a same-genre
+# false-positive neighbour - stock-market "swing" (스윙매매), a food "salsa"
+# (살사소스), a cross-branded product ("망고탱고" ice cream) - three real
+# Production reviews found these attached to entities with no dance
+# connection at all. Never counted on its own (see detect_genres); it stays
+# counted when the SAME text also has its own clean, independent occurrence,
+# so a single stray off-topic word can never erase a genre that has its own
+# real evidence (Section 5, Case 5: "이번 뒤풀이에 살사소스 제공" inside an
+# otherwise genuine Salsa community post).
+GENRE_NEGATIVE_WORDS: dict[str, tuple[str, ...]] = {
+    "SWING": ("스윙매매", "스윙 매매", "스윙트레이딩", "스윙 트레이딩", "매매일지", "주식", "트레이딩",
+              "매매", "종목", "코인", "투자", "차트", "스윙자켓", "스윙 자켓", "스윙도어", "스윙 도어",
+              "swing door", "swing trading", "골프", "자이언트 스윙", "놀이기구", "롤러코스터",
+              "rope swing", "그네"),
+    "SALSA": ("살사소스", "살사 소스", "칠리살사", "칠리 살사", "salsa sauce", "chili salsa",
+              "소스", "레시피", "recipe", "스낵", "snack", "과자", "토마토소스"),
+    "TANGO": ("망고탱고", "망고 탱고", "탱고 아이스크림", "시인", "문학", "시집", "가사", "ost",
+              "앨범", "영화", "콘서트 후기"),
+}
+# Characters either side of a genre word to look for a negative neighbour -
+# enough to catch a tight compound ("스윙매매", "살사소스", "망고탱고") and a
+# short hashtag cluster ("#SwingLog #스윙로그 #스윙매매 #주식공부") without
+# reaching all the way into an unrelated sentence elsewhere in the same
+# snippet (Section 5, Case 5's "이번 뒤풀이에 살사소스 제공" sits well past
+# this many characters from a genuine Salsa community's own mention).
+GENRE_CONTEXT_WINDOW = 18
+
+# v0.89.2: a search hit whose own text says it is someone else's promotion,
+# not the host cafe/community's own activity (Section 6-8) - the exact
+# CASINO RUEDA production failure was a third-party tango academy's class
+# enrollment ad, posted to a Cafe's own advertisement board, whose TANGO
+# genre and date the old classifier read as CASINO RUEDA's own. A board-name
+# word here is a real, commonly-seen Korean cafe convention (the real case's
+# own board was literally named "외부홍보게시판(레슨)"), not a guess.
+#
+# Only the unambiguous board names count on their own (Section 18: "board
+# title만으로 100% external이라고 단정하지 않는다") - a name that structurally
+# can only mean "not this cafe's own" (광고방/외부홍보/...). Genuinely generic
+# board names a real community could just as easily use for its own posts
+# ("정보공유", "자유게시판", "홍보방") are deliberately left out of this list
+# rather than guessed at from the name alone; an explicit phrase is what
+# marks those as someone else's promotion instead.
+AD_BOARD_WORDS = ("광고방", "외부홍보", "타동호회홍보", "타동호회 홍보", "행사홍보")
+EXTERNAL_PROMOTION_PHRASES = ("홍보합니다", "공유합니다", "외부 강사", "타 학원", "타학원",
+                              "다른 카페의", "다른 동호회의", "제휴 홍보")
 # Hosts that are never a community's own page.
 OTHER_HOSTS = frozenset({"youtube.com", "youtu.be", "namu.wiki", "wikipedia.org", "news.naver.com",
                          "n.news.naver.com", "v.daum.net", "tv.naver.com", "map.naver.com",
@@ -875,15 +929,82 @@ def extract_name(identity: Identity, hits: Sequence[Hit]) -> tuple[str | None, l
     return Counter(names).most_common(1)[0][0], list(dict.fromkeys(names))[:KEEP_NAMES]
 
 
-def detect_genres(text: str, genre_ids: dict[str, int]) -> dict[str, str]:
-    """Genre -> the word that showed it. Only genres the master knows."""
-    found = {}
+def _genre_scan(text: str, genre_ids: dict[str, int]) -> tuple[dict[str, str], dict[str, str]]:
+    """One pass shared by detect_genres/genre_negative_context: for each
+    genre word occurrence in ``text``, look at GENRE_CONTEXT_WINDOW
+    characters either side for a same-genre false-positive neighbour
+    (GENRE_NEGATIVE_WORDS). A genre counts (``found``) from its first clean,
+    unwrapped occurrence; when every occurrence found is wrapped, the first
+    one is kept only as an explanatory ``suppressed`` note - never counted.
+    """
+    lowered = text.lower()
+    found: dict[str, str] = {}
+    suppressed: dict[str, str] = {}
+    # A genre word with no local negative neighbour but still floating in a
+    # document that has no community/activity evidence of its own kind
+    # anywhere (Section 3D/5: a poem or product name that merely name-drops
+    # a genre word, no compound needed - "시인"/"가사"/"앨범" can sit a whole
+    # sentence away from "탱고") is not trusted either. A real community's
+    # own COMMUNITY_WORDS/ACTIVITY_WORDS mention anywhere in the text is
+    # what tells the two apart - never a single stray negative word, which
+    # the local-window check above already isolates.
+    has_positive_context = bool(_contains_any(lowered, COMMUNITY_WORDS)
+                                or _contains_any(lowered, ACTIVITY_WORDS))
     for code, words in GENRE_WORDS.items():
-        if code in genre_ids:
-            word = _contains_any(text, words)
-            if word:
-                found[code] = word
-    return found
+        if code not in genre_ids:
+            continue
+        negatives = GENRE_NEGATIVE_WORDS.get(code, ())
+        clean, wrapped_word, wrapped_neg = None, None, None
+        for word in words:
+            w = word.lower()
+            start = 0
+            while True:
+                idx = lowered.find(w, start)
+                if idx == -1:
+                    break
+                start = idx + 1
+                window = lowered[max(0, idx - GENRE_CONTEXT_WINDOW): idx + len(w) + GENRE_CONTEXT_WINDOW]
+                neg = next((n for n in negatives if n in window), None)
+                if neg is None:
+                    clean = word
+                    break
+                if wrapped_word is None:
+                    wrapped_word, wrapped_neg = word, neg
+            if clean:
+                break
+        if clean and not has_positive_context:
+            doc_neg = _contains_any(lowered, negatives)
+            if doc_neg:
+                clean, wrapped_word, wrapped_neg = None, clean, doc_neg
+        if clean:
+            found[code] = clean
+        elif wrapped_word:
+            suppressed[code] = f"'{wrapped_word}' near '{wrapped_neg}'"
+    return found, suppressed
+
+
+def detect_genres(text: str, genre_ids: dict[str, int]) -> dict[str, str]:
+    """Genre -> the word that showed it. Only genres the master knows.
+
+    v0.89.2 (Classification Precision Patch): a genre word wrapped in a
+    same-genre false-positive context (stock-trading '스윙매매', a food
+    '살사소스', a cross-branded '망고탱고', ...) does not count on its own -
+    see _genre_scan. It still counts when the same text also carries an
+    independent, unwrapped occurrence elsewhere, so a single stray off-topic
+    mention can never erase a genre that has its own real evidence.
+    """
+    return _genre_scan(text, genre_ids)[0]
+
+
+def genre_negative_context(text: str, genre_ids: dict[str, int]) -> dict[str, str]:
+    """Genre -> a short, human-readable note ('word near neighbour') for a
+    genre keyword that appeared in the text but only ever inside a
+    same-genre false-positive context - never for a genre detect_genres
+    already found for the same text. Purely explanatory (Section 19/20): it
+    changes no stored genre relation, it only becomes a classification
+    reason so an operator can see why a candidate did not gain a genre it
+    otherwise looks like it should have."""
+    return _genre_scan(text, genre_ids)[1]
 
 
 def detect_region(text: str, regions) -> tuple[int | None, str | None]:
@@ -1004,8 +1125,34 @@ def assess_activity(hits: Sequence[Hit], today: date, *,
     return ActivityResult(UNVERIFIED, None, UNKNOWN_DATE, None, None, None, ["no dated activity"])
 
 
-def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context) -> tuple[str, str]:
-    """What this is: a group, or a venue/academy/instructor/event/blog/other."""
+def hit_is_external(hit: "Hit") -> str | None:
+    """The external-promotion word this ONE hit's own title/snippet carries,
+    or None (Section 6/18). Not a verdict about the whole candidate by
+    itself - a board name alone is never treated as 100% proof (Section 18);
+    _upsert only excludes a hit from the host's own genre/activity evidence
+    when its own text carries one of these, and only calls the candidate
+    'external promotion evidence only' (detect_kind's external_only) when
+    EVERY hit collected for it does."""
+    text = f"{hit.title} {hit.snippet}"
+    return _contains_any(text, AD_BOARD_WORDS) or _contains_any(text, EXTERNAL_PROMOTION_PHRASES)
+
+
+def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context, *,
+                external_only: bool = False) -> tuple[str, str]:
+    """What this is: a group, or a venue/academy/instructor/event/
+    aggregator/blog/other.
+
+    v0.89.2: ``external_only`` (Section 6-8) means every hit collected for
+    this identity was itself someone else's promotion (an ad-board post, a
+    cross-posted class enrollment) - there is no evidence at all of the host
+    cafe/community's own activity, so kind can only ever be UNKNOWN, never a
+    confident COMMUNITY read off the mere fact that the identity happens to
+    be a cafe/group platform. This is the exact CASINO RUEDA production
+    failure: a third-party tango academy's ad, read as CASINO RUEDA's own
+    TANGO community signal purely because CASINO RUEDA is a Daum cafe.
+    """
+    if external_only:
+        return KIND_UNKNOWN, "external promotion evidence only; no host activity"
     if identity.platform == "OTHER":
         return KIND_OTHER, f"not a group's own site ({identity.url})"
     if identity.platform == "BLOG":
@@ -1017,6 +1164,16 @@ def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context) -
         lowered = name.lower()
         word = _contains_any(lowered, ACADEMY_WORDS)
         if word:
+            # Section 11: an academy-sounding name can still run a real
+            # community - only default to ACADEMY when the collected text
+            # lacks separate, independent community evidence (a community
+            # word AND an activity word, not merely one - a single
+            # coincidental word is not "복수 evidence").
+            community_word = _contains_any(text, COMMUNITY_WORDS)
+            activity_word = _contains_any(text, ACTIVITY_WORDS)
+            if community_word and activity_word:
+                return KIND_COMMUNITY, (f"academy-style name ('{word}') but community evidence "
+                                        f"('{community_word}', '{activity_word}')")
             return KIND_ACADEMY, f"academy/studio name ('{word}')"
         word = _contains_any(lowered, INSTRUCTOR_WORDS)
         if word:
@@ -1030,6 +1187,9 @@ def detect_kind(identity: Identity, name: str | None, text: str, ctx: Context) -
     event_word = _contains_any(text, EVENT_WORDS)
     if event_word and not community_word:
         return KIND_EVENT, f"one-off event ('{event_word}')"
+    aggregator_word = _contains_any(text, AGGREGATOR_WORDS)
+    if aggregator_word and not community_word:
+        return KIND_AGGREGATOR, f"event/information aggregator ('{aggregator_word}')"
     venue_word = _contains_any(text, VENUE_WORDS)
     if venue_word and not community_word:
         return KIND_VENUE, f"venue page ('{venue_word}')"
@@ -1264,17 +1424,30 @@ def store_hits(con, hits: Sequence[Hit], ctx: Context, run_id: int | None) -> di
 def _upsert(con, ident: Identity, hits: Sequence[Hit], ctx: Context,
             old: dict[str, Any] | None, run_id: int | None) -> tuple[int, bool]:
     text = " ".join(f"{h.title} {h.snippet} {h.source_name or ''}" for h in hits)
+    # v0.89.2 (Section 6-8): a hit whose own text says it is someone else's
+    # promotion (an ad-board post, a cross-posted class enrollment) never
+    # feeds the HOST candidate's own genre or activity - only its real name
+    # (source_name/cafe title, extracted from every hit below) is trusted,
+    # since that is the cafe's own identity regardless of what got posted to
+    # one of its boards. When literally every hit found is external, there
+    # is no host evidence at all (external_only) and kind can only be
+    # UNKNOWN - never the confident COMMUNITY a bare cafe/group platform
+    # would otherwise imply (the CASINO RUEDA production failure).
+    host_hits = [h for h in hits if not hit_is_external(h)]
+    external_only = not host_hits
+    host_text = " ".join(f"{h.title} {h.snippet} {h.source_name or ''}" for h in host_hits)
     name, names = extract_name(ident, hits)
     candidate = (old or {}).get("candidate_name") or name
-    genres = detect_genres(f"{text} {candidate or ''}", ctx.genre_ids)
+    genres = detect_genres(f"{host_text} {candidate or ''}", ctx.genre_ids)
+    genre_suppressed = genre_negative_context(f"{host_text} {candidate or ''}", ctx.genre_ids)
     region_id, region_text = detect_region(f"{text} {candidate or ''}", ctx.regions)
     if old and region_id is None and old.get("region_id"):
         region_id, region_text = old["region_id"], old.get("region_candidate")
     result = assess_activity(
-        hits, ctx.today, previous_date=(old or {}).get("activity_date"),
+        host_hits, ctx.today, previous_date=(old or {}).get("activity_date"),
         previous_confidence=(old or {}).get("activity_date_confidence") or UNKNOWN_DATE)
     activity, recent, activity_reasons = result.verdict, result.activity_date, result.reasons
-    kind, kind_reason = detect_kind(ident, candidate, text, ctx)
+    kind, kind_reason = detect_kind(ident, candidate, host_text, ctx, external_only=external_only)
     if old and kind == KIND_UNKNOWN and old.get("kind") != KIND_UNKNOWN:
         kind = old["kind"]
     venues = match_venues(f"{text} {candidate or ''}", region_id,
@@ -1283,6 +1456,7 @@ def _upsert(con, ident: Identity, hits: Sequence[Hit], ctx: Context,
     newest = max(hits, key=lambda h: (h.published or date.min))
     reasons = [f"platform: {ident.platform}", f"kind: {kind} - {kind_reason}"] \
         + [f"genre {code}: '{word}'" for code, word in genres.items()] \
+        + [f"genre {code} not counted: {note}" for code, note in genre_suppressed.items()] \
         + ([f"region: {region_text}"] if region_text else []) + activity_reasons
     providers = sorted({h.provider for h in hits})
     queries = [h.query for h in hits]
