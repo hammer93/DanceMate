@@ -294,6 +294,46 @@ def test_source_row_enable_disable_action_still_works(client_v0865, pg):
 
 
 @pytest.mark.postgres
+def test_enabling_a_source_with_an_invalid_legacy_authority_is_a_safe_redirect(
+    client_v0865, pg, committed_sources, unique
+):
+    """v0.90.0: SRC-D-003's own PRIMARY_COMMUNITY value is corrected by
+    migration 039, but the Admin enable/disable route itself used to have no
+    guard at all around sources.validate() rejecting *any* row's authority_
+    level - a future legacy import could hit the exact same 500 a different
+    way. Insert a row the same way migration 027's raw SQL once did (bypassing
+    sources.validate() entirely), confirm the route now degrades to its
+    standard error flash instead of an unhandled 500.
+    """
+    from runtime import db, sources as sources_module
+    from runtime.config import load_settings
+
+    source_key = f"SRC-TEST-LEGACY-{unique}"
+    settings = load_settings()
+    with db.connect(settings, autocommit=True) as con:
+        with con.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sources (source_key, name, platform, source_role, "
+                "authority_level, queries, config, enabled, collection_interval_minutes) "
+                "VALUES (%s, %s, 'WEB', 'ORGANIZER', 'PRIMARY_COMMUNITY', "
+                "'[]'::jsonb, '{}'::jsonb, FALSE, 60) RETURNING source_id",
+                (source_key, "Legacy Test Source"),
+            )
+            source_id = cur.fetchone()[0]
+    committed_sources.append(source_id)
+
+    response = client_v0865.post(
+        f"/admin/sources/{source_id}/enable", auth=_AUTH, follow_redirects=False)
+    assert response.status_code == 303
+    assert "tone=bad" in response.headers["location"]
+
+    # never actually enabled - the row is exactly what validate() rejected
+    row = sources_module.get_source(pg, source_id)
+    assert row["enabled"] is False
+    assert row["authority_level"] == "PRIMARY_COMMUNITY"
+
+
+@pytest.mark.postgres
 def test_no_row_is_dramatically_taller_than_the_others(client_v0865, pg):
     """Acceptance proxy for Section 22-23/53: a real regression here would
     be one cell emitting far more `<div>`/`<br>` line-breaks than any

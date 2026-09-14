@@ -9,15 +9,19 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.81.0 (Real Source Data Pipeline - Alpha)
-  - deployed and verified on the ROCKPro64 on 2026-09-05
-- Information Engine: v0.76 (`engine/`) — 연도 추론 규칙 변경, v0.81.0에서 미변경
+- Product Runtime: v0.90.0 (Alpha Readiness & Baseline Convergence)
+  - release candidate - pre-deploy verification passed; ROCKPro64 배포는 아직 진행 전
+- Information Engine: v0.85 (`engine/`) — v0.90.0에서 미변경
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
-- Initial Region: Seoul
-- Initial Genres:
+- Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
+  확장됨 (실제 데이터가 있는 지역은 소스 수집 현황에 따라 다름)
+- Genres:
   - Tango
   - Salsa
   - Swing
+  - Bachata
+  - Balboa
+  - Kizomba
 
 제품 버전과 Information Engine 버전은 서로 다르다. `VERSION`은 제품 런타임
 버전이다. Engine은 v0.77에서 처음으로 추출 로직이 수정되어 v0.74가 되었다.
@@ -70,7 +74,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.80.2"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.90.0"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -85,6 +89,10 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 | `GET /events/{id}` | 상세 + 출처 원문 링크 |
 | `GET /api/events` | 같은 검색의 JSON. `when` / `date` / `from` / `to` / `genre` / `region` / `status` |
 | `GET /api/events/{id}` | 이벤트 하나와 그것을 언급한 모든 게시글 |
+
+`GET /`는 다섯 개 탭(행사/장소/동호회/정보원/게시판)을 공유하는 genre 필터로
+넘나든다 — 장소·정보원은 한 줄짜리 목록, 동호회는 카드, 게시판은 관리자가 쓴
+공지(NOTICE 보드)다. 각 탭은 `?genres=`로 같은 genre 선택을 유지한다.
 
 날짜는 Asia/Seoul 기준. LIVE로 수집된 것만 노출한다 — snapshot과 fixture는
 콘솔에만 남고 사용자에게 가지 않는다. 지난 행사와 취소된 행사는 기본 목록에서

@@ -2009,7 +2009,10 @@ def admin_source_action(
         if source is None:
             return _back("/admin/sources", f"source {source_id} not found", "bad")
         if action in ("enable", "disable"):
-            sources.set_enabled(con, source_id, action == "enable")
+            try:
+                sources.set_enabled(con, source_id, action == "enable")
+            except sources.SourceValidationError as exc:
+                return _back("/admin/sources", str(exc), "bad")
             return _back("/admin/sources", f"{source['source_key']} {action}d")
         report = collectors.test_source(settings, source)
 

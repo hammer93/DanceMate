@@ -220,28 +220,24 @@ def test_the_single_genre_query_still_works(pg):
 
 # --- 4, 18: the first screen shows where, too -------------------------------
 
-def test_the_region_row_is_offered_even_when_today_has_none(pg, seoul_name, busan_name):
-    """Seoul and Busan are questions the first screen should let you ask.
-
-    Built from the region master, so a day with one region-less event does not
-    take the region filter off the page.
+def test_zero_count_regions_are_omitted_from_the_first_screen(pg, seoul_name, busan_name):
+    """v0.85.7 (public._region_options's own docstring): a chip only survives
+    into the returned list when its count under the current window/genre
+    selection is at least 1 - "청주 0" is a dead end with a number attached,
+    not a place to go. An empty counted window means nothing has a real
+    count yet, so nothing is offered - not every region at zero.
     """
     options = public._region_options(pg, [])
-    names = [o["label"] for o in options]
-    assert seoul_name in names and busan_name in names
-    # Cities only: the country row is not somewhere to go.
-    assert "South Korea" not in names
-    assert all(o["events"] == 0 for o in options)
+    assert options == []
 
 
 def test_region_counts_come_from_the_window_being_shown(pg, seoul_name, busan_name):
     counted = [{"value": busan_name, "label": busan_name, "events": 4}]
     options = public._region_options(pg, counted)
-    by_name = {o["label"]: o["events"] for o in options}
-    assert by_name[busan_name] == 4
-    assert by_name.get(seoul_name) == 0
-    # Busiest first, so the row reads as an answer as well as a question.
-    assert options[0]["label"] == busan_name
+    # Seoul has no count in this window, so it is not offered at all - only
+    # Busan, with the count this window actually shows for it.
+    assert [o["label"] for o in options] == [busan_name]
+    assert options[0]["events"] == 4
 
 
 def test_the_first_screen_order_is_when_then_style_then_place():

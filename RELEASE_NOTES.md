@@ -1,5 +1,247 @@
 # DanceMate Release Notes
 
+## v0.90.0 Alpha Readiness & Baseline Convergence
+
+Status: RELEASE CANDIDATE - pre-deploy verification passed, 2026-09-14. **Not
+yet deployed to Production** (that is Phase 9 of this release's own process;
+this entry documents everything verified up to and including a local
+release-candidate image, not a live deploy).
+
+Version split:
+
+- Product Runtime: 0.90.0
+- Information Engine: 0.85 (unchanged - no `engine/` code touched this release)
+- Migration: **039** (new - `regions`/`genres`/`sources` master convergence
+  plus one conditional single-row data correction; no schema change)
+
+A fresh `001`-`038` install and real Production had quietly diverged since
+early in this project: rows Production has carried since before migrations
+existed, or that an operator added by hand through the Admin console later,
+were never captured in a migration. Migration 039 converges a fresh install
+onto that same baseline. None of this is new data - every row it adds
+already exists, unchanged, in Production today.
+
+### Root causes and contract decisions
+
+- **Regions** `KR-BUSAN`/`KR-DAEJEON`/`KR-INCHEON`: per migration 038's own
+  audit and this project's release notes, all three were "only ever added by
+  hand through the Admin console, never migration-seeded" - migration 024's
+  comment claiming the master "always seeded KR/KR-SEOUL/KR-BUSAN" was
+  itself wrong (`024_regional_coverage_expansion.sql` seeds neither). All
+  three were left out of 038 deliberately, as a documented follow-up,
+  because adding KR-BUSAN there surfaced two pre-existing stale assertions
+  in `tests/test_genre_filter.py` (fixed alongside this migration - see
+  below). They are no longer optional: `runtime/community_discovery.py`'s
+  own `REGION_QUERY_CODES`/`REGION_HINTS` (current, shipped code) already
+  treat all three as first-class Discovery query regions - a fresh install
+  could silently never resolve a Busan/Daejeon/Incheon community.
+  `KR-SEJONG`, also named in `runtime/venue_resolution.py`'s
+  `_REGION_BY_ADMIN`, stays deliberately unseeded - no Production row and no
+  Admin-confirmed event names it (same policy 038 already applied).
+- **Genres** `BACHATA`/`BALBOA`/`KIZOMBA`: `community_discovery.py`'s own
+  `TARGET_GENRES`/`DEFAULT_QUERIES` (current, shipped code) already name all
+  six genres - `TANGO`/`SALSA`/`SWING` (migration 002) plus these three,
+  which exist in Production only because an operator added them by hand
+  (their high, non-sequential `genre_id` values are exactly that
+  fingerprint). A fresh install without them meant Community Discovery
+  silently only ever queried half its own target vocabulary.
+- **`SRC-W-001` "K-TANGO"**: migration 021's own comment already says this
+  row "was added through the admin console at runtime", not by any
+  migration - registered in Production since v0.81, before this project's
+  source migrations began. Two regression tests
+  (`test_k_tango_is_preserved_untouched`,
+  `test_existing_top3_sources_are_preserved`) are named specifically after
+  preserving it, and both failed on every fresh install this project has
+  ever produced for exactly that reason. Seeded here with Production's own
+  current field values (platform `WEB`, role `ORGANIZER`, authority
+  `PRIMARY_ORGANIZER` - a valid, unrelated value; enabled `TRUE`; the same
+  interval/url/config Production carries today).
+- **`SRC-D-003` authority correction**: migration 027 seeded `SRC-D-003`
+  with `authority_level = 'PRIMARY_COMMUNITY'`, a value
+  `runtime/sources.py`'s own `AUTHORITY_LEVELS` domain has never included.
+  This project's own v0.87.0 release notes call it explicitly "a value
+  outside the system's real enum" and, when the same bad value turned up in
+  a later CSV import, corrected those new rows to `UNKNOWN` - the same
+  convention every other COMMUNITY-role source already uses - while
+  deliberately leaving this one Production row untouched at the time to
+  avoid an unrelated edit. `PRIMARY_COMMUNITY` was **not** added to
+  `AUTHORITY_LEVELS` (it is not authoritative - no code anywhere reads or
+  writes it); migration 039 instead finishes that same correction,
+  conditionally, only for this one row.
+
+### Migration 039 contract
+
+- `regions`/`genres`/`sources` inserts all use `ON CONFLICT (code)` /
+  `ON CONFLICT (source_key) DO NOTHING` - an operator-created row with the
+  same key keeps its own id, name, enabled flag and every other field
+  exactly as an operator left them; nothing is overwritten.
+- The `SRC-D-003` correction is a single `UPDATE ... SET authority_level =
+  'UNKNOWN', updated_at = now() WHERE source_key = 'SRC-D-003' AND
+  authority_level = 'PRIMARY_COMMUNITY'` - one row, one column, conditional.
+  When the row already reads `UNKNOWN` (or does not exist), it matches zero
+  rows and `updated_at` does not move. No other field of that row, and no
+  other source's `authority_level`, is touched.
+- No other Production Source, Region, Venue, Event, Community, Post, or
+  Discovery candidate is seeded - this migration is scoped to master-data
+  convergence only.
+
+### Known deterministic test debt - before / after
+
+| Test | Before (fresh 001-038) | After (fresh 001-039) |
+|---|---|---|
+| `test_existing_top3_sources_are_preserved` | FAIL (`SRC-W-001` missing) | PASS |
+| `test_k_tango_is_preserved_untouched` | FAIL (`SRC-W-001` missing) | PASS |
+| `test_source_row_enable_disable_action_still_works` | FAIL (HTTP 500 - `PRIMARY_COMMUNITY` rejected by `sources.validate()`, uncaught) | PASS |
+
+### Admin validation error hardening
+
+`runtime/admin.py`'s `admin_source_action` (the enable/disable route) had no
+guard around `sources.set_enabled()` raising `SourceValidationError` -
+unlike three sibling routes that already catch it. Any source whose stored
+`authority_level` (or other field) `sources.validate()` rejects - not just
+`SRC-D-003` - crashed that route with an unhandled 500. Now caught the same
+way the sibling routes already do, returning the standard 303 redirect with
+an error flash. Verified with a synthetic legacy-shaped row carrying a bad
+`authority_level` distinct from `SRC-D-003`, proving the fix is general, not
+a `SRC-D-003` special case.
+
+### Fresh reproducibility
+
+- `001`→`039` on an isolated, uniquely-named fresh PostgreSQL database:
+  39/39 migrations applied, head `039`, **zero checksum drift** against the
+  repository's own migration files - reproduced independently in three
+  separate phases of this release's own verification (baseline audit,
+  focused fix, full regression) and again this phase against the built
+  `dancemate/runtime:0.90.0` image itself.
+- Application boot verified against a disposable fresh `001`→`039` database
+  using the built `0.90.0` image: `GET /health` → `{"status":"ok",
+  "version":"0.90.0"}`; `GET /version` → `{"product_runtime":"0.90.0",
+  "information_engine":"0.85", ...}`; `GET /` → 200; `GET /admin/master` →
+  401 without credentials, 200 with the configured Basic Auth.
+- Scheduler boot verified separately, in isolation, against the same
+  database with every source explicitly disabled beforehand (zero live-
+  collection risk): all 8 registered jobs (`community-discovery`,
+  `content-acquisition`, `engine-availability`, `engine-ingest`,
+  `engine-reprocess`, `event-normalization`, `source-intake`,
+  `storage-probe`) ran once and reported `PASS`, `source-intake` explicitly
+  logging `no source due (enabled=0)` - no migration/checksum error, no
+  external network call. Stopped within seconds, well inside the 300s job
+  interval, before any second tick could occur.
+
+### Test counts (this release's own verification, all phases)
+
+- Focused, fresh 001-039: **479 passed, 0 failed, 2 benign data-dependent
+  skips** ("no source has collected any items on this database").
+- Focused, stateful dev database (rollback-safe fixtures): **240 passed**.
+- Full suite, fresh 001-039: **2382 passed, 0 failed, 16 documented skips**
+  (git-unavailable-in-container and fresh-database-has-no-collected-items
+  guards, all benign).
+- Full suite, stateful dev database: **2370 passed, 15 pre-existing
+  stateful-data failures, 13 skips**. All 15 reproduced identically against
+  unmodified commit `6f8c53c` (v0.89.4) exported via `git archive` and run
+  against the exact same dev database - same names, same tracebacks -
+  confirming DB-growth-driven test staleness in the events/usage/master-edit
+  domains, unrelated to this release's Region/Source/Genre convergence
+  scope, and not a regression.
+- Host (no PostgreSQL, no container): **1704 passed, 0 failed, 688 skipped**
+  (the documented pg-fixture/git-unavailable-on-host skip set).
+- Information Engine: **809 passed, 0 failed** - unaffected, `engine/`
+  untouched, version stays 0.85.
+
+### Alpha E2E (real Production-derived data, isolated candidate database)
+
+Verified against a genuine copy of real accumulated data (a `pg_dump`/
+restore of the dev database), migrated 001→039, served by a disposable
+candidate runtime with no scheduler attached:
+
+- **TANGO + Seoul**: real event and venue **PASS** - a genuine today-dated
+  Seoul milonga (title, venue, date) rendered correctly through
+  `Genre=TANGO&Region=서울`.
+- **SALSA + Seoul**: real event **PASS** on the nearest real date once the
+  region filter was dropped; Seoul-resolved **venue: NO DATA** - all 18 real
+  SALSA events in this dataset are genuinely unresolved (`region_id`/
+  `venue_id` both NULL, `review_state=PENDING`), reported precisely rather
+  than manufactured.
+- **SWING + Seoul/Busan**: real event **PASS** on its nearest real date;
+  Seoul/Busan-resolved **event venue: NO DATA** (same genuine
+  unresolved-region/venue state as SALSA); real Seoul and Busan **community
+  data: AVAILABLE** (9 real SWING communities, including 스윙팩토리 in
+  Busan and five in Seoul).
+- **Communities/Venues/Sources tabs**: rendered content counts matched the
+  database exactly under a `TANGO` filter (7 communities, 33 venues, 9
+  enabled sources; the 4 disabled TANGO sources correctly absent from the
+  Sources tab, confirming `directory.public_sources()`'s `WHERE s.enabled`
+  contract).
+- **Notices tab**: renders its correct empty state - 0 real `board_posts`
+  exist on this dataset, recorded as that, not treated as a failure.
+- Public 5-tab surface (행사/장소/동호회/정보원/게시판), shared genre state
+  across tab switches, unknown-tab fallback to 행사, and the 4 Admin GET
+  routes (`/admin/master`, `/admin/venues`, `/admin/communities`,
+  `/admin/community-discovery`) all **PASS**.
+- The no-data findings above (SALSA/SWING region-resolved venues) are real,
+  current gaps in the underlying collected data, not something this release
+  claims to have fixed - reported here precisely rather than hidden.
+
+### Discovery / Region resolution regression
+
+108 tests across `test_v0894_region_resolution.py`,
+`test_v0892_discovery_context_precision.py`,
+`test_v0892_discovery_external_promotion.py`,
+`test_v0893_evidence_attribution.py`, `test_v0893_news_media_classification.py`,
+and `test_v0891_discovery_reliability.py` - **108 passed, 0 failed** - run
+this release directly against the real-data candidate database. Named
+fixtures confirmed: **CASINO RUEDA** (external-promotion isolation - a Daum
+cafe must not inherit an ad's genre/date as its own activity); **KBS news**
+("우리 동호회가 KBS 뉴스에 소개됐습니다" must never flip classification -
+generic news-signal rule, never outlet-specific); **SwingLog** (a
+stock-swing-trading cafe correctly excluded from dance Swing); **살사소스**
+("살사소스 만드는 법" recipe correctly excluded from dance Salsa). Region
+rules confirmed with exact fixtures: 전주/전주시→전북, 여수/여수시→전남,
+천안/서산/당진→충남 (서산+당진 resolve to the *same* region, never asked to
+pick between them), 청주/진주/창원/포항 stay their own dedicated regions
+(never pulled into their enclosing province), 제주/서귀포→제주; negative
+cases explicitly never auto-resolved - `"Boston"`, `"전국"`, `"서울/부산"`,
+`"수도권 전체"`, `"전국모임"`, `"온라인"`, `"지역 없음"` - covering
+Boston-unresolved and 서울/부산-ambiguous-unresolved directly, under the
+file's own documented rule: "ambiguous stays unresolved, never guess the
+nearest Region."
+
+### Production pre-deploy reference (read-only, v0.89.4 - not this release)
+
+Confirmed via read-only SSH, `192.168.1.100:8080` (LAN-bound, not
+127.0.0.1): commit `6f8c53c`, tag `v0.89.4`, migration head `038`, all 38
+migration checksums byte-identical to this repository - **zero drift**.
+Runtime/scheduler/Caddy/Postgres all healthy, scheduler count exactly 1,
+`scripts/check-server.sh` all-PASS. Live counts: events 449, venues 53,
+genres 6, regions 21, sources 33, communities 37, community_discovery_items
+442 - stable across this release's entire verification window (no
+concurrency drift observed). Latest backup
+`dancemate-backup-20260914-093336` confirmed intact
+(`postgres.dump`/`engine.sqlite3`/`manifest.json`, owned `hammer:hammer`).
+This is **reference only** - Production has not been touched, migrated, or
+deployed to by this release. A candidate-database clone (`pg_dump`/restore
+of the local dev database, never Production) was used for all Alpha E2E
+verification above; Production's own post-deploy integrity check is
+**Phase 9's job, not yet performed**.
+
+### Data safety, encoding, scope
+
+- Every fresh-database test this release ran used an isolated, uniquely
+  named temporary database, created and dropped within the same phase -
+  never the shared dev database, never Production.
+- Every Korean/Unicode-bearing value used in verification (region names,
+  event titles, community names) was passed through UTF-8 file/JSON or a
+  Python `urllib`/`psycopg` helper - never as literal shell argv - after an
+  early attempt via `curl --data-urlencode` on a Korean literal was caught
+  silently mis-encoding mid-pipeline and replaced with the safe method.
+- No feature creep: no UI redesign, no auth/SNS/carpool/recommendation
+  work, no unrelated cleanup. The only runtime code changes are the one
+  `admin.py` exception guard and the one migration; every test file change
+  is narrowly scoped to what this release's own baseline-convergence work
+  required.
+- `scratchpad-archive/` and `docs/V0852_POST_RELEASE_CONVERGENCE_AUDIT.md`
+  remained untracked and unmodified throughout every phase of this release.
+
 ## v0.89.4 Region Master Coverage & Resolution
 
 Status: PASS, 2026-09-14.
