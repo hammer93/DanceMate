@@ -197,6 +197,31 @@ def get_source_by_key(con, source_key: str) -> dict[str, Any] | None:
         return _row(cur)
 
 
+def _sync_primary_source_genre(con, source_id: int, genre_id: int | None) -> None:
+    """v0.91.0 PHASE 6 (corrected): ``source_genres`` holds every genre a
+    source is associated with, *including* the compatibility primary in
+    ``sources.genre_id`` - migration 040's own backfill already establishes
+    that for every pre-existing row, so a newly created or re-pointed source
+    must keep the same invariant from this moment on, or a fresh
+    Bachata-registered source would show ``genre_id=BACHATA`` yet be
+    invisible to a ``source_genres``-based (or combined) genre query until
+    someone happened to also confirm it through the admin edit path.
+
+    Never removes anything - changing the primary only ever *adds* the new
+    one; an old primary that is no longer pointed to by ``genre_id`` simply
+    keeps being a plain, still-explicit genre unless an admin removes it
+    through ``master_edit.set_source_genres()``.
+    """
+    if genre_id is None:
+        return
+    with con.cursor() as cur:
+        cur.execute(
+            "INSERT INTO source_genres (source_id, genre_id) VALUES (%s, %s) "
+            "ON CONFLICT (source_id, genre_id) DO NOTHING",
+            (source_id, genre_id),
+        )
+
+
 def create_source(
     con, *, source_key: str, name: str, platform: str, source_role: str,
     url: str | None = None, genre_id: int | None = None, region_id: int | None = None,
@@ -226,7 +251,9 @@ def create_source(
                 collection_interval_minutes, notes,
             ),
         )
-        return _row(cur)
+        created = _row(cur)
+    _sync_primary_source_genre(con, created["source_id"], genre_id)
+    return created
 
 
 def update_source(con, source_id: int, **fields: Any) -> dict[str, Any] | None:
@@ -282,7 +309,10 @@ def update_source(con, source_id: int, **fields: Any) -> dict[str, Any] | None:
             "WHERE source_id = %s RETURNING *",
             (*values, source_id),
         )
-        return _row(cur)
+        updated = _row(cur)
+    if updated is not None and "genre_id" in updates:
+        _sync_primary_source_genre(con, source_id, updates["genre_id"])
+    return updated
 
 
 def set_enabled(con, source_id: int, enabled: bool) -> dict[str, Any] | None:

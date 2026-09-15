@@ -25,6 +25,77 @@ _SOCIAL_BY_CLOCK = re.compile(
 # and both appear in the collected posts.
 _PRODUCT_SUFFIX = re.compile(rf"(?:{_SOCIAL})\s*(?:팩|권)", re.I)
 
+# v0.91.0 PHASE 4: a real production post (SRC-D-011 item 2079) is a workshop
+# night that also sells a separate, cheaper social-only ticket -- "워크샵+
+# 소셜 20,000원 / 소셜 12,000원" -- and names when its own door opens --
+# "클럽 오픈 오후 8시". social_evidence()'s clock-adjacency rule (above) is
+# deliberately strict and stays exactly as it is; this is a second, narrower
+# kind of evidence entirely: nobody prices admission to a thing they are only
+# mentioning in passing. It is checked only for a post that already has a
+# class word (see classify()) and only tips a CLASS into SOCIAL_WITH_CLASS
+# when all three of the following hold together, so a lesson notice that
+# happens to use one of these words alone never qualifies:
+#
+#   1. the post names a specific day (not just a month, never a bare weekday
+#      or "매주 토요일" -- open-ended recurrence stays unmaterialized, same
+#      rule extractor.py's own date gate already enforces downstream);
+#   2. its own door/event opens -- "클럽 오픈", "도어 오픈", "파티 오픈" --
+#      never a bare "오픈" alone, which is also how a lesson round opens
+#      ("시즌 오픈", "강습 오픈", item 2225's own shape: "일요일 강습 오픈"
+#      / "새 시즌 오픈합니다" -- neither names a club, a door or a party, so
+#      neither matches);
+#   3. a social/party word sits directly in front of its own price -- an
+#      admission fee for the social itself, not a season ticket six words
+#      later ("소셜의 입장을 할 수 있는 정기권입니다 ... 6만원" fails this
+#      the same way it fails social_evidence(), by the same tight distance).
+#
+# A generic lesson advert that merely mentions a social afterwards (item
+# 2225: "수업 후 쌤들과 소셜 및 정모 있어요", no price, no door, no "오픈"
+# naming a club or a party) matches none of the three and stays CLASS.
+
+# Restated from extractor.DATE_PATTERNS (Section: date extraction) rather
+# than imported -- this package is stdlib-only and does not import
+# extractor.py at module scope (see classify_with_image_evidence()'s own
+# comment on the one lazy import it does need). Only used as a gate for "does
+# this post name a specific day", never to resolve or anchor one -- that
+# stays extractor.py's job, and it can still refuse the candidate afterwards
+# if the date turns out unresolvable.
+_EXPLICIT_DAY_DATE_RE = re.compile(
+    r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}\s*일?"
+    r"|\d{1,2}\s*월\s*\d{1,2}\s*일"
+    r"|(?<!\d)\d{1,2}[./]\d{1,2}(?!\d)"
+)
+
+# "클럽 오픈", "도어 오픈", "파티 오픈" -- an event's own door, never a bare
+# "오픈" on its own, which is exactly how a lesson round or a new season
+# opens too ("시즌 오픈", "강습 오픈", "모집 오픈").
+_DOOR_OPEN_RE = re.compile(r"(?:클럽|도어|door|파티)\s*(?:가\s*)?오픈|open\s*door", re.I)
+
+# A social/party word immediately pricing itself -- "소셜 20,000원", "파티
+# 12,000원" -- not a season ticket or a bundle mentioned sentences later
+# (_PRODUCT_SUFFIX already strips the bundle/season-ticket suffix forms
+# before this ever runs, same as social_evidence()).
+_SOCIAL_PRICED_RE = re.compile(
+    rf"(?:{_SOCIAL})(?:{_JOIN}){{0,3}}[0-9][0-9,]*\s*(?:원|만\s*원)", re.I
+)
+
+
+def party_evidence_bundle(title: str, body: str) -> bool:
+    """A stronger, narrower kind of social evidence than social_evidence().
+
+    True only when a specific day, a named door/event opening, and a price
+    tied directly to the social/party word all appear together -- see the
+    comment above for why each piece is required and what it excludes.
+    """
+    heading = _PRODUCT_SUFFIX.sub(" ", (title or "").lower())
+    text = _PRODUCT_SUFFIX.sub(" ", (body or "").lower())
+    whole = f"{heading} {text}"
+    return bool(
+        _EXPLICIT_DAY_DATE_RE.search(whole)
+        and _DOOR_OPEN_RE.search(whole)
+        and _SOCIAL_PRICED_RE.search(whole)
+    )
+
 
 def social_evidence(title: str, body: str) -> bool:
     """Does this post *announce* a social, or merely mention one?
@@ -106,6 +177,14 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
         # The same discipline for the other scenes: mentioning a social is not
         # announcing one, and social_evidence is what tells them apart.
         if has_social:
+            return "SOCIAL_WITH_CLASS"
+        # A second, narrower kind of evidence social_evidence() cannot see:
+        # a priced admission to the social itself, on a post that also names
+        # its own door opening and a specific day (party_evidence_bundle()'s
+        # own comment has the real post and the two real negatives this was
+        # built against). Still SOCIAL_WITH_CLASS, the same canonical type
+        # social_evidence() would have produced -- no new type is invented.
+        if party_evidence_bundle(title, body):
             return "SOCIAL_WITH_CLASS"
         return "CLASS"
     if has_milonga:
@@ -210,3 +289,37 @@ def _extract_signal(title, image_text, event_type, published_date):
     from .extractor import extract_single
 
     return extract_single(title, image_text, event_type=event_type, published=published_date)
+
+
+# v0.91.0 PHASE 4/5: real production posts name more than one genre in their
+# own text (SRC-D-020 item 2100: "인천 살사&바차타 엘마르"; SRC-D-011 item
+# 2225: "살사 바차타 강남 라틴 댄스 동호회") while ``events.genre_id`` is a
+# single FK and the posting source is registered under only one genre - the
+# second genre has nowhere to be recorded today. This is deliberately
+# word-specific, one dedicated term per genre, never the family name: "라틴"
+# means "Latin", not Bachata or Kizomba specifically, and a post that only
+# ever says "스윙" is not Balboa evidence just because Balboa is a kind of
+# swing dance - see test_a_bare_swing_word_is_never_a_balboa_hint.
+GENRE_HINT_WORDS = {
+    "BACHATA": ("바차타", "bachata"),
+    "KIZOMBA": ("키좀바", "kizomba"),
+    "BALBOA": ("발보아", "balboa"),
+}
+
+
+def detect_genre_hints(title: str, body: str) -> set[str]:
+    """Which other genres (by code) this post's own text names, if any.
+
+    extract_single() turns each hit into a real "genre_hint" Evidence on the
+    candidate - the engine's evidences table already stores any field name,
+    so this needed no schema change to be a genuine, persisted, queryable
+    finding rather than a detector whose output nobody reads. Storing it
+    against a *second* events.genre_id is a separate, larger change (see the
+    PHASE 4 report's migration-040 recommendation) this function does not
+    attempt.
+    """
+    text = f"{title or ''} {body or ''}".lower()
+    return {
+        code for code, words in GENRE_HINT_WORDS.items()
+        if any(word in text for word in words)
+    }

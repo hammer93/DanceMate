@@ -49,8 +49,9 @@ def test_migrations_are_discovered_in_order():
         "037_community_discovery_reliability",
         "038_region_master_coverage",
         "039_alpha_baseline_convergence",
+        "040_source_event_multi_genre",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032", "033", "034", "035", "036", "037", "038", "039"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032", "033", "034", "035", "036", "037", "038", "039", "040"]
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():
@@ -167,6 +168,60 @@ def test_usage_migration_creates_the_v076_tables():
     sql = migrate.discover()[5].sql.lower()
     for table in ("provider_usage_daily", "provider_pricing_config"):
         assert f"create table if not exists {table}" in sql
+
+
+def test_multi_genre_migration_creates_the_v091_tables():
+    sql = migrate.discover()[39].sql.lower()
+    for table in ("source_genres", "event_genres"):
+        assert f"create table if not exists {table}" in sql
+
+
+def test_multi_genre_migration_is_the_040th():
+    assert migrate.discover()[39].version == "040"
+    assert migrate.discover()[39].name == "040_source_event_multi_genre"
+
+
+def test_multi_genre_migration_backfills_from_the_existing_primary_column():
+    sql = migrate.discover()[39].sql
+    assert "INSERT INTO source_genres (source_id, genre_id)" in sql
+    assert "SELECT source_id, genre_id FROM sources WHERE genre_id IS NOT NULL" in sql
+    assert "INSERT INTO event_genres (event_id, genre_id, origin)" in sql
+    assert "SELECT event_id, genre_id, 'AUTO' FROM events WHERE genre_id IS NOT NULL" in sql
+    # Idempotent on re-application to an already-backfilled 039 baseline.
+    assert sql.count("ON CONFLICT") >= 2
+    assert "ON CONFLICT (source_id, genre_id) DO NOTHING" in sql
+    assert "ON CONFLICT (event_id, genre_id) DO NOTHING" in sql
+
+
+def test_multi_genre_migration_never_touches_the_primary_genre_id_column():
+    """Old clients reading sources.genre_id/events.genre_id must keep working
+    unchanged - this migration only ever adds a relation alongside it."""
+    sql = migrate.discover()[39].sql.upper()
+    assert "ALTER TABLE SOURCES" not in sql
+    assert "ALTER TABLE EVENTS" not in sql
+    assert "DROP COLUMN" not in sql
+    assert "UPDATE SOURCES" not in sql
+    assert "UPDATE EVENTS" not in sql
+
+
+def test_event_genres_distinguishes_auto_from_human_origin():
+    sql = migrate.discover()[39].sql
+    assert "origin" in sql.lower()
+    assert "'AUTO'" in sql
+    assert "'HUMAN'" in sql
+    assert "CHECK (origin IN ('AUTO', 'HUMAN'))" in sql
+
+
+def test_multi_genre_migration_reuses_the_existing_source_genre_audit_action():
+    """014/028 already allow entity_type='SOURCE' and action='GENRE_ADD'/
+    'GENRE_REMOVE' in master_data_actions - this migration must not need (or
+    add) a new one."""
+    sql = migrate.discover()[39].sql.upper()
+    assert "ALTER TABLE MASTER_DATA_ACTIONS" not in sql
+    entity_sql = migrate.discover()[13].sql
+    assert "'SOURCE'" in entity_sql
+    action_sql = migrate.discover()[27].sql
+    assert "GENRE_ADD" in action_sql and "GENRE_REMOVE" in action_sql
 
 
 def test_usage_migration_never_seeds_a_provider_as_free():

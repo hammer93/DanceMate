@@ -210,6 +210,32 @@ def test_a_bracket_after_one_group_still_ends_the_venue():
     assert reading.name == "엔빠스(EnPaz Tango Studio)"
 
 
+# --- v0.91.0: a snippet truncated right after the label ---------------------
+#
+# Production case, SRC-D-012 item 186 (Daum search snippet, FETCH_BLOCKED so
+# this METADATA_ONLY snippet is all the engine ever sees): "...⏰매주 토요일:
+# 16:00~18:00 (소셜타임 18:00~22:00) 📍장소: 강습 인원..." -- the API cut the
+# post off right after "장소:", so "강습 인원" ("class headcount") is a
+# fragment of a later sentence ("강습 인원 마감임박" or similar), not a place.
+# Accepting it materialized a false venue on a real, otherwise-correct
+# candidate (event_id 13668). Never guess a venue from a cut-off label.
+
+@pytest.mark.parametrize("text", [
+    "📍장소: 강습 인원...",
+    "장소: 강습 인원…",
+])
+def test_a_label_truncated_at_the_end_of_the_snippet_yields_no_venue(text):
+    assert rules.extract_venue(text) is None
+
+
+def test_an_ellipsis_mid_sentence_does_not_suppress_a_real_venue():
+    """The truncation guard only fires when the "..." is the last thing in
+    the whole snippet -- more text after it (even just a following field)
+    means the venue name itself was not what got cut off."""
+    reading = rules.extract_venue("장소: 아미고스튜디오... DJ : 로띠")
+    assert reading.name == "아미고스튜디오"
+
+
 def test_extraction_does_not_resolve_or_register_a_venue():
     """Reading the string is all this layer does. Deciding that 아미고스튜디오
     is a known venue -- or creating it -- is a separate, supervised step."""

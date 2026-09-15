@@ -308,6 +308,62 @@ def set_venue_genres(con, venue_id: int, genre_ids: list[int], *,
     return {"venue": venue, "added": added, "removed": removed}
 
 
+def set_source_genres(con, source_id: int, genre_ids: list[int], *,
+                      reviewer: str = "admin") -> dict[str, Any]:
+    """Set a source's registered genres to exactly this set, the primary
+    always included (v0.91.0 PHASE 6, corrected; mirrors
+    set_venue_genres()'s diff-and-record shape, but a venue has no
+    "primary" genre to protect the way a source's `genre_id` is one).
+
+    `source_genres` holds every genre a source is associated with,
+    *including* the compatibility primary - migration 040's backfill
+    already established that for every pre-existing row, and
+    `sources.create_source()`/`update_source()` keep it true for every row
+    created or re-pointed after. This is the one write path a person drives
+    directly, so it is also the one place a submitted list that happens to
+    omit the primary (an admin unticking every box, a stale form) must not
+    be read as "remove the primary" - the primary is force-included in
+    `wanted` before diffing, and never appears in `removed`. Changing what
+    the primary *is* stays `sources.update_source(genre_id=...)`'s job, not
+    this function's.
+
+    Never inferred from any post's own text - that inference is
+    `classifier.detect_genre_hints()`'s job, on individual events, not a
+    blanket claim about everything a source ever posts.
+    """
+    source = sources.get_source(con, source_id)
+    if source is None:
+        raise EditError(f"no source {source_id}")
+    current = {row["genre_id"] for row in master_data.source_genres(con, source_id)}
+    primary_id = source.get("genre_id")
+    wanted = set(genre_ids) | ({primary_id} if primary_id is not None else set())
+    added, removed = [], []
+    with con.transaction():
+        for genre_id in wanted - current:
+            genre = master_data.get_genre(con, genre_id)
+            if genre is None:
+                raise EditError(f"no genre {genre_id}")
+            master_data.add_source_genre(con, source_id, genre_id)
+            record(
+                con, entity_type=SOURCE, entity_id=source_id, action=GENRE_ADD,
+                reviewer=reviewer, entity_name=source["name"],
+                after={"genre_code": genre["code"]},
+                detail=f"registered genre {genre['code']}",
+            )
+            added.append(genre["code"])
+        for genre_id in current - wanted:
+            genre = master_data.get_genre(con, genre_id)
+            master_data.remove_source_genre(con, source_id, genre_id)
+            record(
+                con, entity_type=SOURCE, entity_id=source_id, action=GENRE_REMOVE,
+                reviewer=reviewer, entity_name=source["name"],
+                before={"genre_code": genre["code"] if genre else genre_id},
+                detail=f"removed genre {genre['code'] if genre else genre_id}",
+            )
+            removed.append(genre["code"] if genre else genre_id)
+    return {"source": source, "added": added, "removed": removed}
+
+
 def remove_alias(con, venue_alias_id: int, *, reviewer: str = "admin",
                  force: bool = False) -> dict[str, Any]:
     """Drop one spelling.
@@ -343,9 +399,14 @@ def _usage_total(usage: dict[str, int]) -> int:
 
 def _extra_usage(usage: dict[str, int]) -> str:
     """v0.88.0: communities and notices point at genres (and communities at
-    regions) too - named in the refusal whenever they are counted."""
+    regions) too - named in the refusal whenever they are counted.
+    v0.91.0 PHASE 6: source_genres/event_genres (migration 040) join the
+    same list - a genre only referenced through the multi-genre relation,
+    never through the primary sources.genre_id/events.genre_id column, must
+    still block deletion and say why."""
     return "".join(f", {label} {usage[key]}건" for key, label in
-                   (("communities", "Community"), ("notices", "Notice"))
+                   (("communities", "Community"), ("notices", "Notice"),
+                    ("source_genres", "SourceGenre"), ("event_genres", "EventGenre"))
                    if key in usage)
 
 

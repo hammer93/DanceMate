@@ -209,6 +209,109 @@ def test_linking_a_raw_text_that_already_matches_a_seeded_alias_still_resolves(p
     assert linked_entry["state"] == "LINKED"
 
 
+def test_the_primary_genre_gets_an_event_genres_row(pg, unique):
+    """v0.91.0 PHASE 6: normalize_candidate() always maintains a real
+    event_genres row for the primary genre, not just events.genre_id -
+    that's what lets a genre-filtered query use one relation for both the
+    primary and any secondary genres."""
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    assert stored["genre_id"] is not None
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT genre_id, origin FROM event_genres WHERE event_id = %s",
+            (stored["event_id"],),
+        )
+        rows = cur.fetchall()
+    assert (stored["genre_id"], "AUTO") in rows
+
+
+def test_a_genre_hint_adds_a_secondary_event_genres_row(pg, unique):
+    """Real shape: SRC-D-020 item 2100's own title names Salsa and Bachata -
+    the primary stays whatever the source/event_type says, and the hint adds
+    a second, real, queryable relation alongside it."""
+    with pg.cursor() as cur:
+        cur.execute("SELECT genre_id FROM genres WHERE code = 'BACHATA'")
+        bachata_id = cur.fetchone()[0]
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique), genre_hints=["BACHATA"],
+    )
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT genre_id, origin FROM event_genres WHERE event_id = %s",
+            (stored["event_id"],),
+        )
+        rows = dict(cur.fetchall())
+    assert rows.get(bachata_id) == "AUTO"
+    assert rows.get(stored["genre_id"]) == "AUTO"
+
+
+def test_a_stale_hint_is_removed_on_reprocess(pg, unique):
+    """A reprocessed post whose fuller text no longer names a second genre
+    must not leave a false relation behind - PHASE 6's explicit "no stale
+    hints" requirement."""
+    with pg.cursor() as cur:
+        cur.execute("SELECT genre_id FROM genres WHERE code = 'BACHATA'")
+        bachata_id = cur.fetchone()[0]
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique), genre_hints=["BACHATA"],
+    )
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT genre_id FROM event_genres WHERE event_id = %s AND origin = 'AUTO'",
+            (stored["event_id"],),
+        )
+        assert bachata_id in {r[0] for r in cur.fetchall()}
+
+    normalization.normalize_candidate(pg, _candidate(unique), genre_hints=None)
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT genre_id FROM event_genres WHERE event_id = %s AND origin = 'AUTO'",
+            (stored["event_id"],),
+        )
+        remaining = {r[0] for r in cur.fetchall()}
+    assert bachata_id not in remaining
+    assert stored["genre_id"] in remaining
+
+
+def test_a_human_confirmed_genre_survives_a_reprocess_with_different_hints(pg, unique):
+    """The one thing a reprocess must never delete: a HUMAN-origin row,
+    regardless of what the engine's own hints say this time."""
+    with pg.cursor() as cur:
+        cur.execute("SELECT genre_id FROM genres WHERE code = 'KIZOMBA'")
+        kizomba_id = cur.fetchone()[0]
+    stored = normalization.normalize_candidate(pg, _candidate(unique))
+    with pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO event_genres (event_id, genre_id, origin) VALUES (%s, %s, 'HUMAN')",
+            (stored["event_id"], kizomba_id),
+        )
+
+    normalization.normalize_candidate(pg, _candidate(unique), genre_hints=["BACHATA"])
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT genre_id, origin FROM event_genres WHERE event_id = %s",
+            (stored["event_id"],),
+        )
+        rows = dict(cur.fetchall())
+    assert rows.get(kizomba_id) == "HUMAN"
+
+
+def test_latin_alone_is_never_a_stored_genre_hint(pg, unique):
+    """detect_genre_hints() itself already refuses this (engine/tests), but
+    this pins the write side too: nothing calls normalize_candidate() with a
+    fabricated hint for a post that only says "라틴"."""
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique), genre_hints=[],
+    )
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM event_genres WHERE event_id = %s AND origin = 'AUTO'",
+            (stored["event_id"],),
+        )
+        count = cur.fetchone()[0]
+    assert count == 1  # only the primary
+
+
 def test_normalizing_the_same_candidate_twice_updates_one_row(pg, unique):
     first = normalization.normalize_candidate(pg, _candidate(unique))
     second = normalization.normalize_candidate(pg, _candidate(unique, fee=15000))

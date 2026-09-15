@@ -473,6 +473,42 @@ def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str
     return {row["candidate_id"]: row["inference"] for row in rows if row["inference"]}
 
 
+def genre_hints(settings: Settings, candidate_ids: list[int]) -> dict[int, list[str]]:
+    """Which other genres (by code, e.g. "BACHATA") the engine's own text
+    reading named for each candidate (v0.91.0 PHASE 6).
+
+    classifier.detect_genre_hints() (engine/src/classifier.py) already
+    refuses to infer Bachata/Kizomba from "라틴" or Balboa from a bare
+    "스윙" - a "genre_hint" evidence row only ever exists because the post's
+    own text named the dedicated word. Reading it back here, the same way
+    venue_alias_candidates()/time_evidence() already read their own fields,
+    is what lets normalize_candidate() turn real evidence into a real
+    event_genres row instead of a detector whose output nobody consumes.
+    """
+    if not candidate_ids:
+        return {}
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, value FROM evidences "
+            f"WHERE field = 'genre_hint' AND candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+
+    found: dict[int, list[str]] = {}
+    for row in rows:
+        found.setdefault(row["candidate_id"], []).append(row["value"])
+    return found
+
+
 def image_ocr_fields(settings: Settings, candidate_id: int) -> list[dict[str, Any]]:
     """Which fields this candidate drew from an image (v0.81.3), for the
     Review detail page's Image Evidence section - never from list/venue,

@@ -173,6 +173,28 @@ def record_decision(con, *, event_id: int, canonical_event_id: int | None,
         )
         recorded = _row(cur)
         if decision == DUPLICATE:
+            if canonical_event_id is not None:
+                # v0.91.0 PHASE 6 (corrected): the losing row's own explicit
+                # genre relations (event_genres) would otherwise become
+                # unreachable the moment it is hidden - nothing queries a
+                # HIDDEN/non-canonical row's genres again. Union them onto
+                # the survivor before hiding it, origin preserved - never
+                # inferred, only ever copied from a relation that already
+                # existed. HUMAN must dominate AUTO on conflict, in either
+                # direction: a HUMAN-confirmed genre is a real, confirmed
+                # fact regardless of which side of the merge it came from,
+                # and merging must never quietly downgrade one survivor's
+                # already-HUMAN row back to AUTO just because the loser only
+                # had it as AUTO (the WHERE guard below is what stops that -
+                # it only fires when the loser's copy is HUMAN and the
+                # survivor's existing row is still AUTO).
+                cur.execute(
+                    "INSERT INTO event_genres (event_id, genre_id, origin) "
+                    "SELECT %s, genre_id, origin FROM event_genres WHERE event_id = %s "
+                    "ON CONFLICT (event_id, genre_id) DO UPDATE SET origin = 'HUMAN' "
+                    "WHERE event_genres.origin = 'AUTO' AND EXCLUDED.origin = 'HUMAN'",
+                    (canonical_event_id, event_id),
+                )
             cur.execute(
                 "UPDATE events SET canonical_event_id = %s, duplicate_decided_by = %s, "
                 "  listing_state = 'HIDDEN', updated_at = now() WHERE event_id = %s",

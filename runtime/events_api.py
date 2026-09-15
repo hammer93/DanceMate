@@ -111,14 +111,27 @@ def week_counts(con, *, start: date, end: date, genre: str | None = None,
     """
     where = [_VISIBLE, "e.engine_status <> %s", "e.event_date BETWEEN %s AND %s"]
     params: list[Any] = [CANCELLED, start, end]
+    # Same primary-or-secondary-relation match as search() (PHASE 6) - a
+    # multi-genre event's day still counts once under each genre it is
+    # filtered by, never duplicated by the GROUP BY below since this is an
+    # EXISTS, not a JOIN against event_genres.
     if genre:
-        where.append("g.code = %s")
-        params.append(genre.strip().upper())
+        code = genre.strip().upper()
+        where.append(
+            "(g.code = %s OR EXISTS (SELECT 1 FROM event_genres eg "
+            "JOIN genres eg_g ON eg_g.genre_id = eg.genre_id "
+            "WHERE eg.event_id = e.event_id AND eg_g.code = %s))"
+        )
+        params.extend([code, code])
     if genres is not None:
         codes = [g.strip().upper() for g in genres if g and g.strip()]
         if codes:
-            where.append("g.code = ANY(%s)")
-            params.append(codes)
+            where.append(
+                "(g.code = ANY(%s) OR EXISTS (SELECT 1 FROM event_genres eg "
+                "JOIN genres eg_g ON eg_g.genre_id = eg.genre_id "
+                "WHERE eg.event_id = e.event_id AND eg_g.code = ANY(%s)))"
+            )
+            params.extend([codes, codes])
         else:
             where.append("false")
     if region:
@@ -608,17 +621,32 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
     if end is not None:
         where.append("e.event_date <= %s")
         params.append(end)
+    # v0.91.0 PHASE 6: a genre filter matches the primary genre (g.code, the
+    # LEFT JOIN already in the FROM clause below) OR an explicit secondary
+    # relation (migration 040's event_genres) - EXISTS, never a JOIN against
+    # event_genres, so a multi-genre event is still exactly one output row
+    # under any one filter, and a SALSA-only event with no BACHATA relation
+    # never appears under a BACHATA filter.
     if genre:
-        where.append("g.code = %s")
-        params.append(genre.strip().upper())
+        code = genre.strip().upper()
+        where.append(
+            "(g.code = %s OR EXISTS (SELECT 1 FROM event_genres eg "
+            "JOIN genres eg_g ON eg_g.genre_id = eg.genre_id "
+            "WHERE eg.event_id = e.event_id AND eg_g.code = %s))"
+        )
+        params.extend([code, code])
     if genres is not None:
         # An explicit set of genres. An empty set means the reader unchecked
         # everything, which is a real answer -- nothing matches -- and not a
         # reason to quietly show them everything instead.
         codes = [g.strip().upper() for g in genres if g and g.strip()]
         if codes:
-            where.append("g.code = ANY(%s)")
-            params.append(codes)
+            where.append(
+                "(g.code = ANY(%s) OR EXISTS (SELECT 1 FROM event_genres eg "
+                "JOIN genres eg_g ON eg_g.genre_id = eg.genre_id "
+                "WHERE eg.event_id = e.event_id AND eg_g.code = ANY(%s)))"
+            )
+            params.extend([codes, codes])
         else:
             where.append("false")
     if region:

@@ -360,6 +360,7 @@ WEB_PARSER_TANGONOW = "tangonow_firestore"
 WEB_PARSER_TANGOCALENDAR = "tangocalendar_json"
 WEB_PARSER_MILTANG = "miltang_ssr"
 WEB_PARSER_TANGOCLASS = "tangoclass_wp_json"
+WEB_PARSER_BALNHOP = "balnhop_meta"
 
 
 def _web_discovery_module(parser: str):
@@ -383,6 +384,10 @@ def _web_discovery_module(parser: str):
         from . import tangoclass_discovery  # noqa: PLC0415
 
         return tangoclass_discovery
+    if parser == WEB_PARSER_BALNHOP:
+        from . import balnhop_discovery  # noqa: PLC0415
+
+        return balnhop_discovery
     from . import web_discovery  # noqa: PLC0415
 
     return web_discovery
@@ -425,6 +430,17 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
             extra_kwargs["max_pages"] = config["max_pages"]
     if parser in (WEB_PARSER_DANCEINFO, WEB_PARSER_MILTANG) and "days_ahead" in config:
         extra_kwargs["days_ahead"] = config["days_ahead"]
+    # v0.91.0 PHASE 10B: danceinfo_discovery.discover()/parse_list() already
+    # accept genre_name (default "탱고") - the site lists every genre on one
+    # page (Section 34/35's own docstring), and a second DanceInfo-backed
+    # source (e.g. a dedicated Salsa registration) needs the exact same
+    # module filtering to a different genre, never inventing a second
+    # parser for what is only a config difference. Only this parser knows
+    # the keyword; every existing source without config.genre_name (every
+    # Tango registration today, including SRC-W-004) keeps the module's own
+    # "탱고" default untouched.
+    if parser == WEB_PARSER_DANCEINFO and "genre_name" in config:
+        extra_kwargs["genre_name"] = config["genre_name"]
 
     records: list[dict[str, Any]] = []
     seen: set[str] = set()

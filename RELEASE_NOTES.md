@@ -1,11 +1,372 @@
 # DanceMate Release Notes
 
+## v0.91.0 Multi-Genre Event Coverage
+
+Status: RELEASE CANDIDATE - PHASE 8/9/9-supplement/10/10B/11A verification
+passed, 2026-09-15. **Not yet deployed to Production** - Production is
+confirmed (read-only inspection, 2026-09-15) still on migration `039` /
+image `0.90.0`; this entry documents everything verified up to and
+including a local release-candidate, not a live deploy. No Production data
+was written by any phase of this release's own verification.
+
+**PHASE 10B correction note:** an earlier draft of this entry described a
+"genuinely live-fetched" Salsa/Swing region-aware verification that had, in
+fact, manually bridged externally-fetched El Mar text into the pipeline
+(the real `DAUM_CAFE` collector step is credential-gated in the verification
+environment) and cited two `osalsa` posts as evidence toward an upcoming
+Salsa event without checking that one is an explicit Bachata workshop and
+the other names no dance style at all. Both issues are corrected below with
+a genuinely complete, unmodified-collector, region-resolved live run for
+both genres (see "Live region-aware E2E, PHASE 10B" below) and the
+overclaiming language removed.
+
+**PHASE 11A production-preview correction note:** a read-only re-check of
+Production's real Venue and Source Masters (below) found the PHASE 10B
+draft's venue-creation framing was Production-inaccurate for one of the two
+venues: "홍턴" already exists there (`venue_id=4247`, region KR-SEOUL, a
+real street address) and this release should **REUSE** it, not create a
+duplicate - "Happy Hall" genuinely does not exist there yet. Both source
+keys proposed below (`SRC-W-012`/`SRC-W-013`) were confirmed unused, and
+the DanceInfo proposal's registration shape was corrected from the static
+dated test URL to a date-less URL plus `config.days_ahead`, so a real
+registration keeps working on future scheduler cycles instead of expiring.
+
+Version split:
+
+- Product Runtime: 0.91.0
+- Information Engine: **0.86** (changed - see below)
+
+The Information Engine is versioned by its own extraction behaviour, not in
+lockstep with the product runtime (`README.md`'s own stated rule, e.g.
+v0.77→v0.74). This release genuinely changes what the engine reads, not
+just what Source rows exist, so it bumps: `extractor.DATE_PATTERNS` gained a
+year-plus-day-range reading (`extract_single()` now also emits
+`MULTI_DAY_EVENT`/`genre_hint` evidence rows that did not exist before),
+`extraction_rules.extract_venue()` gained a truncated-label guard, and
+`classifier.py` gained `party_evidence_bundle()` (a second SOCIAL_WITH_CLASS
+path) and `detect_genre_hints()`.
+
+### Multi-Genre Event Coverage (migration 040, schema-only)
+
+Real production evidence (`SRC-D-020` item 2100: "인천 살사&바차타 엘마르";
+`SRC-D-011` item 2225: "살사 바차타 강남 라틴 댄스 동호회") shows a single
+`genre_id` FK loses real discoverability - a post naming two dance styles in
+one line has nowhere to record the second one. Migration 040 adds
+`source_genres`/`event_genres` (many-to-many, additive, following the two
+existing join-table shapes already in this schema - `venue_genres` and the
+community layer's join tables), backfilled from the existing primary
+`genre_id` columns, **never touching `sources.genre_id`/`events.genre_id`
+themselves**. `event_genres.origin` (`AUTO`/`HUMAN`) means a reprocess can
+safely delete-and-reinsert its own AUTO rows without ever touching what a
+person confirmed.
+
+Public genre filtering (`events_api.search()`/`week_counts()`,
+`directory.public_sources()`) matches `(primary OR EXISTS secondary
+relation)`, never a JOIN against the relation table, so a multi-genre
+event/source is never duplicated in results. Verified with a genuine SALSA
+primary + BACHATA/KIZOMBA secondary and a genuine SWING primary + BALBOA
+secondary (both resolved through the real source-fallback genre path, not
+the TANGO/MILONGA shortcut): SALSA-only, SWING-only, SALSA+BACHATA,
+SWING+BALBOA all resolve correctly with **zero cross-leakage**. PHASE 10B
+re-verified this again over real HTTP (`GET /api/events?genre=...&date=...
+&region=...`) against two genuinely, fully live-fetched events - a real
+DanceInfo Salsa listing and the real BAL&HOP Swing listing, both carried
+through the unmodified collector, both region-resolved - see "Live
+region-aware E2E, PHASE 10B" below.
+
+### Dedupe: `identity_key` is not a hard merge key
+
+Investigated directly: `events.identity_key` (`"date|venue|time"`) carries
+only a plain, non-unique index - it is never the actual duplicate-merge
+decision. `duplicates.classify()` compares `venue_id`/`venue_text` and
+`start_time` directly, each via a `bool(value) and value == other` pattern,
+so two events that both lack a venue and a start time are never treated as
+"matching," even when their `identity_key` strings are textually identical.
+Proven empirically for the specific case that matters here - two distinct
+events, same date, both with no venue and no start time (the exact shape a
+`WEB`-platform single-page source like BAL&HOP produces): their
+`identity_key`s were textually equal, yet `duplicates.classify()` returned
+`None` (not even flagged for review) and `duplicates.scan()` reported
+`auto_merged: 0`. This demonstrates no false-merge risk **for that same-
+date/venue-unknown/time-unknown scenario** - it is not a claim that no
+duplicate-merge edge case exists anywhere in `duplicates.py` generally,
+only that this specific, real-shaped collision does not occur.
+
+### Venue false-positive fix - scope, precisely
+
+The fix (`extraction_rules._TRUNCATED_TAIL_RE`) suppresses a venue reading
+only when the labelled value is truncated at the very end of the whole
+snippet (a real production case, `event_id 13668`, `venue_text="강습
+인원"` - "class headcount", a fragment of a later, cut-off sentence). It is
+genuine and general (fires on any truncated label, not a keyword list), and
+does not suppress a real, non-truncated venue containing an incidental
+ellipsis. **It does not cover a non-truncated headcount/recruitment phrase**
+(e.g. a complete "장소: 20명 선착순 마감" with no truncation) - no evidence
+of that as a live false positive was found, and a keyword-list approach
+would risk suppressing a real venue name sharing that vocabulary, so this is
+tracked as a known limitation rather than papered over with a guess.
+
+### Real Production read-only evidence (2026-09-15, this release's own prep)
+
+Production is still on migration `039` (the `source_genres`/`event_genres`
+tables do not exist there yet) - all of the following describes what is
+real, live, and already true in Production **today**, under the currently
+deployed (pre-fix) code:
+
+- `SRC-D-020` (El Mar, 엘마르, `cafe.daum.net/clubelmar`, genre=SALSA) and
+  `SRC-D-012` (Swing Factory, 스윙팩토리, `cafe.daum.net/swingfactory`,
+  genre=SWING, region=KR-BUSAN) are both **already enabled, real, actively
+  collecting** Production sources (`last_status=PASS`, both collected within
+  hours of this check).
+- `event_id 13668` ("Lv3.린디베이직 강습 신청", SWING, dated 2026-09-26,
+  `start_time=16:00`) is live in Production **right now** with
+  `venue_text='강습 인원'`, `venue_status=UNRESOLVED` - the exact real
+  instance of the bug this release's venue guard fixes, still uncorrected
+  because migration 040/this release has not been deployed yet.
+- The real, live El Mar 2nd-anniversary post (`cafe.daum.net/clubelmar/
+  ew3I/787`, collected 2026-09-10) **never became a public event**: its
+  engine candidate (`candidate_id 1909`) has `event_date=None`,
+  `core_complete=0`. Its `raw_posts.title` in Production's own store is
+  itself truncated mid-date by the Kakao Cafe Search API snippet
+  (`acquisition_quality=METADATA_ONLY`, title cut at "...뉴엘마르 2주년
+  파티(9") - the day number never reaches the engine at all. This is an
+  **upstream acquisition-layer limitation** (the snippet API itself, not
+  DanceMate's parsing of it) distinct from, and not addressed by, this
+  release's venue-truncation guard (which only protects `extract_venue()`,
+  not date extraction from a truncated title).
+- Two real, very recent `osalsa` (SRC-D-011) items carry a full,
+  untruncated date in their title and have no engine candidate yet
+  (`event_candidates` empty for both, routine processing lag, not a
+  defect) - but **neither is confirmed Salsa evidence on its own text**:
+  "월마콘도 니르바나 썬쌤 바차타 꿀강습!! 9월 28일 개강!!" names Bachata
+  explicitly, not Salsa, and "[일요일 강습 오픈] 강남역 뉴욕바, 9/20~11/1"
+  names no dance style at all. Both were only ever registered under
+  `SRC-D-011`'s own SALSA primary `genre_id` - Source-primary genre alone is
+  not the same claim as the post's own text naming Salsa, and this entry
+  does not treat it as such. PHASE 10B instead verified a genuinely,
+  explicitly Salsa-labelled upcoming event through a different, accessible
+  source - see "Live region-aware E2E, PHASE 10B" below.
+- No source registered for BAL&HOP exists in Production (`platform='WEB' AND
+  url ILIKE '%balnhop%'` → 0 rows).
+
+### BAL&HOP - genre-contract determination (no fabricated hint)
+
+Fetched live: `https://www.balnhop.kr/en/about/schedule` and `.../ko/
+contests`. Friday 9/18 explicitly runs a **"Welcome Class - Jeremy & Theresa
+(Lindy Hop)"**; contest categories split across Balboa (Strictly/Open
+Mixed/Amateur Mixed/Rookie Mixed), **Shag** (Strictly/Mixed), and a combined
+"Bal & Hop Cup" named explicitly as "린디합, 발보아 또는 쉐그" (Lindy Hop,
+Balboa, or Shag). This product's genre model has exactly 6 genres with no
+dedicated LINDY or SHAG entry, so **SWING is the only correct primary genre
+for the festival as a whole** - not inferred from the "BAL" abbreviation,
+but the only bucket this product's own vocabulary offers for genuine,
+officially-confirmed Lindy Hop/Shag content. This is a justification for the
+*admin's* source-registration choice; the automated pipeline still reads
+only the page's thin `<title>`/meta description
+(`balnhop_discovery.py` deliberately never fetches the JS-rendered
+schedule/contest subpages) and correctly produces **no** genre_hint from
+that text - verified live, `detect_genre_hints()` returns `set()` against
+the real fetched title/description, so no BALBOA relation is fabricated
+either way. Robots.txt absent (404, rendered by the app itself) at both
+`balnhop.kr` and `www.balnhop.kr`.
+
+**Region - resolved with real official evidence, not invented:**
+`balnhop_discovery.py` never extracts a venue field, so a BAL&HOP event's
+`venue_text` stays `NULL` straight out of the automated pipeline, and the
+public region filter's fallback for an unresolved event (`venue_text ILIKE
+'%term%'`) is never true against `NULL` - so on its own, a BAL&HOP-shaped
+event would not appear under any region-filtered public view. PHASE 10B
+found the real fix is not to invent a region but to look at the site's own
+content a level deeper: `https://www.balnhop.kr/en`'s own embedded page
+data names the real venue explicitly - **"Happy Hall", 37 B1
+Myeongmul-gil, Seodaemun-gu, Seoul, Republic of Korea** (6 minutes on foot
+from Sinchon Station Exit 3, Line 2) - fetched live this phase. This is
+exactly what the product's own Human Verification review step exists for:
+the automated title/meta-only discovery cannot see it, but a reviewer
+reading the real site can confirm it, same as any other admin venue
+correction. See "Live region-aware E2E, PHASE 10B" below for the full,
+demonstrated resolution.
+
+### Live region-aware E2E, PHASE 10B (real fetch, unmodified collector, both genres)
+
+**DanceInfo Salsa (new minimal fix).** `runtime/danceinfo_discovery.py`
+already accepted a `genre_name` parameter (default `"탱고"`), but
+`collectors._collect_web()` never read `config.genre_name` to pass it
+through - so no WEB source could ever use this module for anything but
+Tango. Fixed minimally: `_collect_web()` now forwards `config.genre_name`
+to the `danceinfo_json` parser only, exactly the same opt-in pattern
+`config.days_ahead`/`config.lookback_days` already use for other parsers.
+Every existing Tango registration (including Production's real `SRC-W-004`)
+has no `genre_name` key and is completely unaffected - verified with
+dedicated tests pinning both the new passthrough and that it reaches no
+other parser.
+
+Live-verified against `danceinfo.net` (`robots.txt`: `Allow: /`,
+`Disallow: /admin_w/` and `/api/` only - the `/lessons` pages used here are
+allowed): a local-preview source (`config.genre_name="살사"`,
+`board_urls=[".../lessons?...&date=2026-09-18"]` - a static dated URL,
+**deliberately used only for this one deterministic E2E proof**, see the
+production registration note below for why it must not be registered that
+way) run through the real, unmodified `collectors.collect(mode=LIVE)`
+returned **11 real listings**, each with `genreName` exactly `"살사"` -
+the parser's exact-string match against `genreName` intentionally excludes
+every mixed `"바차타/살사"` row (confirmed directly against the real
+`__NEXT_DATA__` JSON: the same date page also carries 40+ listings tagged
+`"바차타/살사"` that this filter correctly does not return) - so this is
+pure Salsa, not "any Latin genre" widened. The chosen event:
+
+- **Title:** "홍대 최대 독립군 라틴클럽 포에버 파티" ("Hongdae's biggest
+  independent Latin club FOREVER PARTY")
+- **Detail URL:** `https://danceinfo.net/lessons/4481`
+- **Page's own `<title>`:** "...| 서울(홍대) | 살사 · 파티(페스티발)/
+  출빠정보 | 댄스인포" - the site's own classification, not an inference
+- **Event date:** 2026-09-18 (`행사일` field, SSR text)
+- **Venue as printed on the page:** "장소 홍턴" (no colon after the label,
+  so `extract_venue()`'s `_VENUE_LABEL_RE` - which requires one - correctly
+  does not auto-extract it; this is an honest miss, not a suppressed one)
+
+Carried through the real, unmodified pipeline end to end: `collectors.
+collect()` → `intake.store_items()` (real `source_items`, real
+`collected_at`) → the real scheduler `acquisition_job.run()` (real HTTP GET
+to the detail page, "fetched 10 full, 1 partial of 11") → real
+`engine_ingest.ingest_pending()` (real `classify()`/`extract_single()`, 2
+of the 11 posts produced an engine candidate - the rest were CLASS/OTHER,
+not public events) → real `normalization.normalize_all()`. Then the exact
+product-designed gap-filling step: a Human Verification `EDIT` action
+(`review.record(candidate_id=..., action="EDIT", after={"venue": "홍턴"})`,
+citing the real page text) supplies the venue text `extract_venue()`
+missed, which then resolves as `UNRESOLVED` (real text, no Venue Master
+match **in the isolated test database, which started empty**) → an admin
+`create_and_link` creates a real Venue Master row ("홍턴", region
+**KR-SEOUL**, confirmed from the same listing's own `location: "서울
+(홍대)"` field) → the event becomes fully `RESOLVED`.
+
+**PHASE 11A Production check (read-only):** Production's real Venue Master
+already carries this exact venue - `venue_id=4247`, `name='홍턴'`,
+`region_id=2` (KR-SEOUL), `address='서울 마포구 동교로 207 현우빌딩
+지하1층'`. So in Production, once a human types the same corrected venue
+text "홍턴" (`extract_venue()` still cannot auto-read it there either - the
+site's own markup is unchanged), `resolve_venue()`'s ordinary alias match
+finds `venue_id=4247` directly - **no new venue row would be created**,
+this release should **REUSE** the existing one, not duplicate it. The
+`create_and_link` step demonstrated above only fired because the isolated
+verification database started with no venues at all; it is not the
+predicted real-Production code path for this specific venue name.
+
+Real HTTP render: `GET /api/events?genre=SALSA&date=2026-09-18&
+region=KR-SEOUL` → the event, `region: "Seoul"`, `venue: {"name": "홍턴",
+"status": "RESOLVED"}`. `region=Busan` and `genre=TANGO` on the same
+date/region both correctly empty.
+
+**BAL&HOP Swing, region resolved.** Same real, unmodified `collectors.
+collect(mode=LIVE)` fetch as PHASE 9 (title "BAL&HOP 2026 - 9.18-20",
+`event_date=2026-09-18`, `genre_hints=set()` - no fabrication). PHASE 10B
+found the real venue one level deeper than the discovery module reads:
+`https://www.balnhop.kr/en`'s own page content names it explicitly -
+**"Happy Hall", 37 B1 Myeongmul-gil, Seodaemun-gu, Seoul, Republic of
+Korea**. Same Human Verification → Venue Master → region-resolution chain
+as above, using this real official address (not a guess, not third-party
+speculation - the organizer's own site). **PHASE 11A Production check
+(read-only):** confirmed "Happy Hall" does **not** exist in Production's
+Venue Master today - unlike "홍턴" above, this one genuinely needs a new
+row. Per the current Admin Human Verification contract, that row must be
+created by an operator confirming the address (exactly as demonstrated
+here), never auto-registered by the collector itself - `balnhop_discovery.
+py` does not write to `venues` and this release does not add any code path
+that would. Real HTTP render: `GET
+/api/events?genre=SWING&date=2026-09-18&region=KR-SEOUL` → the event,
+`region: "Seoul"`, `venue: {"name": "Happy Hall", "status": "RESOLVED"}`.
+`region=Busan` empty; querying the Salsa event under `genre=SWING` and vice
+versa both correctly empty - both genres, both regions, side by side, zero
+cross-leakage, in the same isolated database.
+
+Both events carry `provenance='LIVE'` durably (traced through
+`source_collection_runs.mode='live'`, the same `source_of()` path
+`normalization.normalize_all()` uses for every real production event -
+`events_api._VISIBLE` requires `provenance='LIVE'` for public listing, so
+this is not cosmetic).
+
+### Production source preview (proposal only, no Production write)
+
+| Source | Action | Platform | Genre | Region | Authority | Notes |
+|---|---|---|---|---|---|---|
+| `SRC-D-020` El Mar (SALSA) | **REUSE** | DAUM_CAFE | SALSA | unset | UNKNOWN | Already enabled/collecting; real dated candidate exists but is stuck on an upstream snippet-truncation issue, not actionable by this release |
+| `SRC-D-012` Swing Factory (SWING) | **REUSE** | DAUM_CAFE | SWING | KR-BUSAN | UNKNOWN | Already enabled/collecting; `event_id 13668` is the live real-world case this release's venue fix targets |
+| `SRC-D-011`/`SRC-D-021` (osalsa/sdamu, SALSA) | **REUSE** | DAUM_CAFE | SALSA | unset | UNKNOWN | Already enabled/collecting; recent items pending routine engine processing, genre not confirmed at title level for either (see caveat above) |
+| `SRC-W-009` sidf.kr (SALSA) | **HOLD** | WEB | SALSA | KR-SEOUL | PRIMARY_ORGANIZER | Registered but disabled; not independently re-verified this session |
+| `SRC-W-010`/`SRC-W-011` (SWING) | **HOLD** | WEB | SWING | KR-SEOUL | PRIMARY_ORGANIZER | Registered but disabled; not independently re-verified this session |
+| DanceInfo (Salsa), proposed **`SRC-W-012`** | **ADD (proposed)** | WEB | SALSA | KR-SEOUL (demonstrated, per-listing; venue "홍턴" would **REUSE** existing `venue_id=4247`, not create a new row) | AGGREGATOR | Same public page as `SRC-W-004` (Tango), filtered via the new `config.genre_name="살사"`; live-verified this phase end to end including region resolution. **Must register with a date-less `board_urls` entry (`https://danceinfo.net/lessons?genre=all&category=all&location=all`) plus `config.days_ahead` set to a real window (e.g. 7)** - the static `&date=2026-09-18` URL used for this phase's own deterministic proof would go stale and stop returning current listings on later scheduler cycles; `days_ahead` computes "today + N" fresh every collection, exactly as `SRC-W-004`'s own module already supports |
+| BAL&HOP, proposed **`SRC-W-013`** | **ADD (proposed)** | WEB | SWING (primary, admin-assigned; schedule/contest rationale above) | KR-SEOUL (Seodaemun-gu; venue "Happy Hall" does **not** exist in Production yet - genuinely new Venue Master row, Human Verification only, no collector auto-registration) | PRIMARY_ORGANIZER | `board_urls=["https://balnhop.kr/ko"]` (the live official homepage, single page, no query params needed), `config.parser=balnhop_meta`; live-fetch-verified; robots absent |
+
+`SRC-W-012`/`SRC-W-013` confirmed unused against Production's real Source
+Master this phase (read-only check: existing `SRC-W-*` keys run
+`SRC-W-001`…`SRC-W-011`) - the next two in this repository's own sequential
+convention. No `ENABLE` action is proposed for any row in this document - that is an
+operator decision made through the Admin console after deploy, not this
+release's own write.
+
+### Dry-run event/publication contract
+
+Every candidate this release's own verification produced (the PHASE 10B
+DanceInfo/BAL&HOP live runs above, plus earlier synthetic collision-test
+rows) lands as `engine_status=POSSIBLE`, `review_state=PENDING` by default
+- real Human Verification review is still required before any of it would
+read as admin-confirmed; nothing in this release changes that gate.
+`listing_state` still defaults to `LISTED` (publicly visible pending
+review) unless the review state is one of the unlistable ones, unchanged
+from pre-040 behaviour. The PHASE 10B runs additionally exercised the real
+`EDIT` review action end to end (see above) - not just the default path.
+
+### Test counts (this release's own verification, PHASE 8-10B)
+
+- PostgreSQL runtime, fresh isolated database: **2446 passed, 11 skipped, 0
+  failed** (+3 vs PHASE 9's 2443, exactly the new `genre_name`-passthrough
+  tests; skips: Pillow optional dependency, empty-fresh-DB no-collected-
+  items guards, POSIX-bash-in-container guards - all benign, none hide a
+  known failure).
+- Host (no PostgreSQL): **1726 passed, 731 skipped, 0 failed** (+3 vs PHASE
+  9's 1723, same three new tests) - every skip reason confirmed to fall
+  into the standard "no PostgreSQL credentials" / "needs POSIX bash" /
+  "Pillow required" categories; this also confirms none of the known
+  dev-DB-growth failures ([[dancemate-known-test-failures]]) are masked -
+  they simply skip for the standard reason on a no-Postgres host.
+- Information Engine: unaffected by this phase's change (`engine/` not
+  touched again since PHASE 8/9) - re-run this phase for confirmation:
+  **862 passed, 0 failed, 0 skipped**, identical to PHASE 9.
+
+### Migration 040 - fresh and upgrade
+
+- Fresh `001`→`040` on an isolated, uniquely-named PostgreSQL database:
+  40/40 applied, zero checksum drift.
+- Simulated Production-style `039`→`040` upgrade: applied `001`-`039`,
+  seeded synthetic pre-existing rows with explicit IDs, then applied `040`
+  alone (the other 39 already-recorded checksums matched exactly, zero
+  drift) - post-upgrade, the pre-existing `source_id`/`event_id` were
+  unchanged, `source_genres`/`event_genres` correctly backfilled with
+  `origin='AUTO'`, zero orphan rows (FK integrity intact).
+
+### Tango/Practica/Community Discovery regression
+
+Unmodified by this release (`community_discovery.py`, `venue_resolution.py`,
+event-terminology/practica logic are not in this release's diff). Explicitly
+re-run: tango discovery/migration tests, `test_v0869_event_terminology.py`
+(PRACTICA/프락티카/쁘렉틸롱가 contract), `test_v0890`-`test_v0894`
+Community Discovery suite - **399 passed, 0 failed**.
+
 ## v0.90.0 Alpha Readiness & Baseline Convergence
 
 Status: RELEASE CANDIDATE - pre-deploy verification passed, 2026-09-14. **Not
 yet deployed to Production** (that is Phase 9 of this release's own process;
 this entry documents everything verified up to and including a local
 release-candidate image, not a live deploy).
+
+**Deployment confirmed after the fact (added 2026-09-15, v0.91.0 prep):** a
+read-only Production inspection (SSH, `HEAD` == `306c78b` matching this
+release's own commit, `VERSION`=0.90.0, migration head `039`, all containers
+healthy) confirms this release **has since been deployed** to the ROCKPro64
+board. The "Not yet deployed" line above is left exactly as written - it was
+true at the time this entry was authored, and this note documents what
+changed afterward rather than rewriting the historical record.
 
 Version split:
 

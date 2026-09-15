@@ -276,8 +276,19 @@ def public_sources(con, genre_codes: Sequence[str] | None) -> list[dict[str, Any
     )
     params: list[Any] = []
     if genre_codes is not None:
-        sql += " AND g.code = ANY(%s)"
-        params.append(list(genre_codes))
+        # v0.91.0 PHASE 6: the primary (g.code, the LEFT JOIN above) OR an
+        # explicit secondary relation (migration 040's source_genres) -
+        # EXISTS, never a JOIN against source_genres, so a multi-genre
+        # source is still exactly one output row here, same discipline
+        # public_venues()/public_communities() already use for their own
+        # join tables just above. A Salsa-only source with no Swing relation
+        # never appears under a Swing filter.
+        sql += (
+            " AND (g.code = ANY(%s) OR EXISTS (SELECT 1 FROM source_genres sg "
+            "JOIN genres sg_g ON sg_g.genre_id = sg.genre_id "
+            "WHERE sg.source_id = s.source_id AND sg_g.code = ANY(%s)))"
+        )
+        params.extend([list(genre_codes), list(genre_codes)])
     sql += " ORDER BY lower(s.name), s.source_id"
     shown = []
     for row in _rows(con, sql, params):

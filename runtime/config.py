@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.90.0"
+PRODUCT_VERSION = "0.91.0"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -30,7 +30,13 @@ PRODUCT_VERSION = "0.90.0"
 # image-only post can now be classified from a trusted poster reading, not
 # just title+body, closing the gap that made v0.84.3's own OCR fallback
 # unreachable for a genuinely empty-body post.
-DEFAULT_ENGINE_VERSION = "0.85"
+# v0.91.0 bumped it again: extractor.DATE_PATTERNS gained a year-plus-range
+# reading (extract_single() now also emits MULTI_DAY_EVENT/genre_hint
+# evidence), extraction_rules.extract_venue() gained the truncated-label
+# guard, and classifier.py gained party_evidence_bundle() and
+# detect_genre_hints() - all real changes to what the engine reads, not
+# just new Source rows.
+DEFAULT_ENGINE_VERSION = "0.86"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

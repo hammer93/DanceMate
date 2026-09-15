@@ -1,8 +1,24 @@
 import re
 from . import extraction_rules
+from . import classifier
 from .models import EventCandidate, Evidence
 
 DATE_PATTERNS = [
+    # v0.91.0 PHASE 7: an explicit year sitting beside a "m.d-d"/"m/d-d" day
+    # range - "BAL&HOP 2026 - 9.18-20", found live. Checked before the plain
+    # y.m.d pattern below (which requires no space around its separators and
+    # so never matches this shape) and before the bare "m.d" fallback,
+    # because a year that is genuinely written down is real evidence and
+    # must win over anchoring the range's bare first day against whatever
+    # published_at/crawl time happens to be - the exact fragility a page
+    # revisited in a later real year (2027 still showing "2026" in its own
+    # title) would otherwise hit. Resolves via the same EXPLICIT_YEAR path
+    # every other year-bearing pattern already uses (_resolve_date_match) -
+    # no new provenance value, no new field.
+    re.compile(
+        r"(?P<y>20\d{2})[\s\-–—]+(?P<m>\d{1,2})[./](?P<d>\d{1,2})"
+        r"\s*-\s*\d{1,2}(?!\d)"
+    ),
     re.compile(r"(?P<y>20\d{2})[.\-/](?P<m>\d{1,2})[.\-/](?P<d>\d{1,2})"),
     re.compile(r"(?P<y>20\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<y>\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
@@ -12,6 +28,13 @@ DATE_PATTERNS = [
     # matched as 10.12 and became an event this October.
     re.compile(r"(?<!\d)(?P<m>\d{1,2})[./](?P<d>\d{1,2})(?!\d)"),
 ]
+
+# v0.91.0 PHASE 5: "9.18-20"/"9/18-20" -- a same-month day range, real shape
+# (BAL&HOP 2026's own page title). Only ever used to *flag* a multi-day span
+# on the evidence trail (see below); `event_date` itself still comes from
+# DATE_PATTERNS above and is always just the range's first day.
+_DAY_RANGE_RE = re.compile(r"(?<!\d)\d{1,2}[./]\d{1,2}\s*-\s*\d{1,2}(?!\d)")
+
 # Kept for callers that still reference it. Time reading itself moved to
 # extraction_rules.parse_time_range, which also handles a meridiem marker
 # placed *before* the clock -- "PM 07:30~11:30", which this pattern read as
@@ -316,6 +339,19 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
             "date", date, raw or date, source_role=source_role,
             inference=inference, context_id=context_id,
         ))
+        # "9.18-20"/"9/18-20": a festival naming more days than the single
+        # `event_date` column can hold (PHASE 5: `events` has no end-date
+        # contract yet). Never expanded into extra events or a guessed end
+        # date - flagged the same way an ambiguous multi-program post already
+        # is (MULTI_EVENT_CONTEXT), so a human sees the real span rather than
+        # a silently-truncated single day.
+        range_match = _DAY_RANGE_RE.search(text)
+        if range_match:
+            ev.evidences.append(Evidence(
+                "context", "MULTI_DAY_EVENT", range_match.group(0),
+                source_role=source_role, inference="DATE_RANGE_START_ONLY",
+                context_id=context_id,
+            ))
     elif raw:
         # A date was written and we could not place it in a year. Say so, so
         # the missing date reads as a refusal rather than as nothing found.
@@ -369,6 +405,17 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         ev.evidences.append(Evidence(
             "context", "MULTI_EVENT_CONTEXT",
             scope[:160], source_role=source_role, context_id=context_id,
+        ))
+
+    # A named genre other than the one this post is already filed under
+    # (classifier.detect_genre_hints() - whole post, not just this segment,
+    # since a festival naming three dance styles in one intro line is not a
+    # multi-program post the way a date/time/venue mix-up would be).
+    for code in sorted(classifier.detect_genre_hints(title, body)):
+        ev.evidences.append(Evidence(
+            "genre_hint", code, f"{title} {body}"[:160],
+            source_role=source_role, inference="SECONDARY_GENRE_WORD",
+            context_id=context_id,
         ))
 
     # A labelled venue is what the post actually says; the known names below

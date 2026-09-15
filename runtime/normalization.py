@@ -244,6 +244,7 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
                         review_state: dict[str, Any] | None = None,
                         alias_candidates: list[str] | None = None,
                         terms_map: dict[int, list[dict[str, Any]]] | None = None,
+                        genre_hints: list[str] | None = None,
                         ) -> dict[str, Any] | None:
     """Write one candidate into ``events``. Returns the stored row.
 
@@ -328,7 +329,52 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         )
         names = [c.name for c in cur.description]
         row = cur.fetchone()
-    return None if row is None else dict(zip(names, row))
+    if row is None:
+        return None
+    stored = dict(zip(names, row))
+    _sync_event_genres(con, stored["event_id"], genre_id, genre_hints)
+    return stored
+
+
+def _sync_event_genres(con, event_id: int, genre_id: int | None,
+                       hint_codes: list[str] | None) -> None:
+    """Keep ``event_genres`` consistent with the primary genre and the
+    engine's own "genre_hint" evidence, without ever touching a HUMAN row
+    (v0.91.0 PHASE 6).
+
+    A reprocessed candidate's hints can legitimately change (a correction, a
+    fuller fetch that drops a coincidental phrase) - stale AUTO rows are
+    deleted and current ones reinserted every call, exactly the delete-then-
+    insert discipline ``communities._set_links()`` already uses for
+    ``community_genres``. Anything a person confirmed (``origin = 'HUMAN'``)
+    is never selected by the DELETE below, so it survives every reprocess.
+    """
+    with con.cursor() as cur:
+        if genre_id is not None:
+            cur.execute(
+                "INSERT INTO event_genres (event_id, genre_id, origin) "
+                "VALUES (%s, %s, 'AUTO') ON CONFLICT (event_id, genre_id) DO NOTHING",
+                (event_id, genre_id),
+            )
+        hint_genre_ids: set[int] = set()
+        if hint_codes:
+            cur.execute(
+                "SELECT genre_id FROM genres WHERE code = ANY(%s)",
+                (sorted(set(hint_codes)),),
+            )
+            hint_genre_ids = {row[0] for row in cur.fetchall()}
+        keep = hint_genre_ids | ({genre_id} if genre_id is not None else set())
+        cur.execute(
+            "DELETE FROM event_genres WHERE event_id = %s AND origin = 'AUTO' "
+            "AND NOT (genre_id = ANY(%s))",
+            (event_id, sorted(keep)),
+        )
+        for hint_genre_id in hint_genre_ids:
+            cur.execute(
+                "INSERT INTO event_genres (event_id, genre_id, origin) "
+                "VALUES (%s, %s, 'AUTO') ON CONFLICT (event_id, genre_id) DO NOTHING",
+                (event_id, hint_genre_id),
+            )
 
 
 def get(con, event_id: int) -> dict[str, Any] | None:
@@ -527,6 +573,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
     ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
     aliases = candidate_store.venue_alias_candidates(settings, ids)
     time_evidence = candidate_store.time_evidence(settings, ids)
+    genre_hint_map = candidate_store.genre_hints(settings, ids)
 
     normalized = skipped = 0
     unresolved = 0
@@ -545,6 +592,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
                 review_state=states.get(candidate_id),
                 alias_candidates=aliases.get(candidate_id),
                 terms_map=terms_map,
+                genre_hints=genre_hint_map.get(candidate_id),
             )
             if stored is None:
                 skipped += 1

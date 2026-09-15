@@ -321,6 +321,14 @@ _ADDRESS_START_RE = re.compile(
 
 _TRIM_LEAD = "#＃@＠:：-–—·•*✦♦◆■●▶>《<「【 \t"
 
+# A search snippet that stops mid-sentence marks it with a trailing "..."/"…"
+# -- there was more text, the API just did not send it. Real production case:
+# SRC-D-012 item 186, "📍장소: 강습 인원..." -- the venue label happened to sit
+# right before the cut, and what survived ("강습 인원", "class headcount") is
+# a fragment of a later sentence, not a place. A truncated value at the very
+# end of the snippet is never trustworthy enough to call a venue.
+_TRUNCATED_TAIL_RE = re.compile(r"(?:\.\.\.|…)\s*$")
+
 
 @dataclass
 class VenueReading:
@@ -411,7 +419,11 @@ def extract_venue(text: str) -> VenueReading | None:
         위치와 카프레제 파스타                     -> None, no colon
     """
     for match in _VENUE_LABEL_RE.finditer(text or ""):
-        name = _strip_decoration(_cut_at_boundary(match.group("value")))
+        raw_value = match.group("value")
+        remainder = (text or "")[match.end("value"):]
+        if not remainder.strip() and _TRUNCATED_TAIL_RE.search(raw_value):
+            continue
+        name = _strip_decoration(_cut_at_boundary(raw_value))
         if len(name) < 2:
             continue
         candidates = [name]

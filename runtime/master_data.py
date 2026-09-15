@@ -106,8 +106,13 @@ def genre_usage(con, genre_id: int) -> dict[str, int]:
             "  (SELECT count(*) FROM events WHERE genre_id = %s) AS events, "
             # v0.88.0: community and notice genre links (migration 035).
             "  (SELECT count(*) FROM community_genres WHERE genre_id = %s) AS communities, "
-            "  (SELECT count(*) FROM board_post_genres WHERE genre_id = %s) AS notices",
-            (genre_id,) * 6,
+            "  (SELECT count(*) FROM board_post_genres WHERE genre_id = %s) AS notices, "
+            # v0.91.0 PHASE 6: secondary/explicit multi-genre relations
+            # (migration 040) - counted separately from the primary
+            # sources.genre_id/events.genre_id columns above.
+            "  (SELECT count(*) FROM source_genres WHERE genre_id = %s) AS source_genres, "
+            "  (SELECT count(*) FROM event_genres WHERE genre_id = %s) AS event_genres",
+            (genre_id,) * 8,
         )
         cols = [c.name for c in cur.description]
         return dict(zip(cols, cur.fetchone()))
@@ -422,6 +427,58 @@ def remove_venue_genre(con, venue_id: int, genre_id: int) -> dict[str, Any] | No
             "DELETE FROM venue_genres WHERE venue_id = %s AND genre_id = %s "
             "RETURNING *",
             (venue_id, genre_id),
+        )
+        return _row(cur)
+
+
+def source_genres(con, source_id: int) -> list[dict[str, Any]]:
+    """Every genre this source is associated with, each row carrying the
+    genre's own code and name (v0.91.0 PHASE 6, corrected; mirrors
+    venue_genres() exactly).
+
+    Includes the compatibility primary (sources.genre_id) as well as any
+    additional genres - `sources.create_source()`/`update_source()` keep the
+    primary's own row here in sync, so this is the one query a genre-scope
+    check (or a genre-filtered Source listing) needs, without also having to
+    remember to OR it against sources.genre_id separately. The primary
+    column itself is unaffected by this table and stays the single value
+    every existing reader relies on. A genuinely multi-genre community
+    (SRC-D-020 Elmar's own community row: Bachata+Kizomba+Salsa+Tango) can
+    register its full scope here, an admin decision, never inferred from
+    post content.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT sg.*, g.code AS genre_code, g.name AS genre_name "
+            "FROM source_genres sg JOIN genres g ON g.genre_id = sg.genre_id "
+            "WHERE sg.source_id = %s ORDER BY g.code",
+            (source_id,),
+        )
+        return _rows(cur)
+
+
+def add_source_genre(con, source_id: int, genre_id: int, *,
+                     ignore_conflict: bool = True) -> dict[str, Any] | None:
+    """Register one additional genre for a source. Idempotent by default."""
+    conflict = (" ON CONFLICT (source_id, genre_id) DO NOTHING" if ignore_conflict
+               else "")
+    with con.cursor() as cur:
+        cur.execute(
+            "INSERT INTO source_genres (source_id, genre_id) "
+            f"VALUES (%s, %s){conflict} RETURNING *",
+            (source_id, genre_id),
+        )
+        return _row(cur) if cur.description and cur.rowcount else None
+
+
+def remove_source_genre(con, source_id: int, genre_id: int) -> dict[str, Any] | None:
+    """Un-register one genre for a source. The source and its events are
+    untouched - this only removes a fact about the source's own scope."""
+    with con.cursor() as cur:
+        cur.execute(
+            "DELETE FROM source_genres WHERE source_id = %s AND genre_id = %s "
+            "RETURNING *",
+            (source_id, genre_id),
         )
         return _row(cur)
 

@@ -281,6 +281,74 @@ def test_config_days_ahead_is_passed_only_to_the_danceinfo_parser(settings, monk
     assert seen_kwargs == {"days_ahead": 7}
 
 
+def test_config_genre_name_is_passed_only_to_the_danceinfo_parser(settings, monkeypatch):
+    """v0.91.0 PHASE 10B: danceinfo.net lists every genre on one page - a
+    second DanceInfo-backed source (a dedicated Salsa registration) needs
+    the same module filtered to a different genre, via config, never a new
+    parser."""
+    from runtime import danceinfo_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(danceinfo_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "danceinfo_json",
+        "board_urls": ["https://danceinfo.net/lessons?genre=all"],
+        "genre_name": "살사",
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {"genre_name": "살사"}
+
+
+def test_a_danceinfo_source_with_no_genre_name_keeps_the_modules_own_tango_default(
+    settings, monkeypatch,
+):
+    """Every existing DanceInfo registration (SRC-W-004 included) has no
+    config.genre_name - it must keep reading exactly as before, with
+    nothing forwarded for the module's own "탱고" default to apply."""
+    from runtime import danceinfo_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(danceinfo_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "danceinfo_json",
+        "board_urls": ["https://danceinfo.net/lessons?genre=all"],
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {}
+
+
+def test_genre_name_is_not_sent_to_the_miltang_parser(settings, monkeypatch):
+    """Only danceinfo_json understands genre_name - a stray config key on a
+    Miltang-parsed source must never reach a discovery module whose
+    discover() has no such keyword."""
+    from runtime import miltang_discovery
+
+    seen_kwargs = {}
+
+    def fake_discover(list_url, *, source_id, platform="WEB", **kwargs):
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(miltang_discovery, "discover", fake_discover)
+    source = _web_source(config={
+        "parser": "miltang_ssr",
+        "board_urls": ["https://miltang.com/milongas"],
+        "genre_name": "살사",
+    })
+    collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert seen_kwargs == {}
+
+
 def test_config_days_ahead_is_also_passed_to_the_miltang_parser(settings, monkeypatch):
     """v0.83: Miltang's own `/milongas` list is day-scoped exactly like
     DanceInfo's - the same days_ahead gate must forward to it too."""
