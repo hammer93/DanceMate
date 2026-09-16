@@ -331,7 +331,8 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         "provenance": candidate.get("provenance") or PROVENANCE_UNKNOWN,
         # A time a person corrected is confirmed by that person, whatever the
         # extractor could tell from the post.
-        "time_evidence": ("HUMAN" if "start_time" in origin
+        "time_evidence": ("HUMAN" if "start_time" in origin and start is not None
+                          else None if "start_time" in origin
                           else candidate.get("time_evidence")),
     }
 

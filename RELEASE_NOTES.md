@@ -1,5 +1,19 @@
 # DanceMate Release Notes
 
+## v0.92.1 Salsa Community Board OCR Time Safety
+
+Product Runtime 0.92.1; Information Engine 0.88; no migration (head 040).
+The v0.92.0 Production acquisition QA found a Sura-dan Wednesday poster
+whose OCR read only `9:10~12:00`, without an AM/PM or Korean evening marker.
+The previous image fallback materialized `09:10` as the Public Event start;
+that morning interpretation had no source evidence. Image OCR now refuses to
+fill Event time when the existing time parser marks its reading ambiguous,
+and persists an `IMAGE_TIME_AMBIGUOUS` context Evidence for human review.
+Explicit evening clocks such as the separate Friday poster's `저녁 9:10`
+still yield `21:10`. Body-text time extraction is unchanged. The affected
+Production Event must receive a guarded Admin review correction; no invented
+PM value is written.
+
 ## v0.92.0 Salsa Community Board Acquisition
 
 Product Runtime 0.92.0; Information Engine 0.87 (extraction behavior changed).

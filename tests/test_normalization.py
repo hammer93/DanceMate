@@ -93,6 +93,21 @@ def test_a_candidate_without_a_date_is_not_an_event_instance(pg, unique):
     assert stored is None
 
 
+def test_reviewed_blank_ocr_clock_is_not_recorded_as_human_time(pg, unique):
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, start_time="09:10", end_time="12:00",
+                       time_evidence="IMAGE_OCR"),
+        review_state={
+            "review_state": "EDITED",
+            "corrected_json": {"start_time": None, "end_time": None},
+        },
+    )
+    assert stored["start_time"] is None
+    assert stored["end_time"] is None
+    assert stored["time_evidence"] is None
+    assert stored["field_origin"]["start_time"] == "HUMAN"
+
+
 def test_an_unrecognised_venue_is_unresolved_and_queued(pg, unique):
     venue_text = f"미등록 스튜디오 {unique}"
     stored = normalization.normalize_candidate(

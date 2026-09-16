@@ -594,8 +594,25 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
             continue
         sub = extract_single(title, image_text, source_role=source_role,
                              event_type=ev.event_type, published=published)
+        time_evidence = next((e for e in sub.evidences if e.field == "time"), None)
+        time_details = time_evidence.value if time_evidence else None
+        image_time_ambiguous = (sub.start_time is not None and
+                                (not isinstance(time_details, dict) or
+                                 bool(time_details.get("ambiguous", True))))
+        if image_time_ambiguous and "time" in missing:
+            # The OCR may have read 9:10 correctly, but without a meridiem
+            # it cannot decide 09:10 versus 21:10. Keep the raw observation
+            # for human review; never advertise a guessed morning start.
+            ev.evidences.append(Evidence(
+                "context", "IMAGE_TIME_AMBIGUOUS",
+                time_evidence.raw_text if time_evidence else str(sub.start_time),
+                evidence_type=IMAGE_OCR, source_role=source_role,
+                inference=image_ref,
+            ))
 
         def _sub_value(key):
+            if key == "time" and image_time_ambiguous:
+                return None
             return _image_venue(sub) if key == "venue" else _field_value(sub, key)
 
         contributes = {

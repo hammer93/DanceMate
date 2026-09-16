@@ -9,9 +9,9 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.92.0 (Salsa Community Board Acquisition)
+- Product Runtime: v0.92.1 (Salsa Community Board Acquisition time-safety patch)
   - v0.91.0은 ROCKPro64의 직전 운영 기준점이었다 (migration 040).
-- Information Engine: v0.87 (`engine/`) — 날짜가 명확한 Community 강습,
+- Information Engine: v0.88 (`engine/`) — 날짜가 명확한 Community 강습,
   게시일 기준 상대 날짜와 짧은 주간 정모 증거를 추가했다 (RELEASE_NOTES 참고).
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
@@ -75,7 +75,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.92.0"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.92.1"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

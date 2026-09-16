@@ -70,6 +70,18 @@ def test_no_corrections_leaves_the_candidate_untouched():
     assert merged == CANDIDATE
 
 
+def test_explicit_blank_clock_clears_unsupported_ocr_time_with_audit_value():
+    candidate = {**CANDIDATE, "start_time": "09:10", "end_time": "12:00"}
+    merged = review.apply_corrections(
+        candidate, {"corrected_json": {"start_time": None, "end_time": None}}
+    )
+    assert merged["start_time"] is None
+    assert merged["end_time"] is None
+    assert merged["engine_start_time"] == "09:10"
+    assert merged["engine_end_time"] == "12:00"
+    assert set(merged["corrected_fields"]) == {"start_time", "end_time"}
+
+
 # --- database-backed --------------------------------------------------------
 
 @pytest.fixture
@@ -94,6 +106,19 @@ def test_approve_is_recorded_and_does_not_claim_verified(pg, candidate_id):
 def test_confirm_is_recorded(pg, candidate_id):
     review.record(pg, candidate_id=candidate_id, action=review.CONFIRM)
     assert review.state(pg, candidate_id)["review_state"] == "CONFIRMED"
+
+
+def test_edit_records_explicitly_cleared_ocr_clock(pg, candidate_id):
+    before = {**CANDIDATE, "start_time": "09:10", "end_time": "12:00"}
+    review.record(
+        pg, candidate_id=candidate_id, action=review.EDIT,
+        before=before, after={"start_time": None, "end_time": None},
+        reason="Poster OCR gives no AM/PM",
+    )
+    state = review.state(pg, candidate_id)
+    assert state["review_state"] == "EDITED"
+    assert state["corrected_json"] == {"start_time": None, "end_time": None}
+    assert review.history(pg, candidate_id)[0]["after_json"] == state["corrected_json"]
 
 
 def test_edit_keeps_both_versions(pg, candidate_id):

@@ -265,7 +265,13 @@ def apply_corrections(candidate: dict[str, Any], review: dict[str, Any]) -> dict
         "fee": "fee",
     }
     for review_field, candidate_field in field_map.items():
-        if review_field in corrected and corrected[review_field] is not None:
+        if review_field in corrected and (
+            corrected[review_field] is not None or
+            candidate_field in ("start_time", "end_time")
+        ):
+            # An explicit blank time is a meaningful correction: OCR can
+            # recognize 9:10 yet lack the AM/PM needed to publish a clock.
+            # Absent keys still leave the engine reading untouched.
             merged[f"engine_{candidate_field}"] = candidate.get(candidate_field)
             merged[candidate_field] = corrected[review_field]
             merged.setdefault("corrected_fields", []).append(candidate_field)

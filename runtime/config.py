@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.92.0"
+PRODUCT_VERSION = "0.92.1"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -36,7 +36,7 @@ PRODUCT_VERSION = "0.92.0"
 # guard, and classifier.py gained party_evidence_bundle() and
 # detect_genre_hints() - all real changes to what the engine reads, not
 # just new Source rows.
-DEFAULT_ENGINE_VERSION = "0.87"
+DEFAULT_ENGINE_VERSION = "0.88"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
