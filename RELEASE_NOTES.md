@@ -1,5 +1,28 @@
 # DanceMate Release Notes
 
+## v0.92.2 Salsa Community Board Genre and Clock Precision
+
+Product Runtime 0.92.2; Information Engine remains 0.88; no migration (head 040).
+Production board QA found one historical Latin Amigos Bachata/Merengue-only
+article incorrectly labelled Salsa solely because its Community Source was
+registered as Salsa. A direct Daum Community board now needs article-level
+Salsa wording in its title, body or event poster to assign SALSA. A
+Bachata-only article keeps BACHATA; an explicitly Salsa+Bachata article keeps
+both. Daum mobile-page chrome naming the host Community is excluded from
+article-level evidence; a dated class whose title names a style uses that
+title instead of a generic introductory paragraph. This exception is
+limited to direct board Sources; legacy Tango and
+other Source contracts remain unchanged. Existing Engine time Evidence also
+marks bare body/OCR clocks `ambiguous`; board normalization now withholds
+those unsupported clocks, while preserving the raw Engine reading for review
+and respecting explicit human time corrections. This converges four older
+board Events which had morning-looking clocks without AM/PM, without
+deleting or recreating an Event. No new recurrence or Venue is generated.
+Pre-release tests: host 1,745 passed (738 skipped without PostgreSQL);
+isolated fresh PostgreSQL 2,468 passed (15 skipped, six Linux ownership
+tests excluded from that ephemeral image and passed on the host); existing
+upgrade focused 66 passed; Information Engine 867 passed. No new failures.
+
 ## v0.92.1 Salsa Community Board OCR Time Safety
 
 Product Runtime 0.92.1; Information Engine 0.88; no migration (head 040).

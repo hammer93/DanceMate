@@ -509,6 +509,40 @@ def genre_hints(settings: Settings, candidate_ids: list[int]) -> dict[int, list[
     return found
 
 
+def ambiguous_time_ids(settings: Settings, candidate_ids: list[int]) -> set[int]:
+    """Time evidence whose clock lacks a meridiem, for board listing safety.
+
+    Keep the Engine candidate untouched. Normalization can withhold the
+    unsupported clock while the original raw reading stays reviewable.
+    """
+    if not candidate_ids:
+        return set()
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return set()
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, value FROM evidences "
+            f"WHERE field = 'time' AND candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return set()
+    finally:
+        con.close()
+    found = set()
+    for row in rows:
+        try:
+            details = json.loads(row["value"] or "")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(details, dict) and details.get("ambiguous") is True:
+            found.add(row["candidate_id"])
+    return found
+
+
 def image_ocr_fields(settings: Settings, candidate_id: int) -> list[dict[str, Any]]:
     """Which fields this candidate drew from an image (v0.81.3), for the
     Review detail page's Image Evidence section - never from list/venue,

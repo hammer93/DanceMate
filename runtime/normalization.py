@@ -180,7 +180,55 @@ def record_unresolved_venue(con, venue_text: str,
     return None if row is None else dict(zip(columns, row))
 
 
-def _genre_id(con, event_type: str | None, source_item_id: int | None = None) -> int | None:
+def _board_item_info(con, source_item_id: int | None) -> dict[str, Any] | None:
+    if source_item_id is None:
+        return None
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT g.code, i.title, COALESCE(c.extracted_text, ''), "
+            "COALESCE((SELECT string_agg(im.ocr_text, ' ') "
+            "          FROM source_item_image im "
+            "          WHERE im.source_item_id = i.source_item_id), '') "
+            "FROM source_items i JOIN sources s ON s.source_id = i.source_id "
+            "LEFT JOIN genres g ON g.genre_id = s.genre_id "
+            "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            "WHERE i.source_item_id = %s AND s.config->>'parser' = 'daum_cafe_board'",
+            (source_item_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    title, body, poster = row[1] or "", row[2] or "", row[3] or ""
+    # An image-only Daum article can yield mobile-page chrome rather than
+    # article prose. Its Community subtitle names genres but is not Event
+    # evidence; the poster is the actual Event-level text in that case.
+    if "앱으로보기" in body and "댓글쓰기" in body:
+        body = ""
+    return {"source_genre": row[0], "title": title, "body": body,
+            "poster": poster}
+
+
+_BOARD_GENRE_WORDS = {
+    "SALSA": re.compile(r"살사|salsa", re.I),
+    "BACHATA": re.compile(r"바차타|bachata", re.I),
+    "KIZOMBA": re.compile(r"키좀바|kizomba", re.I),
+}
+
+
+def _board_named_genres(info: dict[str, Any], event_type: str | None) -> set[str]:
+    title = info["title"]
+    title_names_class_style = ((event_type or "").upper() == "CLASS" and
+                               any(p.search(title) for p in _BOARD_GENRE_WORDS.values()))
+    event_text = title if title_names_class_style else (
+        title + " " + info["body"] + " " + info["poster"]
+    )
+    return {code for code, pattern in _BOARD_GENRE_WORDS.items()
+            if pattern.search(event_text)}
+
+
+def _genre_id(con, event_type: str | None, source_item_id: int | None = None,
+              *, genre_hints: list[str] | None = None,
+              board_info: dict[str, Any] | None = None) -> int | None:
     """The event's genre, from what it is or from where it was posted.
 
     ``event_type`` settles it when the extractor recognised one: a milonga is
@@ -197,6 +245,21 @@ def _genre_id(con, event_type: str | None, source_item_id: int | None = None) ->
             return row[0]
     if source_item_id is None:
         return None
+    if board_info and board_info["source_genre"] == "SALSA":
+        # A Salsa Community can also post a Bachata-only event. Its Source
+        # genre describes the publisher, not every single dated article.
+        named = _board_named_genres(board_info, event_type)
+        if "SALSA" in named:
+            code = "SALSA"
+        else:
+            code = next((c for c in ("BACHATA", "KIZOMBA")
+                         if c in named), None)
+        if code is None:
+            return None
+        with con.cursor() as cur:
+            cur.execute("SELECT genre_id FROM genres WHERE code = %s", (code,))
+            row = cur.fetchone()
+        return row[0] if row else None
     with con.cursor() as cur:
         cur.execute(
             "SELECT s.genre_id FROM source_items i "
@@ -265,6 +328,7 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
                         alias_candidates: list[str] | None = None,
                         terms_map: dict[int, list[dict[str, Any]]] | None = None,
                         genre_hints: list[str] | None = None,
+                        time_ambiguous: bool = False,
                         ) -> dict[str, Any] | None:
     """Write one candidate into ``events``. Returns the stored row.
 
@@ -279,8 +343,16 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
     if event_date is None:
         return None
 
-    start = _as_time(merged.get("start_time"))
-    end = _as_time(merged.get("end_time"))
+    board_info = _board_item_info(con, _as_int(candidate.get("source_item_id")))
+    if board_info and board_info["source_genre"] == "SALSA":
+        named = _board_named_genres(board_info, candidate.get("event_type"))
+        genre_hints = [code for code in (genre_hints or []) if code in named]
+    corrected_fields = set(merged.get("corrected_fields") or [])
+    unsafe_board_clock = bool(board_info and time_ambiguous)
+    start = (None if unsafe_board_clock and "start_time" not in corrected_fields
+             else _as_time(merged.get("start_time")))
+    end = (None if unsafe_board_clock and "end_time" not in corrected_fields
+           else _as_time(merged.get("end_time")))
     venue_text = (merged.get("venue") or "").strip() or None
 
     resolution = resolve_venue(con, venue_text, alias_candidates)
@@ -295,7 +367,8 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
     origin = {field: "HUMAN" for field in (merged.get("corrected_fields") or [])}
 
     genre_id = _genre_id(con, candidate.get("event_type"),
-                         _as_int(candidate.get("source_item_id")))
+                         _as_int(candidate.get("source_item_id")),
+                         genre_hints=genre_hints, board_info=board_info)
     key = venue_key(venue_id, venue_text)
     values = {
         "candidate_id": _as_int(candidate.get("candidate_id")),
@@ -333,6 +406,7 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         # extractor could tell from the post.
         "time_evidence": ("HUMAN" if "start_time" in origin and start is not None
                           else None if "start_time" in origin
+                          else None if unsafe_board_clock
                           else candidate.get("time_evidence")),
     }
 
@@ -595,6 +669,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
     ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
     aliases = candidate_store.venue_alias_candidates(settings, ids)
     time_evidence = candidate_store.time_evidence(settings, ids)
+    ambiguous_times = candidate_store.ambiguous_time_ids(settings, ids)
     genre_hint_map = candidate_store.genre_hints(settings, ids)
 
     normalized = skipped = 0
@@ -615,6 +690,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
                 alias_candidates=aliases.get(candidate_id),
                 terms_map=terms_map,
                 genre_hints=genre_hint_map.get(candidate_id),
+                time_ambiguous=candidate_id in ambiguous_times,
             )
             if stored is None:
                 skipped += 1

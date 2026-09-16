@@ -86,6 +86,126 @@ def _candidate(unique: str, **overrides):
     return base
 
 
+def _salsa_board_item(pg, unique: str, title: str, body: str) -> int:
+    from runtime import intake, sources
+
+    with pg.cursor() as cur:
+        cur.execute("SELECT genre_id FROM genres WHERE code = 'SALSA'")
+        salsa_id = cur.fetchone()[0]
+    source = sources.create_source(
+        pg, source_key=f"test-board-{unique}", name="test public Salsa board",
+        platform="DAUM_CAFE", source_role="COMMUNITY",
+        url=f"https://cafe.daum.net/test/{unique}", genre_id=salsa_id,
+        authority_level="PRIMARY_ORGANIZER",
+        config={"parser": "daum_cafe_board", "board_type": "EVENT_PRIMARY"},
+    )
+    external_id = f"article-{unique}"
+    assert intake.store_item(
+        pg, source["source_id"], intake.RawItem(
+            external_id=external_id, url=f"https://cafe.daum.net/test/{unique}/1",
+            title=title, body=body,
+            raw={"acquisition_quality": "FETCHED_FULL"},
+        ),
+    ) == "NEW"
+    with pg.cursor() as cur:
+        cur.execute("SELECT source_item_id FROM source_items WHERE source_id=%s AND external_id=%s",
+                    (source["source_id"], external_id))
+        return cur.fetchone()[0]
+
+
+def test_board_source_salsa_does_not_make_bachata_only_article_salsa(pg, unique):
+    item_id = _salsa_board_item(
+        pg, unique, "Best Latin Amigos gathering",
+        "7:20 Merengue; 8:00 Bachata social. No other named dance.",
+    )
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       event_name="Best Latin Amigos gathering"),
+        genre_hints=["BACHATA"],
+    )
+    with pg.cursor() as cur:
+        cur.execute("SELECT g.code FROM event_genres eg JOIN genres g ON g.genre_id=eg.genre_id "
+                    "WHERE eg.event_id=%s", (stored["event_id"],))
+        codes = {row[0] for row in cur.fetchall()}
+        cur.execute("SELECT code FROM genres WHERE genre_id=%s", (stored["genre_id"],))
+        primary = cur.fetchone()[0]
+    assert primary == "BACHATA"
+    assert codes == {"BACHATA"}
+
+
+def test_board_salsa_bachata_article_keeps_both_explicit_genres(pg, unique):
+    item_id = _salsa_board_item(pg, unique, "Salsa+Bachata party",
+                                "Dated Salsa and Bachata party")
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL"),
+        genre_hints=["BACHATA"],
+    )
+    with pg.cursor() as cur:
+        cur.execute("SELECT g.code FROM event_genres eg JOIN genres g ON g.genre_id=eg.genre_id "
+                    "WHERE eg.event_id=%s", (stored["event_id"],))
+        codes = {row[0] for row in cur.fetchall()}
+    assert codes == {"SALSA", "BACHATA"}
+
+
+def test_daum_mobile_chrome_does_not_copy_community_genres_to_event(pg, unique):
+    item_id = _salsa_board_item(
+        pg, unique, "Wednesday gathering",
+        "[Community Salsa Bachata] 앱으로보기 목록 댓글쓰기",
+    )
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL"),
+        genre_hints=["BACHATA"],
+    )
+    assert stored["genre_id"] is None
+    with pg.cursor() as cur:
+        cur.execute("SELECT count(*) FROM event_genres WHERE event_id=%s", (stored["event_id"],))
+        assert cur.fetchone()[0] == 0
+
+
+def test_actual_board_poster_names_salsa_despite_mobile_chrome(pg, unique):
+    item_id = _salsa_board_item(
+        pg, unique, "Wednesday gathering",
+        "[Community Salsa Bachata] 앱으로보기 목록 댓글쓰기",
+    )
+    with pg.cursor() as cur:
+        cur.execute("INSERT INTO source_item_image (source_item_id,image_url,ocr_text) "
+                    "VALUES (%s,%s,%s)",
+                    (item_id, f"https://example.com/poster/{unique}.png",
+                     "Salsa 3 : Bachata 3, 2026-09-18"))
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL"),
+        genre_hints=["BACHATA"],
+    )
+    with pg.cursor() as cur:
+        cur.execute("SELECT g.code FROM event_genres eg JOIN genres g ON g.genre_id=eg.genre_id "
+                    "WHERE eg.event_id=%s", (stored["event_id"],))
+        codes = {row[0] for row in cur.fetchall()}
+    assert codes == {"SALSA", "BACHATA"}
+
+
+def test_ambiguous_board_clock_is_not_advertised_as_morning(pg, unique):
+    item_id = _salsa_board_item(pg, unique, "Salsa social",
+                                "7:20~8:00 Salsa social; no AM/PM")
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       start_time="07:20", end_time="08:00",
+                       time_evidence="TEXT"),
+        time_ambiguous=True,
+    )
+    assert stored["start_time"] is None
+    assert stored["end_time"] is None
+    assert stored["time_evidence"] is None
+    corrected = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       start_time="07:20", end_time="08:00"),
+        time_ambiguous=True,
+        review_state={"review_state": "EDITED",
+                      "corrected_json": {"start_time": "21:20", "end_time": "22:00"}},
+    )
+    assert corrected["start_time"].isoformat() == "21:20:00"
+    assert corrected["time_evidence"] == "HUMAN"
+
+
 def test_a_candidate_without_a_date_is_not_an_event_instance(pg, unique):
     """A post we could not place on a calendar stays in review rather than
     becoming a row with a made-up day."""

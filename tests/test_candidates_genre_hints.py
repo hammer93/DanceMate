@@ -88,3 +88,22 @@ def test_multiple_hints_on_one_candidate_all_come_back(engine_db):
     con.close()
     hints = candidates.genre_hints(engine_db, [101])
     assert set(hints[101]) == {"BACHATA", "KIZOMBA"}
+
+
+def test_only_explicitly_ambiguous_engine_clock_is_flagged(engine_db):
+    from runtime.engine_adapter import engine_db_path
+
+    con = sqlite3.connect(engine_db_path(engine_db))
+    for candidate_id, value in (
+        (101, '{"start":"07:20","ambiguous":true}'),
+        (102, '{"start":"21:10","ambiguous":false}'),
+        (102, 'not-json'),
+    ):
+        con.execute(
+            "INSERT INTO evidences(candidate_id, field, value, raw_text) "
+            "VALUES (?, 'time', ?, 'raw clock')", (candidate_id, value),
+        )
+    con.commit()
+    con.close()
+    assert candidates.ambiguous_time_ids(engine_db, [101, 102]) == {101}
+    assert candidates.ambiguous_time_ids(engine_db, []) == set()
