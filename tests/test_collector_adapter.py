@@ -116,6 +116,102 @@ def test_a_disabled_source_is_marked_inactive_for_the_engine():
     assert collectors._to_engine_source(_source(enabled=False))["status"] == "INACTIVE"
 
 
+def test_naver_official_cafe_filter_rejects_cross_posts():
+    from types import SimpleNamespace
+
+    source = _source(
+        platform="NAVER_CAFE",
+        config={
+            "cafe_name_hint": "전주살사 바차타 라틴크루즈",
+            "url_contains": ["jueonjuinsalsa"],
+        },
+    )
+    official = SimpleNamespace(
+        cafe_name="전주살사 바차타 라틴크루즈",
+        source_url="https://cafe.naver.com/jueonjuinsalsa/4456",
+    )
+    repost = SimpleNamespace(
+        cafe_name="라틴팩토리",
+        source_url="https://cafe.naver.com/latinfactory/722",
+    )
+
+    assert collectors._naver_record_matches(official, source) is True
+    assert collectors._naver_record_matches(repost, source) is False
+
+
+def test_only_a_tightly_scoped_primary_naver_board_gets_structure_trust():
+    from types import SimpleNamespace
+
+    source = _source(
+        platform="NAVER_CAFE",
+        source_role="COMMUNITY",
+        authority_level="PRIMARY_ORGANIZER",
+        config={
+            "cafe_name_hint": "진주 라틴 피루나",
+            "url_contains": ["jinjulatin"],
+            "board_type": "EVENT_PRIMARY",
+        },
+    )
+    record = SimpleNamespace(known_event_type=None, class_event_opt_in=False)
+    collectors._apply_naver_structure_trust(record, source)
+    assert record.known_event_type == "SOCIAL"
+
+    broad = _source(
+        platform="NAVER_CAFE",
+        source_role="COMMUNITY",
+        authority_level="PRIMARY_ORGANIZER",
+        config={"board_type": "EVENT_PRIMARY"},
+    )
+    untrusted = SimpleNamespace(known_event_type=None, class_event_opt_in=False)
+    collectors._apply_naver_structure_trust(untrusted, broad)
+    assert untrusted.known_event_type is None
+
+
+def test_live_naver_collection_filters_and_persists_structure_trust(
+    settings, monkeypatch
+):
+    monkeypatch.setenv("NAVER_CLIENT_ID", "id")
+    monkeypatch.setenv("NAVER_CLIENT_SECRET", "secret")
+    collectors._engine_on_path(settings)
+    from src.collectors.base import RawPostRecord
+    from src.collectors.naver import NaverSearchCollector
+
+    def fake_search(self, query, **kwargs):
+        common = dict(
+            source_id=kwargs["source_id"], platform="NAVER_CAFE",
+            title="2026년 9월 17일 정모", body="공식 정모 안내",
+            discovery_query=query,
+        )
+        return [
+            RawPostRecord(
+                source_url="https://cafe.naver.com/jueonjuinsalsa/4456",
+                cafe_name="전주살사 바차타 라틴크루즈", **common,
+            ),
+            RawPostRecord(
+                source_url="https://cafe.naver.com/latinfactory/722",
+                cafe_name="라틴팩토리", **common,
+            ),
+        ]
+
+    monkeypatch.setattr(NaverSearchCollector, "search", fake_search)
+    source = _source(
+        source_key="SRC-N-TEST", platform="NAVER_CAFE",
+        source_role="COMMUNITY", authority_level="PRIMARY_ORGANIZER",
+        queries=["전주 라틴크루즈 정모"],
+        config={
+            "cafe_name_hint": "전주살사 바차타 라틴크루즈",
+            "url_contains": ["jueonjuinsalsa"],
+            "board_type": "EVENT_PRIMARY",
+        },
+    )
+
+    result = collectors.collect(settings, source, mode=collectors.MODE_LIVE)
+    assert [item.url for item in result.items] == [
+        "https://cafe.naver.com/jueonjuinsalsa/4456"
+    ]
+    assert result.items[0].raw["known_event_type"] == "SOCIAL"
+
+
 # --- snapshot collection through the engine's own code ----------------------
 
 def test_snapshot_collection_runs_the_engine_collector(engine_settings):

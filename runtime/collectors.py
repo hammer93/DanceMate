@@ -196,6 +196,54 @@ def _parse_published(value: str | None) -> datetime | None:
     return None
 
 
+def _naver_record_matches(record: Any, source: dict[str, Any]) -> bool:
+    """Apply a Naver Source's official-Cafe boundary to one search hit.
+
+    The Information Engine's Daum collector has always applied
+    ``cafe_name_hint`` and ``url_contains`` itself. Naver Search returns the
+    same two useful identity signals, but its collector intentionally knows
+    nothing about DanceMate's Source Master config. Keep the boundary here in
+    the adapter so a Community Source cannot absorb cross-posts from another
+    Cafe merely because they matched the same query.
+    """
+    config = _config(source)
+    cafe_hint = str(config.get("cafe_name_hint") or "").strip().casefold()
+    cafe_name = str(getattr(record, "cafe_name", None) or "").casefold()
+    tokens = [
+        str(token).strip().casefold()
+        for token in (config.get("url_contains") or [])
+        if str(token).strip()
+    ]
+    url = str(getattr(record, "source_url", None) or "").casefold()
+    return (not cafe_hint or cafe_hint in cafe_name) and (
+        not tokens or all(token in url for token in tokens)
+    )
+
+
+def _apply_naver_structure_trust(record: Any, source: dict[str, Any]) -> None:
+    """Carry an explicitly trusted official Cafe board type into ingestion.
+
+    Direct Daum boards already put ``known_event_type`` in every RawPostRecord.
+    A Naver Cafe is search-only, so that structural signal used to disappear
+    even when an operator had configured the same EVENT_PRIMARY contract. It
+    is safe to retain only for primary Community/Organizer Sources whose Cafe
+    name *and* URL are both constrained; broad searches and secondary sources
+    continue through ordinary keyword classification.
+    """
+    config = _config(source)
+    if (
+        source.get("platform") != "NAVER_CAFE"
+        or source.get("source_role") not in {"COMMUNITY", "ORGANIZER"}
+        or source.get("authority_level")
+        not in {"PRIMARY_COMMUNITY", "PRIMARY_ORGANIZER"}
+        or not str(config.get("cafe_name_hint") or "").strip()
+        or not (config.get("url_contains") or [])
+    ):
+        return
+    if config.get("board_type") == "EVENT_PRIMARY":
+        record.known_event_type = "SOCIAL"
+
+
 def _to_raw_item(record: Any) -> RawItem:
     """Translate one engine RawPostRecord into a runtime RawItem."""
     payload = record.to_dict() if hasattr(record, "to_dict") else dict(record)
@@ -362,6 +410,9 @@ def _collect_live(
                 start=naver.get("start", 1),
                 sort=naver.get("sort", "date"),
             ):
+                if not _naver_record_matches(record, source):
+                    continue
+                _apply_naver_structure_trust(record, source)
                 # The same post can match several queries; store it once.
                 if record.source_url and record.source_url in seen:
                     continue

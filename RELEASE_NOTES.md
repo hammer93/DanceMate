@@ -1,5 +1,29 @@
 # DanceMate Release Notes
 
+## v0.92.3 Official Cafe Search Provenance
+
+Product Runtime 0.92.3; Information Engine remains 0.88; no migration (head
+040). Salsa Coverage Expansion Round 2 exposed two adapter defects in
+SEARCH_ONLY Naver Cafe Sources. Source Master `cafe_name_hint` and
+`url_contains` constraints were not applied to Naver results, allowing another
+Cafe's cross-post to enter an official Community Source. The runtime now
+requires both configured boundaries to match every Naver result before intake.
+
+The same official search Source also lost its operator-reviewed
+`EVENT_PRIMARY` structure before Information Engine classification. A tightly
+scoped Naver Cafe Source may now carry that structure as `known_event_type`
+only when it is a PRIMARY Community/Organizer Source and has both Cafe-name
+and URL constraints. Broad searches, blogs, secondary Sources, and
+unconstrained Cafes retain ordinary keyword classification. Naver robots.txt
+continues to block detail fetches and is never bypassed; Search API title and
+snippet evidence remains `METADATA_ONLY` and cannot self-verify an Event.
+There is no schema change and no new recurrence or Venue creation behavior.
+Pre-release verification: focused collector/intake/config tests 86 passed
+(40 PostgreSQL-dependent skips on the Windows host); host suite 1,741 passed
+with only the two documented Linux-only ownership tests unavailable on the
+host; isolated Linux/fresh PostgreSQL suite 2,476 passed (16 skipped); and the
+Information Engine suite 867 passed. No new failures.
+
 ## v0.92.2 Salsa Community Board Genre and Clock Precision
 
 Product Runtime 0.92.2; Information Engine remains 0.88; no migration (head 040).
