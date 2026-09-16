@@ -1,0 +1,42 @@
+[
+  {
+    "mode": "REUSE", "expected_source_id": 5400,
+    "source_key": "SRC-D-026", "name": "라틴속으로 살사 강습 공식 게시판",
+    "community_id": 3, "region_code": "KR-SEOUL",
+    "url": "https://cafe.daum.net/intothesalsa",
+    "board_url": "https://cafe.daum.net/_c21_/bbs_list?grpid=1XBze&fldid=dgfZ",
+    "board_name": "강습게시판(강습신청)", "board_type": "CLASS_PRIMARY"
+  },
+  {
+    "mode": "REUSE", "expected_source_id": 5396,
+    "source_key": "SRC-D-022", "name": "수라댄 정모·파티 공식 게시판",
+    "community_id": 18, "region_code": "KR-GYEONGGI",
+    "url": "https://cafe.daum.net/dk2094",
+    "board_url": "https://cafe.daum.net/_c21_/bbs_list?grpid=1SvB&fldid=5YUX",
+    "board_name": "공지합니다", "board_type": "EVENT_PRIMARY"
+  },
+  {
+    "mode": "ADD", "source_key": "SRC-D-027",
+    "name": "엘마르 월별 파티 공식 게시판",
+    "community_id": 6, "region_code": "KR-INCHEON",
+    "url": "https://cafe.daum.net/clubelmar",
+    "board_url": "https://cafe.daum.net/_c21_/bbs_list?grpid=1Wcra&fldid=ew3I",
+    "board_name": "엘마르 월별 파티", "board_type": "EVENT_PRIMARY"
+  },
+  {
+    "mode": "ADD", "source_key": "SRC-D-028",
+    "name": "라틴아미고스 정모 공식 게시판",
+    "community_id": 34, "region_code": "KR-INCHEON",
+    "url": "https://cafe.daum.net/AmigoS",
+    "board_url": "https://cafe.daum.net/_c21_/bbs_list?grpid=w40N&fldid=MANg",
+    "board_name": "공지사항", "board_type": "EVENT_PRIMARY"
+  },
+  {
+    "mode": "ADD", "source_key": "SRC-D-029",
+    "name": "살사왓 정모·벙개 공식 게시판",
+    "community_id": 9, "region_code": "KR-JEJU",
+    "url": "https://cafe.daum.net/spasoapaso",
+    "board_url": "https://cafe.daum.net/_c21_/bbs_list?grpid=1Ypx5&fldid=AqxN",
+    "board_name": "정모&벙개 공지", "board_type": "EVENT_PRIMARY"
+  }
+]

@@ -9,13 +9,10 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.91.0 (Multi-Genre Event Coverage)
-  - release candidate - pre-deploy verification passed; ROCKPro64 배포는 아직 진행 전
-  - v0.90.0은 실제로 ROCKPro64에 배포되어 있음을 2026-09-15 Production 점검(read-only
-    SSH, HEAD 306c78b 일치, migration 039 적용 확인)으로 확인함 - 이전 릴리스 노트의
-    "Not yet deployed" 문구는 작성 시점 기준 사실이었고, 이후 실제 배포가 이뤄진 것
-- Information Engine: v0.86 (`engine/`) — 이번 릴리스에서 추출 로직 변경
-  (날짜 범위 패턴, 장르 힌트, 잘린 장소 라벨 가드; PHASE별 상세는 RELEASE_NOTES 참고)
+- Product Runtime: v0.92.0 (Salsa Community Board Acquisition)
+  - v0.91.0은 ROCKPro64의 직전 운영 기준점이었다 (migration 040).
+- Information Engine: v0.87 (`engine/`) — 날짜가 명확한 Community 강습,
+  게시일 기준 상대 날짜와 짧은 주간 정모 증거를 추가했다 (RELEASE_NOTES 참고).
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
   확장됨 (실제 데이터가 있는 지역은 소스 수집 현황에 따라 다름)
@@ -78,7 +75,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.91.0"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.92.0"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

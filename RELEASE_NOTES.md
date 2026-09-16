@@ -1,5 +1,66 @@
 # DanceMate Release Notes
 
+## v0.92.0 Salsa Community Board Acquisition
+
+Product Runtime 0.92.0; Information Engine 0.87 (extraction behavior changed).
+Migration: **none**; head remains 040. The v0.91.0 Production baseline is
+the starting point, not this release's completion claim.
+
+The new `daum_cafe_board` Source parser reads only Daum Cafe's public,
+server-rendered `articles.push` ordinary board-list rows. Each Source URL is
+its exact board target (so a Community's existing search API Source may keep
+the unique Cafe homepage URL); `config.cafe_url` retains the official home.
+Each Source uses its
+existing `config` JSON for `community_id`, specific `board_urls`, `board_name`,
+`board_type`, `genre_code` and a maximum 60-day initial lookback. Daum robots
+explicitly allows list/detail paths; Naver Cafe's robots blocks direct
+collection and is not bypassed. Stable article URLs become existing
+`source_items.external_id` values; the `(source_id, external_id)`/content-hash
+contract makes subsequent scheduler cycles incremental. Direct board reads
+need no Kakao API key and do not debit Kakao API quota. One failing board is
+recorded per Source and does not stop other scheduler Sources.
+
+Event extraction reuses Source → acquisition → Information Engine → candidate
+→ normalization/review → Public. An official event board can classify a dated
+정모/벙개 as a SOCIAL without making every notice an Event. A dedicated class
+board opts into **CLASS instances only when an actual class date is stated in
+the title or a labelled schedule**; registration/payment deadlines alone do
+not become Events. A class title that names Salsa alone no longer gains a
+Bachata relation from a generic Salsa/Bachata Community introduction; a
+combined class title or explicit party-body program still provides multi-genre
+evidence. Exclusive Bachata/Kizomba/Tango/Swing titles on a Salsa
+Source are not silently assigned Salsa. Relative dates are anchored to the
+article's publication date, never the crawl clock. A “매주” notice produces at
+most **one instance in its posted week** (within 13 days of the publication
+date); the next week's new post supplies new evidence. No months-long series
+is projected. Inferred/blocked-body values stay pending until human review;
+collector code never creates a Venue. A resolved Venue's region wins; only an
+official PRIMARY_ORGANIZER direct board may supply a region fallback when its
+Venue is unresolved. Explicit external-promotion article text and
+external-promotion/search Sources cannot do so; a host Community ID in raw
+provenance is never itself an Event organizer claim.
+
+The initial Source set is documented in
+`docs/SALSA_COMMUNITY_BOARD_AUDIT.md` and
+`docs/SALSA_BOARD_SOURCES.json`: reuse two disabled zero-item Sources
+(`SRC-D-022`, `SRC-D-026`) and add three official board Sources
+(`SRC-D-027`–`029`). `scripts/apply-board-sources.py` previews and applies
+through the authenticated Admin Source CRUD, checks live yield before enabling,
+records an ACTIVE operator decision, and reads back UTF-8 values. This is a
+one-time master-data operation; enabled Sources thereafter run in the normal
+single scheduler. It does not insert Events manually.
+
+Backup manifests now derive product version from the **running image**, commit
+from that image's annotated release tag, and migration head from the live DB;
+deploy pre-backups taken after checkout moves to 0.92 can therefore still
+describe their actual 0.91/040 snapshot. Missing metadata fails the backup
+gate rather than silently writing a mislabeled manifest.
+
+Focused/host/engine and fresh/upgrade PostgreSQL tests, Production acquisition,
+coverage delta, Public Salsa rendering and data-integrity results are verified
+in the deployment report; no Production results are claimed by this source
+commit alone.
+
 ## v0.91.0 Multi-Genre Event Coverage
 
 Status: RELEASE CANDIDATE - PHASE 8/9/9-supplement/10/10B/11A verification

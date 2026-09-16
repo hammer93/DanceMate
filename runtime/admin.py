@@ -1254,7 +1254,7 @@ def admin_sources(request: Request, genre: str = "ALL",
 
     table_rows = []
     for source in rows:
-        capability = collectors.describe_capability(source["platform"])
+        capability = collectors.describe_capability(source["platform"], source)
         enabled = source["enabled"]
         toggle = "disable" if enabled else "enable"
         actions = (
@@ -1609,7 +1609,7 @@ def admin_source_detail(
 
     genre_by_id = {g["genre_id"]: g["code"] for g in genres}
     region_by_id = {r["region_id"]: r["name"] for r in regions}
-    capability = collectors.describe_capability(source["platform"])
+    capability = collectors.describe_capability(source["platform"], source)
     outcome = outcomes.get(source_id, {})
     health = _source_health(source, outcome)
     tier = source_priority.tier_of(source["source_role"])
@@ -3350,7 +3350,7 @@ def api_sources(_: str = Depends(require_admin)) -> JSONResponse:
     with _connection() as con:
         rows = sources.list_sources(con)
     for row in rows:
-        row["collector"] = collectors.describe_capability(row["platform"])
+        row["collector"] = collectors.describe_capability(row["platform"], row)
     return _dump(rows)
 
 

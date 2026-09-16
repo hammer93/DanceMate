@@ -105,11 +105,32 @@ else
 fi
 
 # --- manifest ---------------------------------------------------------------
+RUNTIME_VERSION="$(compose exec -T runtime cat /app/VERSION 2>/dev/null | tr -d '\r\n' || true)"
+MIGRATION_HEAD="$(pg_run psql -U "$PG_USER" -d "$PG_DB" -At -c 'SELECT max(version) FROM schema_migrations' 2>/dev/null | tr -d '\r\n' || true)"
+# The checkout can already be at the NEW release when deploy-production.sh
+# takes its pre-deploy backup. The running image is still the OLD release.
+# Derive the commit from the annotated release tag matching that image, not
+# from checkout HEAD or the freshly patched .env/VERSION.
+RUNTIME_COMMIT=""
+if [[ -n "$RUNTIME_VERSION" ]]; then
+  RUNTIME_COMMIT="$(git -C "$REPO_ROOT" rev-list -n1 "v$RUNTIME_VERSION" 2>/dev/null || true)"
+fi
+if [[ "$RUNTIME_VERSION" == "$(cat "$REPO_ROOT/VERSION")" ]]; then
+  HEAD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$RUNTIME_COMMIT" ]] || RUNTIME_COMMIT="$HEAD_COMMIT"
+fi
+if [[ -z "$RUNTIME_VERSION" || -z "$RUNTIME_COMMIT" || -z "$MIGRATION_HEAD" ]]; then
+  warn "backup metadata incomplete: runtime=$RUNTIME_VERSION commit=$RUNTIME_COMMIT migration=$MIGRATION_HEAD"
+  warn "refusing a manifest that could mislabel the actual snapshot"
+  exit 1
+fi
 cat > "$TARGET/manifest.json" <<JSON
 {
   "name": "$NAME",
   "created_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "product_runtime_version": "$(cat "$REPO_ROOT/VERSION" 2>/dev/null || echo unknown)",
+  "product_runtime_version": "$RUNTIME_VERSION",
+  "product_commit": "$RUNTIME_COMMIT",
+  "migration_head": "$MIGRATION_HEAD",
   "postgres": {"database": "$PG_DB", "status": "$PG_STATUS", "file": "postgres.dump"},
   "engine_sqlite": {"filename": "$ENGINE_DB_FILENAME", "status": "$ENGINE_STATUS", "file": "engine.sqlite3"}
 }

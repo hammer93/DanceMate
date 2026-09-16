@@ -21,6 +21,9 @@ class RawPostRecord:
     # (the default) leaves classification exactly as it was for every
     # existing caller.
     known_event_type: Optional[str] = None
+    # Only a Source explicitly configured as a dated class board opts into
+    # class-instance Event creation. Ordinary lesson adverts stay non-events.
+    class_event_opt_in: bool = False
     # v0.86.9: extra normalized words the tango-social detection should
     # recognise, handed in by the runtime from its Settings terminology.
     # None (the default) leaves classification exactly as it was.

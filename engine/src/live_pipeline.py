@@ -1,5 +1,5 @@
 from .classifier import classify_with_image_evidence
-from .extractor import extract_single, extract_with_image_fallback
+from .extractor import DATE_PATTERNS, extract_single, extract_with_image_fallback
 from .verifier import verify
 from .database import persist_events
 
@@ -11,6 +11,25 @@ from .database import persist_events
 EVENT_CLASSIFICATIONS = {
     "MILONGA", "MILONGA_WITH_CLASS", "SOCIAL", "SOCIAL_WITH_CLASS",
 }
+
+
+def _dated_class_instance(post) -> bool:
+    """An actual lesson date, not a registration/payment deadline."""
+    import re
+
+    title = post.title or ""
+    body = post.body or ""
+    if re.search(r"강습|개강|클래스|워크숍|워크샵|lesson|workshop", title, re.I):
+        if any(pattern.search(title) for pattern in DATE_PATTERNS) and not re.search(
+            r"신청|입금|마감", title
+        ):
+            return True
+    for match in re.finditer(r"(?:수업|강습)?\s*일정\s*[:：]|개강일\s*[:：]|수업일\s*[:：]",
+                              body):
+        segment = body[match.end():match.end() + 90]
+        if any(pattern.search(segment) for pattern in DATE_PATTERNS):
+            return True
+    return False
 
 
 def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None,
@@ -50,7 +69,10 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         published=getattr(post, "published_at", None),
         event_terms=getattr(post, "event_terms", None),
     )
-    if classification not in EVENT_CLASSIFICATIONS:
+    class_instance = (classification == "CLASS"
+                      and getattr(post, "class_event_opt_in", False)
+                      and _dated_class_instance(post))
+    if classification not in EVENT_CLASSIFICATIONS and not class_instance:
         return {"classification": classification, "events": []}
     ev = extract_with_image_fallback(
         post.title, post.body, source_role=source_role,

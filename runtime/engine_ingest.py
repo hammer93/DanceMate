@@ -159,6 +159,7 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         # miltang_discovery.discover()'s own comment) - process_discovered_
         # post() reads it straight off the RawPostRecord it is handed.
         known_event_type=raw.get("known_event_type"),
+        class_event_opt_in=bool(raw.get("class_event_opt_in")),
         # v0.86.9: the Settings terminology for this source's genre -
         # see _detection_terms_by_source().
         event_terms=event_terms,

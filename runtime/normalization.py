@@ -217,6 +217,26 @@ def _region_id(con, venue_id: int | None) -> int | None:
     return row[0] if row else None
 
 
+def _official_board_region_id(con, source_item_id: int | None) -> int | None:
+    # Only an explicitly official, direct Community board may fall back to
+    # its Source region when venue resolution failed. An external-ad board or
+    # generic search result must never inherit the host Community's city.
+    if source_item_id is None:
+        return None
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT s.region_id FROM source_items i JOIN sources s "
+            "ON s.source_id = i.source_id WHERE i.source_item_id = %s "
+            "AND s.authority_level = 'PRIMARY_ORGANIZER' "
+            "AND s.config->>'parser' = 'daum_cafe_board' "
+            "AND s.config->>'board_type' IN ('EVENT_PRIMARY', 'CLASS_PRIMARY') "
+            "AND COALESCE(i.raw->>'external_promotion', 'false') <> 'true'",
+            (source_item_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 EVIDENCE_ABSENT = "ABSENT"
 
 
@@ -300,7 +320,8 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         # engine's single classification, untouched.
         "event_formats": _event_formats(con, merged.get("event_name"), genre_id,
                                         terms_map),
-        "region_id": _region_id(con, venue_id),
+        "region_id": (_region_id(con, venue_id) or _official_board_region_id(
+            con, _as_int(candidate.get("source_item_id")))),
         "engine_status": (candidate.get("candidate_status") or "POSSIBLE").upper(),
         "review_state": state,
         "field_origin": json.dumps(origin, ensure_ascii=False),

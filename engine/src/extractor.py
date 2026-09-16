@@ -20,6 +20,9 @@ DATE_PATTERNS = [
         r"\s*-\s*\d{1,2}(?!\d)"
     ),
     re.compile(r"(?P<y>20\d{2})[.\-/](?P<m>\d{1,2})[.\-/](?P<d>\d{1,2})"),
+    # Cafe notices often abbreviate the year: "26.9.16.정모". Keep the
+    # left boundary so a longer four-digit year is never chopped in half.
+    re.compile(r"(?<!\d)(?P<y>\d{2})[.\-/](?P<m>\d{1,2})[.\-/](?P<d>\d{1,2})(?!\d)"),
     re.compile(r"(?P<y>20\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<y>\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
@@ -80,6 +83,44 @@ EXPLICIT_YEAR = "EXPLICIT_YEAR"          # the post wrote the year
 SOURCE_YEAR = "SOURCE_YEAR"              # taken from when the post was written
 CURRENT_YEAR_INFERRED = "CURRENT_YEAR_INFERRED"  # see _norm_date; not reachable
 UNKNOWN_YEAR = "UNKNOWN_YEAR"            # no year, and nothing to infer it from
+SOURCE_RELATIVE_DATE = "SOURCE_RELATIVE_DATE"
+SOURCE_WEEKLY_BOUNDED = "SOURCE_WEEKLY_BOUNDED"
+
+_WEEKDAY = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
+_RELATIVE = re.compile(r"(?P<week>이번주|다음주|이번|매주)\s*(?P<day>[월화수목금토일])요일|(?P<simple>오늘|내일)")
+
+
+def _relative_date(text, published):
+    """One relative date from the post's timestamp, never the crawl clock.
+
+    A weekly notice yields at most *one* dated occurrence in the week it was
+    posted; a fresh notice next week is new evidence. No months-long series
+    is projected from an undated/static community advert.
+    """
+    from datetime import timedelta
+
+    if published is None:
+        return None, None, None
+    match = _RELATIVE.search(text)
+    if not match:
+        return None, None, None
+    if match.group("simple"):
+        day = published + timedelta(days=1 if match.group("simple") == "내일" else 0)
+        return day.isoformat(), match.group(0), SOURCE_RELATIVE_DATE
+    target = _WEEKDAY[match.group("day")]
+    week = match.group("week")
+    if week == "이번주":
+        day = published - timedelta(days=published.weekday()) + timedelta(days=target)
+        if day < published:
+            return None, match.group(0), SOURCE_RELATIVE_DATE
+    elif week == "다음주":
+        day = published - timedelta(days=published.weekday()) + timedelta(days=7 + target)
+    else:
+        day = published + timedelta(days=(target - published.weekday()) % 7)
+    if (day - published).days > 13:
+        return None, match.group(0), SOURCE_RELATIVE_DATE
+    provenance = SOURCE_WEEKLY_BOUNDED if week == "매주" else SOURCE_RELATIVE_DATE
+    return day.isoformat(), match.group(0), provenance
 
 # How far from the post its event may fall before we stop believing the year.
 #
@@ -172,7 +213,7 @@ def _norm_date(text: str, published=None, default_year=None):
             continue
         resolved, provenance = _resolve_date_match(m, published)
         return resolved, m.group(0), provenance
-    return None, None, None
+    return _relative_date(text, published)
 
 
 # --- event context segmentation (v0.81.2) ------------------------------------
@@ -407,11 +448,15 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
             scope[:160], source_role=source_role, context_id=context_id,
         ))
 
-    # A named genre other than the one this post is already filed under
-    # (classifier.detect_genre_hints() - whole post, not just this segment,
-    # since a festival naming three dance styles in one intro line is not a
-    # multi-program post the way a date/time/venue mix-up would be).
-    for code in sorted(classifier.detect_genre_hints(title, body)):
+    # A dated class with a named dance in its title is that class, not every
+    # style mentioned in the Community's generic introductory paragraph.
+    # Parties/festivals can still name additional styles in their body.
+    class_title_genre = (event_type == "CLASS" and re.search(
+        r"살사|salsa|바차타|bachata|키좀바|kizomba|발보아|balboa|"
+        r"스윙|swing|탱고|땅고|tango", title, re.I
+    ))
+    genre_body = "" if class_title_genre else body
+    for code in sorted(classifier.detect_genre_hints(title, genre_body)):
         ev.evidences.append(Evidence(
             "genre_hint", code, f"{title} {body}"[:160],
             source_role=source_role, inference="SECONDARY_GENRE_WORD",

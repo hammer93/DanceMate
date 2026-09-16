@@ -84,7 +84,15 @@ def missing_credentials(platform: str) -> list[str]:
     return [name for name in CREDENTIAL_ENV.get(platform, ()) if not os.environ.get(name)]
 
 
-def describe_capability(platform: str) -> dict[str, Any]:
+DAUM_BOARD_PARSER = "daum_cafe_board"
+
+
+def _is_daum_board(source: dict[str, Any] | None) -> bool:
+    return bool(source and source.get("platform") == "DAUM_CAFE"
+                and _config(source).get("parser") == DAUM_BOARD_PARSER)
+
+
+def describe_capability(platform: str, source: dict[str, Any] | None = None) -> dict[str, Any]:
     """What can this platform do right now, and why not more."""
     if platform not in SUPPORTED_PLATFORMS:
         return {
@@ -92,7 +100,7 @@ def describe_capability(platform: str) -> dict[str, Any]:
             "snapshot": False,
             "detail": f"{platform} has no collector in v0.75",
         }
-    missing = missing_credentials(platform)
+    missing = [] if _is_daum_board(source) else missing_credentials(platform)
     return {
         "live": not missing,
         "snapshot": True,
@@ -138,6 +146,8 @@ def content_mode(source: dict[str, Any]) -> str:
     """
     from . import acquisition  # local: acquisition never imports collectors
 
+    if _is_daum_board(source):
+        return CONTENT_MODE_DETAIL_FETCH
     if source.get("platform") != "WEB":
         return CONTENT_MODE_SEARCH_API
     parser = _config(source).get("parser") or WEB_PARSER_BOARD
@@ -245,7 +255,7 @@ def collect(
     if mode != MODE_LIVE:
         raise CollectorUnavailable(f"unknown collection mode: {mode}")
 
-    missing = missing_credentials(platform)
+    missing = [] if _is_daum_board(source) else missing_credentials(platform)
     if missing:
         raise CollectorUnavailable(
             f"live collection from {platform} needs {', '.join(missing)} in .env"
@@ -263,7 +273,24 @@ def _collect_snapshot(
             "set config.snapshot_path or ship a fixture"
         )
     platform = source["platform"]
-    if platform == "DAUM_CAFE":
+    if _is_daum_board(source):
+        from . import daum_board_discovery
+
+        config = _config(source)
+        board = (config.get("board_urls") or [""])[0]
+        records = daum_board_discovery.parse_list(
+            path.read_text(encoding="utf-8"), board,
+            cafe_url=config.get("cafe_url") or source.get("url") or "",
+            lookback_days=config.get("lookback_days", 60),
+            community_id=config.get("community_id"),
+            board_type=config.get("board_type", "EVENT_PRIMARY"),
+            board_name=config.get("board_name", ""),
+            genre_code=config.get("genre_code", "SALSA"),
+        )
+        for record in records:
+            record["source_id"] = engine_source["source_id"]
+            record["platform"] = platform
+    elif platform == "DAUM_CAFE":
         from src.collectors.daum import load_snapshot  # noqa: PLC0415
 
         records = load_snapshot(path, engine_source, query="snapshot")
@@ -296,6 +323,8 @@ def _collect_live(
 ) -> CollectionResult:
     platform = source["platform"]
 
+    if _is_daum_board(source):
+        return _collect_daum_board(source, engine_source)
     if platform == "WEB":
         return _collect_web(source, engine_source)
 
@@ -361,6 +390,33 @@ WEB_PARSER_TANGOCALENDAR = "tangocalendar_json"
 WEB_PARSER_MILTANG = "miltang_ssr"
 WEB_PARSER_TANGOCLASS = "tangoclass_wp_json"
 WEB_PARSER_BALNHOP = "balnhop_meta"
+
+
+def _collect_daum_board(source: dict[str, Any], engine_source: dict[str, Any]
+                        ) -> CollectionResult:
+    from . import daum_board_discovery
+
+    config = _config(source)
+    board_urls = config.get("board_urls") or []
+    if not board_urls:
+        raise CollectorUnavailable("Daum Cafe board has no config.board_urls")
+    records = []
+    seen = set()
+    for board_url in board_urls:
+        for record in daum_board_discovery.discover(
+            board_url, source_id=engine_source["source_id"],
+            cafe_url=config.get("cafe_url") or source.get("url") or "",
+            lookback_days=config.get("lookback_days", 60),
+            community_id=config.get("community_id"),
+            board_type=config.get("board_type", "EVENT_PRIMARY"),
+            board_name=config.get("board_name", ""),
+            genre_code=config.get("genre_code", "SALSA"),
+        ):
+            if record["source_url"] not in seen:
+                seen.add(record["source_url"])
+                records.append(record)
+    return CollectionResult(MODE_LIVE, [_to_raw_item(record) for record in records],
+                            f"live Daum board: {len(records)} posts from {len(board_urls)} board(s)")
 
 
 def _web_discovery_module(parser: str):
@@ -470,7 +526,7 @@ def test_source(settings: Settings, source: dict[str, Any]) -> dict[str, Any]:
     unreachable one before enabling it.
     """
     platform = source["platform"]
-    capability = describe_capability(platform)
+    capability = describe_capability(platform, source)
     result: dict[str, Any] = {
         "source_key": source.get("source_key"),
         "platform": platform,

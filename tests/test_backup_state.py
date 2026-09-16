@@ -112,3 +112,13 @@ def test_backup_script_and_module_agree_on_the_naming_contract(repo_root):
     assert backup_state.ENGINE_SQLITE in script
     # the timestamp format must match backup_name()
     assert "date -u +%Y%m%d-%H%M%S" in script
+
+
+def test_backup_manifest_describes_running_snapshot_not_new_checkout(repo_root):
+    script = (repo_root / "scripts" / "backup.sh").read_text(encoding="utf-8")
+    assert "compose exec -T runtime cat /app/VERSION" in script
+    assert "SELECT max(version) FROM schema_migrations" in script
+    assert 'rev-list -n1 "v$RUNTIME_VERSION"' in script
+    assert '"product_commit": "$RUNTIME_COMMIT"' in script
+    assert '"migration_head": "$MIGRATION_HEAD"' in script
+    assert '"product_runtime_version": "$RUNTIME_VERSION"' in script

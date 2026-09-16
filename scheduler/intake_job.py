@@ -70,7 +70,7 @@ def choose_mode(source: dict[str, Any]) -> tuple[str | None, str]:
     A mode of None means: do not collect, and report the reason.
     """
     platform = source["platform"]
-    capability = collectors.describe_capability(platform)
+    capability = collectors.describe_capability(platform, source)
 
     if not capability["live"] and not capability["snapshot"]:
         return None, f"{platform} has no collector in this version"
@@ -93,6 +93,7 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
     source_id = source["source_id"]
     source_key = source["source_key"]
     platform = source["platform"]
+    direct_board = collectors._is_daum_board(source)
 
     mode, reason = choose_mode(source)
     if mode is None:
@@ -108,7 +109,7 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
 
     # Budget check before any request: a source with six queries costs six calls.
     expected = quota.expected_request_count(source)
-    if mode == collectors.MODE_LIVE:
+    if mode == collectors.MODE_LIVE and not direct_board:
         try:
             quota.check(con, platform, cost=expected)
         except quota.QuotaExceeded as exc:
@@ -144,15 +145,16 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
         return {"source_key": source_key, "status": STATUS_SKIPPED, "detail": detail}
     except Exception as exc:
         classified = collector_errors.classify(exc)
-        if mode == collectors.MODE_LIVE:
+        if mode == collectors.MODE_LIVE and not direct_board:
             # The requests were spent even though they failed.
             quota.record(con, platform, requests=expected, error=classified.kind)
-        usage.record_api_requests(
-            con, platform, requests=expected, errors=expected,
-            rate_limited=expected if classified.kind == collector_errors.RATE_LIMITED else 0,
-            auth_errors=expected if classified.kind == collector_errors.AUTH_FAILED else 0,
-            status=classified.kind,
-        )
+        if not direct_board:
+            usage.record_api_requests(
+                con, platform, requests=expected, errors=expected,
+                rate_limited=expected if classified.kind == collector_errors.RATE_LIMITED else 0,
+                auth_errors=expected if classified.kind == collector_errors.AUTH_FAILED else 0,
+                status=classified.kind,
+            )
         intake.finish_run(con, run_id, status=STATUS_FAIL, error=classified.summary())
         intake.record_error(
             con, source_id=source_id, collection_run_id=run_id,
@@ -171,11 +173,11 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
             "detail": classified.summary(),
         }
 
-    if mode == collectors.MODE_LIVE:
+    if mode == collectors.MODE_LIVE and not direct_board:
         quota.record(con, platform, requests=expected)
 
     counts = intake.store_items(con, source_id, result.items, collection_run_id=run_id)
-    if mode == collectors.MODE_LIVE:
+    if mode == collectors.MODE_LIVE and not direct_board:
         usage.record_api_requests(
             con, platform, requests=expected, success=expected,
             items=len(result.items), new_items=counts["NEW"] + counts["REVISED"],
