@@ -1,5 +1,31 @@
 # DanceMate Release Notes
 
+## v0.92.4 Official Naver Board Regional Coverage
+
+Product Runtime 0.92.4; Information Engine remains 0.88; no migration (head
+040). Salsa Coverage Expansion Round 3 found that direct official Naver Cafe
+Sources could satisfy the same strict Community identity and Event-board
+boundaries as direct Daum boards, yet an Event without a resolved Venue still
+lost its trusted Source region. The fallback now also accepts a
+`PRIMARY_ORGANIZER` Naver Cafe Source only when both `cafe_name_hint` and a
+non-empty `url_contains` boundary are configured and the item is not an
+external promotion. Secondary, aggregate, unconstrained, and cross-posted
+items remain unable to inherit a Source region.
+
+The collector and migration 016 have supported Naver `webkr` Sources since
+that migration, but Source Master validation accidentally omitted
+`NAVER_WEB`, preventing operators from registering or enabling that supported
+collector through the normal contract. Validation and the Admin platform list
+now match the existing collector and database constraint. There is no schema
+change, Venue creation, or recurrence-policy change. Pre-release verification:
+focused host tests 78 passed (42 PostgreSQL-dependent skips), and focused
+existing-PostgreSQL tests 120 passed. The full fresh PostgreSQL suite passed
+2,479 tests (16 skipped); the host suite passed 1,742 tests (745 skipped),
+with only the two documented Linux-bash ownership tests unavailable on this
+Windows host; and the Information Engine suite passed all 867 tests. HTTP and
+production results are recorded in the Round 3 operating report. No new
+product failure.
+
 ## v0.92.3 Official Cafe Search Provenance
 
 Product Runtime 0.92.3; Information Engine remains 0.88; no migration (head

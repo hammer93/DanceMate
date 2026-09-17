@@ -147,7 +147,8 @@ def test_official_board_region_fallback_is_guarded_not_generic():
         def fetchone(self):
             return (123,) if all(token in self.query for token in (
                 "PRIMARY_ORGANIZER", "daum_cafe_board", "EVENT_PRIMARY",
-                "CLASS_PRIMARY", "source_items", "external_promotion"
+                "CLASS_PRIMARY", "NAVER_CAFE", "cafe_name_hint",
+                "url_contains", "source_items", "external_promotion"
             )) else None
 
         def __enter__(self):

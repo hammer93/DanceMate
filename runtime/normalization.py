@@ -283,7 +283,10 @@ def _region_id(con, venue_id: int | None) -> int | None:
 def _official_board_region_id(con, source_item_id: int | None) -> int | None:
     # Only an explicitly official, direct Community board may fall back to
     # its Source region when venue resolution failed. An external-ad board or
-    # generic search result must never inherit the host Community's city.
+    # generic search result must never inherit the host Community's city. A
+    # Naver Cafe search is direct only when the Source has both identity
+    # boundaries that intake enforces for every result; unconstrained Cafe
+    # searches remain generic.
     if source_item_id is None:
         return None
     with con.cursor() as cur:
@@ -291,8 +294,13 @@ def _official_board_region_id(con, source_item_id: int | None) -> int | None:
             "SELECT s.region_id FROM source_items i JOIN sources s "
             "ON s.source_id = i.source_id WHERE i.source_item_id = %s "
             "AND s.authority_level = 'PRIMARY_ORGANIZER' "
-            "AND s.config->>'parser' = 'daum_cafe_board' "
             "AND s.config->>'board_type' IN ('EVENT_PRIMARY', 'CLASS_PRIMARY') "
+            "AND ((s.platform = 'DAUM_CAFE' "
+            "      AND s.config->>'parser' = 'daum_cafe_board') "
+            "  OR (s.platform = 'NAVER_CAFE' "
+            "      AND NULLIF(btrim(s.config->>'cafe_name_hint'), '') IS NOT NULL "
+            "      AND jsonb_typeof(s.config->'url_contains') = 'array' "
+            "      AND jsonb_array_length(s.config->'url_contains') > 0)) "
             "AND COALESCE(i.raw->>'external_promotion', 'false') <> 'true'",
             (source_item_id,),
         )

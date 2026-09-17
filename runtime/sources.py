@@ -19,6 +19,7 @@ PLATFORMS = (
     "DAUM_CAFE",
     "NAVER_CAFE",
     "NAVER_BLOG",
+    "NAVER_WEB",
     "FACEBOOK",
     "WEB",
     "DIRECTORY",

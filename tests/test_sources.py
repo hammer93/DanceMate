@@ -35,6 +35,11 @@ def test_a_well_formed_source_validates():
     sources.validate(**_valid())
 
 
+def test_naver_web_is_a_valid_source_master_platform():
+    """Migration 016 and the collector already support Naver webkr."""
+    sources.validate(**_valid(platform="NAVER_WEB"))
+
+
 @pytest.mark.parametrize("field", ["source_key", "name"])
 def test_blank_required_fields_are_rejected(field):
     with pytest.raises(sources.SourceValidationError, match=field):

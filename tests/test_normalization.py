@@ -113,6 +113,57 @@ def _salsa_board_item(pg, unique: str, title: str, body: str) -> int:
         return cur.fetchone()[0]
 
 
+def _naver_board_item(pg, unique: str, *, authority: str) -> int:
+    from runtime import intake, sources
+
+    with pg.cursor() as cur:
+        cur.execute("SELECT genre_id FROM genres WHERE code = 'SALSA'")
+        salsa_id = cur.fetchone()[0]
+        cur.execute("SELECT region_id FROM regions WHERE code = 'KR-SEOUL'")
+        seoul_id = cur.fetchone()[0]
+    source = sources.create_source(
+        pg, source_key=f"test-naver-board-{authority}-{unique}",
+        name=f"test Naver board {authority} {unique}", platform="NAVER_CAFE",
+        source_role="COMMUNITY", url=f"https://cafe.naver.com/test{unique}",
+        genre_id=salsa_id, region_id=seoul_id, authority_level=authority,
+        queries=["살사 정모"], config={
+            "board_type": "EVENT_PRIMARY", "cafe_name_hint": "테스트 살사",
+            "url_contains": [f"test{unique}"],
+        },
+    )
+    assert intake.store_item(
+        pg, source["source_id"], intake.RawItem(
+            external_id=f"naver-{authority}-{unique}",
+            url=f"https://cafe.naver.com/test{unique}/1",
+            title="서울 살사 정모", body="2026년 9월 20일 살사 정모",
+            raw={"acquisition_quality": "METADATA_ONLY"},
+        ),
+    ) == "NEW"
+    with pg.cursor() as cur:
+        cur.execute("SELECT source_item_id FROM source_items WHERE source_id=%s",
+                    (source["source_id"],))
+        return cur.fetchone()[0]
+
+
+def test_tightly_bounded_official_naver_board_can_supply_its_region(pg, unique, seoul_id):
+    item_id = _naver_board_item(pg, unique, authority="PRIMARY_ORGANIZER")
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       event_name="서울 살사 정모", venue=None),
+    )
+    assert stored["venue_status"] == normalization.VENUE_ABSENT
+    assert stored["region_id"] == seoul_id
+
+
+def test_secondary_naver_search_never_supplies_its_source_region(pg, unique):
+    item_id = _naver_board_item(pg, unique, authority="SECONDARY")
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       event_name="서울 살사 정모", venue=None),
+    )
+    assert stored["region_id"] is None
+
+
 def test_board_source_salsa_does_not_make_bachata_only_article_salsa(pg, unique):
     item_id = _salsa_board_item(
         pg, unique, "Best Latin Amigos gathering",
