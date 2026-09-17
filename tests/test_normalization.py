@@ -164,6 +164,59 @@ def test_secondary_naver_search_never_supplies_its_source_region(pg, unique):
     assert stored["region_id"] is None
 
 
+def _structured_web_item(pg, unique: str, *, opted_in: bool) -> int:
+    from runtime import intake, sources
+
+    with pg.cursor() as cur:
+        cur.execute("SELECT genre_id FROM genres WHERE code = 'SALSA'")
+        salsa_id = cur.fetchone()[0]
+        cur.execute("SELECT region_id FROM regions WHERE code = 'KR-SEOUL'")
+        seoul_id = cur.fetchone()[0]
+    source = sources.create_source(
+        pg, source_key=f"test-web-location-{opted_in}-{unique}",
+        name=f"test structured directory {unique}", platform="NAVER_WEB",
+        source_role="DIRECTORY", genre_id=salsa_id, region_id=seoul_id,
+        authority_level="SECONDARY", queries=["부산 살사 파티"],
+        config={
+            "url_contains": ["events.example.test/"],
+            "structured_event_location": opted_in,
+        },
+    )
+    assert intake.store_item(
+        pg, source["source_id"], intake.RawItem(
+            external_id=f"web-{unique}", url=f"https://events.example.test/{unique}",
+            title="부산 행사 - 서울 초청 DJ 살사 파티",
+            body=("부산 행사 · 2026-09-20 · baile social · social dance · "
+                  "서면, 부산, Busan, 대한민국 · 살사 · 파티"),
+        ),
+    ) == "NEW"
+    with pg.cursor() as cur:
+        cur.execute("SELECT source_item_id FROM source_items WHERE source_id=%s",
+                    (source["source_id"],))
+        return cur.fetchone()[0]
+
+
+def test_opted_in_structured_event_location_supplies_event_region(pg, unique):
+    item_id = _structured_web_item(pg, unique, opted_in=True)
+    with pg.cursor() as cur:
+        cur.execute("SELECT region_id FROM regions WHERE code = 'KR-BUSAN'")
+        busan_id = cur.fetchone()[0]
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       event_name="부산 행사 - 서울 초청 DJ 살사 파티", venue=None),
+    )
+    assert stored["region_id"] == busan_id
+
+
+def test_unconfigured_directory_cannot_infer_region_from_event_text(pg, unique):
+    item_id = _structured_web_item(pg, unique, opted_in=False)
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       event_name="부산 행사 - 서울 초청 DJ 살사 파티", venue=None),
+    )
+    assert stored["region_id"] is None
+
+
 def test_board_source_salsa_does_not_make_bachata_only_article_salsa(pg, unique):
     item_id = _salsa_board_item(
         pg, unique, "Best Latin Amigos gathering",

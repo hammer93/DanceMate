@@ -1,5 +1,25 @@
 # DanceMate Release Notes
 
+## v0.92.5 Structured Event Location Attribution
+
+Product Runtime 0.92.5; Information Engine remains 0.88; no migration (head
+040). Salsa Coverage Expansion Round 3 exposed one remaining attribution gap:
+a region-neutral secondary event directory could provide an Event's own
+structured locality (`social dance · Yuseong-gu, Daejeon ·`), but normalization
+discarded it because there was no resolved Venue and correctly refused to use
+the directory Source's region. An explicitly opted-in `NAVER_WEB` directory
+may now resolve that one structured location field to 부산, 대전, or 광주. It
+never reads `sources.region_id`, ignores titles where guest-city cross-post
+language occurs, requires a single unambiguous region, and retains the special
+Gwangju metro/광주시 collision guard. Unconfigured and free-text aggregate
+Sources remain unchanged. There is no schema, Venue, recurrence, or Engine
+change. Focused verification passed 55 host tests (44 PostgreSQL-dependent
+skips) and 99 existing-PostgreSQL tests. The full fresh PostgreSQL suite
+passed 2,481 tests (16 skipped); the host suite passed 1,742 tests (747
+skipped), with only the two documented Linux-bash ownership tests unavailable
+on this Windows host. The unchanged Information Engine passed all 867 tests
+during this Round 3 release sequence. No new product failure.
+
 ## v0.92.4 Official Naver Board Regional Coverage
 
 Product Runtime 0.92.4; Information Engine remains 0.88; no migration (head

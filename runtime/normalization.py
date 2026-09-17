@@ -308,6 +308,66 @@ def _official_board_region_id(con, source_item_id: int | None) -> int | None:
     return row[0] if row else None
 
 
+_STRUCTURED_EVENT_LOCATION = re.compile(
+    r"\bsocial\s+dance\s*·\s*([^·\n]{2,160})\s*·", re.I,
+)
+
+
+def _structured_event_region_id(con, source_item_id: int | None) -> int | None:
+    """Resolve an Event's own structured locality from an opted-in directory.
+
+    This is deliberately not free-text inference and never reads
+    ``sources.region_id``. The configured Naver Web directory must expose a
+    distinct ``social dance · <location> ·`` field, and that one field must
+    name exactly one supported region. Event titles are excluded: a Busan
+    event can legitimately say "Seoul guest DJ" there.
+    """
+    if source_item_id is None:
+        return None
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT i.body FROM source_items i JOIN sources s "
+            "ON s.source_id = i.source_id WHERE i.source_item_id = %s "
+            "AND s.platform = 'NAVER_WEB' AND s.source_role = 'DIRECTORY' "
+            "AND s.authority_level = 'SECONDARY' "
+            "AND s.config->>'structured_event_location' = 'true' "
+            "AND jsonb_typeof(s.config->'url_contains') = 'array' "
+            "AND jsonb_array_length(s.config->'url_contains') > 0",
+            (source_item_id,),
+        )
+        row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+    match = _STRUCTURED_EVENT_LOCATION.search(row[0])
+    if not match:
+        return None
+    location = match.group(1)
+    codes: set[str] = set()
+    if "부산" in location or re.search(r"\bBusan\b", location, re.I):
+        codes.add("KR-BUSAN")
+    if "대전" in location or re.search(r"\bDaejeon\b", location, re.I):
+        codes.add("KR-DAEJEON")
+    # Gwangju-si in Gyeonggi is not the metro. Require one of the metro's
+    # five gu districts (English or Korean), or the full metropolitan name.
+    if (
+        "광주광역시" in location
+        or re.search(r"광주\s*(?:동구|서구|남구|북구|광산구)", location)
+        or (
+            re.search(r"\bGwangju\b", location, re.I)
+            and re.search(
+                r"\b(?:Dong|Seo|Nam|Buk|Gwangsan)-gu\b", location, re.I,
+            )
+        )
+    ):
+        codes.add("KR-GWANGJU")
+    if len(codes) != 1:
+        return None
+    with con.cursor() as cur:
+        cur.execute("SELECT region_id FROM regions WHERE code = %s", (codes.pop(),))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 EVIDENCE_ABSENT = "ABSENT"
 
 
@@ -401,8 +461,13 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         # engine's single classification, untouched.
         "event_formats": _event_formats(con, merged.get("event_name"), genre_id,
                                         terms_map),
-        "region_id": (_region_id(con, venue_id) or _official_board_region_id(
-            con, _as_int(candidate.get("source_item_id")))),
+        "region_id": (
+            _region_id(con, venue_id)
+            or _official_board_region_id(con, _as_int(candidate.get("source_item_id")))
+            or _structured_event_region_id(
+                con, _as_int(candidate.get("source_item_id"))
+            )
+        ),
         "engine_status": (candidate.get("candidate_status") or "POSSIBLE").upper(),
         "review_state": state,
         "field_origin": json.dumps(origin, ensure_ascii=False),

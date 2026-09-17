@@ -9,7 +9,7 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.92.4 (official Naver board region and Naver web Source patch)
+- Product Runtime: v0.92.5 (structured Event location attribution patch)
   - v0.91.0은 ROCKPro64의 직전 운영 기준점이었다 (migration 040).
 - Information Engine: v0.88 (`engine/`) — 날짜가 명확한 Community 강습,
   게시일 기준 상대 날짜와 짧은 주간 정모 증거를 추가했다 (RELEASE_NOTES 참고).
@@ -75,7 +75,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.92.4"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.92.5"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
