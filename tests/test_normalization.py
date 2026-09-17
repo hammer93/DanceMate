@@ -208,6 +208,32 @@ def test_opted_in_structured_event_location_supplies_event_region(pg, unique):
     assert stored["region_id"] == busan_id
 
 
+def test_acquired_event_location_takes_precedence_over_search_snippet(pg, unique):
+    item_id = _structured_web_item(pg, unique, opted_in=True)
+    acquired = ("대전 행사 · 2026-09-20 · baile social · social dance · "
+                "Yuseong-gu, Daejeon, South Korea · 살사 · 파티")
+    with pg.cursor() as cur:
+        cur.execute("UPDATE source_items SET body = '검색 결과의 짧은 소개' "
+                    "WHERE source_item_id = %s", (item_id,))
+        cur.execute(
+            "INSERT INTO source_item_content "
+            "(source_item_id, acquisition_status, extracted_text, content_length) "
+            "VALUES (%s, 'FETCHED_FULL', %s, %s) "
+            "ON CONFLICT (source_item_id) DO UPDATE SET "
+            "acquisition_status = EXCLUDED.acquisition_status, "
+            "extracted_text = EXCLUDED.extracted_text, "
+            "content_length = EXCLUDED.content_length",
+            (item_id, acquired, len(acquired)),
+        )
+        cur.execute("SELECT region_id FROM regions WHERE code = 'KR-DAEJEON'")
+        daejeon_id = cur.fetchone()[0]
+    stored = normalization.normalize_candidate(
+        pg, _candidate(unique, source_item_id=item_id, event_type="SOCIAL",
+                       event_name="대전 행사", venue=None),
+    )
+    assert stored["region_id"] == daejeon_id
+
+
 def test_unconfigured_directory_cannot_infer_region_from_event_text(pg, unique):
     item_id = _structured_web_item(pg, unique, opted_in=False)
     stored = normalization.normalize_candidate(

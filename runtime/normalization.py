@@ -326,8 +326,11 @@ def _structured_event_region_id(con, source_item_id: int | None) -> int | None:
         return None
     with con.cursor() as cur:
         cur.execute(
-            "SELECT i.body FROM source_items i JOIN sources s "
-            "ON s.source_id = i.source_id WHERE i.source_item_id = %s "
+            "SELECT COALESCE(NULLIF(c.extracted_text, ''), i.body) "
+            "FROM source_items i JOIN sources s "
+            "ON s.source_id = i.source_id "
+            "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            "WHERE i.source_item_id = %s "
             "AND s.platform = 'NAVER_WEB' AND s.source_role = 'DIRECTORY' "
             "AND s.authority_level = 'SECONDARY' "
             "AND s.config->>'structured_event_location' = 'true' "

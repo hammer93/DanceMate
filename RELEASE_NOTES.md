@@ -1,5 +1,22 @@
 # DanceMate Release Notes
 
+## v0.92.6 Acquired Structured Event Location
+
+Product Runtime 0.92.6; Information Engine remains 0.88; no migration (head
+040). The v0.92.5 structured Event locality guard initially read only the
+search-discovery snippet. A real Social Dance Live result demonstrated the
+other valid acquisition shape: its snippet ended before the structured
+location, while the successfully fetched `og_description` carried the full
+`social dance · Seo-gu, Daejeon ·` field that the Engine used. Attribution
+now reads settled acquired text first and falls back to the discovery body,
+matching the existing extraction precedence without broadening the opt-in,
+platform, role, authority, unambiguous-region, or Gwangju safety gates. There
+is no schema, Venue, recurrence, or Engine change. Focused verification passed
+20 host tests (34 PostgreSQL-dependent skips) and 54 existing-PostgreSQL tests.
+The full fresh PostgreSQL suite passed 2,482 tests (16 skipped); the host suite
+passed 1,742 tests (748 skipped), with only the two documented Linux-bash
+ownership tests unavailable on this Windows host. No new product failure.
+
 ## v0.92.5 Structured Event Location Attribution
 
 Product Runtime 0.92.5; Information Engine remains 0.88; no migration (head
