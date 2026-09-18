@@ -72,8 +72,21 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
         page = pagination.resolve_page(request.query_params.get("page"), total)
         with con.cursor() as cur:
             cur.execute(
-                "SELECT e.*, v.name AS venue_name FROM events e "
+                # v0.94.0: the representative source (elected primary, else
+                # the row's own) and how many folded posts stand behind it -
+                # joined here, never looked up per row.
+                "SELECT e.*, v.name AS venue_name, "
+                "       src.name AS source_name, src.source_role, src.authority_level, "
+                "       src.platform AS source_platform, "
+                "       (COALESCE(si.raw->>'external_promotion', 'false') = 'true') "
+                "         AS external_promotion, "
+                "       (SELECT count(*) FROM events d WHERE d.canonical_event_id = e.event_id) "
+                "         AS supporting "
+                "FROM events e "
                 "LEFT JOIN venues v ON v.venue_id = e.venue_id "
+                "LEFT JOIN source_items si "
+                "  ON si.source_item_id = COALESCE(e.primary_source_item_id, e.source_item_id) "
+                "LEFT JOIN sources src ON src.source_id = si.source_id "
                 "ORDER BY e.event_date DESC, e.start_time NULLS LAST, e.event_id "
                 "LIMIT %s OFFSET %s",
                 (pagination.PAGE_SIZE, pagination.sql_offset(page)),
@@ -82,7 +95,8 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
             rows = [dict(zip(names, row)) for row in cur.fetchall()]
 
     table = admin._table(
-        ["Date", "Time", "Event", "Venue", "Fee", "Engine", "Review", "Source", "Listing"],
+        ["Date", "Time", "Event", "Venue", "Fee", "Engine", "Review", "Source",
+         "대표 출처", "Listing"],
         [
             [
                 E(str(row["event_date"])),
@@ -98,6 +112,7 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
                 E(row["review_state"]),
                 admin._badge(row["provenance"],
                              "ok" if row["provenance"] == "LIVE" else "muted"),
+                _primary_source_cell(row),
                 (admin._badge("DUPLICATE", "muted")
                  if row["canonical_event_id"] else admin._badge(row["listing_state"],
                      "ok" if row["listing_state"] == "LISTED" else "muted")),
@@ -130,6 +145,135 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
     )
     return HTMLResponse(admin._page("Events", "/admin/events", body,
                                     flash=admin._flash(request)))
+
+
+# --- event sources (v0.94.0) -------------------------------------------------
+#
+# Which post represents an event, and every other post that stands behind
+# it. Elected by runtime.duplicates.reconcile_primary_source(); a person can
+# name a different post here, and that choice outlasts every later scan.
+
+def _primary_source_cell(row: dict[str, Any]) -> str:
+    from . import source_evidence
+
+    evidence_class = source_evidence.classify(
+        row.get("source_role"), row.get("authority_level"), row.get("source_platform"),
+        bool(row.get("external_promotion")),
+    )
+    tone = "ok" if source_evidence.is_direct(evidence_class) else "muted"
+    supporting = int(row.get("supporting") or 0)
+    label = admin._badge(source_evidence.label_of(evidence_class), tone)
+    name = E(row.get("source_name") or "-")
+    extra = f" +{supporting}" if supporting else ""
+    decided = " (사람)" if row.get("primary_source_decided_by") == duplicates.HUMAN else ""
+    return (f'<a href="/admin/events/{row["event_id"]}/sources">{name}</a>{E(extra)}'
+            f"<div class=\"note\">{label}{E(decided)}</div>")
+
+
+@router.get("/admin/events/{event_id}/sources", response_class=HTMLResponse)
+def admin_event_sources(event_id: int, request: Request,
+                        _: str = Depends(require_admin)) -> HTMLResponse:
+    from . import source_evidence
+
+    with _connection() as con:
+        members = duplicates.evidence_of(con, event_id)
+        history = duplicates.primary_source_history(con, event_id) if members else []
+    if not members:
+        raise HTTPException(status_code=404, detail="no such event")
+    head = next(m for m in members if m["is_canonical"])
+    canonical_id = head["event_id"]
+    back = f"/admin/events/{canonical_id}/sources"
+
+    rows = []
+    for m in members:
+        flags = []
+        if m["is_primary"]:
+            flags.append(admin._badge("대표 출처", "ok"))
+        if m["is_canonical"]:
+            flags.append(admin._badge(f"canonical #{m['event_id']}", "muted"))
+        else:
+            flags.append(admin._badge(f"folded #{m['event_id']}", "muted"))
+        if m.get("external_promotion"):
+            flags.append(admin._badge("external promotion", "warn"))
+        url = events_api.valid_public_url(m.get("source_url"))
+        link = (f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">{E(url)}</a>'
+                if url else "-")
+        choose = ""
+        if m.get("source_item_id") is not None and not m["is_primary"]:
+            choose = (f'<form method="post" action="/admin/events/{canonical_id}/primary-source" '
+                      f'class="inline"><input type="hidden" name="source_item_id" '
+                      f'value="{m["source_item_id"]}">'
+                      '<button class="primary" data-busy="...">대표 출처로 지정</button></form>')
+        rows.append([
+            " ".join(flags),
+            f'{E(m.get("source_name") or "-")}<div class="note">{E(m.get("source_platform") or "-")}'
+            f' · {E(m.get("source_role") or "-")} · {E(m.get("authority_level") or "-")}</div>',
+            admin._badge(m["evidence_label"], "ok" if source_evidence.is_direct(m["evidence_class"])
+                         else "muted") + f'<div class="note">{E(m["evidence_class"])}</div>',
+            E(m.get("event_name") or "-"),
+            E(_clock(m.get("start_time"))) + " · " + E(m.get("venue_text") or "-"),
+            str(m["completeness"]),
+            f'<div class="clip">{link}</div>',
+            choose,
+        ])
+    table = admin._table(
+        ["", "Source", "Evidence", "Post", "Time · Venue", "Completeness", "URL", ""], rows,
+        empty="-",
+    )
+
+    reason = head.get("primary_source_reason") or "-"
+    decided_by = head.get("primary_source_decided_by") or "AUTO (own post)"
+    reset = ""
+    if head.get("primary_source_decided_by") == duplicates.HUMAN:
+        reset = (f'<form method="post" action="/admin/events/{canonical_id}/primary-source" '
+                 'class="inline"><input type="hidden" name="action" value="reset">'
+                 '<button data-busy="...">자동 판정으로 되돌리기</button></form>')
+    cards = admin._cards([
+        ("Event", f"#{canonical_id}", head.get("event_name") or ""),
+        ("Posts", len(members), "canonical + folded duplicates"),
+        ("Decided by", decided_by, "HUMAN outlasts every scan"),
+    ])
+    history_rows = [
+        [E(str(h["decided_at"])[:16]), E(h["decided_by"]),
+         E(h.get("source_name") or (str(h["source_item_id"]) if h["source_item_id"] else "own post")),
+         E(h.get("evidence_class") or "-"), E(h.get("reason") or "-"), E(h.get("reviewer") or "-")]
+        for h in history
+    ]
+    body = (
+        f"<h2>Event #{canonical_id} - 출처 근거</h2>" + cards
+        + f'<p class="note">Reconciliation 근거: {E(reason)}</p>' + reset
+        + table
+        + "<h3>History</h3>"
+        + admin._table(["When", "By", "Representative", "Class", "Reason", "Reviewer"],
+                       history_rows, empty="no change of representative recorded yet")
+        + '<p class="note">우선순위: 주최 공식 &gt; 주최/동호회 &gt; 장소 공식 &gt; 홍보/공유 &gt; '
+          "일정모음 &gt; 검색 결과. 같은 등급끼리는 바꾸지 않고, 날짜·장소·시간이 어긋나는 "
+          "게시물은 대표가 되지 않습니다. external promotion으로 표시된 글은 홍보/공유 "
+          "이상으로 올라가지 않습니다.</p>"
+        + f'<p><a href="/admin/events">&larr; Events</a></p>'
+    )
+    return HTMLResponse(admin._page("Event Sources", "/admin/events", body,
+                                    flash=admin._flash(request)))
+
+
+@router.post("/admin/events/{event_id}/primary-source")
+def admin_set_primary_source(
+    event_id: int,
+    action: str = Form(""),
+    source_item_id: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> RedirectResponse:
+    target = f"/admin/events/{event_id}/sources"
+    try:
+        with _connection() as con:
+            if action == "reset":
+                result = duplicates.reset_primary_source(con, event_id, reviewer=reviewer)
+                return admin._back(target, f"automatic selection: {result['reason']}")
+            item = int(source_item_id)
+            duplicates.set_primary_source(con, event_id, item, reviewer=reviewer)
+    except (ValueError, LookupError) as exc:
+        return admin._back(target, f"could not set the representative: {exc}", "bad")
+    return admin._back(target, f"representative set to source item #{source_item_id}")
 
 
 # --- unresolved venues ------------------------------------------------------

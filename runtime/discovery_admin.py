@@ -35,7 +35,7 @@ E = html.escape
 BASE = "/admin/community-discovery"
 PAGE_SIZE = 50
 FILTER_KEYS = ("provider", "genre", "region", "classification", "state", "queue")
-ACTIONS = {"link", "hold", "reject", "reopen", "separate"}
+ACTIONS = {"link", "hold", "reject", "reopen", "separate", "propose-source"}
 _TONE = {cd.VERIFIED_NEW: "ok", cd.VERIFIED_EXISTING: "ok", cd.POSSIBLE_DUPLICATE: "warn",
          cd.UNVERIFIED: "muted", cd.STALE: "muted", cd.INACTIVE: "bad", cd.NOT_A_COMMUNITY: "muted",
          cd.HIGH: "ok", cd.MEDIUM: "warn", cd.LOW: "muted", cd.SUCCESS: "ok",
@@ -266,6 +266,17 @@ def _candidate_rows(view: str, items: list[dict[str, Any]], comms, genre_names,
                 f'{_hidden(view)}<input type="date" name="activity_date" required>'
                 f'<input name="evidence_url" placeholder="근거 URL (선택)" size="14">'
                 f'<button data-busy="...">근거 확인</button></form>')
+        else:
+            # v0.94.0: a registered/linked Community can become a collected
+            # Source - registered DISABLED, tested and enabled on the Sources
+            # screen by a person.
+            if item.get("source_id"):
+                actions.append(
+                    f'<a class="rowbtn" href="/admin/sources/{item["source_id"]}">'
+                    f'Source {E(item.get("source_key") or "")}'
+                    f'{"" if item.get("source_enabled") else " (비활성)"}</a>')
+            elif item.get("platform") in cd.SOURCE_PLATFORMS:
+                actions.append(_action_form(view, iid, "propose-source", "수집 Source 제안"))
         rows.append([
             f'<div class="clip">{name}{evidence}</div>',
             E(", ".join(genre_names.get(c, c) for c in item["genre_codes"]) or "-"),
@@ -526,6 +537,12 @@ async def admin_review_action(item_id: str, action: str, request: Request,
             elif action == "separate":
                 cd.mark_independent(con, iid, reviewer=reviewer)
                 message = f"후보 #{iid}: 서로 다른 Community로 표시했습니다 (다시 중복으로 묶이지 않습니다)"
+            elif action == "propose-source":
+                found = cd.propose_source(con, iid, reviewer=reviewer)
+                source = found["source"]
+                message = (f"후보 #{iid}: 수집 Source {source['source_key']}"
+                           f"{'을(를) 등록했습니다 (비활성)' if found['created'] else '에 연결했습니다'}"
+                           f" - /admin/sources/{source['source_id']}에서 Test 후 활성화하세요")
             else:
                 state = {"hold": cd.HELD, "reject": cd.REJECTED, "reopen": cd.PENDING}[action]
                 cd.set_review_state(con, iid, state, reviewer=reviewer)

@@ -192,6 +192,38 @@ def get_source(con, source_id: int) -> dict[str, Any] | None:
         return _row(cur)
 
 
+# The operator-facing key prefix per platform, as every registered source
+# already spells it (SRC-D-026, SRC-N-013, SRC-W-006).
+KEY_PREFIX = {"DAUM_CAFE": "SRC-D-", "NAVER_CAFE": "SRC-N-", "NAVER_BLOG": "SRC-N-",
+              "NAVER_WEB": "SRC-N-", "WEB": "SRC-W-", "DIRECTORY": "SRC-W-",
+              "FACEBOOK": "SRC-F-"}
+
+
+def next_source_key(con, platform: str) -> str:
+    """The next free ``SRC-X-NNN`` key for a platform (v0.94.0). Reads the
+    highest number already used with that prefix, so a hand-registered key
+    and a proposed one never collide."""
+    prefix = KEY_PREFIX.get(platform, "SRC-X-")
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT COALESCE(MAX((substring(source_key FROM %s))::int), 0) "
+            "FROM sources WHERE source_key ~ %s",
+            (f"^{prefix}(\\d+)$", f"^{prefix}\\d+$"),
+        )
+        highest = cur.fetchone()[0] or 0
+    return f"{prefix}{highest + 1:03d}"
+
+
+def get_source_by_url(con, url: str | None) -> dict[str, Any] | None:
+    """The source registered at exactly this URL (case-insensitive, the same
+    rule ``sources_url_unique`` enforces), or None."""
+    if not url:
+        return None
+    with con.cursor() as cur:
+        cur.execute("SELECT * FROM sources WHERE lower(url) = lower(%s) LIMIT 1", (url,))
+        return _row(cur)
+
+
 def get_source_by_key(con, source_key: str) -> dict[str, Any] | None:
     with con.cursor() as cur:
         cur.execute("SELECT * FROM sources WHERE source_key = %s", (source_key,))

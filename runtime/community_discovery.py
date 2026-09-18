@@ -1848,10 +1848,13 @@ _ITEM_SELECT = (
     "        WHERE iv.item_id = i.item_id ORDER BY iv.match_kind DESC, iv.venue_id) AS venue_names, "
     "  ARRAY(SELECT iv.match_kind FROM community_discovery_item_venues iv "
     "        WHERE iv.item_id = i.item_id ORDER BY iv.match_kind DESC, iv.venue_id) AS venue_kinds "
+    # v0.94.0: the Source Master row this candidate was proposed as, if any.
+    ", s.source_key AS source_key, s.name AS source_name, s.enabled AS source_enabled "
     "FROM community_discovery_items i "
     "LEFT JOIN regions r ON r.region_id = i.region_id "
     "LEFT JOIN communities ec ON ec.community_id = i.existing_community_id "
-    "LEFT JOIN communities rc ON rc.community_id = i.registered_community_id"
+    "LEFT JOIN communities rc ON rc.community_id = i.registered_community_id "
+    "LEFT JOIN sources s ON s.source_id = i.source_id"
 )
 
 
@@ -2010,6 +2013,112 @@ def link_item(con, item_id: int, community_id: Any, *, reviewer: str = "admin") 
                         "  reviewed_by = %s, reviewed_at = now(), updated_at = now() "
                         "WHERE item_id = %s", (cid, cid, reviewer, item_id))
     return community
+
+
+# --- Community -> Source Registry (v0.94.0) ----------------------------------------------------
+#
+# A reviewed candidate that became (or was linked to) a Community can be
+# proposed as a Source Master row, so the community's own board is collected
+# directly instead of only being re-listed by an aggregator. The row is
+# registered DISABLED with authority SECONDARY, exactly like migrations
+# 021/023/027 did by hand: an operator tests it from the Sources screen,
+# confirms it is the organizer's own board, and only then enables it and -
+# if warranted - raises its authority. Nothing here makes a source PRIMARY_
+# ORGANIZER, so the v0.92.x Region-inheritance guard is never reached by a
+# proposal alone.
+
+SOURCE_PLATFORMS = frozenset({"NAVER_CAFE", "DAUM_CAFE", "WEB"})
+PROPOSED_INTERVAL_MINUTES = 360
+# Search terms for a cafe's own posts: the cafe's name with the words its
+# own event notices use. runtime.collectors' cafe_name_hint/url_contains
+# filters keep results scoped to the cafe itself.
+PROPOSAL_QUERY_SUFFIXES = ("정모", "파티", "공지")
+
+
+def proposal_for(item: dict[str, Any], community: dict[str, Any]) -> dict[str, Any]:
+    """The Source Master fields a candidate would be registered with. Pure:
+    no database access, so the Admin screen can preview it."""
+    platform = item.get("platform")
+    if platform not in SOURCE_PLATFORMS:
+        raise DiscoveryError(f"{platform or '알 수 없는 플랫폼'}: 수집 Source로 등록할 수 있는 "
+                             "플랫폼이 아닙니다 (NAVER_CAFE / DAUM_CAFE / WEB)")
+    ident = identify(item.get("community_url"))
+    if ident is None or ident.platform != platform:
+        raise DiscoveryError("후보의 URL에서 공개 identity를 확인할 수 없습니다")
+    name = (community.get("name") or item.get("candidate_name") or "").strip()
+    if not name:
+        raise DiscoveryError("동호회 이름이 없어 Source 이름을 정할 수 없습니다")
+    club = ident.key.split(":", 1)[1]
+    config: dict[str, Any] = {"community_id": community["community_id"],
+                              "discovery_item_id": item["item_id"],
+                              "board_type": "EVENT_PRIMARY"}
+    queries: list[str] = []
+    if platform in ("NAVER_CAFE", "DAUM_CAFE"):
+        config["cafe_name_hint"] = name
+        config["url_contains"] = [club]
+        queries = [f"{name} {suffix}" for suffix in PROPOSAL_QUERY_SUFFIXES]
+        label = "공식 카페"
+    else:
+        config["parser"] = "board"
+        config["board_urls"] = [ident.url]
+        label = "공식 홈페이지"
+    genre_ids = list(community.get("genre_ids") or [])
+    return {
+        "name": f"{name} {label}"[:120], "platform": platform, "source_role": "COMMUNITY",
+        "url": ident.url, "region_id": community.get("region_id") or item.get("region_id"),
+        "genre_id": genre_ids[0] if genre_ids else None, "authority_level": "SECONDARY",
+        "queries": queries, "config": config, "enabled": False,
+        "collection_interval_minutes": PROPOSED_INTERVAL_MINUTES,
+        "notes": (f"v0.94.0 Community Discovery 후보 #{item['item_id']}에서 제안됨. "
+                  "운영자가 Test로 공개 접근을 확인한 뒤 활성화합니다. 주최 공식 게시판으로 "
+                  "확인되면 authority_level을 PRIMARY_ORGANIZER로 올립니다."),
+    }
+
+
+def propose_source(con, item_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
+    """Register (or link) a Source Master row for a reviewed candidate.
+
+    Returns ``{"source": row, "created": bool}``. An existing source at the
+    same URL is linked rather than duplicated - unless it already belongs to
+    a different Community, which is refused: one board is one Community's.
+    Idempotent: a candidate already proposed returns its source unchanged.
+    """
+    from . import sources as source_master  # noqa: PLC0415
+
+    with con.transaction():
+        item = _locked_item(con, item_id)
+        if item.get("source_id"):
+            existing = source_master.get_source(con, item["source_id"])
+            if existing is not None:
+                return {"source": existing, "created": False}
+        community_id = item.get("registered_community_id")
+        if item["review_state"] not in DONE_STATES or community_id is None:
+            raise DiscoveryError("동호회로 등록되거나 연결된 후보만 수집 Source로 제안할 수 있습니다")
+        community = communities.get_community(con, community_id)
+        if community is None:
+            raise DiscoveryError("연결된 동호회를 찾을 수 없습니다")
+        fields = proposal_for(item, community)
+
+        existing = source_master.get_source_by_url(con, fields["url"])
+        if existing is not None:
+            owner = (existing.get("config") or {})
+            if isinstance(owner, str):
+                owner = json.loads(owner)
+            owner_id = owner.get("community_id")
+            if owner_id is not None and int(owner_id) != int(community_id):
+                raise DiscoveryError(f"같은 URL의 Source {existing['source_key']}은(는) 이미 다른 "
+                                     "동호회의 Source입니다")
+            source = existing
+            created = False
+        else:
+            source = source_master.create_source(
+                con, source_key=source_master.next_source_key(con, fields["platform"]), **fields,
+            )
+            created = True
+        with con.cursor() as cur:
+            cur.execute("UPDATE community_discovery_items SET source_id = %s, updated_at = now() "
+                        "WHERE item_id = %s", (source["source_id"], item_id))
+    return {"source": source, "created": created}
 
 
 def set_review_state(con, item_id: int, state: str, *, reviewer: str = "admin") -> dict[str, Any]:

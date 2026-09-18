@@ -1798,10 +1798,17 @@ def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLRespons
     # post" can be counted. That is the one signal worth having: a detail view
     # says the card was interesting, a source click says the card was not
     # enough. It is a measurement of DanceMate, not of a person.
+    # v0.94.0: the representative post is marked, and each post says what
+    # kind of evidence it is (organizer's own, promotion, directory ...), so
+    # a reader can tell the original from the listing that re-posted it.
     sources = "".join(
         f'<li class="event"><a href="/events/{event["id"]}/source?to={quote(source["url"], safe="")}" '
         f'rel="nofollow noopener" target="_blank">'
-        f'{E(source["event_name"] or source["url"])}</a></li>'
+        f'{E(source["event_name"] or source["url"])}</a>'
+        + (' <span class="tag">대표 출처</span>' if source.get("is_primary") else "")
+        + (f' <span class="tag">{E(source["evidence_label"])}</span>'
+           if source.get("evidence_label") else "")
+        + "</li>"
         for source in event.get("sources") or []
     )
     origin = (

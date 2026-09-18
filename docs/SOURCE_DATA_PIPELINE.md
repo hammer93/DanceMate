@@ -127,6 +127,44 @@ Unchanged - `event_duplicate_pairs`/`event_duplicate_decisions`
 (`runtime/duplicates.py` - pre-existing) key on date/venue/name/time
 similarity regardless of source platform. Not modified for this source.
 
+### 7a. Source evidence and the representative post (v0.94.0)
+
+Which row is canonical and which post *represents* the Event are two
+separate questions:
+
+- **Canonical row**: the most complete row, then the oldest. A later post of
+  the same night (same date, place and start time) is folded under the
+  existing row, so the Event keeps its id and its public URL.
+- **Representative post** (`events.primary_source_item_id`): elected across
+  the canonical row and every folded duplicate by evidence priority
+  (`runtime/source_evidence.py`, derived at read time from
+  `sources.source_role` / `authority_level` / `platform` and the item's
+  `raw.external_promotion`):
+
+      PRIMARY_ORGANIZER > OFFICIAL_ORGANIZER > OFFICIAL_VENUE
+        > COMMUNITY_PROMOTION > AGGREGATOR > SEARCH_DISCOVERY
+
+  A post marked `external_promotion` is COMMUNITY_PROMOTION at most. Only a
+  post that agrees with the canonical row's date, place and time is
+  eligible; the representative changes only for a strictly more direct
+  class; a HUMAN choice (Admin → Events → 대표 출처) outlasts every scan
+  until reset. Every change is recorded in `event_primary_source_history`.
+
+`events_api._SELECT` joins the representative post for the source link,
+tier badge, freshness stamp and evidence class, and fills the DJ and the
+fee/fee-display pair from it only where the canonical row has none.
+Aggregators (Miltang, TangoNOW, ...) are never dropped: they remain
+supporting evidence, the fallback representative, and coverage.
+
+A reviewed Community Discovery candidate can be proposed as a Source
+Master row (`community_discovery.propose_source`, Admin → Community
+Discovery → 수집 Source 제안): registered DISABLED with authority
+SECONDARY, `config.community_id` linking it to the Community, and the
+cafe/board scoping the existing collectors already use. The operator tests
+and enables it on the Sources screen; only a person raises it to
+PRIMARY_ORGANIZER, so the Region-inheritance guard is never reached by a
+proposal alone.
+
 ## 8. Human Verification
 
 Unchanged - `candidate_review_state.review_state` (`PENDING` /`APPROVED`/

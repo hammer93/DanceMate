@@ -1,5 +1,92 @@
 # DanceMate Release Notes
 
+## v0.94.0 Direct Sources Over Aggregators
+
+Product Runtime 0.94.0; Information Engine remains 0.88; migration **041**
+(`041_event_source_evidence.sql`, additive only - no backfill, no rewrite of
+any existing row). Direct community/organizer source acquisition, Event
+source evidence reconciliation, primary source authority selection, and
+aggregators retained as supporting/fallback evidence.
+
+**What was wrong.** Upcoming coverage is still mostly Miltang/TangoNOW. Not
+because the organizer's own post is missing - Direct/Public Web acquisition
+(K-TANGO board, TangoClass, Daum Cafe boards, Naver Cafe search scoped by
+`cafe_name_hint`/`url_contains`) has existed since v0.81-v0.92 - but because
+an Event had exactly one source: its own row's post. When the same night was
+found by a directory and by the organizer, duplicate resolution folded one
+row under the other and the *row* that survived decided which post a reader
+saw. v0.85.0 made source directness the tiebreak, so the organizer's later
+post took over the listing's row - and its public id.
+
+**Event Source Evidence.** Which row is canonical and which post represents
+the Event are now two questions. The canonical row is the most complete
+one, then the oldest (`duplicates._canonical_of`, directness removed from
+the tiebreak): a later post of the same date/place/time folds under the
+existing Event, whose id and URL never move. The representative is
+`events.primary_source_item_id`, elected across the canonical row and every
+folded duplicate by `runtime/source_evidence.py` - a class derived at read
+time from `sources.source_role`/`authority_level`/`platform` and the item's
+`raw.external_promotion`, never a new stored enum:
+
+    PRIMARY_ORGANIZER > OFFICIAL_ORGANIZER > OFFICIAL_VENUE
+      > COMMUNITY_PROMOTION > AGGREGATOR > SEARCH_DISCOVERY
+
+`external_promotion` is a ceiling: a Busan cafe sharing a Seoul organizer's
+night is COMMUNITY_PROMOTION however that cafe's own source is configured -
+more direct than a directory, never the organizer, and never a path to the
+PRIMARY_ORGANIZER protections. Only a post that agrees with the canonical
+row's date, place and start time is eligible; the badge moves only for a
+strictly more direct class (no churn between posts of one class); a HUMAN
+choice outlasts every later scan until reset. Every change is recorded in
+`event_primary_source_history`. `events_api._SELECT` joins the
+representative post for the source link, tier badge, freshness stamp and a
+new `source_evidence` block, and fills the DJ and the fee/fee-display pair
+from it only where the canonical row has none - never over its own value.
+`get_event()` on a folded row answers with the Event it now belongs to,
+never a 404. Nothing about Miltang/TangoNOW acquisition changed: they stay
+supporting evidence, the fallback representative, and coverage.
+
+**Community -> Source Registry.** A Community Discovery candidate that was
+registered as, or linked to, a Community can be proposed as a Source Master
+row (`community_discovery.propose_source`; Admin -> Community Discovery ->
+수집 Source 제안). NAVER_CAFE and DAUM_CAFE proposals carry
+`cafe_name_hint`/`url_contains`/queries for the existing collectors; a WEB
+homepage carries `board_urls` for the board parser. Registered DISABLED
+with authority SECONDARY and `config.community_id`, exactly as migrations
+021/023/027 did by hand: the operator tests and enables it on the Sources
+screen, and only a person raises it to PRIMARY_ORGANIZER. A source already
+at that URL is linked, not duplicated; one belonging to another Community
+is refused. A Community is not a Source and may end up with several.
+
+**Admin.** Events lists the representative post (evidence class, +N
+supporting); `/admin/events/{id}/sources` shows every post with its class,
+authority, external-promotion flag, completeness and the reconciliation
+reason, lets a person choose the representative or hand it back to the
+rules, and shows the history. The public detail marks the representative
+post and each post's evidence class.
+
+**Contract change, stated plainly.** v0.85.1's "representative flip" tests
+asserted that the PRIMARY row becomes canonical. They now assert the new
+contract - the listed row keeps its id, the PRIMARY post is its
+representative - and the v0.85.2 Solo Tango scenario re-checks the same
+guarantees (source link, tier, DJ from the direct post, freshness, evidence
+KPI) under it. Not touched: Event Region Attribution (reads the canonical
+row's own source, unchanged), Venue resolution, Community CRUD, the Source
+Data Pipeline, and every collector.
+
+Verification: 34 new tests, 45 cases (`tests/test_v0940_source_reconciliation.py`:
+evidence classes, aggregator-first/organizer-later with id preserved,
+organizer-first, richer-post completeness, external promotion as a ceiling,
+place/time conflict, HUMAN override and reset, DISTINCT re-election,
+identity matching stays narrow, Community -> Source proposals, the direct
+provider's malformed/missing/network/robots/credential paths, and the Admin
+and public screens) plus the migration-order test. Full fresh PostgreSQL
+suite **2,530 passed, 16 skipped, 0 failed**. The shared development
+database (`dancemate`) still shows its 15 pre-existing seed-pollution
+failures, none in anything this release touched and all absent on the
+fresh database. No Event id recreated, no Region Attribution rewrite, no
+Production deployment, no tag.
+
 ## v0.93.0 Discovery Provider Protocol
 
 Product Runtime 0.93.0; Information Engine remains 0.88; no migration (head

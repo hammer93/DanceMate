@@ -20,6 +20,16 @@ answer afterwards.
 
 A person's decision is final. Automation skips any event a human has ruled on,
 in either direction, and re-running the scan never revisits it.
+
+v0.94.0 (Event Source Evidence): which row is canonical and which post
+represents the event are two different questions now. The canonical row is
+the most complete one, then the oldest - the incumbent keeps its id when a
+later post of the same night arrives. The representative is
+``events.primary_source_item_id``, elected across the whole group (canonical
+plus every folded duplicate) by ``source_evidence`` priority, so an
+organizer's own post found after a directory listing becomes what a reader is
+sent to without the directory row losing its id or its place as retained
+evidence. A HUMAN choice of representative outlasts every later scan.
 """
 
 from __future__ import annotations
@@ -28,7 +38,7 @@ import json
 from datetime import date
 from typing import Any
 
-from . import source_priority
+from . import source_evidence, source_priority
 
 AUTO = "AUTO"
 HUMAN = "HUMAN"
@@ -83,25 +93,20 @@ def completeness(event: dict[str, Any]) -> int:
 
 
 def _canonical_of(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict, dict]:
-    """(canonical, duplicate). Deterministic: completeness first, then
-    source directness, then oldest id.
+    """(canonical, duplicate). Deterministic: completeness first, then the
+    oldest id.
 
-    v0.85.0 Section 7/9: source directness is a *tiebreak*, not a reason to
-    prefer a sparser post over a richer one - "보조 ranking" (Section 9),
-    never a primary key. A PRIMARY organiser's own post that is missing a
-    fee must not out-rank a DIRECTORY aggregator's post that has one; it
-    only wins when the two are otherwise equally complete, which is exactly
-    the common case Section 7 describes (several sources posting the same,
-    essentially-equivalent announcement). ``source_role`` is absent from a
-    caller that never joined it in (pre-v0.85.0 callers, or a synthetic
-    fixture) - ``source_priority.rank(None)`` is a safe DIRECTORY-tier
-    default, identical to today's behaviour for both sides.
+    v0.94.0: source directness is no longer a reason to change which row
+    is canonical. It used to be the tiebreak here (v0.85.0), which meant an
+    organizer's post arriving after a directory listing took over the
+    listing's row - and its public id - whenever the two were equally
+    complete. Directness now decides the representative *source*
+    (``reconcile_primary_source``) instead, across the whole group, so the
+    incumbent row keeps its id and the reader is still sent to the most
+    direct post. Completeness still wins outright: a sparser post never
+    hides a richer one's fields.
     """
-    ranked = sorted(
-        (left, right),
-        key=lambda e: (-completeness(e), source_priority.rank(e.get("source_role")),
-                       e["event_id"]),
-    )
+    ranked = sorted((left, right), key=lambda e: (-completeness(e), e["event_id"]))
     return ranked[0], ranked[1]
 
 
@@ -208,6 +213,13 @@ def record_decision(con, *, event_id: int, canonical_event_id: int | None,
                 "  updated_at = now() WHERE event_id = %s",
                 (decided_by, event_id),
             )
+    # v0.94.0: the group just changed shape, so its representative source is
+    # re-elected - for the survivor after a merge, and for a row that has
+    # just been ruled DISTINCT (its own post is once again all it has).
+    if decision == DUPLICATE and canonical_event_id is not None:
+        reconcile_primary_source(con, canonical_event_id)
+    else:
+        reconcile_primary_source(con, event_id)
     return recorded
 
 
@@ -382,22 +394,265 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
             "canonical_event_id": canonical_event_id}
 
 
+# --- source evidence (v0.94.0) ----------------------------------------------
+
+_EVIDENCE_SELECT = (
+    "SELECT e.event_id, e.candidate_id, e.source_item_id, e.source_url, e.event_name, "
+    "       e.event_date, e.start_time, e.end_time, e.fee, e.dj, e.venue_id, e.venue_text, "
+    "       e.venue_status, e.engine_status, e.review_state, e.canonical_event_id, "
+    "       e.primary_source_item_id, e.primary_source_decided_by, e.primary_source_reason, "
+    "       si.url AS item_url, si.collected_at, "
+    "       (COALESCE(si.raw->>'external_promotion', 'false') = 'true') AS external_promotion, "
+    "       src.source_id, src.source_key, src.name AS source_name, "
+    "       src.platform AS source_platform, src.source_role, src.authority_level "
+    "FROM events e "
+    "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+    "LEFT JOIN sources src ON src.source_id = si.source_id "
+)
+
+
+def canonical_id_of(con, event_id: int) -> int | None:
+    """The row a reader is shown for ``event_id`` - itself, or the canonical
+    row it was folded under. None when the event does not exist."""
+    seen: set[int] = set()
+    current = event_id
+    with con.cursor() as cur:
+        while current not in seen:
+            seen.add(current)
+            cur.execute("SELECT canonical_event_id FROM events WHERE event_id = %s", (current,))
+            row = cur.fetchone()
+            if row is None:
+                return None if current == event_id else current
+            if row[0] is None:
+                return current
+            current = row[0]
+    return current
+
+
+def _annotate(member: dict[str, Any]) -> dict[str, Any]:
+    member["evidence_class"] = source_evidence.classify(
+        member.get("source_role"), member.get("authority_level"),
+        member.get("source_platform"), bool(member.get("external_promotion")),
+    )
+    member["evidence_rank"] = source_evidence.rank(member["evidence_class"])
+    member["evidence_label"] = source_evidence.label_of(member["evidence_class"])
+    member["source_tier"] = source_priority.tier_of(member.get("source_role"))
+    member["source_tier_label"] = source_priority.label_of(member.get("source_role"))
+    member["completeness"] = completeness(member)
+    return member
+
+
+def effective_primary_item(canonical: dict[str, Any]) -> int | None:
+    """The source_item that represents a canonical row: its elected primary,
+    or - the default that predates v0.94.0 - its own."""
+    return canonical.get("primary_source_item_id") or canonical.get("source_item_id")
+
+
+def evidence_of(con, event_id: int) -> list[dict[str, Any]]:
+    """Every post behind an event - the canonical row's own and each folded
+    duplicate's - classified by evidence priority, the representative first.
+
+    Resolves ``event_id`` to its canonical row, so asking about a folded
+    duplicate answers for the event a reader actually sees.
+    """
+    canonical_id = canonical_id_of(con, event_id)
+    if canonical_id is None:
+        return []
+    with con.cursor() as cur:
+        cur.execute(
+            _EVIDENCE_SELECT + "WHERE e.event_id = %s OR e.canonical_event_id = %s "
+            "ORDER BY (e.event_id = %s) DESC, e.event_id",
+            (canonical_id, canonical_id, canonical_id),
+        )
+        members = [_annotate(m) for m in _rows(cur)]
+    if not members:
+        return []
+    head = members[0]
+    primary_item = effective_primary_item(head)
+    for member in members:
+        member["is_canonical"] = member["event_id"] == canonical_id
+        member["is_primary"] = (member.get("source_item_id") is not None
+                                and member["source_item_id"] == primary_item)
+        member["decided_by"] = head.get("primary_source_decided_by")
+        member["primary_reason"] = head.get("primary_source_reason")
+    members.sort(key=lambda m: (not m["is_primary"], m["evidence_rank"], -m["completeness"],
+                                m["event_id"]))
+    return members
+
+
+def _place_and_clock_agree(head: dict[str, Any], member: dict[str, Any]) -> bool:
+    """A post may only represent an event whose own place and time it does not
+    contradict. Missing on either side is not a contradiction; a person merged
+    those, and the merge stands - but the representative stays conservative."""
+    if head.get("event_date") != member.get("event_date"):
+        return False
+    head_place, member_place = _place(head), _place(member)
+    if head_place and member_place and head_place != member_place:
+        return False
+    head_clock, member_clock = _clock(head), _clock(member)
+    if head_clock and member_clock and head_clock != member_clock:
+        return False
+    return True
+
+
+def _record_primary(con, event_id: int, *, source_item_id: int | None, previous: int | None,
+                    evidence_class: str | None, decided_by: str, reason: str,
+                    reviewer: str | None = None) -> None:
+    with con.cursor() as cur:
+        cur.execute(
+            "UPDATE events SET primary_source_item_id = %s, primary_source_decided_by = %s, "
+            "  primary_source_reason = %s, primary_source_updated_at = now(), "
+            "  updated_at = now() WHERE event_id = %s",
+            (source_item_id, decided_by, reason, event_id),
+        )
+        cur.execute(
+            "INSERT INTO event_primary_source_history (event_id, source_item_id, "
+            "  previous_source_item_id, evidence_class, decided_by, reason, reviewer) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (event_id, source_item_id, previous, evidence_class, decided_by, reason, reviewer),
+        )
+
+
+def reconcile_primary_source(con, event_id: int) -> dict[str, Any]:
+    """Elect the representative post for an event's whole duplicate group.
+
+    Rules, in order:
+
+    * a HUMAN choice is kept as long as its post is still in the group;
+    * only a post that agrees with the canonical row's own date, place and
+      time is eligible (``_place_and_clock_agree``) - a directory listing and
+      an organizer's post a person merged despite a differing time never
+      quietly hands the badge to the one that disagrees;
+    * the current representative is replaced only by a *strictly* more
+      direct class (``source_evidence.rank``) - never re-shuffled between
+      posts of the same class, so the badge does not churn;
+    * within a class, the more complete post, then the older item, wins.
+
+    Returns ``{"event_id", "changed", "primary_source_item_id",
+    "evidence_class", "reason"}``. Never raises for an unknown event.
+    """
+    members = evidence_of(con, event_id)
+    if not members:
+        return {"event_id": event_id, "changed": False, "primary_source_item_id": None,
+                "evidence_class": None, "reason": "no such event"}
+    head = members[0] if members[0]["is_canonical"] else next(m for m in members if m["is_canonical"])
+    canonical_id = head["event_id"]
+    current_item = effective_primary_item(head)
+    current = next((m for m in members if m.get("source_item_id") == current_item), None)
+
+    if head.get("primary_source_decided_by") == HUMAN and current is not None:
+        return {"event_id": canonical_id, "changed": False,
+                "primary_source_item_id": current_item,
+                "evidence_class": current["evidence_class"], "reason": "human decision kept"}
+
+    eligible = [m for m in members
+                if m.get("source_item_id") is not None and _place_and_clock_agree(head, m)]
+    if not eligible:
+        return {"event_id": canonical_id, "changed": False, "primary_source_item_id": current_item,
+                "evidence_class": current["evidence_class"] if current else None,
+                "reason": "no eligible evidence"}
+    best = min(eligible, key=lambda m: (m["evidence_rank"], -m["completeness"],
+                                        m["source_item_id"]))
+
+    if current is not None and current in eligible and best["evidence_rank"] >= current["evidence_rank"]:
+        return {"event_id": canonical_id, "changed": False, "primary_source_item_id": current_item,
+                "evidence_class": current["evidence_class"],
+                "reason": "current representative is at least as direct"}
+    if current is not None and current not in eligible and best is current:
+        return {"event_id": canonical_id, "changed": False, "primary_source_item_id": current_item,
+                "evidence_class": current["evidence_class"], "reason": "no eligible replacement"}
+    if best["source_item_id"] == current_item and head.get("primary_source_item_id") is None:
+        # The row's own post is already the best evidence: nothing to store.
+        return {"event_id": canonical_id, "changed": False, "primary_source_item_id": current_item,
+                "evidence_class": best["evidence_class"], "reason": "own post is the best evidence"}
+
+    conflicts = [m for m in members if m.get("source_item_id") is not None and m not in eligible]
+    reason = (f"{best['evidence_label']} ({best['evidence_class']}) from "
+              f"{best.get('source_name') or best.get('source_key') or 'unknown source'}")
+    if current is not None and current is not best:
+        reason += f" over {current['evidence_label']} ({current['evidence_class']})"
+    if conflicts:
+        reason += f"; {len(conflicts)} post(s) skipped for a differing place/time"
+    stored = None if best["event_id"] == canonical_id else best["source_item_id"]
+    _record_primary(con, canonical_id, source_item_id=stored, previous=current_item,
+                    evidence_class=best["evidence_class"], decided_by=AUTO, reason=reason)
+    return {"event_id": canonical_id, "changed": True,
+            "primary_source_item_id": best["source_item_id"],
+            "evidence_class": best["evidence_class"], "reason": reason}
+
+
+def set_primary_source(con, event_id: int, source_item_id: int, *, reviewer: str = "admin",
+                       reason: str | None = None) -> dict[str, Any]:
+    """A person names the representative post. Final until reset."""
+    members = evidence_of(con, event_id)
+    if not members:
+        raise LookupError(f"no event {event_id}")
+    head = next(m for m in members if m["is_canonical"])
+    chosen = next((m for m in members if m.get("source_item_id") == source_item_id), None)
+    if chosen is None:
+        raise ValueError("the representative has to be one of this event's own posts")
+    previous = effective_primary_item(head)
+    note = reason or f"chosen by {reviewer}: {chosen['evidence_label']} ({chosen['evidence_class']})"
+    _record_primary(con, head["event_id"], source_item_id=source_item_id, previous=previous,
+                    evidence_class=chosen["evidence_class"], decided_by=HUMAN, reason=note,
+                    reviewer=reviewer)
+    return {"event_id": head["event_id"], "primary_source_item_id": source_item_id,
+            "evidence_class": chosen["evidence_class"], "decided_by": HUMAN}
+
+
+def reset_primary_source(con, event_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
+    """Hand the choice back to the rules: clear a HUMAN pick, then re-elect."""
+    canonical_id = canonical_id_of(con, event_id)
+    if canonical_id is None:
+        raise LookupError(f"no event {event_id}")
+    with con.cursor() as cur:
+        cur.execute("SELECT primary_source_item_id, source_item_id FROM events WHERE event_id = %s",
+                    (canonical_id,))
+        explicit, own = cur.fetchone()
+    _record_primary(con, canonical_id, source_item_id=None, previous=explicit or own,
+                    evidence_class=None, decided_by=AUTO,
+                    reason=f"reset to automatic selection by {reviewer}", reviewer=reviewer)
+    return reconcile_primary_source(con, canonical_id)
+
+
+def primary_source_history(con, event_id: int) -> list[dict[str, Any]]:
+    canonical_id = canonical_id_of(con, event_id)
+    if canonical_id is None:
+        return []
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT h.*, si.url AS item_url, src.name AS source_name "
+            "FROM event_primary_source_history h "
+            "LEFT JOIN source_items si ON si.source_item_id = h.source_item_id "
+            "LEFT JOIN sources src ON src.source_id = si.source_id "
+            "WHERE h.event_id = %s ORDER BY h.history_id DESC",
+            (canonical_id,),
+        )
+        return _rows(cur)
+
+
 def sources_of(con, event_id: int) -> list[dict[str, Any]]:
     """Every post behind an event, its own and its duplicates'.
 
     This is what merging costs nothing: the canonical row is what a reader
-    sees, and all of the provenance is still here.
+    sees, and all of the provenance is still here. v0.94.0: each post also
+    says which evidence class it is and whether it is the representative.
     """
-    with con.cursor() as cur:
-        cur.execute(
-            "SELECT event_id, candidate_id, source_item_id, source_url, event_name, "
-            "       venue_text, start_time, fee, engine_status, review_state, "
-            "       (event_id = %s) AS is_canonical "
-            "FROM events WHERE event_id = %s OR canonical_event_id = %s "
-            "ORDER BY (event_id = %s) DESC, event_id",
-            (event_id, event_id, event_id, event_id),
-        )
-        return _rows(cur)
+    members = evidence_of(con, event_id)
+    return [
+        {
+            "event_id": m["event_id"], "candidate_id": m["candidate_id"],
+            "source_item_id": m["source_item_id"], "source_url": m["source_url"],
+            "event_name": m["event_name"], "venue_text": m["venue_text"],
+            "start_time": m["start_time"], "fee": m["fee"], "engine_status": m["engine_status"],
+            "review_state": m["review_state"], "is_canonical": m["is_canonical"],
+            "is_primary": m["is_primary"], "evidence_class": m["evidence_class"],
+            "evidence_label": m["evidence_label"], "source_name": m.get("source_name"),
+            "source_tier": m["source_tier"], "source_tier_label": m["source_tier_label"],
+            "external_promotion": bool(m.get("external_promotion")),
+        }
+        for m in members
+    ]
 
 
 def metrics(con) -> dict[str, Any]:

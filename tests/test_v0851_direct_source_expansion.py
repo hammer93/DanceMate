@@ -196,9 +196,13 @@ def test_directory_duplicate_is_recognized_against_a_new_primary_event(seeded, u
 
 def test_representative_source_is_primary_over_directory(seeded, unique):
     """Section 11: when the same event has both PRIMARY and DIRECTORY
-    evidence, the representative (canonical) event is the PRIMARY one -
-    duplicates._canonical_of()'s source_priority tiebreak, exercised here
-    with a real ORGANIZER-role source rather than a synthetic string."""
+    evidence, the representative source is the PRIMARY one.
+
+    v0.94.0: "representative" is the elected primary source of the Event,
+    not which row survived - the DIRECTORY row that was listed first keeps
+    its id (it is at least as complete), and the ORGANIZER's own post is
+    what the Event now points a reader to. Exercised with a real
+    ORGANIZER-role source rather than a synthetic string."""
     directory_item = _make_source_item(
         seeded, source_role="DIRECTORY", source_url=f"https://directory.test/{unique}"
     )
@@ -217,13 +221,16 @@ def test_representative_source_is_primary_over_directory(seeded, unique):
 
     with seeded.cursor() as cur:
         cur.execute(
-            "SELECT canonical_event_id FROM events WHERE event_id = %s",
+            "SELECT canonical_event_id, primary_source_item_id FROM events WHERE event_id = %s",
             (directory_event["event_id"],),
         )
-        directory_canonical = cur.fetchone()[0]
-    assert directory_canonical == primary_event["event_id"], (
-        "the PRIMARY-sourced event must be the representative, not the DIRECTORY one"
+        directory_canonical, representative = cur.fetchone()
+    assert directory_canonical is None, "the listed row keeps its id (v0.94.0)"
+    assert representative == primary_item, (
+        "the PRIMARY-sourced post must be the representative, not the DIRECTORY one"
     )
+    shown = events_api.get_event(seeded, directory_event["event_id"])
+    assert shown["source_tier"] == source_priority.PRIMARY
 
 
 # 5. directory evidence retained -----------------------------------------------

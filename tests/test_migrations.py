@@ -50,8 +50,21 @@ def test_migrations_are_discovered_in_order():
         "038_region_master_coverage",
         "039_alpha_baseline_convergence",
         "040_source_event_multi_genre",
+        "041_event_source_evidence",
     ]
-    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032", "033", "034", "035", "036", "037", "038", "039", "040"]
+    assert [m.version for m in found] == ["001", "002", "003", "004", "005", "006", "007", "008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032", "033", "034", "035", "036", "037", "038", "039", "040", "041"]
+
+
+def test_source_evidence_migration_is_the_041st():
+    migration = migrate.discover()[40]
+    assert migration.version == "041"
+    assert migration.name == "041_event_source_evidence"
+    sql = migration.sql.lower()
+    assert "primary_source_item_id" in sql
+    assert "create table if not exists event_primary_source_history" in sql
+    assert "alter table community_discovery_items" in sql
+    # Additive only: no backfill rewrites an existing representative.
+    assert "update events" not in sql
 
 
 def test_initial_migration_creates_the_v074_runtime_tables():

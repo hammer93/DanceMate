@@ -122,12 +122,19 @@ def _solo_tango_pair(pg, unique):
 # 13. primary/direct representative ------------------------------------------
 
 def test_primary_direct_representative(seeded, unique):
-    directory_event, primary_event, _, _ = _solo_tango_pair(seeded, unique)
+    """v0.94.0: the representative is the elected primary *source* of the
+    Event; the Miltang-first row keeps its id and points a reader at
+    SRC-D-003's own post."""
+    directory_event, primary_event, _, primary_url = _solo_tango_pair(seeded, unique)
     duplicates.scan(seeded, on=_BASE_DATE)
     with seeded.cursor() as cur:
         cur.execute("SELECT canonical_event_id FROM events WHERE event_id = %s",
-                    (directory_event["event_id"],))
-        assert cur.fetchone()[0] == primary_event["event_id"]
+                    (primary_event["event_id"],))
+        assert cur.fetchone()[0] == directory_event["event_id"]
+    shown = events_api.get_event(seeded, directory_event["event_id"])
+    assert shown["id"] == directory_event["event_id"]
+    assert shown["source_link"]["url"] == primary_url
+    assert shown["source_tier"] == source_priority.PRIMARY
 
 
 # 14. directory retained -------------------------------------------------------
@@ -277,9 +284,10 @@ def test_evidence_tiers_folded_duplicate_still_counts_toward_multi_tier(seeded, 
     directory_event, primary_event, _, _ = _solo_tango_pair(seeded, unique)
     duplicates.scan(seeded, on=_BASE_DATE)
     with seeded.cursor() as cur:
-        cur.execute("SELECT canonical_event_id FROM events WHERE event_id = %s",
-                    (directory_event["event_id"],))
-        assert cur.fetchone()[0] is not None, "setup check: the pair must actually merge"
+        cur.execute("SELECT count(*) FROM events WHERE event_id IN (%s, %s) "
+                    "AND canonical_event_id IS NOT NULL",
+                    (directory_event["event_id"], primary_event["event_id"]))
+        assert cur.fetchone()[0] == 1, "setup check: the pair must actually merge"
     result = source_ops.evidence_tiers(seeded)
     assert result["multi_tier"] >= 1
     assert result["primary"] >= 1

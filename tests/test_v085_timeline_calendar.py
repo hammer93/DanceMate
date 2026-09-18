@@ -315,23 +315,36 @@ def test_kst_boundary_for_today():
 # =============================================================================
 
 # 35. a PRIMARY source beats a DIRECTORY one as the representative source
+#
+# v0.94.0: "representative" is the Event's elected primary *source*
+# (runtime.source_evidence), not which row survives - equally complete rows
+# keep the older one canonical so the Event's id never moves, and the
+# organizer's post is what represents it.
 def test_primary_beats_directory_as_representative():
+    from runtime import source_evidence
+
     left = {"event_id": 1, "event_date": date(2026, 9, 12), "start_time": time(19, 0),
             "venue_id": 7, "venue_status": "RESOLVED", "end_time": time(23, 0), "fee": 20000,
             "engine_status": "POSSIBLE", "review_state": "PENDING", "source_role": "DIRECTORY"}
     right = dict(left, event_id=2, source_role="ORGANIZER")
     canonical, _ = duplicates._canonical_of(left, right)
-    assert canonical["event_id"] == 2
+    assert canonical["event_id"] == 1
+    assert (source_evidence.rank(source_evidence.classify("ORGANIZER"))
+            < source_evidence.rank(source_evidence.classify("DIRECTORY")))
 
 
 # 36. a PROMOTION_BOARD source beats a DIRECTORY one
 def test_promotion_board_beats_directory():
+    from runtime import source_evidence
+
     left = {"event_id": 1, "event_date": date(2026, 9, 12), "start_time": time(19, 0),
             "venue_id": 7, "venue_status": "RESOLVED", "end_time": time(23, 0), "fee": 20000,
             "engine_status": "POSSIBLE", "review_state": "PENDING", "source_role": "AGGREGATOR"}
     right = dict(left, event_id=2, source_role="PROMOTION_BOARD")
     canonical, _ = duplicates._canonical_of(left, right)
-    assert canonical["event_id"] == 2
+    assert canonical["event_id"] == 1
+    assert (source_evidence.rank(source_evidence.classify("PROMOTION_BOARD"))
+            < source_evidence.rank(source_evidence.classify("AGGREGATOR")))
 
 
 # 37. a DIRECTORY source remains the (safe) fallback when nothing more

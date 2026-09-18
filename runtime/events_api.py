@@ -348,13 +348,15 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
             # existing consumers reading only the fields above see no change.
             "aliases": list(row.get("venue_aliases") or []),
         },
-        "fee": row.get("fee"),
-        "currency": "KRW" if row.get("fee") is not None else None,
+        "fee": _fee_of(row)[0],
+        "currency": "KRW" if _fee_of(row)[0] is not None else None,
         # Full text for a fee that means more than one plain number - a
         # conditional discount or a set of named options (v0.85.9,
         # Section 18). None for an ordinary single price.
-        "fee_display_text": row.get("fee_display_text"),
-        "dj": row.get("dj"),
+        "fee_display_text": _fee_of(row)[1],
+        # v0.94.0: the representative (organizer's own) post's DJ when this
+        # row read none - the reader is sent to that post anyway.
+        "dj": row.get("dj") or row.get("rep_dj"),
         "event_type": row.get("event_type"),
         "event_type_label": EVENT_TYPE_LABELS.get(
             (row.get("event_type") or "").upper()),
@@ -389,7 +391,11 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         # source_item_id / source_url already denormalize onto every event
         # row. No fallback: a missing URL means no link, not a guessed one.
         "source_link": {
-            "url": valid_public_url(resolve_public_source_url(row.get("source_url"))),
+            # v0.94.0: the representative post's URL (the elected primary
+            # source when one exists, else this row's own) - what a reader
+            # is sent to when they tap 출처.
+            "url": valid_public_url(resolve_public_source_url(
+                row.get("primary_source_url") or row.get("source_url"))),
             "label": source_label(row.get("source_platform"), row.get("source_name")),
         },
         # v0.85.0: which tier this event's own source falls into (Section 5/8)
@@ -398,6 +404,35 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         # docstring for the exact role->tier mapping.
         "source_tier": source_priority.tier_of(row.get("source_source_role")),
         "source_tier_label": source_priority.label_of(row.get("source_source_role")),
+        # v0.94.0: the representative post's evidence class (runtime/
+        # source_evidence.py), and whether it was elected from a different
+        # post than this row's own. Additive; nothing above changed shape.
+        "source_evidence": _source_evidence_of(row),
+    }
+
+
+def _fee_of(row: dict[str, Any]) -> tuple[Any, Any]:
+    """(fee, fee_display_text): this row's own, or - only when it carries
+    neither - the representative post's pair, taken together so a number and
+    a display text never come from two different posts."""
+    if row.get("fee") is not None or row.get("fee_display_text"):
+        return row.get("fee"), row.get("fee_display_text")
+    return row.get("rep_fee"), row.get("rep_fee_display_text")
+
+
+def _source_evidence_of(row: dict[str, Any]) -> dict[str, Any]:
+    from . import source_evidence  # local: keeps the module's import list small
+
+    evidence_class = source_evidence.classify(
+        row.get("source_source_role"), row.get("source_authority_level"),
+        row.get("source_platform"), bool(row.get("source_external_promotion")),
+    )
+    return {
+        "class": evidence_class,
+        "label": source_evidence.label_of(evidence_class),
+        "direct": source_evidence.is_direct(evidence_class),
+        "elected": row.get("primary_source_item_id") is not None,
+        "decided_by": row.get("primary_source_decided_by"),
     }
 
 
@@ -413,19 +448,41 @@ _SELECT = (
     # tonight is relying on something we read at some point, and when that was
     # is part of the answer.
     "       i.collected_at AS collected_at, "
-    # The event's own source, for a reader who wants to check the original
-    # post — not "every post that ever mentioned this event" (get_event's
-    # duplicates.sources_of does that on the detail page), just this row's.
+    # The event's representative source, for a reader who wants to check the
+    # original post — not "every post that ever mentioned this event"
+    # (get_event's duplicates.sources_of does that on the detail page).
+    # v0.94.0: the representative is the elected primary post when one has
+    # been chosen across the event's duplicate group, else the row's own -
+    # so an organizer's post found after a directory listing is what the
+    # link, the tier badge and the freshness stamp all follow.
+    "       i.url AS primary_source_url, "
     "       src.name AS source_name, src.platform AS source_platform, "
-    "       src.source_role AS source_source_role "
+    "       src.source_role AS source_source_role, "
+    "       src.authority_level AS source_authority_level, "
+    "       (COALESCE(i.raw->>'external_promotion', 'false') = 'true') "
+    "         AS source_external_promotion, "
+    # v0.94.0: what the representative post itself says, for the few fields
+    # a reader learns from the organizer and an aggregator often lacks
+    # (the DJ; the fee, with its display text). present() fills these only
+    # where this row has nothing - it never overrides the row's own value.
+    "       rep.dj AS rep_dj, rep.fee AS rep_fee, "
+    "       rep.fee_display_text AS rep_fee_display_text "
     "FROM events e "
+    "LEFT JOIN LATERAL ("
+    "  SELECT pe.dj, pe.fee, pe.fee_display_text FROM events pe "
+    "  WHERE e.primary_source_item_id IS NOT NULL "
+    "    AND pe.source_item_id = e.primary_source_item_id "
+    "    AND pe.canonical_event_id = e.event_id "
+    "  ORDER BY pe.event_id LIMIT 1"
+    ") rep ON TRUE "
     "LEFT JOIN venues v ON v.venue_id = e.venue_id "
     "LEFT JOIN LATERAL ("
     "  SELECT array_agg(alias) AS aliases FROM venue_aliases WHERE venue_id = v.venue_id"
     ") va ON TRUE "
     "LEFT JOIN genres g ON g.genre_id = e.genre_id "
     "LEFT JOIN regions r ON r.region_id = e.region_id "
-    "LEFT JOIN source_items i ON i.source_item_id = e.source_item_id "
+    "LEFT JOIN source_items i "
+    "  ON i.source_item_id = COALESCE(e.primary_source_item_id, e.source_item_id) "
     "LEFT JOIN sources src ON src.source_id = i.source_id "
 )
 
@@ -768,13 +825,25 @@ def get_event(con, event_id: int) -> dict[str, Any] | None:
     """
     # No date or cancellation filter here on purpose: someone holding the link
     # to a cancelled event should be told it is off, not shown a 404.
+    from . import duplicates  # local import: search does not need it
+
     with con.cursor() as cur:
         cur.execute(_SELECT + "WHERE e.event_id = %s AND " + _VISIBLE, (event_id,))
         rows = _rows(cur)
     if not rows:
-        return None
-
-    from . import duplicates  # local import: search does not need it
+        # v0.94.0: a link to a row that was later folded under another post
+        # of the same night still answers - with the event a reader is now
+        # shown, never a 404. Only a duplicate is followed; a rejected or
+        # otherwise hidden row is still not shown.
+        canonical_id = duplicates.canonical_id_of(con, event_id)
+        if canonical_id is None or canonical_id == event_id:
+            return None
+        with con.cursor() as cur:
+            cur.execute(_SELECT + "WHERE e.event_id = %s AND " + _VISIBLE, (canonical_id,))
+            rows = _rows(cur)
+        if not rows:
+            return None
+        event_id = canonical_id
 
     event = present(rows[0])
     event["sources"] = [
@@ -782,6 +851,12 @@ def get_event(con, event_id: int) -> dict[str, Any] | None:
             "url": valid_public_url(resolve_public_source_url(source["source_url"])),
             "event_name": source["event_name"],
             "is_canonical": source["is_canonical"],
+            # v0.94.0: which post represents the event, and what kind of
+            # evidence each one is (see runtime/source_evidence.py).
+            "is_primary": source["is_primary"],
+            "evidence_class": source["evidence_class"],
+            "evidence_label": source["evidence_label"],
+            "source_name": source["source_name"],
         }
         for source in duplicates.sources_of(con, event_id)
         if source["source_url"]
