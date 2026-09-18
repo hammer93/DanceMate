@@ -175,6 +175,23 @@ def due_for_acquisition(con, *, limit: int = 10) -> list[dict[str, Any]]:
     This is deliberate defense in depth: a historical row already sitting at
     `FETCH_PENDING`/`FETCH_FAILED`/`FETCH_BLOCKED` from before this release
     must not be fetched either, even though no new one can be created.
+
+    v0.96.1 - three kinds of row, decided *before* the LIMIT (see
+    acquisition.queue_state()):
+
+    * PENDING - never asked (attempt_count = 0, no next_attempt_at): due now.
+    * RETRYABLE - asked, and the policy named a time: due once that time
+      has passed; a future time is left alone.
+    * TERMINAL - asked, and the policy named no time (a PERMANENT_ERRORS
+      refusal such as ROBOTS_DISALLOWED, or an exhausted retry class): never
+      selected again, and its attempt_count never moves again.
+
+    `next_attempt_at IS NULL` alone used to count as "due now, first in
+    line", which made every terminal row the head of the queue on every
+    tick and starved the rows behind it (Production, 2026-09-16 onward:
+    five ROBOTS_DISALLOWED rows, 541 attempts each, 936 FETCH_PENDING rows
+    never reached). Rows already in that state on a deployed database fall
+    out of the queue by this rule alone - no cleanup, no migration.
     """
     with con.cursor() as cur:
         cur.execute(
@@ -184,11 +201,14 @@ def due_for_acquisition(con, *, limit: int = 10) -> list[dict[str, Any]]:
             "JOIN sources s ON s.source_id = i.source_id "
             "WHERE c.acquisition_status = ANY(%s) "
             "  AND i.url IS NOT NULL "
-            "  AND (c.next_attempt_at IS NULL OR c.next_attempt_at <= now()) "
+            "  AND NOT (COALESCE(c.error_code, '') = ANY(%s)) "
+            "  AND ((c.next_attempt_at IS NULL AND COALESCE(c.attempt_count, 0) = 0) "
+            "       OR c.next_attempt_at <= now()) "
             "  AND NOT (COALESCE(s.config->>'parser', '') = ANY(%s)) "
             "ORDER BY c.next_attempt_at NULLS FIRST, c.source_item_id "
             "LIMIT %s",
-            (list(acquisition.RETRYABLE), list(acquisition.NON_HTML_API_PARSERS), limit),
+            (list(acquisition.RETRYABLE), list(acquisition.PERMANENT_ERRORS),
+             list(acquisition.NON_HTML_API_PARSERS), limit),
         )
         return _rows(cur)
 

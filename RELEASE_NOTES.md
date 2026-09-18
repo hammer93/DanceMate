@@ -1,5 +1,58 @@
 # DanceMate Release Notes
 
+## v0.96.1 Acquisition Queue Starvation Fix
+
+Product Runtime 0.96.1; Information Engine remains 0.89; no migration (head
+041). Fixed content-acquisition queue starvation caused by terminally
+blocked rows being repeatedly selected. ROBOTS_DISALLOWED and other
+permanent or exhausted failures no longer consume scheduler acquisition
+slots; normal FETCH_PENDING and due retryable items now progress. No change
+to extraction, Event identity, Region, Source authority, or reconciliation
+contracts.
+
+**What Production showed (2026-09-18, v0.96.0 verification).** Since
+2026-09-16 every content-acquisition tick fetched the same five items
+(2628-2632, a Naver cafe whose robots.txt disallows the article path):
+`FETCH_BLOCKED` / `ROBOTS_DISALLOWED`, `next_attempt_at = NULL`, 541
+attempts each. Behind them 936 `FETCH_PENDING` rows - among them all 143
+still-unread 가또땅고 Daum bodies - never got a turn, so the v0.96.0
+body-arrival path had nothing to read.
+
+**Cause.** `acquisition.next_attempt_at()` answers `None` for "never retry"
+(a `PERMANENT_ERRORS` refusal, or a retry class whose `MAX_ATTEMPTS` ran
+out). `content_store.due_for_acquisition()` read `next_attempt_at IS NULL`
+as "due now" and sorted it first (`NULLS FIRST`) - the same NULL a row
+nobody has asked yet carries. With a budget of 5 per tick, five permanent
+refusals were the whole tick, forever.
+
+**Fix** (`runtime/content_store.due_for_acquisition`, `runtime/acquisition.
+queue_state`). A row is due when it is PENDING (never asked:
+`attempt_count = 0`, no `next_attempt_at`) or RETRYABLE and due
+(`next_attempt_at <= now()`); a TERMINAL row (a `PERMANENT_ERRORS` code, or
+asked before and given no retry time) is excluded *before* the LIMIT and its
+`attempt_count` never moves again. `attempt_count` already separates the two
+meanings of NULL, so there is no new column, no new status and no
+migration; the rows already sitting in that state on the board fall out of
+the queue by the rule alone. The per-tick budget stays 5, the retry
+schedule and backoff are untouched, `mark_pending()` still queues new items
+with `next_attempt_at = now()`, and the Admin re-acquire route can still
+fetch any item on demand. Naver `FETCH_BLOCKED`/`METADATA_ONLY` policy is
+unchanged and not bypassed. The v0.96.0 yield diagnostics already count a
+robots-refused row as blocked (`METADATA_ONLY_NO_EVENT`), not as
+`BODY_PENDING`, so no diagnostic changed.
+
+**Verification.** `tests/test_v0961_acquisition_starvation.py`: 5 terminal +
+100 pending with limit 5 selects 0 terminal / 5 pending; a terminal row is
+never returned across repeated calls; never-asked rows are selected; a
+future retry is left alone and a due retry is taken; a mixed queue of 10
+terminal / 10 future / 3 due / 20 new yields 5 normal rows; 20 pending
+rows all get their turn within 4 ticks of 5; a terminal row's
+`attempt_count` stays at 541 across ticks and the fetcher is never called
+for it; a 가또땅고-shaped fixture (robots rows + Daum pending rows) selects
+only the Daum rows; the queue state helper agrees with the SQL. Existing
+acquisition/retry/intake and v0.96.0 tests unchanged and green; fresh-DB
+full regression 0 failed. No Production change, no tag.
+
 ## v0.96.0 Direct Source Event Extraction Yield
 
 Product Runtime 0.96.0; Information Engine 0.89; no migration (head 041).

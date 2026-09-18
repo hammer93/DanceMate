@@ -118,6 +118,33 @@ RETRY_CLASS = {
 # failed together does not come back together.
 RETRY_JITTER = 0.2
 
+# v0.96.1: what a content row means to the acquisition queue. `next_attempt_at`
+# is NULL for two opposite reasons - "never asked yet" and "never ask again"
+# (a PERMANENT_ERRORS refusal, or a class whose MAX_ATTEMPTS ran out) - and
+# the queue used to read both as "due now, first in line". On the board that
+# put five ROBOTS_DISALLOWED rows at the head of every tick, 541 attempts
+# each, while 936 real FETCH_PENDING rows never got a turn. `attempt_count`
+# tells the two apart without a new column: a row nobody has asked yet has
+# none; a row the policy declined to reschedule has some and no date.
+QUEUE_PENDING = "PENDING"
+QUEUE_RETRYABLE = "RETRYABLE"
+QUEUE_TERMINAL = "TERMINAL"
+
+
+def queue_state(status: str | None, error_code: str | None, attempt_count: int | None,
+                next_attempt_at) -> str:
+    """PENDING (never asked, due now), RETRYABLE (asked, comes back at
+    next_attempt_at) or TERMINAL (settled, permanently refused, or exhausted -
+    the queue must never pick it again). Mirrors due_for_acquisition()'s SQL."""
+    if status in SETTLED or status not in RETRYABLE:
+        return QUEUE_TERMINAL
+    if error_code in PERMANENT_ERRORS:
+        return QUEUE_TERMINAL
+    attempts = int(attempt_count or 0)
+    if next_attempt_at is not None:
+        return QUEUE_RETRYABLE
+    return QUEUE_PENDING if attempts == 0 else QUEUE_TERMINAL
+
 
 # --- personal data ----------------------------------------------------------
 # Community event posts carry organiser phone numbers and bank account details.
