@@ -66,6 +66,12 @@ class CollectionResult:
     mode: str
     items: list[RawItem]
     detail: str
+    # v0.95.0: how many provider search hits were looked at before the
+    # source's own boundary (cafe_name_hint / url_contains) and the
+    # same-URL dedupe reduced them to ``items`` - None for a collector that
+    # has no search step. Lets an operator tell "the search found nothing"
+    # from "the search found plenty, none of it inside this cafe".
+    search_hits: int | None = None
 
 
 def _engine_on_path(settings: Settings) -> None:
@@ -401,6 +407,7 @@ def _collect_live(
         kind = NAVER_KIND.get(platform, "cafe")
         records = []
         seen: set[str] = set()
+        search_hits = 0
         for query in engine_source.get("queries") or []:
             for record in collector.search(
                 query,
@@ -410,6 +417,7 @@ def _collect_live(
                 start=naver.get("start", 1),
                 sort=naver.get("sort", "date"),
             ):
+                search_hits += 1
                 if not _naver_record_matches(record, source):
                     continue
                 _apply_naver_structure_trust(record, source)
@@ -424,6 +432,7 @@ def _collect_live(
         mode=MODE_LIVE,
         items=[_to_raw_item(r) for r in records],
         detail=f"live {platform}: {len(records)} records",
+        search_hits=search_hits if platform != "DAUM_CAFE" else None,
     )
 
 

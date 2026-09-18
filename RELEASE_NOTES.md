@@ -1,5 +1,99 @@
 # DanceMate Release Notes
 
+## v0.95.0 Direct Source Coverage Expansion
+
+Product Runtime 0.95.0; Information Engine remains 0.88; no migration (head
+041). Expanded direct Community/Organizer source coverage, genre-aware
+discovery query profiles, Community-to-Source activation workflow
+improvements, direct-source yield and coverage diagnostics; aggregators
+retained as fallback/supporting evidence.
+
+**Why.** v0.94.0 settled which post represents an Event once several exist.
+Production then showed the actual constraint: of 171 upcoming events, 156
+are still represented by a directory or aggregator (Miltang, TangoNOW,
+Tango Calendar Korea, DanceInfo) and only 15 by a community, organizer or
+promotion board - not because the representative rule fails, but because
+there are few direct sources to choose from. The first proposed source,
+SRC-N-017 (OSIK), also showed why: its three fixed queries ("<cafe name>
+정모/파티/공지") found one post in a cafe that announces 밀롱가 and
+프락티카.
+
+**Genre-aware query profiles** (`runtime/source_queries.py`). A proposed
+search-API source now starts from its genre's own vocabulary - TANGO:
+밀롱가/프락티카/탱고/정모/워크샵/클래스/번개; SALSA: 살사/파티/정모/바차타/소셜/
+클래스/강습/번개; SWING: 스윙/소셜/파티/정모/린디합/발보아/클래스/강습; BALBOA,
+BACHATA, KIZOMBA likewise; any other genre falls back to the generic
+community set (정모/파티/공지/모임/소셜/클래스). Each query is anchored on the
+community's distinctive name (`core_name`: region, genre and club words
+stripped - "홍대 탱고 동호회 OSIK" searches as "OSIK 밀롱가", not as a bare
+"밀롱가" that would drag every cafe on Naver through the boundary filter),
+an operator's own words come first and are never dropped, duplicates
+collapse after NFKC/case/space normalisation, and the list is capped at
+`MAX_QUERIES` (8) provider calls per collection. Without a name, a region
+name prefixes the genre words instead. The profile is a default:
+`sources.queries` stays the operator-edited list, and the Sources screen's
+new **Query profile** action merges the profile behind whatever is already
+there (so v0.94.0's narrow lists widen without retyping, and a source a
+person already raised to PRIMARY_ORGANIZER keeps that authority).
+
+**Community -> Source, generalised.** `propose_source_for_community()`
+proposes a Source for a registered Community directly - the ones
+registered by hand or before Community Discovery existed, which had no
+candidate to propose from; a Community with no homepage but an approved
+candidate uses the candidate's page. Same rules as v0.94.0's candidate path
+(one shared `build_proposal`): DISABLED, SECONDARY, `config.community_id`,
+cafe_name_hint/url_contains for NAVER_CAFE/DAUM_CAFE, board_urls for WEB,
+an existing source at that URL reused, another Community's refused; a
+candidate already registered as that Community is linked to the result.
+The Community Discovery screen now opens with the work list -
+**Communities with no collected Source** (proposable in place; a BAND/
+Instagram-only page is listed but marked not proposable) - and a **Region x
+Genre coverage gap** table (communities, communities with a source,
+communities without, enabled direct sources, upcoming events those sources
+represent), biggest gap first. Search results themselves remain
+SEARCH_DISCOVERY evidence; nothing becomes a Source without a person's
+Test and Enable.
+
+**Yield diagnosis.** "0 events" is five different situations, and each has
+a different fix. `source_ops.yield_diagnosis()` tells them apart from
+numbers already stored - DISABLED, NEVER_RUN, COLLECTOR_FAILURE,
+QUERY_TOO_NARROW (the search found nothing, or the community is quiet),
+BOUNDARY_TOO_STRICT (the search found hits, none inside the cafe boundary),
+METADATA_ONLY_NO_EVENT (posts collected, bodies not fetchable under the
+Naver Cafe policy, no dated event in title/snippet), NON_EVENT_CONTENT,
+PAST_ONLY, HEALTHY - and the Sources screen shows the verdict beside each
+source's activity. To make the boundary case visible at all, a Naver
+collection now counts its search hits before the boundary filter
+(`CollectionResult.search_hits`, recorded in the run detail as "N search
+hits"). `source_ops.overview()` also reports each source's last run and its
+**representative wins** - upcoming events it represents, and how many it
+won over another post (v0.94.0's primary election) - shown as a badge.
+
+**Unchanged, re-asserted.** Region Attribution (1217208 -> KR-JINJU,
+1217535 -> KR-JEONBUK, official-source fallback, external_promotion never
+reaching PRIMARY_ORGANIZER or moving a Region), the v0.94.0 reconciliation
+contract (aggregator first, direct later: same Event id, direct post
+elected, aggregator supporting), Event ID stability, aggregator
+collection, and every collector/parser - no new crawler, no Naver detail
+fetch (FETCH_BLOCKED/METADATA_ONLY stays the policy).
+
+Verification: 26 new tests, 35 cases (`tests/test_v0950_direct_source_coverage.py`:
+profiles per genre and fallback, core-name stripping, anchoring, region x
+genre, extra-query precedence and dedupe, merge; tango/salsa/swing cafe
+proposals, direct-from-Community proposals incl. the no-homepage case,
+URL reuse, other-Community refusal, non-proposable pages, PRIMARY_
+ORGANIZER preserved across a requery, backlog proposals 1 -> 2; the wider
+profile finding two posts the three suffixes missed with the milonga
+matched by two queries stored once and another cafe's post excluded (4
+search hits), zero/malformed/network cases with no secret in the summary;
+the five diagnoses; intake recording search hits; coverage gaps; the
+v0.94.0 aggregator-first contract and external-promotion ceiling; the two
+Admin screens). Full fresh PostgreSQL suite **2,568 passed, 16 skipped, 0
+failed** (migration head 041 applied to a clean database). The shared
+development database keeps its known pre-existing seed-pollution
+failures, none in anything this release touched. No Production change, no
+deployment, no tag.
+
 ## v0.94.0 Direct Sources Over Aggregators
 
 Product Runtime 0.94.0; Information Engine remains 0.88; migration **041**

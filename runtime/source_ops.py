@@ -13,6 +13,7 @@ next week should not have been dropped this week.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -189,6 +190,187 @@ def evidence_tiers(con) -> dict[str, int]:
     return result
 
 
+# --- v0.95.0: yield diagnosis, representative wins, coverage gaps ------------
+
+DIRECT_ROLES = ("COMMUNITY", "ORGANIZER", "VENUE", "PROMOTION_BOARD")
+
+DIAG_DISABLED = "DISABLED"
+DIAG_NEVER_RUN = "NEVER_RUN"
+DIAG_COLLECTOR_FAILURE = "COLLECTOR_FAILURE"
+DIAG_QUERY_TOO_NARROW = "QUERY_TOO_NARROW"
+DIAG_BOUNDARY_TOO_STRICT = "BOUNDARY_TOO_STRICT"
+DIAG_METADATA_ONLY_NO_EVENT = "METADATA_ONLY_NO_EVENT"
+DIAG_NON_EVENT_CONTENT = "NON_EVENT_CONTENT"
+DIAG_PAST_ONLY = "PAST_ONLY"
+DIAG_HEALTHY = "HEALTHY"
+
+DIAG_LABELS = {
+    DIAG_DISABLED: "비활성",
+    DIAG_NEVER_RUN: "미실행",
+    DIAG_COLLECTOR_FAILURE: "수집 실패",
+    DIAG_QUERY_TOO_NARROW: "검색어 부족/활동 없음",
+    DIAG_BOUNDARY_TOO_STRICT: "경계 필터로 전부 제외",
+    DIAG_METADATA_ONLY_NO_EVENT: "본문 차단·행사 미추출",
+    DIAG_NON_EVENT_CONTENT: "글은 있으나 행사 아님",
+    DIAG_PAST_ONLY: "지난 행사만",
+    DIAG_HEALTHY: "정상",
+}
+
+_SEARCH_HITS = re.compile(r"(\d+) search hits")
+_OK_RUN = frozenset({"PASS", "SNAPSHOT"})
+
+
+def yield_diagnosis(source: dict[str, Any], outcome: dict[str, Any],
+                    last_run: dict[str, Any] | None) -> tuple[str, str]:
+    """Why a source yields what it yields - one code and one sentence.
+
+    "0 events" is five different situations, and each has a different fix:
+    a switched-off source, a collector that fails, a query that finds
+    nothing (or a community that has gone quiet), a boundary that rejects
+    everything the search did find, posts that exist but announce no event
+    (or whose bodies this deployment may not fetch), and a source whose
+    events are all in the past. Deterministic, from numbers already stored.
+    """
+    if not source.get("enabled"):
+        return DIAG_DISABLED, "enable and Test before expecting anything"
+    if last_run is None:
+        return DIAG_NEVER_RUN, "the scheduler has not collected from it yet"
+    if (last_run.get("status") or "").upper() not in _OK_RUN:
+        return DIAG_COLLECTOR_FAILURE, f"last run {last_run.get('status')}: {last_run.get('error') or '-'}"
+    items = int(outcome.get("items", 0) or 0)
+    if int(last_run.get("discovered_count") or 0) == 0 and items == 0:
+        hits = _SEARCH_HITS.search(source.get("last_detail") or "")
+        if hits and int(hits.group(1)) > 0:
+            return DIAG_BOUNDARY_TOO_STRICT, (
+                f"{hits.group(1)} search hits, none inside cafe_name_hint/url_contains")
+        return DIAG_QUERY_TOO_NARROW, "the search returned nothing - widen the query profile or the community is quiet"
+    events = int(outcome.get("events", 0) or 0)
+    if events == 0:
+        blocked = int(outcome.get("blocked", 0) or 0) + int(outcome.get("login", 0) or 0)
+        fetched = int(outcome.get("fetched", 0) or 0)
+        if fetched == 0 and blocked >= max(items, 1):
+            return DIAG_METADATA_ONLY_NO_EVENT, (
+                f"{items} posts, bodies not fetchable here; titles/snippets carried no dated event")
+        return DIAG_NON_EVENT_CONTENT, f"{items} posts collected, none normalised into an event"
+    if int(outcome.get("upcoming_events", 0) or 0) == 0:
+        return DIAG_PAST_ONLY, f"{events} events, none upcoming"
+    return DIAG_HEALTHY, f"{outcome.get('upcoming_events')} upcoming events"
+
+
+def last_run_per_source(con) -> dict[int, dict[str, Any]]:
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT ON (source_id) source_id, status, discovered_count, new_count, "
+            "       started_at, error FROM source_collection_runs "
+            "ORDER BY source_id, started_at DESC"
+        )
+        return {row["source_id"]: row for row in _rows(cur)}
+
+
+def representative_yield(con) -> dict[int, dict[str, int]]:
+    """Per source: how many visible upcoming events it *represents*
+    (v0.94.0's elected primary post, else the row's own), and how many of
+    those it won over another post - a direct source's "primary wins"."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT i.source_id, count(*) AS represented, "
+            "       count(*) FILTER (WHERE e.primary_source_item_id IS NOT NULL) AS wins "
+            "FROM events e "
+            "JOIN source_items i ON i.source_item_id = "
+            "     COALESCE(e.primary_source_item_id, e.source_item_id) "
+            "WHERE e.provenance = 'LIVE' AND e.listing_state = 'LISTED' "
+            "  AND e.canonical_event_id IS NULL AND e.event_date >= current_date "
+            "GROUP BY i.source_id"
+        )
+        return {row["source_id"]: {"represented": row["represented"], "wins": row["wins"]}
+                for row in _rows(cur)}
+
+
+def coverage_gaps(con) -> list[dict[str, Any]]:
+    """Region x genre: communities we know, how many of them have a direct
+    source, how many direct sources are enabled there, and the upcoming
+    events those sources represent. Sorted so the biggest gap (communities
+    with no source at all) comes first - the next Source to propose."""
+    with con.cursor() as cur:
+        cur.execute(
+            "WITH linked AS ("
+            "  SELECT DISTINCT (config->>'community_id')::bigint AS community_id "
+            "  FROM sources WHERE config ? 'community_id' AND config->>'community_id' ~ '^\\d+$'"
+            "), comm AS ("
+            "  SELECT c.community_id, c.region_id, cg.genre_id, "
+            "         (l.community_id IS NOT NULL) AS has_source "
+            "  FROM communities c JOIN community_genres cg USING (community_id) "
+            "  LEFT JOIN linked l ON l.community_id = c.community_id "
+            "  WHERE c.enabled"
+            "), direct AS ("
+            "  SELECT s.source_id, s.region_id, s.genre_id, s.enabled FROM sources s "
+            "  WHERE s.source_role = ANY(%s)"
+            "), upcoming AS ("
+            "  SELECT src.region_id, src.genre_id, count(*) AS events FROM events e "
+            "  JOIN source_items i ON i.source_item_id = "
+            "       COALESCE(e.primary_source_item_id, e.source_item_id) "
+            "  JOIN sources src ON src.source_id = i.source_id "
+            "  WHERE e.provenance = 'LIVE' AND e.listing_state = 'LISTED' "
+            "    AND e.canonical_event_id IS NULL AND e.event_date >= current_date "
+            "    AND src.source_role = ANY(%s) GROUP BY 1, 2"
+            ") "
+            "SELECT r.code AS region_code, r.name AS region_name, g.code AS genre_code, "
+            "       (SELECT count(*) FROM comm WHERE comm.region_id = r.region_id "
+            "          AND comm.genre_id = g.genre_id) AS communities, "
+            "       (SELECT count(*) FROM comm WHERE comm.region_id = r.region_id "
+            "          AND comm.genre_id = g.genre_id AND comm.has_source) AS communities_with_source, "
+            "       (SELECT count(*) FROM direct WHERE direct.region_id = r.region_id "
+            "          AND direct.genre_id = g.genre_id AND direct.enabled) AS enabled_direct_sources, "
+            "       COALESCE((SELECT events FROM upcoming WHERE upcoming.region_id = r.region_id "
+            "          AND upcoming.genre_id = g.genre_id), 0) AS upcoming_direct_events "
+            "FROM regions r CROSS JOIN genres g "
+            "WHERE r.code <> 'KR' AND g.enabled "
+            "ORDER BY r.name, g.code",
+            (list(DIRECT_ROLES), list(DIRECT_ROLES)),
+        )
+        rows = [row for row in _rows(cur)
+                if row["communities"] or row["enabled_direct_sources"] or row["upcoming_direct_events"]]
+    for row in rows:
+        row["communities_without_source"] = row["communities"] - row["communities_with_source"]
+    rows.sort(key=lambda r: (-r["communities_without_source"], -r["communities"],
+                             r["region_name"], r["genre_code"]))
+    return rows
+
+
+def communities_without_source(con) -> list[dict[str, Any]]:
+    """Enabled communities no Source Master row is linked to, with what a
+    proposal would need - the operator's work list, approved discovery
+    candidates and recently-seen communities first."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT c.community_id, c.name, c.homepage_url, c.region_id, r.name AS region_name, "
+            "       ARRAY(SELECT g.code FROM community_genres cg JOIN genres g USING (genre_id) "
+            "             WHERE cg.community_id = c.community_id ORDER BY g.code) AS genre_codes, "
+            "       (SELECT max(i.item_id) FROM community_discovery_items i "
+            "        WHERE i.registered_community_id = c.community_id "
+            "          AND i.review_state IN ('APPROVED', 'LINKED')) AS discovery_item_id, "
+            "       (SELECT max(i.last_seen) FROM community_discovery_items i "
+            "        WHERE i.registered_community_id = c.community_id) AS last_seen "
+            "FROM communities c LEFT JOIN regions r ON r.region_id = c.region_id "
+            "WHERE c.enabled AND NOT EXISTS ("
+            "  SELECT 1 FROM sources s WHERE s.config->>'community_id' = c.community_id::text) "
+            "ORDER BY (SELECT max(i.item_id) FROM community_discovery_items i "
+            "          WHERE i.registered_community_id = c.community_id "
+            "            AND i.review_state IN ('APPROVED', 'LINKED')) IS NULL, "
+            "         (SELECT max(i.last_seen) FROM community_discovery_items i "
+            "          WHERE i.registered_community_id = c.community_id) DESC NULLS LAST, "
+            "         c.community_id"
+        )
+        rows = _rows(cur)
+    from . import community_discovery as cd  # noqa: PLC0415
+
+    for row in rows:
+        ident = cd.identify(row.get("homepage_url"))
+        row["platform"] = ident.platform if ident else None
+        row["proposable"] = bool(ident and ident.platform in cd.SOURCE_PLATFORMS)
+    return rows
+
+
 def recommend(source: dict[str, Any], outcome: dict[str, Any],
               alternatives: int = 0) -> tuple[str, str]:
     """A suggested decision and the reason for it, from the numbers alone.
@@ -227,6 +409,8 @@ def overview(con) -> list[dict[str, Any]]:
     rows = sources.list_sources(con)
     outcomes = sources.acquisition_outcomes(con)
     upcoming = upcoming_yield(con)
+    last_runs = last_run_per_source(con)
+    represented = representative_yield(con)
 
     # How many other enabled sources of the same genre are actually readable.
     readable_by_genre: dict[Any, int] = {}
@@ -254,6 +438,20 @@ def overview(con) -> list[dict[str, Any]]:
             "recommended": decision,
             "recommendation_reason": reason,
             "alternatives": alternatives,
+        })
+        # v0.95.0: yield diagnosis and representative wins, from the same
+        # stored numbers - no new tracking column.
+        run = last_runs.get(source["source_id"])
+        code, why = yield_diagnosis(source, entry, run)
+        rep = represented.get(source["source_id"], {})
+        entry.update({
+            "diagnosis": code, "diagnosis_label": DIAG_LABELS[code], "diagnosis_detail": why,
+            "last_run_status": run.get("status") if run else None,
+            "last_run_at": run.get("started_at") if run else None,
+            "last_run_discovered": run.get("discovered_count") if run else None,
+            "last_run_new": run.get("new_count") if run else None,
+            "represented_events": rep.get("represented", 0),
+            "primary_wins": rep.get("wins", 0),
         })
         out.append(entry)
     return out

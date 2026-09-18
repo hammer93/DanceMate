@@ -516,7 +516,15 @@ def test_an_approved_community_becomes_a_disabled_source_the_operator_still_has_
     assert config["cafe_name_hint"] == community["name"]
     assert config["url_contains"] == [f"salsa{unique}"]
     assert config["board_type"] == "EVENT_PRIMARY"
-    assert len(source["queries"]) == 3 and all(community["name"] in q for q in source["queries"])
+    # v0.95.0: queries come from the genre's profile, anchored on the
+    # community's distinctive name (genre/region/club words stripped), not
+    # three fixed suffixes.
+    from runtime import source_queries
+
+    anchor = source_queries.core_name(community["name"])
+    assert anchor and len(source["queries"]) >= 3
+    assert all(q.startswith(anchor) for q in source["queries"])
+    assert any(q.endswith(" 살사") for q in source["queries"])
     assert source["region_id"] == seoul_id and source["genre_id"] is not None
     assert cd.get_item(pg, item_id)["source_id"] == source["source_id"]
     assert cd.get_item(pg, item_id)["source_key"] == source["source_key"]

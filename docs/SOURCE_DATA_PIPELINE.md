@@ -167,6 +167,17 @@ and enables it on the Sources screen; only a person raises it to
 PRIMARY_ORGANIZER, so the Region-inheritance guard is never reached by a
 proposal alone.
 
+v0.95.0: a registered Community with no Source can be proposed directly
+(`propose_source_for_community`; the Community Discovery screen lists them
+and the Region × Genre coverage gaps). A search-API source's queries start
+from its genre's profile in `runtime/source_queries.py` (anchored on the
+community's distinctive name, operator words first, deduplicated, capped)
+and the Sources screen's **Query profile** action widens an existing list
+the same way. `source_ops.yield_diagnosis()` explains a source's yield
+(query too narrow vs. boundary too strict vs. metadata-only vs. non-event
+content vs. past-only), using the search-hit count a Naver collection now
+records in its run detail.
+
 ## 8. Human Verification
 
 Unchanged - `candidate_review_state.review_state` (`PENDING` /`APPROVED`/

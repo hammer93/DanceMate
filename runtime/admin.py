@@ -954,7 +954,7 @@ def _source_yield(found: dict[str, Any], op: dict[str, Any] | None = None) -> st
     """
     items = found.get("items", 0)
     if not items:
-        return '<span class="num">0</span>'
+        return '<span class="num">0</span>' + _source_diagnosis(op)
     fetched = found.get("fetched", 0)
     blocked = (found.get("blocked", 0) or 0) + (found.get("login", 0) or 0)
     events = found.get("events", 0)
@@ -972,8 +972,22 @@ def _source_yield(found: dict[str, Any], op: dict[str, Any] | None = None) -> st
         f' <span class="badge ok">앞으로 {upcoming}</span>' if upcoming
         else ' <span class="badge muted">앞으로 0</span>'
     )
+    wins = (op or {}).get("primary_wins", 0)
+    if wins:
+        parts.append(f' <span class="badge ok">대표 {wins}</span>')
     parts.append("</div>")
+    parts.append(_source_diagnosis(op))
     return "".join(parts)
+
+
+def _source_diagnosis(op: dict[str, Any] | None) -> str:
+    """v0.95.0: why the source yields what it yields (source_ops.yield_diagnosis)."""
+    if not op or not op.get("diagnosis"):
+        return ""
+    code = op["diagnosis"]
+    tone = {"HEALTHY": "ok", "DISABLED": "muted", "NEVER_RUN": "muted"}.get(code, "warn")
+    return (f'<div class="note"><span class="badge {tone}" title="{E(op.get("diagnosis_detail") or "")}">'
+            f'{E(op.get("diagnosis_label") or code)}</span></div>')
 
 
 # --- v0.82 Source Transparency ------------------------------------------------
@@ -1302,6 +1316,11 @@ def admin_sources(request: Request, genre: str = "ALL",
             + f'<form class="inline" method="post" '
             f'action="/admin/sources/{source["source_id"]}/test">'
             "<button>Test</button></form>"
+            + (f'<form class="inline" method="post" '
+               f'action="/admin/sources/{source["source_id"]}/requery">'
+               '<button title="장르 query profile을 기존 검색어 뒤에 합칩니다">Query profile</button></form>'
+               if source["platform"] in ("NAVER_CAFE", "DAUM_CAFE", "NAVER_BLOG", "NAVER_WEB")
+               else "")
             + _source_decision_form(operations.get(source["source_id"], {}))
             + "</div>"
         )
@@ -2001,13 +2020,25 @@ def admin_source_decision(
 def admin_source_action(
     source_id: int, action: str, request: Request, _: str = Depends(require_admin)
 ) -> HTMLResponse | RedirectResponse:
-    if action not in ("enable", "disable", "test"):
+    if action not in ("enable", "disable", "test", "requery"):
         raise HTTPException(status_code=404, detail="unknown action")
     settings = _settings()
     with _connection() as con:
         source = sources.get_source(con, source_id)
         if source is None:
             return _back("/admin/sources", f"source {source_id} not found", "bad")
+        if action == "requery":
+            # v0.95.0: widen a search-API source's queries to its genre's
+            # profile, keeping every word the operator already wrote.
+            from . import community_discovery  # noqa: PLC0415
+
+            if source["platform"] not in ("NAVER_CAFE", "DAUM_CAFE", "NAVER_BLOG", "NAVER_WEB"):
+                return _back("/admin/sources", f"{source['source_key']}: 검색어는 검색 API "
+                             "플랫폼에서만 쓰입니다", "bad")
+            merged = community_discovery.suggested_queries(con, source)
+            sources.update_source(con, source_id, queries=merged)
+            return _back("/admin/sources", f"{source['source_key']} 검색어 {len(merged)}개: "
+                         + " / ".join(merged))
         if action in ("enable", "disable"):
             try:
                 sources.set_enabled(con, source_id, action == "enable")

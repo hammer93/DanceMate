@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import admin, communities, master_data, pagination
+from . import admin, communities, master_data, pagination, source_ops
 from . import community_discovery as cd
 from .admin_auth import require_admin
 from .directory import DirectoryError, parse_ids, public_link
@@ -132,6 +132,50 @@ def _runs_table(runs: list[dict[str, Any]]) -> str:
         ])
     return admin._table(["Run", "요청", "상태", "장르 / 지역", "Provider", "검색어 / 결과",
                          "신규 / 갱신", "오류"], rows, empty="아직 실행한 검색이 없습니다")
+
+
+def _coverage_section(view: str, unlinked: list[dict[str, Any]],
+                      gaps: list[dict[str, Any]]) -> str:
+    """v0.95.0: the work list - Communities with no collected Source yet
+    (propose one in place), and the Region x Genre gaps behind them."""
+    rows = []
+    for c in unlinked[:30]:
+        link = public_link(c.get("homepage_url"))
+        url = (f'<a href="{E(link)}" target="_blank" rel="noopener noreferrer">'
+               f'{E(c["homepage_url"])}</a>' if link else E(c.get("homepage_url") or "-"))
+        action = (
+            f'<form class="inline" method="post" action="{BASE}/communities/{c["community_id"]}/propose-source">'
+            f'{_hidden(view)}<button data-busy="...">수집 Source 제안</button></form>'
+            if c["proposable"] else
+            f'<span class="note">{E(c.get("platform") or "URL 없음")}: 제안 불가 (직접 등록)</span>')
+        rows.append([
+            f'<a href="/admin/communities#community-{c["community_id"]}">{E(c["name"])}</a>',
+            E(", ".join(c.get("genre_codes") or []) or "-"),
+            E(c.get("region_name") or "-"),
+            f'<div class="clip">{url}</div>',
+            E(f'후보 #{c["discovery_item_id"]}' if c.get("discovery_item_id") else "-"),
+            action,
+        ])
+    unlinked_table = admin._table(
+        ["동호회", "장르", "지역", "공개 페이지", "발굴 후보", ""], rows,
+        empty="모든 활성 동호회에 수집 Source가 연결되어 있습니다")
+    gap_rows = [
+        [E(g["region_name"]), E(g["genre_code"]), str(g["communities"]),
+         str(g["communities_with_source"]), str(g["communities_without_source"]),
+         str(g["enabled_direct_sources"]), str(g["upcoming_direct_events"])]
+        for g in gaps[:20] if g["communities_without_source"] or g["enabled_direct_sources"]
+    ]
+    gap_table = admin._table(
+        ["지역", "장르", "동호회", "Source 있음", "Source 없음", "활성 직접 Source", "앞으로 (직접)"],
+        gap_rows, empty="-")
+    return (
+        f"<h3>수집 Source가 없는 동호회 ({len(unlinked)})</h3>"
+        '<p class="note">제안된 Source는 비활성·SECONDARY로 등록됩니다. Sources 화면에서 Test로 공개 '
+        "접근을 확인한 뒤 활성화하고, 주최 공식 게시판으로 확인된 경우에만 PRIMARY_ORGANIZER로 "
+        "올립니다. 검색어는 장르 query profile에서 시작하며 Sources 화면에서 수정합니다.</p>"
+        + unlinked_table
+        + "<h3>지역 × 장르 coverage gap</h3>" + gap_table
+    )
 
 
 def _queries_section(view: str, queries: list[dict[str, Any]], genres) -> str:
@@ -342,6 +386,8 @@ def admin_discovery(request: Request, _: str = Depends(require_admin)) -> HTMLRe
         comms = communities.list_communities(con)
         current = cd.open_run(con)
         group_map = {i["item_id"]: cd.duplicate_group(con, i["item_id"]) for i in items}
+        unlinked = source_ops.communities_without_source(con)
+        gaps = source_ops.coverage_gaps(con)
     genre_names = {g["code"]: g["name"] for g in genres}
     rows, attrs = _candidate_rows(view, items, comms, genre_names, group_map)
     body = (
@@ -356,6 +402,7 @@ def admin_discovery(request: Request, _: str = Depends(require_admin)) -> HTMLRe
            "스케줄러가 처리 중입니다.</p>" if current else "")
         + _run_form(view, genres, regions)
         + "<h3>최근 검색</h3>" + _runs_table(runs)
+        + _coverage_section(view, unlinked, gaps)
         + _queries_section(view, queries, genres)
         + f"<h3>후보 ({total})</h3>" + _filter_form(filters, genres, regions)
         + admin._table(["이름 / 근거", "장르 후보", "지역", "Provider", "URL", "활동 근거", "신뢰도",
@@ -519,6 +566,25 @@ async def admin_confirm_evidence(item_id: str, request: Request, reviewer: str =
     except DirectoryError as exc:
         return _go(return_to, BASE, str(exc), "bad", anchor=f"candidate-{iid}")
     return _go(return_to, BASE, f"후보 #{iid}: 활동 근거를 확인했습니다", anchor=f"candidate-{iid}")
+
+
+@router.post(BASE + "/communities/{community_id}/propose-source")
+async def admin_propose_for_community(community_id: str, request: Request,
+                                      reviewer: str = Depends(require_admin)):
+    """v0.95.0: propose a Source for a registered Community that has none."""
+    cid = _path_id(community_id)
+    form = await request.form()
+    return_to = _text(form, "return_to")
+    try:
+        with _connection() as con:
+            found = cd.propose_source_for_community(con, cid, reviewer=reviewer)
+    except DirectoryError as exc:
+        return _go(return_to, BASE, str(exc), "bad")
+    source = found["source"]
+    return _go(return_to, BASE,
+               f"동호회 #{cid}: 수집 Source {source['source_key']}"
+               f"{'을(를) 등록했습니다 (비활성)' if found['created'] else '에 연결했습니다'}"
+               f" - /admin/sources/{source['source_id']}에서 Test 후 활성화하세요")
 
 
 @router.post(BASE + "/items/{item_id}/{action}")

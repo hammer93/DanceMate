@@ -197,6 +197,11 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
         f"{counts['REVISED']} revised, {counts['DUPLICATE']} duplicate, "
         f"{duration:.1f}s"
     )
+    if getattr(result, "search_hits", None) is not None:
+        # v0.95.0: kept for source_ops.yield_diagnosis() - "0 found of 0
+        # hits" is a query that finds nothing; "0 found of 80 hits" is a
+        # boundary that lets nothing through. Two different fixes.
+        detail += f", {result.search_hits} search hits"
     sources.record_collection_result(
         con, source_id, status=status, detail=detail,
         collected_at=datetime.now(timezone.utc),

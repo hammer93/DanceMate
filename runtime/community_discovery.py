@@ -2029,50 +2029,84 @@ def link_item(con, item_id: int, community_id: Any, *, reviewer: str = "admin") 
 
 SOURCE_PLATFORMS = frozenset({"NAVER_CAFE", "DAUM_CAFE", "WEB"})
 PROPOSED_INTERVAL_MINUTES = 360
-# Search terms for a cafe's own posts: the cafe's name with the words its
-# own event notices use. runtime.collectors' cafe_name_hint/url_contains
-# filters keep results scoped to the cafe itself.
-PROPOSAL_QUERY_SUFFIXES = ("정모", "파티", "공지")
 
 
-def proposal_for(item: dict[str, Any], community: dict[str, Any]) -> dict[str, Any]:
-    """The Source Master fields a candidate would be registered with. Pure:
-    no database access, so the Admin screen can preview it."""
-    platform = item.get("platform")
+def build_proposal(*, platform: str | None, url: str | None, name: str,
+                   community: dict[str, Any], item_id: int | None = None,
+                   genre_code: str | None = None, region_id: int | None = None,
+                   extra_queries: Sequence[str] = ()) -> dict[str, Any]:
+    """The Source Master fields a community's public page would be
+    registered with. Pure: no database access, so a screen can preview it.
+
+    v0.95.0: the search queries come from ``source_queries`` - the genre's
+    own profile anchored on the community's distinctive name (not the
+    three fixed suffixes v0.94.0 used), with an operator's extra words in
+    front. The cafe/URL boundary in ``config`` is what keeps precision;
+    the profile is what gives recall.
+    """
+    from . import source_queries  # noqa: PLC0415
+
     if platform not in SOURCE_PLATFORMS:
         raise DiscoveryError(f"{platform or '알 수 없는 플랫폼'}: 수집 Source로 등록할 수 있는 "
                              "플랫폼이 아닙니다 (NAVER_CAFE / DAUM_CAFE / WEB)")
-    ident = identify(item.get("community_url"))
+    ident = identify(url)
     if ident is None or ident.platform != platform:
         raise DiscoveryError("후보의 URL에서 공개 identity를 확인할 수 없습니다")
-    name = (community.get("name") or item.get("candidate_name") or "").strip()
+    name = (name or "").strip()
     if not name:
         raise DiscoveryError("동호회 이름이 없어 Source 이름을 정할 수 없습니다")
     club = ident.key.split(":", 1)[1]
     config: dict[str, Any] = {"community_id": community["community_id"],
-                              "discovery_item_id": item["item_id"],
                               "board_type": "EVENT_PRIMARY"}
+    if item_id is not None:
+        config["discovery_item_id"] = item_id
     queries: list[str] = []
     if platform in ("NAVER_CAFE", "DAUM_CAFE"):
         config["cafe_name_hint"] = name
         config["url_contains"] = [club]
-        queries = [f"{name} {suffix}" for suffix in PROPOSAL_QUERY_SUFFIXES]
+        queries = source_queries.queries_for(genre_code, name=name, extra=extra_queries)
         label = "공식 카페"
     else:
         config["parser"] = "board"
         config["board_urls"] = [ident.url]
         label = "공식 홈페이지"
     genre_ids = list(community.get("genre_ids") or [])
+    origin = f"Community Discovery 후보 #{item_id}" if item_id is not None else f"동호회 #{community['community_id']}"
     return {
         "name": f"{name} {label}"[:120], "platform": platform, "source_role": "COMMUNITY",
-        "url": ident.url, "region_id": community.get("region_id") or item.get("region_id"),
+        "url": ident.url, "region_id": community.get("region_id") or region_id,
         "genre_id": genre_ids[0] if genre_ids else None, "authority_level": "SECONDARY",
         "queries": queries, "config": config, "enabled": False,
         "collection_interval_minutes": PROPOSED_INTERVAL_MINUTES,
-        "notes": (f"v0.94.0 Community Discovery 후보 #{item['item_id']}에서 제안됨. "
+        "notes": (f"v0.95.0 {origin}에서 제안됨 (검색어: {genre_code or '공통'} query profile). "
                   "운영자가 Test로 공개 접근을 확인한 뒤 활성화합니다. 주최 공식 게시판으로 "
                   "확인되면 authority_level을 PRIMARY_ORGANIZER로 올립니다."),
     }
+
+
+def proposal_for(item: dict[str, Any], community: dict[str, Any],
+                 genre_code: str | None = None) -> dict[str, Any]:
+    """The Source Master fields a discovery candidate would be registered
+    with (v0.94.0 entry point, kept)."""
+    return build_proposal(
+        platform=item.get("platform"), url=item.get("community_url"),
+        name=community.get("name") or item.get("candidate_name") or "", community=community,
+        item_id=item["item_id"], genre_code=genre_code or _first_genre_code(item, community),
+        region_id=item.get("region_id"),
+    )
+
+
+def _first_genre_code(item: dict[str, Any], community: dict[str, Any]) -> str | None:
+    codes = list(item.get("genre_codes") or [])
+    return codes[0] if codes else None
+
+
+def _genre_code_for(con, community: dict[str, Any]) -> str | None:
+    genre_ids = list(community.get("genre_ids") or [])
+    if not genre_ids:
+        return None
+    genre = master_data.get_genre(con, genre_ids[0])
+    return genre["code"] if genre else None
 
 
 def propose_source(con, item_id: int, *, reviewer: str = "admin") -> dict[str, Any]:
@@ -2097,28 +2131,98 @@ def propose_source(con, item_id: int, *, reviewer: str = "admin") -> dict[str, A
         community = communities.get_community(con, community_id)
         if community is None:
             raise DiscoveryError("연결된 동호회를 찾을 수 없습니다")
-        fields = proposal_for(item, community)
-
-        existing = source_master.get_source_by_url(con, fields["url"])
-        if existing is not None:
-            owner = (existing.get("config") or {})
-            if isinstance(owner, str):
-                owner = json.loads(owner)
-            owner_id = owner.get("community_id")
-            if owner_id is not None and int(owner_id) != int(community_id):
-                raise DiscoveryError(f"같은 URL의 Source {existing['source_key']}은(는) 이미 다른 "
-                                     "동호회의 Source입니다")
-            source = existing
-            created = False
-        else:
-            source = source_master.create_source(
-                con, source_key=source_master.next_source_key(con, fields["platform"]), **fields,
-            )
-            created = True
+        fields = proposal_for(item, community, genre_code=_genre_code_for(con, community))
+        source, created = _register_or_reuse(con, fields, community_id)
         with con.cursor() as cur:
             cur.execute("UPDATE community_discovery_items SET source_id = %s, updated_at = now() "
                         "WHERE item_id = %s", (source["source_id"], item_id))
     return {"source": source, "created": created}
+
+
+def _register_or_reuse(con, fields: dict[str, Any], community_id: int) -> tuple[dict[str, Any], bool]:
+    """Create the proposed source, or hand back the one already at that URL
+    - unless it belongs to a different Community, which is refused."""
+    from . import sources as source_master  # noqa: PLC0415
+
+    existing = source_master.get_source_by_url(con, fields["url"])
+    if existing is not None:
+        owner = (existing.get("config") or {})
+        if isinstance(owner, str):
+            owner = json.loads(owner)
+        owner_id = owner.get("community_id")
+        if owner_id is not None and int(owner_id) != int(community_id):
+            raise DiscoveryError(f"같은 URL의 Source {existing['source_key']}은(는) 이미 다른 "
+                                 "동호회의 Source입니다")
+        return existing, False
+    source = source_master.create_source(
+        con, source_key=source_master.next_source_key(con, fields["platform"]), **fields,
+    )
+    return source, True
+
+
+def propose_source_for_community(con, community_id: Any, *, reviewer: str = "admin",
+                                 extra_queries: Sequence[str] = ()) -> dict[str, Any]:
+    """v0.95.0: propose a Source for a registered Community directly - the
+    ones registered by hand or before Community Discovery existed, and
+    therefore never had a candidate to propose from. Same rules as
+    ``propose_source``: DISABLED, SECONDARY, linked by ``config.community_id``,
+    an existing source at that URL reused, another Community's refused. A
+    discovery candidate already registered as this Community is linked to
+    the result as well.
+    """
+    cid = parse_id(community_id, what="동호회")
+    if cid is None:
+        raise DiscoveryError("동호회: 필수 항목입니다")
+    with con.transaction():
+        community = communities.get_community(con, cid)
+        if community is None:
+            raise DiscoveryError("동호회: 존재하지 않는 항목입니다")
+        page_url = community.get("homepage_url")
+        item_id = None
+        ident = identify(page_url)
+        if ident is None:
+            # A Community registered without a homepage: its own approved
+            # discovery candidate knows the public page it was found at.
+            rows = _rows(con, "SELECT item_id, community_url FROM community_discovery_items "
+                              "WHERE registered_community_id = %s AND review_state IN ('APPROVED', 'LINKED') "
+                              "ORDER BY item_id DESC LIMIT 1", (cid,))
+            if rows:
+                item_id, page_url = rows[0]["item_id"], rows[0]["community_url"]
+                ident = identify(page_url)
+        if ident is None:
+            raise DiscoveryError("동호회의 홈페이지 URL에서 공개 identity를 확인할 수 없습니다")
+        fields = build_proposal(
+            platform=ident.platform, url=page_url, name=community["name"],
+            community=community, item_id=item_id, genre_code=_genre_code_for(con, community),
+            extra_queries=extra_queries,
+        )
+        source, created = _register_or_reuse(con, fields, cid)
+        with con.cursor() as cur:
+            cur.execute(
+                "UPDATE community_discovery_items SET source_id = %s, updated_at = now() "
+                "WHERE registered_community_id = %s AND source_id IS NULL "
+                "  AND review_state IN ('APPROVED', 'LINKED')",
+                (source["source_id"], cid))
+    return {"source": source, "created": created}
+
+
+def suggested_queries(con, source: dict[str, Any]) -> list[str]:
+    """v0.95.0: the query profile a source would be proposed with today,
+    merged behind whatever an operator already wrote - for the Sources
+    screen's "query profile 적용" action, so a narrow v0.94.0 list can be
+    widened without retyping. Only meaningful for search-API platforms."""
+    from . import source_queries  # noqa: PLC0415
+
+    config = source.get("config") or {}
+    if isinstance(config, str):
+        config = json.loads(config)
+    name = config.get("cafe_name_hint") or source.get("name") or ""
+    genre = master_data.get_genre(con, source["genre_id"]) if source.get("genre_id") else None
+    current = source.get("queries") or []
+    if isinstance(current, str):
+        current = json.loads(current)
+    proposed = source_queries.queries_for(genre["code"] if genre else None, name=name)
+    return source_queries.merge_queries(current, proposed)
 
 
 def set_review_state(con, item_id: int, state: str, *, reviewer: str = "admin") -> dict[str, Any]:
