@@ -149,14 +149,64 @@ def term_occurs(normalized_term: str, normalized_text: str) -> bool:
     return normalized_term in normalized_text
 
 
+# v0.96.0: a community board is mostly not announcements. A recap of last
+# week's social ("축하소셜 스케치 영상", "정모 사진 후기"), a membership or
+# fee notice, a venue-booking note, an instructor introduction, a
+# registration-closed notice - these carry the very words that announce a
+# night (소셜, 정모, 밀롱가) and used to become events dated in the past, or
+# not at all. Judged on the title only: a real announcement's title does not
+# call itself a recap, and a body may legitimately say "지난 파티 영상 참고".
+_RECAP_TITLE_RE = re.compile(
+    r"영상|동영상|후기|사진|스케치|리뷰|다녀왔|되돌아|지난|recap|vlog|photo|video|하이라이트|highlight",
+    re.I,
+)
+_ADMIN_NOTICE_TITLE_RE = re.compile(
+    r"가입\s*안내|가입\s*문의|가입방법|회비|회원비|대관|강사\s*소개|자기\s*소개|인사드립니다|"
+    r"조직도|환불|신청\s*마감|마감\s*안내|마감되었|취소\s*안내|취소\s*및|마니또|운영진\s*모집|"
+    r"설문|투표|경품|추첨|판매|할인|공동구매|공구|계정|에티켓|예절|매너|추천|드레스코드|"
+    r"이전\s*안내|주차\s*안내",
+    re.I,
+)
+# A community's own night announced with a word that is not a scene word -
+# "Special Event 9월24일", "이번 달 정모", "게스트 DJ 나이트" - counts only
+# when the post also names a specific day and either a clock or a place:
+# an announcement carries logistics, a mention does not.
+_NOTICE_WORDS_RE = re.compile(r"정모|행사|event|특별|스페셜|special|게스트|guest|나이트|night", re.I)
+_NOTICE_CLOCK_RE = re.compile(_CLOCK, re.I)
+_NOTICE_PLACE_RE = re.compile(r"(?:장소|위치|venue|place|location)\s*[:：]|[@＠]\s*\S{2,}", re.I)
+
+
+def is_non_event_notice(title: str) -> bool:
+    """A title that says the post is a recap or an administrative notice."""
+    heading = title or ""
+    return bool(_RECAP_TITLE_RE.search(heading) or _ADMIN_NOTICE_TITLE_RE.search(heading))
+
+
+def notice_evidence_bundle(title: str, body: str) -> bool:
+    """An event announced with a non-scene word, backed by a day and by a
+    clock or a place - never the word alone."""
+    if not _NOTICE_WORDS_RE.search(title or ""):
+        return False
+    whole = f"{title or ''} {body or ''}"
+    return bool(
+        _EXPLICIT_DAY_DATE_RE.search(whole)
+        and (_NOTICE_CLOCK_RE.search(whole) or _NOTICE_PLACE_RE.search(whole))
+    )
+
+
 def classify(title: str, body: str, known_event_type=None, event_terms=None) -> str:
     if known_event_type:
         # Source Registry / known series context is admissible evidence for type classification.
         return known_event_type
+    if is_non_event_notice(title):
+        return "OTHER"
     text = f"{title} {body}".lower()
     class_words = ["lesson", "강습", "개강", "모집", "안무반", "공연반", "초중급",
                    "전문가반", "워크샵", "워크숍", "workshop"]
-    milonga_words = ["milonga", "밀롱가", "쁘롱", "쁘락"]
+    # v0.96.0: the practica, in its standard spellings (PRACTICA / 프락티카 /
+    # Práctica), is the same kind of tango night the existing "쁘락" already
+    # counted - a community that writes it out in full was being read as OTHER.
+    milonga_words = ["milonga", "밀롱가", "쁘롱", "쁘락", "프락티카", "practica", "práctica", "쁘락띠까"]
     has_class = any(w in text for w in class_words)
     has_milonga = any(w in text for w in milonga_words)
     if not has_milonga and event_terms:
@@ -171,8 +221,12 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
     if has_class:
         # The tango rule is left exactly as it was. "Special Milonga Lesson
         # 개설" mentions a milonga and is a lesson; only an open class attached
-        # to a milonga has ever counted as the milonga.
-        if "open class" in text and has_milonga:
+        # to a milonga has ever counted as the milonga. v0.96.0: the Korean
+        # spellings of that same open class ("오픈클래스", "원데이 클래스 후
+        # 밀롱가") count the same way - a one-off open lesson attached to the
+        # night, not a course.
+        if has_milonga and ("open class" in text or "오픈클래스" in text
+                            or "오픈 클래스" in text or "원데이" in text):
             return "MILONGA_WITH_CLASS"
         # The same discipline for the other scenes: mentioning a social is not
         # announcing one, and social_evidence is what tells them apart.
@@ -190,6 +244,8 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
     if has_milonga:
         return "MILONGA"
     if has_social:
+        return "SOCIAL"
+    if notice_evidence_bundle(title, body):
         return "SOCIAL"
     return "OTHER"
 

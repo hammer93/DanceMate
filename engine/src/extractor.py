@@ -85,9 +85,96 @@ CURRENT_YEAR_INFERRED = "CURRENT_YEAR_INFERRED"  # see _norm_date; not reachable
 UNKNOWN_YEAR = "UNKNOWN_YEAR"            # no year, and nothing to infer it from
 SOURCE_RELATIVE_DATE = "SOURCE_RELATIVE_DATE"
 SOURCE_WEEKLY_BOUNDED = "SOURCE_WEEKLY_BOUNDED"
+# v0.96.0: "매월 둘째 토요일" / "매월 15일" resolved to the one occurrence
+# nearest after the post, exactly as 매주 is: never a projected series.
+SOURCE_MONTHLY_BOUNDED = "SOURCE_MONTHLY_BOUNDED"
 
 _WEEKDAY = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
-_RELATIVE = re.compile(r"(?P<week>이번주|다음주|이번|매주)\s*(?P<day>[월화수목금토일])요일|(?P<simple>오늘|내일)")
+_RELATIVE = re.compile(
+    r"(?P<week>이번주|이번\s*주|다음주|다음\s*주|이번|매주)\s*(?P<day>[월화수목금토일])요일"
+    r"|(?P<simple>오늘|내일)")
+_ORDINAL = {"첫째": 1, "첫": 1, "둘째": 2, "두번째": 2, "셋째": 3, "세번째": 3, "넷째": 4,
+            "네번째": 4, "다섯째": 5, "마지막": -1}
+_ORDINAL_WORDS = "|".join(sorted(_ORDINAL, key=len, reverse=True))
+_MONTHLY_WEEKDAY_RE = re.compile(
+    rf"매월\s*(?P<ord>{_ORDINAL_WORDS})\s*(?:주)?\s*(?P<day>[월화수목금토일])요일")
+_MONTHLY_DAY_RE = re.compile(r"매월\s*(?P<d>\d{1,2})\s*일")
+# "9월 둘째주 토요일", "10월 마지막 주 금요일" - a named month's nth weekday.
+_MONTH_ORDINAL_RE = re.compile(
+    rf"(?P<m>\d{{1,2}})\s*월\s*(?P<ord>{_ORDINAL_WORDS})\s*(?:주)?\s*(?P<day>[월화수목금토일])요일")
+MAX_DAYS_MONTHLY_AHEAD = 45
+
+
+def _nth_weekday(year: int, month: int, ordinal: int, weekday: int):
+    """The nth (1-based; -1 = last) given weekday of a month, or None."""
+    import calendar
+    from datetime import date as _date
+
+    days = [d for d in range(1, calendar.monthrange(year, month)[1] + 1)
+            if _date(year, month, d).weekday() == weekday]
+    try:
+        return _date(year, month, days[ordinal - 1] if ordinal > 0 else days[-1])
+    except IndexError:
+        return None
+
+
+def _monthly_date(text, published):
+    """"매월 둘째 토요일" / "매월 15일": the next occurrence on or after the
+    post, within MAX_DAYS_MONTHLY_AHEAD. Needs the post's own date."""
+    from datetime import date as _date, timedelta
+
+    if published is None:
+        return None, None, None
+    match = _MONTHLY_WEEKDAY_RE.search(text)
+    candidates = []
+    if match:
+        ordinal, weekday = _ORDINAL[match.group("ord")], _WEEKDAY[match.group("day")]
+        for offset in (0, 1, 2):
+            month_index = published.month - 1 + offset
+            year, month = published.year + month_index // 12, month_index % 12 + 1
+            day = _nth_weekday(year, month, ordinal, weekday)
+            if day is not None:
+                candidates.append(day)
+    else:
+        match = _MONTHLY_DAY_RE.search(text)
+        if not match:
+            return None, None, None
+        dom = int(match.group("d"))
+        for offset in (0, 1, 2):
+            month_index = published.month - 1 + offset
+            year, month = published.year + month_index // 12, month_index % 12 + 1
+            try:
+                candidates.append(_date(year, month, dom))
+            except ValueError:
+                continue
+    upcoming = [d for d in candidates if d >= published]
+    if not upcoming or (upcoming[0] - published).days > MAX_DAYS_MONTHLY_AHEAD:
+        return None, match.group(0), SOURCE_MONTHLY_BOUNDED
+    return upcoming[0].isoformat(), match.group(0), SOURCE_MONTHLY_BOUNDED
+
+
+def _month_ordinal_date(text, published):
+    """"9월 둘째주 토요일": the named month's nth weekday, in the year that
+    lands nearest the post - the same closest-year rule a bare 9/25 uses."""
+    if published is None:
+        return None, None, None
+    match = _MONTH_ORDINAL_RE.search(text)
+    if not match:
+        return None, None, None
+    month, ordinal, weekday = int(match.group("m")), _ORDINAL[match.group("ord")], _WEEKDAY[match.group("day")]
+    if not 1 <= month <= 12:
+        return None, None, None
+    best = None
+    for year in (published.year - 1, published.year, published.year + 1):
+        day = _nth_weekday(year, month, ordinal, weekday)
+        if day is None:
+            continue
+        distance = abs((day - published).days)
+        if best is None or distance < best[0]:
+            best = (distance, day)
+    if best is None or best[0] > MAX_DAYS_FROM_POST:
+        return None, match.group(0), UNKNOWN_YEAR
+    return best[1].isoformat(), match.group(0), SOURCE_YEAR
 
 
 def _relative_date(text, published):
@@ -108,7 +195,7 @@ def _relative_date(text, published):
         day = published + timedelta(days=1 if match.group("simple") == "내일" else 0)
         return day.isoformat(), match.group(0), SOURCE_RELATIVE_DATE
     target = _WEEKDAY[match.group("day")]
-    week = match.group("week")
+    week = re.sub(r"\s+", "", match.group("week"))  # "다음 주" == "다음주"
     if week == "이번주":
         day = published - timedelta(days=published.weekday()) + timedelta(days=target)
         if day < published:
@@ -213,7 +300,15 @@ def _norm_date(text: str, published=None, default_year=None):
             continue
         resolved, provenance = _resolve_date_match(m, published)
         return resolved, m.group(0), provenance
-    return _relative_date(text, published)
+    # v0.96.0: the ways a community names a day without writing one -
+    # a month's nth weekday, this/next/every week's weekday, every month's
+    # nth weekday or day - each anchored on the post's own date, never the
+    # crawl clock, and each yielding at most one occurrence.
+    for reader in (_month_ordinal_date, _relative_date, _monthly_date):
+        resolved, raw, provenance = reader(text, published)
+        if raw:
+            return resolved, raw, provenance
+    return None, None, None
 
 
 # --- event context segmentation (v0.81.2) ------------------------------------
@@ -402,6 +497,11 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         ))
 
     reading = extraction_rules.parse_time_range(scope, ev.event_type)
+    if reading is None:
+        # v0.96.0: a start with no end ("저녁 7시", "8시부터") - see
+        # extraction_rules.parse_start_time for what marks a lone clock as a
+        # start rather than a deadline.
+        reading = extraction_rules.parse_start_time(scope, ev.event_type)
     if reading:
         ev.start_time = reading.start
         ev.end_time = reading.end
@@ -495,6 +595,86 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
             context_id=context_id,
         ))
     return ev
+
+
+# --- schedule posts (v0.96.0) -------------------------------------------
+#
+# "9월 소셜 일정: 9/5 소셜 / 9/12 파티 / 9/19 정모" - one post, several
+# nights. v0.81.2's segmentation already finds every dated program in such a
+# post and extract_single() deliberately reads only one of them, flagging
+# MULTI_EVENT_CONTEXT for a person. That stays the rule for any post that
+# merely *mentions* several dates. A schedule post is narrower: its title
+# says it is a schedule/notice, at least two of its segments each name this
+# event type's own word beside their own date, and every such date sits in a
+# plausible announcement window around the post. Only then does one post
+# become one candidate per dated program - each read by extract_single() on
+# its own segment, so no value is ever merged across programs.
+
+_SCHEDULE_TITLE_RE = re.compile(r"일정|스케줄|schedule|안내|공지|calendar", re.I)
+SCHEDULE_ITEM = "SCHEDULE_ITEM"
+SCHEDULE_DAYS_BEFORE = 7
+SCHEDULE_DAYS_AHEAD = 70
+
+
+def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=None,
+                     published=None):
+    """One candidate per dated program of a schedule post, or None when the
+    post is not one (single date, no schedule title, programs that do not
+    each name the event, or dates outside the announcement window)."""
+    from datetime import date as _date, timedelta
+
+    if not _SCHEDULE_TITLE_RE.search(title or ""):
+        return None
+    text = f"{title} {body}"
+    published_date = _as_date(published)
+    words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
+    if not words:
+        return None
+    # A schedule lists each program *after* its date ("10/3 토 소셜 20:00 @
+    # 스윙홀 / 10/10 ..."), so a program's segment runs from its date to the
+    # next one - not to the midpoint _context_segments uses for prose, which
+    # would cut "20:00" in half. The title is shared by every segment; only
+    # the body's own words say which programs are this event type.
+    title_end = len(title or "") + 1
+    matches = [m for m in _all_date_matches(text) if m.start() >= title_end]
+    if len(matches) < 2:
+        return None
+    low = high = None
+    if published_date is not None:
+        low = published_date - timedelta(days=SCHEDULE_DAYS_BEFORE)
+        high = published_date + timedelta(days=SCHEDULE_DAYS_AHEAD)
+    matching = []
+    seen_dates = set()
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        seg_date, _ = _resolve_date_match(match, published_date)
+        if not seg_date or seg_date in seen_dates:
+            continue
+        own = text[start:end]
+        if not re.search(words, own, re.I):
+            continue
+        if low is not None and not (low <= _date.fromisoformat(seg_date) <= high):
+            continue  # a program outside the announcement window is not read
+        seen_dates.add(seg_date)
+        matching.append((f"sched{len(matching) + 1}", start, end, seg_date))
+    if len(matching) < 2:
+        return None
+    out = []
+    for context_id, start, end, seg_date in matching:
+        scope = text[max(start, title_end):end]
+        ev = extract_single(title, scope, source_role=source_role,
+                            name_hint=f"{re.sub(r'\s+', ' ', title).strip()} {seg_date[5:].replace('-', '/')}",
+                            event_type=event_type, published=published_date)
+        if ev.date != seg_date:
+            return None
+        for e in ev.evidences:
+            e.context_id = context_id
+        ev.evidences.append(Evidence(
+            "context", SCHEDULE_ITEM, scope[:160], source_role=source_role, context_id=context_id,
+        ))
+        out.append(ev)
+    return out
 
 
 # --- image text fallback (v0.81.3) -------------------------------------

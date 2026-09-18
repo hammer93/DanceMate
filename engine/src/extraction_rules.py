@@ -122,7 +122,9 @@ _BARE_HOUR_RE = re.compile(r"^(?P<h>\d{1,2})$")
 @dataclass
 class TimeReading:
     start: str
-    end: str
+    # None for a post that names only when the night starts (v0.96.0:
+    # "저녁 7시", "8시부터", "7:30pm 시작") - a real start with no claimed end.
+    end: "str | None"
     end_day_offset: int
     raw: str
     #: EXPLICIT when the text carried a PM/오후/저녁 marker, ABSENT when it did not.
@@ -238,6 +240,71 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
     return readings[0][0]
 
 
+# v0.96.0: a start time with no end. Community notices very often write only
+# when the night begins - "저녁 7시", "오후 7시 30분 시작", "8시부터 밀롱가",
+# "7:30pm", "19:30" - and _RANGE_RE (two clocks) never sees them, so the
+# candidate had no time at all. A lone clock is accepted only when something
+# marks it as a *start*: a meridiem word, a 부터/시작/from/open suffix, or
+# the unambiguous hh:mm form. A bare "8시" with none of those stays out - it
+# is as likely a deadline ("8시 마감") as a start.
+_SINGLE_CLOCK_RE = re.compile(
+    rf"(?P<lead>{_MARKER})?\s*(?P<t>{_CLOCK})\s*(?P<trail>{_MARKER})?"
+    r"\s*(?P<start>부터|시작|start|from|오픈|open)?",
+    re.I,
+)
+_NOT_A_START_AFTER = re.compile(r"^\s*(?:마감|까지|전|이전|until|by)", re.I)
+
+
+def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | None:
+    """The night's start when the text names one clock and no range."""
+    body = text or ""
+    if any(True for _ in _readings(body)):
+        return None
+    found = []
+    for match in _SINGLE_CLOCK_RE.finditer(body):
+        parts = _clock_parts(match.group("t"))
+        if parts is None:
+            continue
+        if _is_other_programme(body, match):
+            continue
+        after = body[match.end():match.end() + 6]
+        if _NOT_A_START_AFTER.match(after):
+            continue
+        marker = (_meridiem(match.group("lead"), parts[0])
+                  or _meridiem(match.group("trail"), parts[0]))
+        hhmm = _HHMM_RE.fullmatch(match.group("t").replace(" ", ""))
+        # "20시" / "19시 30분": an hour past twelve is already a 24-hour clock.
+        if not marker and not match.group("start") and not hhmm and parts[0] < 13:
+            continue
+        if marker:
+            start_abs = _apply(*parts, marker)
+            evidence, ambiguous = EVIDENCE_EXPLICIT, False
+        else:
+            start_abs = _literal(*parts)
+            evidence = EVIDENCE_ABSENT
+            ambiguous = 1 <= parts[0] <= 12
+        found.append((TimeReading(
+            start=_fmt(start_abs), end=None, end_day_offset=0,
+            raw=re.sub(r"\s+", " ", match.group(0)).strip(),
+            meridiem_evidence=evidence, ambiguous=ambiguous,
+        ), match.start(), match.end()))
+    if not found:
+        return None
+    words = _EVENT_WORDS.get((event_type or "").upper())
+    if words:
+        for reading, start, end in found:
+            window = body[max(0, start - _TIME_NEAR_BEFORE):start] + body[end:end + _TIME_NEAR_AFTER]
+            if re.search(words, window, re.I):
+                return reading
+    # Two different lone clocks for two different things ("클럽 오픈 오후
+    # 8시 ... 오후 7시 핸슨") and neither beside the event's word: which one
+    # is the start is anyone's guess, and this rule does not guess.
+    if len({r[0].start for r in found}) > 1:
+        return None
+    explicit = next((r for r in found if r[0].meridiem_evidence == EVIDENCE_EXPLICIT), None)
+    return (explicit or found[0])[0]
+
+
 def _readings(text: str):
     """Every clock range in the text that is not another programme's."""
     for match in _RANGE_RE.finditer(text or ""):
@@ -309,7 +376,11 @@ _VENUE_STOP_RE = re.compile(
     r"\s*[:：]?"
     r"|[\[\]【】]"
     r"|\d[\d,]{2,}\s*원"          # a price starts the fee field, not the name
-    r"|[가-힣A-Za-z]{2,10}\s*[:：]",  # any other labelled field
+    r"|[가-힣A-Za-z]{2,10}\s*[:：]"   # any other labelled field
+    # v0.96.0: "장소: 이데알 탱고 까페 저녁 7시" / "@오초 19:30" - a clock or a
+    # date after the name is the next fact, not part of the name.
+    r"|(?:오전|오후|저녁|밤|낮|새벽)\s*\d"
+    r"|\d{1,2}\s*(?::\s*\d{2}|시(?!장)|/\s*\d|월\s*\d)",
     re.I,
 )
 
@@ -406,6 +477,39 @@ def _cut_at_boundary(value: str) -> str:
     return value
 
 
+# v0.96.0: "@ 신천 비바스윙", "@스튜디오 오초", "at OCHO" - the way a
+# community writes where without a label. Same boundary rules as a labelled
+# value; a handle-looking token (an e-mail, "@instagram") is not a place.
+_AT_VENUE_RE = re.compile(
+    r"(?:^|(?<=[\s(（\[]))(?:[@＠]|\bat\s)\s*(?P<value>[^\n@＠#,()（）\[\]]{2,60})", re.I,
+)
+_HANDLE_LIKE = re.compile(r"^[A-Za-z0-9_.]+$")
+# "@allaboutswing 팔로우 부탁드립니다" - an ASCII handle followed by Korean
+# prose is an account, not a place; "@Studio Ocho" (Latin on Latin) is one.
+_HANDLE_THEN_KOREAN = re.compile(r"^[A-Za-z0-9_.]{3,}\s+[가-힣]")
+# v0.96.0: an unlabelled name that ends in a venue word - "이데알 탱고 까페
+# 저녁 8시", "홍대 스윙바 20:00" - read only when nothing labels a venue and
+# the name sits right before the night's clock, so the suffix alone
+# ("스튜디오 대관", "카페 추천") never makes a place.
+_SUFFIX_VENUE_RE = re.compile(
+    r"(?:^|(?<=[\s:：]))"
+    r"(?P<value>(?:[가-힣A-Za-z][가-힣A-Za-z]{0,12}\s){0,3}"
+    r"[가-힣A-Za-z]*(?:스튜디오|까페|카페|탱고바|스윙바|라틴바|살사바|홀|Studio|Cafe|Hall))"
+    rf"\s*(?:{_MARKER}\s*)?(?:\d{{1,2}}\s*(?::\s*\d{{2}}|시))",
+    re.I,
+)
+_SUFFIX_VENUE_NOT_ALONE = re.compile(r"^(?:스튜디오|까페|카페|홀|Studio|Cafe|Hall)$", re.I)
+_NAME_OWNER_BEFORE = re.compile(r"(?:DJ|디제이|with|by|feat\.?)\s*$", re.I)
+# The same name right *after* the clock: "19:00-23:00 이데알 탱고 까페".
+_SUFFIX_VENUE_AFTER_CLOCK_RE = re.compile(
+    r"\d{1,2}\s*(?::\s*\d{2}|시(?:\s*\d{1,2}\s*분?)?)\s*(?:[ap]\.?m\.?)?(?:부터|시작)?\s+"
+    r"(?P<value>(?:[가-힣A-Za-z][가-힣A-Za-z]{0,12}\s){0,3}"
+    r"[가-힣A-Za-z]*(?:스튜디오|까페|카페|탱고바|스윙바|라틴바|살사바|홀|Studio|Cafe|Hall))"
+    r"(?=\s|$|[,.!)])",
+    re.I,
+)
+
+
 def extract_venue(text: str) -> VenueReading | None:
     """The labelled venue in ``text``, if the text labels one.
 
@@ -438,6 +542,50 @@ def extract_venue(text: str) -> VenueReading | None:
             raw=re.sub(r"\s+", " ", match.group(0))[:120].strip(),
             label=match.group("label"),
             alias_candidates=candidates,
+        )
+    for match in _AT_VENUE_RE.finditer(text or ""):
+        value = match.group("value")
+        if _HANDLE_THEN_KOREAN.match(value.strip()):
+            continue
+        name = _strip_decoration(_cut_at_boundary(value))
+        # "(...)" already cut by the boundary; a trailing clock/date is prose.
+        name = re.split(r"\s+\d{1,2}\s*[:시/.]", name, maxsplit=1)[0].strip()
+        if len(name) < 2 or _HANDLE_LIKE.match(name):
+            continue
+        if re.search(r"\.(?:com|net|kr|co)\b", name, re.I):
+            continue
+        return VenueReading(
+            name=name,
+            raw=re.sub(r"\s+", " ", match.group(0))[:120].strip(),
+            label="@",
+            alias_candidates=[name],
+        )
+    for pattern in (_SUFFIX_VENUE_RE, _SUFFIX_VENUE_AFTER_CLOCK_RE):
+        match = next((m for m in pattern.finditer(text or "")
+                      if len(_strip_decoration(m.group("value"))) >= 2
+                      and not _SUFFIX_VENUE_NOT_ALONE.match(_strip_decoration(m.group("value")))),
+                     None)
+        if match is None:
+            continue
+        # "with DJ 롭 이데알 탱고 까페": the DJ's name is the word before the
+        # venue, not its first word. Drop leading words that belong to a
+        # DJ/with/by phrase until the name stands on its own.
+        value, position = match.group("value"), match.start("value")
+        while " " in value.strip():
+            if not _NAME_OWNER_BEFORE.search((text or "")[:position]):
+                break
+            step = re.match(r"\S+\s+", value)
+            if not step:
+                break
+            value, position = value[step.end():], position + step.end()
+        name = _strip_decoration(value)
+        if len(name) < 2 or _SUFFIX_VENUE_NOT_ALONE.match(name):
+            continue
+        return VenueReading(
+            name=name,
+            raw=re.sub(r"\s+", " ", match.group(0))[:120].strip(),
+            label="SUFFIX",
+            alias_candidates=[name],
         )
     return None
 

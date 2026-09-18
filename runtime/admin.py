@@ -985,8 +985,17 @@ def _source_diagnosis(op: dict[str, Any] | None) -> str:
     if not op or not op.get("diagnosis"):
         return ""
     code = op["diagnosis"]
-    tone = {"HEALTHY": "ok", "DISABLED": "muted", "NEVER_RUN": "muted"}.get(code, "warn")
-    return (f'<div class="note"><span class="badge {tone}" title="{E(op.get("diagnosis_detail") or "")}">'
+    tone = {"HEALTHY": "ok", "DISABLED": "muted", "NEVER_RUN": "muted",
+            "BODY_PENDING": "muted"}.get(code, "warn")
+    # v0.96.0: the yield behind the badge - past/upcoming/undated and the
+    # per-post rates - in the same tooltip, no new column.
+    detail = op.get("diagnosis_detail") or ""
+    if op.get("items"):
+        detail += (f" | past {op.get('events_past', 0)} / upcoming {op.get('events_upcoming', 0)}"
+                   f" / undated {op.get('events_undated', 0)} / body pending {op.get('body_pending', 0)}"
+                   f" | event rate {op.get('event_candidate_rate', 0.0):.2f}"
+                   f", upcoming rate {op.get('upcoming_event_rate', 0.0):.2f}")
+    return (f'<div class="note"><span class="badge {tone}" title="{E(detail)}">'
             f'{E(op.get("diagnosis_label") or code)}</span></div>')
 
 

@@ -176,18 +176,37 @@ def _detection_terms_by_source(pg):
     """
     from . import event_terms  # noqa: PLC0415 - keeps the import list stable
 
+    import json as _json  # noqa: PLC0415
+
     try:
         grouped = event_terms.terms_by_genre(pg)
         with pg.cursor() as cur:
-            cur.execute("SELECT source_id, genre_id FROM sources")
-            genre_of = dict(cur.fetchall())
+            # v0.96.0: a source's own config.event_terms - words this one
+            # board uses for its night ("쁘락타임", "열탱즐탱") that no
+            # genre-wide Settings term should carry. Same plumbing as the
+            # Settings terms; never a source id in code.
+            cur.execute("SELECT source_id, genre_id, config->'event_terms' FROM sources")
+            rows = cur.fetchall()
+        genre_of = {row[0]: row[1] for row in rows}
+        own_terms = {}
+        for row in rows:
+            extra = row[2] if len(row) > 2 else None
+            if isinstance(extra, str):
+                try:
+                    extra = _json.loads(extra)
+                except ValueError:
+                    extra = None
+            if isinstance(extra, list):
+                own_terms[row[0]] = tuple(
+                    event_terms.normalize_term(str(t)) for t in extra if str(t).strip())
     except Exception as exc:  # noqa: BLE001 - classification must not stop here
         log.warning("event terminology unavailable, using built-in words only: %s", exc)
         return lambda source_id: None
 
     def lookup(source_id):
-        words = event_terms.detection_terms(
-            event_terms.terms_for(grouped, genre_of.get(source_id)))
+        words = tuple(event_terms.detection_terms(
+            event_terms.terms_for(grouped, genre_of.get(source_id))) or ())
+        words = tuple(dict.fromkeys(words + own_terms.get(source_id, ())))
         return words or None
 
     return lookup
@@ -393,6 +412,27 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                             item.get("acquisition_status") == acquisition.FETCH_BLOCKED:
                         content_store.mark_reprocessed(pg, source_item_id)
                         skipped_blocked += 1
+                        continue
+
+                    # v0.96.0: the common shape - one candidate before, one
+                    # after - is re-read *into the same candidate_id*, so the
+                    # Event the runtime already built from it keeps its id
+                    # when the Daum body arrives with the venue and time the
+                    # snippet lacked (Section 16: better information makes
+                    # the Event more accurate, never a different Event).
+                    if len(existing_ids) == 1 and len(events) == 1 \
+                            and hasattr(engine_db, "replace_candidate"):
+                        engine_db.replace_candidate(engine_con, existing_ids[0], events[0])
+                        used = {
+                            e.inference for e in events[0].evidences
+                            if e.evidence_type == "IMAGE_OCR" and e.inference
+                        }
+                        if used:
+                            image_fallback.mark_used_as_fallback(pg, source_item_id, used)
+                        after_total += 1
+                        engine_con.commit()
+                        content_store.mark_reprocessed(pg, source_item_id)
+                        reprocessed += 1
                         continue
 
                     # Replace this post's candidates with whatever the current

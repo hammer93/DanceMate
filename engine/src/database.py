@@ -2882,6 +2882,29 @@ def persist_events(con, post_id, events):
             con.execute("INSERT INTO evidences(candidate_id,field,value,raw_text,evidence_type,source_role,inference,context_id) VALUES(?,?,?,?,?,?,?,?)",
                         (cid,e.field,json.dumps(e.value, ensure_ascii=False) if isinstance(e.value,(dict,list)) else str(e.value),e.raw_text,e.evidence_type,e.source_role,e.inference,e.context_id))
 
+def replace_candidate(con, candidate_id, ev):
+    """v0.96.0: re-read a post into the candidate it already has, in place.
+
+    Re-extraction used to delete a post's candidates and insert fresh ones,
+    so a Daum body arriving after the search-snippet ingest gave the same
+    night a new candidate_id - and, downstream, a new Event row and id.
+    Keeping the id keeps the Event: the runtime upserts events by
+    candidate_id. Field values and evidences are replaced wholesale; nothing
+    a person reviewed is touched, because the caller skips reviewed
+    candidates before ever getting here.
+    """
+    con.execute("""UPDATE event_candidates SET name=?, event_type=?, event_date=?, start_time=?,
+        end_time=?, end_day_offset=?, fee=?, fee_display_text=?, venue=?, dj=?, status=?,
+        core_complete=? WHERE candidate_id=?""",
+        (ev.name, ev.event_type, ev.date, ev.start_time, ev.end_time, ev.end_day_offset, ev.fee,
+         ev.fee_display_text, ev.venue, ev.dj, ev.status, int(ev.core_complete), candidate_id))
+    con.execute("DELETE FROM evidences WHERE candidate_id=?", (candidate_id,))
+    for e in ev.evidences:
+        con.execute("INSERT INTO evidences(candidate_id,field,value,raw_text,evidence_type,source_role,inference,context_id) VALUES(?,?,?,?,?,?,?,?)",
+                    (candidate_id,e.field,json.dumps(e.value, ensure_ascii=False) if isinstance(e.value,(dict,list)) else str(e.value),e.raw_text,e.evidence_type,e.source_role,e.inference,e.context_id))
+    return candidate_id
+
+
 def persist_raw_post(con, post):
     now = datetime.now(timezone.utc).isoformat()
     ext = post.source_url or hashlib.sha256(f"{post.source_id}|{post.title}|{post.published_at}".encode()).hexdigest()

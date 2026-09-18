@@ -1,5 +1,109 @@
 # DanceMate Release Notes
 
+## v0.96.0 Direct Source Event Extraction Yield
+
+Product Runtime 0.96.0; Information Engine 0.89; no migration (head 041).
+Improved direct-source event extraction yield: better event-vs-non-event
+classification, improved date/time/venue extraction, body-arrival
+reprocessing that keeps the Event, per-source yield diagnostics. No change to
+the Event identity, Source reconciliation, region attribution or Event type
+contracts.
+
+**Why.** v0.95.0 put the first direct sources into Production and their
+numbers said what the next constraint is: OSIK, 122 search hits, 30 posts,
+1 event (past); 비바스윙, 742 hits, 100 posts, 0 events; 올어바웃스윙, 525
+hits, 220 posts, 7 events, all past; 가또땅고, 149 posts, 32 events, 1
+upcoming - with every Daum body still `FETCH_PENDING`. The posts are there.
+What they say was not being read: a community writes "저녁 7시", not
+"19:00-23:00"; "@오초", not "장소: 오초"; "매월 둘째 토요일", not a date;
+"Special Event 9월24일(목)" with no scene word at all; and one "9월 소셜
+일정" post for three nights. And a recap ("축하소셜 스케치 영상") reads as a
+past social, which is worse than nothing.
+
+**Classification** (`engine/src/classifier.py`). A title that says the post
+is a recap or an administrative notice (영상/후기/사진/스케치/리뷰/recap/vlog;
+가입 안내/회비/대관/강사 소개/인사드립니다/신청 마감/환불/취소 안내/…) classifies
+as OTHER before any scene word is looked at - judged on the title only, so a
+real announcement whose body says "지난 파티 영상 참고" is untouched. A
+community's own night announced with a non-scene word (정모/행사/Special
+Event/게스트/나이트) counts as SOCIAL only as a bundle: that word in the
+title *and* an explicit day *and* a clock or a labelled/`@` place - never the
+word alone. "오픈클래스"/"원데이" beside a milonga word is the Korean spelling
+of the "open class" rule that already existed (MILONGA_WITH_CLASS). The
+class-word, milonga-word and social-word lists are otherwise unchanged; the
+practica is recognised in its standard spellings only (PRACTICA / 프락티카 /
+Práctica).
+
+**Dates** (`engine/src/extractor.py`). Beyond the numeric forms (9/24,
+09/24, 9월 24일, 9.24, 2026.09.24, 2026-09-24, 9/24(목)) and the v0.85
+relative forms, a post's own date now anchors: "9월 둘째주 토요일" (the named
+month's nth weekday, closest year - the same rule a bare 9/25 uses; new
+provenance stays SOURCE_YEAR), "매월 둘째 토요일" / "매월 15일" (the single
+next occurrence on or after the post, within 45 days - `SOURCE_MONTHLY_BOUNDED`;
+never a projected series), and "이번 주"/"다음 주" with a space. Every one of
+them needs the post's published date; without it the date stays unknown -
+the crawl clock is never a substitute, and a Naver METADATA_ONLY item with
+no published date still yields no dated candidate.
+
+**Schedule posts** (`extractor.extract_schedule`, wired in
+`live_pipeline.process_discovered_post`). One post becomes one candidate per
+dated program only when its title says it is a schedule/notice, at least two
+of its own body segments each name this event type's word beside their own
+date, and every such date lies within [post-7d, post+70d]; each candidate is
+read by `extract_single()` on its own segment (no value crosses programs)
+and carries a `SCHEDULE_ITEM` context evidence. Anything less clear-cut stays
+exactly what it was: one candidate with MULTI_EVENT_CONTEXT for a person.
+
+**Times** (`extraction_rules.parse_start_time`). A lone clock becomes a start
+with no end when something marks it as a start - a meridiem word (저녁 7시,
+오후 7시 30분, 7:30pm), a 부터/시작/from/open suffix (8시부터), or the hh:mm
+form (19:30). A bare "8시" with none of those is left alone (as likely a
+deadline as a start), "8시 마감/까지" is refused, and `TimeReading.end` is
+now Optional. `parse_time_range` (7시~10시, 19:00-22:00, 8시부터 11시까지)
+is unchanged and still wins whenever a range exists.
+
+**Venues** (`extraction_rules.extract_venue`). "@오초" / "@ 신천 비바스윙" /
+"at OCHO" read as the place (label `@`), with the same boundary rules as a
+labelled value; handles and domains are refused. A clock or a date after
+any venue value ("장소: 이데알 탱고 까페 저녁 7시") now ends the name. The
+Venue Master resolver is reused as is; no venue is invented from the
+community's name.
+
+**Body arrival keeps the Event** (`runtime/engine_ingest.reprocess_acquired`
++ `engine/src/database.replace_candidate`). Re-extraction used to delete a
+post's candidates and insert new ones, so a Daum body arriving after the
+search-snippet ingest gave the same night a new candidate_id, and
+normalisation - which upserts by candidate_id and prunes orphans - a new
+Event id. The one-before/one-after case is now re-read *into the same
+candidate_id*: the Event row keeps its id and gains the date/time/venue/fee
+the snippet lacked. N:M re-extraction (a schedule post gaining programs)
+still replaces, as before. Reviewed candidates are still never touched.
+
+**Per-source tuning** (`sources.config.event_terms`). A source's own words
+for its night (e.g. a cafe that calls its practica "쁘락타임") merge into the
+same detection-term plumbing the genre Settings terms use. No source id in
+code.
+
+**Yield diagnostics** (`runtime/source_ops`). `overview()` now carries, per
+source, past/today/upcoming/undated/rejected event counts, `body_pending`
+(FETCH_PENDING posts), `event_candidate_rate` (events per post) and
+`upcoming_event_rate` (upcoming per post) - both 0.0 when nothing was
+collected - and a new diagnosis `BODY_PENDING` ("본문 수집 대기": bodies
+queued, not yet tried) beside the v0.95.0 set; METADATA_ONLY_NO_EVENT keeps
+meaning "tried and unreadable here". The Admin source badge shows the
+breakdown in its tooltip. No new table, no new job.
+
+**Verification.** `engine/tests/test_v0960_extraction_yield.py` (classification
+positives and 14 negatives, every date/time/venue form above, recurrence,
+schedule expansion, and a ~100-post before/after fixture with the pre-release
+engine's counts hard-coded: events and upcoming events rise, no negative
+fixture gains an event) and `tests/test_v0960_direct_source_yield.py` (Daum
+body arrival keeps the candidate and Event id and fills venue/time; the
+월간가또 synthetic case matches its Miltang counterpart only once the body
+carries the real date/time/venue; yield diagnostics; the v0.94.0 identity,
+representative and region contracts re-asserted). Fresh-database full
+regression: 0 failed. No Production deployment, no tag.
+
 ## v0.95.0 Direct Source Coverage Expansion
 
 Product Runtime 0.95.0; Information Engine remains 0.88; no migration (head

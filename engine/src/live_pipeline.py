@@ -1,5 +1,5 @@
 from .classifier import classify_with_image_evidence
-from .extractor import DATE_PATTERNS, extract_single, extract_with_image_fallback
+from .extractor import DATE_PATTERNS, extract_schedule, extract_single, extract_with_image_fallback
 from .verifier import verify
 from .database import persist_events
 
@@ -74,6 +74,19 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
                       and _dated_class_instance(post))
     if classification not in EVENT_CLASSIFICATIONS and not class_instance:
         return {"classification": classification, "events": []}
+    # v0.96.0: a schedule post ("9월 소셜 일정: 9/5 ... 9/12 ... 9/19") is one
+    # candidate per dated program; anything less clear-cut stays one
+    # candidate with MULTI_EVENT_CONTEXT for a person, exactly as before.
+    scheduled = extract_schedule(
+        post.title, post.body, source_role=source_role, event_type=classification,
+        published=getattr(post, "published_at", None),
+    ) if not class_instance else None
+    if scheduled:
+        for ev in scheduled:
+            verify(ev, source_role=source_role)
+            if post.acquisition_quality == "METADATA_ONLY" and ev.status == "VERIFIED":
+                ev.status = "POSSIBLE"
+        return {"classification": classification, "events": scheduled}
     ev = extract_with_image_fallback(
         post.title, post.body, source_role=source_role,
         event_type=classification,

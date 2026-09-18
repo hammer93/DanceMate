@@ -203,6 +203,11 @@ DIAG_METADATA_ONLY_NO_EVENT = "METADATA_ONLY_NO_EVENT"
 DIAG_NON_EVENT_CONTENT = "NON_EVENT_CONTENT"
 DIAG_PAST_ONLY = "PAST_ONLY"
 DIAG_HEALTHY = "HEALTHY"
+# v0.96.0: bodies queued but not yet fetched - the Daum shape right after a
+# source is enabled. Nothing is wrong yet; judge it after content-acquisition
+# has run. Distinct from METADATA_ONLY_NO_EVENT, where the bodies *were*
+# tried and this deployment cannot read them.
+DIAG_BODY_PENDING = "BODY_PENDING"
 
 DIAG_LABELS = {
     DIAG_DISABLED: "비활성",
@@ -214,6 +219,7 @@ DIAG_LABELS = {
     DIAG_NON_EVENT_CONTENT: "글은 있으나 행사 아님",
     DIAG_PAST_ONLY: "지난 행사만",
     DIAG_HEALTHY: "정상",
+    DIAG_BODY_PENDING: "본문 수집 대기",
 }
 
 _SEARCH_HITS = re.compile(r"(\d+) search hits")
@@ -248,13 +254,56 @@ def yield_diagnosis(source: dict[str, Any], outcome: dict[str, Any],
     if events == 0:
         blocked = int(outcome.get("blocked", 0) or 0) + int(outcome.get("login", 0) or 0)
         fetched = int(outcome.get("fetched", 0) or 0)
+        pending = int(outcome.get("body_pending", 0) or 0)
         if fetched == 0 and blocked >= max(items, 1):
             return DIAG_METADATA_ONLY_NO_EVENT, (
                 f"{items} posts, bodies not fetchable here; titles/snippets carried no dated event")
+        if fetched == 0 and pending > 0 and pending >= blocked:
+            return DIAG_BODY_PENDING, (
+                f"{pending} of {items} posts still waiting for their body; judge after content-acquisition")
         return DIAG_NON_EVENT_CONTENT, f"{items} posts collected, none normalised into an event"
     if int(outcome.get("upcoming_events", 0) or 0) == 0:
         return DIAG_PAST_ONLY, f"{events} events, none upcoming"
     return DIAG_HEALTHY, f"{outcome.get('upcoming_events')} upcoming events"
+
+
+def yield_breakdown(con) -> dict[int, dict[str, int]]:
+    """v0.96.0 per-source yield: of the events a source's own posts produced,
+    how many are past / today / upcoming / undated, and how many of its posts
+    are still waiting for a body (FETCH_PENDING). All from rows that already
+    exist - no tracking column, no new job."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT i.source_id, "
+            "  count(e.event_id) AS events_total, "
+            "  count(*) FILTER (WHERE e.event_date < current_date) AS past, "
+            "  count(*) FILTER (WHERE e.event_date = current_date) AS today, "
+            "  count(*) FILTER (WHERE e.event_date > current_date) AS upcoming, "
+            "  count(*) FILTER (WHERE e.event_id IS NOT NULL AND e.event_date IS NULL) AS undated, "
+            "  count(*) FILTER (WHERE e.review_state = 'REJECTED') AS rejected "
+            "FROM source_items i JOIN events e ON e.source_item_id = i.source_item_id "
+            "GROUP BY i.source_id"
+        )
+        out = {row["source_id"]: dict(row) for row in _rows(cur)}
+        cur.execute(
+            "SELECT i.source_id, count(*) AS body_pending "
+            "FROM source_items i JOIN source_item_content c ON c.source_item_id = i.source_item_id "
+            "WHERE c.acquisition_status = 'FETCH_PENDING' GROUP BY i.source_id"
+        )
+        for row in _rows(cur):
+            out.setdefault(row["source_id"], {})["body_pending"] = row["body_pending"]
+    return out
+
+
+def yield_rates(items: int, events: int, upcoming: int) -> dict[str, float]:
+    """`event_candidate_rate` = events per collected post, `upcoming_event_rate`
+    = upcoming events per collected post; 0.0 when nothing was collected."""
+    if not items or items <= 0:
+        return {"event_candidate_rate": 0.0, "upcoming_event_rate": 0.0}
+    return {
+        "event_candidate_rate": round(events / items, 3),
+        "upcoming_event_rate": round(upcoming / items, 3),
+    }
 
 
 def last_run_per_source(con) -> dict[int, dict[str, Any]]:
@@ -411,6 +460,7 @@ def overview(con) -> list[dict[str, Any]]:
     upcoming = upcoming_yield(con)
     last_runs = last_run_per_source(con)
     represented = representative_yield(con)
+    breakdown = yield_breakdown(con)
 
     # How many other enabled sources of the same genre are actually readable.
     readable_by_genre: dict[Any, int] = {}
@@ -439,6 +489,17 @@ def overview(con) -> list[dict[str, Any]]:
             "recommendation_reason": reason,
             "alternatives": alternatives,
         })
+        # v0.96.0: per-source yield breakdown and rates.
+        yielded = breakdown.get(source["source_id"], {})
+        entry.update({
+            "events_past": yielded.get("past", 0) or 0,
+            "events_today": yielded.get("today", 0) or 0,
+            "events_upcoming": yielded.get("upcoming", 0) or 0,
+            "events_undated": yielded.get("undated", 0) or 0,
+            "events_rejected": yielded.get("rejected", 0) or 0,
+            "body_pending": yielded.get("body_pending", 0) or 0,
+        })
+        entry.update(yield_rates(entry["items"], entry["events"], entry["upcoming_events"]))
         # v0.95.0: yield diagnosis and representative wins, from the same
         # stored numbers - no new tracking column.
         run = last_runs.get(source["source_id"])
