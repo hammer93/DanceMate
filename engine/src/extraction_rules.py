@@ -181,13 +181,27 @@ _OTHER_PROGRAMME_TIME = re.compile(
 )
 _TIME_NEAR_BEFORE = 16
 _TIME_NEAR_AFTER = 16
+# v0.96.2: a class word on the other side of a structural break - a line
+# break, a bracket heading, a "/" or "|" list separator - belongs to the
+# item on that side, not to this clock. "8:00~9:10pm 무료 특강 (아미고) [쁘롱가]
+# 9:15~11:15pm": the 특강 sits 12 characters before the milonga's own range,
+# but a "[...]" heading stands between them. Bullets are deliberately not a
+# break: "8:00~9:10pm ① 무료 일일 특강" (Production) numbers the items *of*
+# that clock's slot, so the word after the bullet still qualifies it.
+_PROGRAMME_BREAK = re.compile(r"[\n\[\]/|]")
 
 
 def _is_other_programme(text: str, match: re.Match) -> bool:
     """True when this range belongs to something priced apart from the event."""
-    window = (text[max(0, match.start() - _TIME_NEAR_BEFORE):match.start()]
-              + text[match.end():match.end() + _TIME_NEAR_AFTER])
-    return bool(_OTHER_PROGRAMME_TIME.search(window))
+    before = text[max(0, match.start() - _TIME_NEAR_BEFORE):match.start()]
+    after = text[match.end():match.end() + _TIME_NEAR_AFTER]
+    breaks = list(_PROGRAMME_BREAK.finditer(before))
+    if breaks:
+        before = before[breaks[-1].end():]
+    cut = _PROGRAMME_BREAK.search(after)
+    if cut:
+        after = after[:cut.start()]
+    return bool(_OTHER_PROGRAMME_TIME.search(before + after))
 
 
 def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | None:
@@ -487,6 +501,61 @@ _HANDLE_LIKE = re.compile(r"^[A-Za-z0-9_.]+$")
 # "@allaboutswing 팔로우 부탁드립니다" - an ASCII handle followed by Korean
 # prose is an account, not a place; "@Studio Ocho" (Latin on Latin) is one.
 _HANDLE_THEN_KOREAN = re.compile(r"^[A-Za-z0-9_.]{3,}\s+[가-힣]")
+# v0.96.2: the same handle followed by anything that is not a Latin word -
+# "@intothelatinittl º 카카오톡 ID: ..." (found in Production: an Instagram
+# handle in a contact line, read as the venue "intothelatinittl º 카카오톡").
+# An account name has no spaces; a Latin place name continues in Latin.
+_HANDLE_THEN_NON_LATIN = re.compile(r"^[A-Za-z0-9_.]{3,}(?:\s+(?![A-Za-z])|$)")
+# v0.96.2: an @ inside a contact line is an account whatever script the
+# token is in - "인스타그램 DM: @...", "카카오톡 ID: @...". Judged on the few
+# characters before the @ and on the value itself; 문의 alone is not here,
+# because "문의" also precedes real logistics and the handle shape above
+# already refuses "문의 @handle".
+_ACCOUNT_CONTEXT = re.compile(
+    r"카카오톡|카톡|인스타|instagram|insta\b|\bDM\b|\bID\b|아이디|계정|팔로우|follow|"
+    r"텔레그램|telegram|페이스북|facebook|유튜브|youtube|트위터|twitter|틱톡|tiktok|"
+    r"이메일|e-?mail|메일",
+    re.I,
+)
+_ACCOUNT_CONTEXT_BEFORE = 12
+# v0.96.2: "루 @ 선배님 은 밀롱가에 살다시피 하신다 했다" (found in Production:
+# a nickname followed by "@ 선배님", read as the venue "선배님 은 ..."). A
+# place name is never followed by a detached particle, so the name ends at
+# the first one ("오초 에서 만나요" -> "오초"); what is left is then judged
+# by its shape: a Korean honorific (any token ending in 님, or a kinship /
+# teacher word) is a person, and a token ending in a sentence predicate is
+# prose. No list of real venues is consulted.
+_DETACHED_PARTICLE = re.compile(
+    r"\s+(?:은|는|이|가|을|를|도|의|에|에서|께서|과|와|로|으로|한테|에게|께)(?=\s|$)")
+_PERSON_TOKEN = re.compile(
+    r"^(?:\S*님|형|누나|언니|오빠|쌤|선생|강사|대표|회원|여러분|친구들?|분들?)(?=\s|$)")
+_PREDICATE_END = re.compile(
+    r"(?:니다|했다|하신다|한다|세요|해요|어요|아요|네요|겠죠|죠)[.!?]*$")
+# v0.96.2: a bare room word is a room in some venue, not a venue - "메인홀",
+# "안쪽홀", "큰홀", "2홀" were unresolved venue noise in Production. Only the
+# generic size/position words are refused; "아미고 큰홀" / "세뇨홀" still
+# name something and are left to the Venue Master.
+_ROOM_ONLY_RE = re.compile(
+    r"^(?:(?:메인|안쪽|바깥쪽|바깥|큰|작은|소|대|지하|\d+층?|[A-Za-z])\s*홀"
+    r"|(?:main|big|small|large)\s*hall)$",
+    re.I,
+)
+
+
+def _looks_like_account(text: str, match: re.Match, name: str) -> bool:
+    """An @-token that is an account or a handle, not a place (v0.96.2)."""
+    if _HANDLE_LIKE.match(name) or _HANDLE_THEN_NON_LATIN.match(name):
+        return True
+    before = text[max(0, match.start() - _ACCOUNT_CONTEXT_BEFORE):match.start()]
+    return bool(_ACCOUNT_CONTEXT.search(before) or _ACCOUNT_CONTEXT.search(name))
+
+
+def _looks_like_person_or_prose(name: str) -> bool:
+    """"선배님", "형님 감사합니다", "이번주는 쉽니다": not a place (v0.96.2)."""
+    if _PERSON_TOKEN.match(name):
+        return True
+    last = name.split()[-1] if name.split() else name
+    return bool(_PREDICATE_END.search(last))
 # v0.96.0: an unlabelled name that ends in a venue word - "이데알 탱고 까페
 # 저녁 8시", "홍대 스윙바 20:00" - read only when nothing labels a venue and
 # the name sits right before the night's clock, so the suffix alone
@@ -550,9 +619,13 @@ def extract_venue(text: str) -> VenueReading | None:
         name = _strip_decoration(_cut_at_boundary(value))
         # "(...)" already cut by the boundary; a trailing clock/date is prose.
         name = re.split(r"\s+\d{1,2}\s*[:시/.]", name, maxsplit=1)[0].strip()
-        if len(name) < 2 or _HANDLE_LIKE.match(name):
+        # v0.96.2: the name ends where a detached particle starts the sentence.
+        name = _DETACHED_PARTICLE.split(name, maxsplit=1)[0].strip()
+        if len(name) < 2 or _looks_like_account(text or "", match, name):
             continue
         if re.search(r"\.(?:com|net|kr|co)\b", name, re.I):
+            continue
+        if _looks_like_person_or_prose(name) or _ROOM_ONLY_RE.match(name):
             continue
         return VenueReading(
             name=name,
@@ -563,7 +636,8 @@ def extract_venue(text: str) -> VenueReading | None:
     for pattern in (_SUFFIX_VENUE_RE, _SUFFIX_VENUE_AFTER_CLOCK_RE):
         match = next((m for m in pattern.finditer(text or "")
                       if len(_strip_decoration(m.group("value"))) >= 2
-                      and not _SUFFIX_VENUE_NOT_ALONE.match(_strip_decoration(m.group("value")))),
+                      and not _SUFFIX_VENUE_NOT_ALONE.match(_strip_decoration(m.group("value")))
+                      and not _ROOM_ONLY_RE.match(_strip_decoration(m.group("value")))),
                      None)
         if match is None:
             continue
@@ -579,7 +653,7 @@ def extract_venue(text: str) -> VenueReading | None:
                 break
             value, position = value[step.end():], position + step.end()
         name = _strip_decoration(value)
-        if len(name) < 2 or _SUFFIX_VENUE_NOT_ALONE.match(name):
+        if len(name) < 2 or _SUFFIX_VENUE_NOT_ALONE.match(name) or _ROOM_ONLY_RE.match(name):
             continue
         return VenueReading(
             name=name,
@@ -701,6 +775,21 @@ _EVENT_WORDS = {
 # "what is this event actually called" words to decide which program in a
 # multi-program post the classification was about.
 EVENT_WORDS = _EVENT_WORDS
+# v0.96.2: the same question asked with the classifier's own vocabulary -
+# the spellings classify() already accepts as "this post is a milonga /
+# social" (쁘롱가, 쁘락, practica; 정모 for a community's own night). Used
+# only to pick which program of an *ambiguous* multi-program post stands
+# as the one reviewed candidate (extractor._select_context); the strict
+# EVENT_WORDS above still decide time/fee proximity and schedule expansion.
+EVENT_CONTEXT_WORDS = {
+    "MILONGA": r"밀롱가|milonga|쁘롱|쁘락|프락티카|practica|práctica",
+    "MILONGA_WITH_CLASS": r"밀롱가|milonga|쁘롱|쁘락|프락티카|practica|práctica",
+    "PRACTICA": r"쁘락띠까|쁘락|프락티카|practica|práctica",
+    "CLASS": _EVENT_WORDS["CLASS"],
+    "PARTY": r"파티|party",
+    "SOCIAL": r"소셜|social|파티|party|정모",
+    "SOCIAL_WITH_CLASS": r"소셜|social|파티|party|정모",
+}
 # Priced separately from the event and easy to mistake for it.
 _OTHER_PROGRAMME = re.compile(r"특강|수업|레슨|클래스|워크샵|워크숍|세미나|class|lesson|workshop", re.I)
 

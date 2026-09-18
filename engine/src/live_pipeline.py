@@ -92,6 +92,7 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         event_type=classification,
         published=getattr(post, "published_at", None),
         image_texts=image_texts,
+        event_terms=getattr(post, "event_terms", None),
     )
     if image_evidence_ref:
         from .models import Evidence

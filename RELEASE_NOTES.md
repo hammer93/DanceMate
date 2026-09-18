@@ -1,5 +1,108 @@
 # DanceMate Release Notes
 
+## v0.96.2 Direct Source Venue and Schedule Extraction Precision
+
+Product Runtime 0.96.2; Information Engine **0.90** (extraction behaviour
+changed); no migration (head 041). Fixed the two real misreads the v0.96.0
+/ v0.96.1 Production verification found in direct-source bodies: an "@"
+that addresses a person or names an account was read as the venue, and a
+multi-program schedule post was cut inside its own clock so a rehearsal's
+"8:00~11:00pm" became a 08:00-11:00 morning candidate. No change to the
+Event identity, Region, Source authority, acquisition queue or schedule
+expansion contracts. No Production deployment, no tag.
+
+**What Production showed (2026-09-18, read-only, 182 fetched direct-source
+bodies).** Of four "@" venue candidates two were not places: "루 @ 선배님 은
+밀롱가에 살다시피 하신다 했다" (item 2020 - a nickname addressing a senior;
+venue read as "선배님 은 밀롱가에 ...") and "인스타그램 DM: @intothelatinittl º
+카카오톡 ID: ..." (item 2296 - a contact line; venue read as
+"intothelatinittl º 카카오톡"). And 가또땅고's "9월 둘째주 열탱즐탱 일정" (item
+3132, one flat line after acquisition: "9/14(월) 8:00~11:00pm 군무 연습
+(이데알) 9/16(수)_8:00~9:10pm ① 무료 일일 특강 ... [가또땅고 쁘롱가]
+9:15~11:15pm (DJ 알루, 아미고 큰홀) ... 9/17(목) ... ☆9/18(금) ...") produced one
+candidate dated 9/14 08:00-11:00: the v0.81.2 segmentation split consecutive
+programs at the character midpoint between their dates, which here fell
+inside "8:00~11:00pm" - "8:00~11:00" | "pm ..." - and the representative
+segment of an ambiguous post was always the first one.
+
+**"@" venue (`extraction_rules.extract_venue`).** The "@" reading keeps the
+v0.96.0 boundary rules and adds grammar, not names: the value ends at the
+first detached particle ("오초 에서 만나요" -> "오초"; "선배님 은 ..." ->
+"선배님"); what is left is refused when it is a Korean honorific (any token
+ending in 님, or 형/누나/언니/오빠/쌤/선생/강사/대표/회원/여러분) or ends in a
+sentence predicate (…니다/했다/세요/해요/…); an ASCII handle (letters,
+digits, `_`, `.`, no space) followed by anything that is not a Latin word is
+an account ("@intothelatinittl º 카카오톡"), as a lone handle already was; an
+"@" within a messenger/SNS context (카카오톡/카톡/인스타/instagram/DM/ID/
+아이디/계정/팔로우/텔레그램/페이스북/유튜브/이메일 in the 12 characters before it
+or in the value) is an account whatever its script ("카카오톡 ID: @홍길동");
+and a bare generic room word (메인홀/안쪽홀/큰홀/2홀/지하홀 - not "아미고
+큰홀", not "세뇨홀") is refused on both the "@" and the suffix paths. "@오초",
+"@ 아미고 스튜디오", "@ 신천 비바스윙", "@ 이데알 탱고 까페", "@ 올어바웃스윙 홀",
+"at Studio Ocho" read exactly as in v0.96.0. No venue name appears in code;
+the Venue Master resolver is unchanged.
+
+**Segment boundaries (`extractor._boundary_before`).** A boundary between two
+dated programs is placed at an explicit structural anchor and never inside a
+date or clock token: (1) the heading run that introduces the next date - a
+bullet, a "1."/"2)" list marker, a "[행사]" bracket heading or a 일시:/날짜:
+label, with up to four plain words (the program's name) between it and the
+date - or the start of the line the date heads; (2) otherwise the last
+paragraph break, else the last line break, in the gap; (3) on one flat line
+with no anchor, the next date itself: a program's own words follow its date,
+so everything up to the next date stays with the program that owns it. The
+midpoint is gone. A single-date post still has one segment spanning the
+whole text - unchanged.
+
+**Representative segment (`extractor._representative`).** When no single
+segment names the event type's strict word (밀롱가/소셜/…) the post is still
+one candidate with MULTI_EVENT_CONTEXT - the N:M schedule expansion
+criterion is untouched - but the segment a person reviews is now the one
+that names the night in the classifier's own vocabulary
+(`extraction_rules.EVENT_CONTEXT_WORDS`: 쁘롱가/쁘락/practica for a milonga,
+정모 for a social) or in the source's own `config.event_terms`, and carries a
+clock; then one that names it; then one with a clock; then one with a place;
+else the first. Ties go to the earlier segment. `event_terms` reaches
+`extract_single()` from `live_pipeline.process_discovered_post` for this
+choice only - never for what is read.
+
+**Other-programme window (`extraction_rules._is_other_programme`).** The
+16-character window that disowns a clock beside a class word now stops at
+a line break, a "[...]" bracket heading or a "/"/"|" separator, so "8:00~9:10pm
+무료 특강 (아미고) [쁘롱가] 9:15~11:15pm" keeps the milonga's own range.
+Bullets are deliberately not a break ("8:00~9:10pm ① 무료 일일 특강" numbers
+the items of that clock's slot).
+
+**Result on item 3132.** One candidate, 2026-09-16 21:15-23:15 (raw
+"9:15~11:15pm", EXPLICIT), DJ 알루, MULTI_EVENT_CONTEXT - the post's own
+수요쁘롱가 - instead of 2026-09-14 08:00-11:00. No venue: "(DJ 알루, 아미고
+큰홀)" names the hall inside a DJ parenthesis, which no venue rule reads
+(known limitation, left for a person).
+
+**Verification.** `engine/tests/test_v0962_venue_and_segment_precision.py`
+(70 tests) on `fixture_v0962_precision.py`: the two Production "@" shapes and
+14 more people/handles/accounts/prose/bare rooms yield no venue; 15 real "@"
+forms still yield their name; every pm/am form (9:15-11:15pm, 9:15pm-11:15pm,
+7:30pm, 8pm, 8시pm, 저녁 8시, 8:00~11:00pm, 오후 7시 ~ 11시, 19:00-22:00) reads
+as before; no boundary falls inside a date or clock token; item 3132 as
+acquired, the same week with line structure and three more multi-program
+shapes read the night's own date and pm time from one segment; the v0.96.0
+schedule expansion still yields N candidates and its refusals still refuse.
+Before/after on the fixture against the v0.96.1 engine (`engine/src`
+stashed): "@" false positives 11 -> 0, valid "@" recall 14 -> 15, wrong
+multi-program candidate 5 -> 0, fabricated morning time 5 -> 0, pm lost at a
+boundary 5 -> 0, meridiem forms 9/9 -> 9/9. Existing v0.81.2 context, v0.96.0
+yield (including the ~100-post before/after), v0.94.0 identity, Region and
+v0.96.1 acquisition tests unchanged and green; engine full suite and
+fresh-database runtime full regression 0 failed.
+
+**Operations note (not code).** "이데알" still does not resolve to Venue
+Master 4222 (이데알 탱고 까페), which keeps the 월간가또 direct post and its
+Miltang Event apart. That is an alias-data task: on the Admin Venues screen
+open venue 4222 and add "이데알" in the alias editor (`POST
+/admin/master-data/VENUE/4222/alias-add`); no code change and no deploy is
+needed for it.
+
 ## v0.96.1 Acquisition Queue Starvation Fix
 
 Product Runtime 0.96.1; Information Engine remains 0.89; no migration (head

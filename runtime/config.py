@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.1"
+PRODUCT_VERSION = "0.96.2"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -40,7 +40,14 @@ PRODUCT_VERSION = "0.96.1"
 # non-event gate and the notice evidence bundle, extractor.py monthly and
 # nth-weekday dates plus schedule-post expansion, extraction_rules.py the
 # single start clock and unlabelled venue forms - what the engine reads changed.
-DEFAULT_ENGINE_VERSION = "0.89"
+# v0.96.2 bumped this to 0.90: extraction_rules.extract_venue() refuses a
+# person/account/room "@" (grammar rules, no name list), extractor segments a
+# multi-program post at structural anchors instead of the character midpoint
+# (a clock is never cut in half) and picks the reviewed segment of an
+# ambiguous post by the classifier's own vocabulary; parse_time_range()'s
+# other-programme window stops at a bracket heading / line break. What the
+# engine reads changed, so by the same rule every earlier bump followed.
+DEFAULT_ENGINE_VERSION = "0.90"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

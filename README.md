@@ -9,11 +9,11 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.1 (content-acquisition queue starvation fix on top of the v0.96.0 extraction yield work)
+- Product Runtime: v0.96.2 (direct-source venue and schedule extraction precision on top of the v0.96.1 queue starvation fix)
   - v0.94.0은 ROCKPro64의 직전 운영 기준점이었다 (migration 041, 변경 없음).
-- Information Engine: v0.89 (`engine/`) — 행사/비행사 분류 보강, 시작 시각만
-  적힌 글·"@장소"·매월 N째 요일·일정 안내 글의 다중 후보 추출을 추가했다
-  (RELEASE_NOTES 참고).
+- Information Engine: v0.90 (`engine/`) — "@사람·계정"을 장소로 읽지 않고,
+  여러 프로그램이 있는 글을 시간 토큰을 자르지 않는 구조적 경계로 나누며,
+  검토 대상 segment를 행사 단어+시각 기준으로 고른다 (RELEASE_NOTES 참고).
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
   확장됨 (실제 데이터가 있는 지역은 소스 수집 현황에 따라 다름)
@@ -76,7 +76,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.1"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.2"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

@@ -352,15 +352,98 @@ def _all_date_matches(text: str) -> list["re.Match"]:
     return found
 
 
+# --- segment boundaries (v0.96.2) -------------------------------------------
+#
+# v0.81.2 split consecutive programs at the character midpoint between their
+# two dates. Production (가또땅고, "9월 둘째주 열탱즐탱 일정", item 3132) showed
+# what that does to a flat schedule line: "9/14(월) 8:00~11:00pm 군무 연습
+# (이데알) 9/16(수)_..." was cut inside the clock - "8:00~11:00" | "pm ..." -
+# and the first program read as 08:00-11:00 with no meridiem, a past morning
+# candidate for a night that never existed. A boundary is now placed at an
+# explicit structural anchor and never inside a token:
+#
+#   1. the heading run that introduces the next date - a bullet / list
+#      marker / bracket heading / date label, optionally with a few plain
+#      words (the program's name) between it and the date ("2. 밤 밀롱가
+#      9월 6일", "☆9/18(금)", "[행사] 9/20", "일시: 9/5"), or the start of
+#      the line the date heads;
+#   2. else, when the text has line structure, the last paragraph break in
+#      the gap, else the last line break;
+#   3. else - one flat line and nothing marking where the next program
+#      starts - the next date itself: in a schedule a program's own words
+#      follow its date, so everything up to the next date stays with the
+#      program that owns it. No midpoint, no position arithmetic.
+#
+# Rule 3 is deliberately the "keep, never mix" side of the trade: a name
+# written before its own date in unstructured prose may land with the
+# previous program (a missing venue), but a clock is never cut in half and a
+# later program's time never pairs with an earlier program's date.
+
+_MARKER_TAIL = re.compile(
+    r"(?:(?:^|(?<=\s))\d{1,2}[.)]"                      # "1." / "2)"
+    r"|[•·▪◾■●▶►◆◇☆★※✔✅🔹🔸📌]"                         # bullets
+    r"|[①-⑳]"                                            # circled numbers
+    r"|(?:^|(?<=\s))[-–—]"                               # dash bullet
+    r"|\[[^\[\]\n]{1,30}\])"                              # "[행사]" heading
+    r"\s*$"
+)
+_DATE_LABEL_TAIL = re.compile(r"(?:일시|일자|날짜|date|when)\s*[:：]?\s*$", re.I)
+_PLAIN_WORD_TAIL = re.compile(r"(?:^|(?<=\s))[^\s\d:：]+\s*$")
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
+_HEADING_WORDS_MAX = 4
+
+
+def _boundary_before(text: str, gap_start: int, date_start: int) -> int:
+    """Where the program headed by the date at ``date_start`` begins."""
+    j = date_start
+    words = 0
+    label_start = None  # a date label ("일시:") always travels with its date
+    while True:
+        while j > gap_start and text[j - 1] in " \t　":
+            j -= 1
+        if j <= gap_start:
+            # Nothing but whitespace (or a date label) between the two
+            # dates: the next program starts right after the previous date.
+            # Plain words alone are the previous program's, not a heading.
+            if words == 0:
+                return gap_start
+            break
+        if text[j - 1] == "\n":
+            return j - 1
+        tail = text[gap_start:j]
+        marker = _MARKER_TAIL.search(tail)
+        if marker:
+            return gap_start + marker.start()
+        label = _DATE_LABEL_TAIL.search(tail)
+        if label:
+            j = label_start = gap_start + label.start()
+            continue
+        word = _PLAIN_WORD_TAIL.search(tail)
+        if word and words < _HEADING_WORDS_MAX:
+            words += 1
+            j = gap_start + word.start()
+            continue
+        break
+    if label_start is not None:
+        return label_start
+    gap = text[gap_start:date_start]
+    breaks = list(_PARAGRAPH_BREAK.finditer(gap))
+    if breaks:
+        return gap_start + breaks[-1].start()
+    newline = gap.rfind("\n")
+    if newline >= 0:
+        return gap_start + newline
+    return date_start
+
+
 def _context_segments(text: str, published):
     """(context_id, start, end, date_iso) for each program the text names.
 
     One entry, `context_id=None` spanning the whole text, when there is only
     one date value in the post (or none) - which is "no segmentation", the
     behaviour every post had before this. Two or more distinct dates create
-    one segment per date, split at the midpoint between consecutive date
-    matches so text naming a program *before* its own date heading (the
-    common "장소: OOO 일시: 9/5" order) still lands in that program's segment.
+    one segment per date, each ending where the next program's own heading
+    begins (`_boundary_before`) - never inside a date or clock token.
     """
     resolved = []
     for m in _all_date_matches(text):
@@ -381,34 +464,77 @@ def _context_segments(text: str, published):
             boundaries.append((m, date_iso))
             current = date_iso
 
+    starts = [0]
+    for i in range(1, len(boundaries)):
+        starts.append(_boundary_before(text, boundaries[i - 1][0].end(), boundaries[i][0].start()))
     segments = []
     for i, (m, date_iso) in enumerate(boundaries):
-        start = 0 if i == 0 else (boundaries[i - 1][0].end() + m.start()) // 2
-        end = (len(text) if i + 1 == len(boundaries)
-               else (m.end() + boundaries[i + 1][0].start()) // 2)
-        segments.append((f"ctx{i + 1}", max(0, start), min(len(text), end), date_iso))
+        end = len(text) if i + 1 == len(boundaries) else starts[i + 1]
+        segments.append((f"ctx{i + 1}", starts[i], end, date_iso))
     return segments
 
 
-def _select_context(segments, text: str, event_type: str | None):
+# v0.96.2: what a segment carries, for choosing the reviewed candidate of an
+# ambiguous multi-program post. A clock in any of the forms the time rules
+# read; a place in any of the forms the venue rules read.
+_CLOCK_CUE_RE = re.compile(r"\d{1,2}\s*(?::\s*\d{2}|시(?!간)|[ap]\.?m)", re.I)
+_PLACE_CUE_RE = re.compile(r"(?:장소|위치|venue|place|location)\s*[:：]|(?:^|\s)[@＠]\s*\S{2,}", re.I)
+
+
+def _representative(segments, text: str, event_type: str | None, event_terms=None):
+    """The segment that stands for an ambiguous multi-program post (v0.96.2).
+
+    v0.81.2 fell back to the first segment, which on a weekly schedule is
+    the first program of the week - a rehearsal, a class - not the night the
+    post was classified as. The fallback now prefers, in order: a segment
+    that names the event in the classifier's own vocabulary (or the source's
+    own event terms) *and* carries a clock; one that names it; one with a
+    clock; one with a place; else the first. Ties go to the earlier segment.
+    The result is still flagged MULTI_EVENT_CONTEXT by the caller - this
+    picks a better segment for a person to review, it never removes the
+    review.
+    """
+    words = extraction_rules.EVENT_CONTEXT_WORDS.get((event_type or "").upper())
+    terms = tuple(t for t in (event_terms or ()) if t)
+
+    def names_event(span: str) -> bool:
+        if words and re.search(words, span, re.I):
+            return True
+        if terms:
+            folded = classifier.normalize_term_text(span)
+            return any(classifier.term_occurs(t, folded) for t in terms)
+        return False
+
+    def rank(indexed):
+        index, segment = indexed
+        span = text[segment[1]:segment[2]]
+        named = names_event(span)
+        clock = bool(_CLOCK_CUE_RE.search(span))
+        place = bool(_PLACE_CUE_RE.search(span))
+        return (named and clock, named, clock, place, -index)
+
+    return max(enumerate(segments), key=rank)[1]
+
+
+def _select_context(segments, text: str, event_type: str | None, event_terms=None):
     """Which segment is the announced event, and whether that was ambiguous.
 
     A segment "is" the event when its own span names this event_type's word
     (밀롱가/소셜/파티/...) - the same word classify() used to call the whole
     post this event_type in the first place. Exactly one segment matching is
     unambiguous. Zero or more than one means the post does not clearly say
-    which program the classification was about; the caller falls back to the
-    first segment (never invents a merged value) and is told to flag it.
+    which program the classification was about; the caller falls back to
+    one segment (`_representative`, v0.96.2 - never a merged value) and is
+    told to flag it.
     """
     if len(segments) == 1:
         return segments[0], False
     words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
-    if not words:
-        return segments[0], True
-    matching = [s for s in segments if re.search(words, text[s[1]:s[2]], re.I)]
-    if len(matching) == 1:
-        return matching[0], False
-    return segments[0], True
+    if words:
+        matching = [s for s in segments if re.search(words, text[s[1]:s[2]], re.I)]
+        if len(matching) == 1:
+            return matching[0], False
+    return _representative(segments, text, event_type, event_terms), True
 
 
 def _convert_hour(h: int, ap: str | None):
@@ -431,7 +557,7 @@ def _norm_time(text: str, event_type: str | None = None):
 
 
 def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=None,
-                   event_type=None, published=None):
+                   event_type=None, published=None, event_terms=None):
     """One event read out of one post.
 
     ``event_type`` is the classifier's verdict. It decides which words the time
@@ -441,6 +567,10 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     ``published`` is when the post was written. A post says "9/25" and means
     the 25th of September near the time it was writing; without knowing when
     that was, the day cannot be placed in a year and no date is claimed.
+
+    ``event_terms`` (v0.96.2) are the source's own words for its night, the
+    same ones classify() accepted; they only help choose which program of an
+    ambiguous multi-program post is reviewed, never what is read from it.
     """
     text = f"{title} {body}"
     name = name_hint or re.sub(r"\s+", " ", title).strip()
@@ -449,7 +579,7 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     published_date = _as_date(published)
     segments = _context_segments(text, published_date)
     (context_id, seg_start, seg_end, seg_date), ambiguous = _select_context(
-        segments, text, ev.event_type
+        segments, text, ev.event_type, event_terms
     )
     # Single segment (the overwhelming majority of posts, and every post
     # tested before this release) spans the whole text - date/time/venue/fee
@@ -746,7 +876,7 @@ def _missing_fallback_fields(ev) -> set[str]:
 
 def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
                                 name_hint=None, event_type=None, published=None,
-                                image_texts=None):
+                                image_texts=None, event_terms=None):
     """extract_single(), then fill date/time/fee gaps from image OCR text.
 
     ``image_texts`` is a list of ``(image_ref, ocr_text)`` pairs, already
@@ -764,7 +894,7 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
     stands.
     """
     ev = extract_single(title, body, source_role=source_role, name_hint=name_hint,
-                        event_type=event_type, published=published)
+                        event_type=event_type, published=published, event_terms=event_terms)
     if not image_texts or not needs_image_fallback(ev):
         return ev
 
@@ -773,7 +903,8 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
         if not image_text:
             continue
         sub = extract_single(title, image_text, source_role=source_role,
-                             event_type=ev.event_type, published=published)
+                             event_type=ev.event_type, published=published,
+                             event_terms=event_terms)
         time_evidence = next((e for e in sub.evidences if e.field == "time"), None)
         time_details = time_evidence.value if time_evidence else None
         image_time_ambiguous = (sub.start_time is not None and
