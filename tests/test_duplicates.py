@@ -87,16 +87,25 @@ def test_unrelated_events_on_one_night_are_not_a_pair():
 
 # --- which row survives -----------------------------------------------------
 
-def test_the_more_complete_event_becomes_canonical():
+def test_a_richer_later_event_folds_under_the_existing_one():
+    """v0.94.0 (stable Event identity): completeness still measures how
+    much a row carries, but it no longer decides which row is canonical.
+    The Event that existed first keeps its id; the fuller post lends its
+    fields through the representative-source fill instead."""
     poor = _event(1, venue_id=None, venue_status="UNRESOLVED", fee=None, end_time=None)
     rich = _event(2)
     assert duplicates.completeness(rich) > duplicates.completeness(poor)
+    canonical, duplicate = duplicates._canonical_of(rich, poor)
+    assert canonical["event_id"] == 1
+    assert duplicate["event_id"] == 2
 
 
-def test_a_reviewed_event_outranks_an_unreviewed_one():
-    reviewed = _event(1, review_state="CONFIRMED")
-    plain = _event(2)
+def test_a_reviewed_later_event_still_does_not_take_the_id():
+    reviewed = _event(2, review_state="CONFIRMED")
+    plain = _event(1)
     assert duplicates.completeness(reviewed) > duplicates.completeness(plain)
+    canonical, _ = duplicates._canonical_of(reviewed, plain)
+    assert canonical["event_id"] == 1
 
 
 def test_equally_complete_events_break_the_tie_on_the_oldest_id():
@@ -104,6 +113,17 @@ def test_equally_complete_events_break_the_tie_on_the_oldest_id():
     canonical, duplicate = duplicates._canonical_of(_event(9), _event(4))
     assert canonical["event_id"] == 4
     assert duplicate["event_id"] == 9
+
+
+def test_a_row_that_already_heads_a_group_stays_the_root():
+    """An older stray row must not fold an established group under itself
+    and leave that group's duplicates pointing at a row that is no longer
+    canonical."""
+    root = _event(7, folded_count=2)
+    stray = _event(3)
+    canonical, duplicate = duplicates._canonical_of(stray, root)
+    assert canonical["event_id"] == 7
+    assert duplicate["event_id"] == 3
 
 
 # --- SQL --------------------------------------------------------------------

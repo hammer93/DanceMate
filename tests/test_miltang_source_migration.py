@@ -214,11 +214,17 @@ def test_the_existing_duplicate_scan_auto_merges_tangonow_and_miltang(seeded, un
 
     after_first = _refetch(first["event_id"])
     after_second = _refetch(second["event_id"])
-    merged = (
-        after_first["canonical_event_id"] == second["event_id"]
-        or after_second["canonical_event_id"] == first["event_id"]
-    )
-    assert merged, "TangoNOW and Miltang rows for the same PISTA milonga were not auto-merged"
+    # v0.94.0 (stable Event identity): the pair shares one canonical root.
+    # On a database that already holds an older row for this very night
+    # (the shared development database does), that root is the older row
+    # and both of this test's rows fold under it - still one Event, which
+    # is what "auto-merged" means; on a fresh database it is one of the two.
+    root_first = duplicates.canonical_id_of(seeded, first["event_id"])
+    root_second = duplicates.canonical_id_of(seeded, second["event_id"])
+    assert root_first == root_second, (
+        "TangoNOW and Miltang rows for the same PISTA milonga were not auto-merged")
+    assert (after_first["canonical_event_id"] is not None
+            or after_second["canonical_event_id"] is not None)
 
 
 def test_a_more_complete_row_is_not_overwritten_by_a_thinner_lower_authority_one(

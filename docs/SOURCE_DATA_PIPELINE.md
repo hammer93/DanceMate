@@ -132,8 +132,10 @@ similarity regardless of source platform. Not modified for this source.
 Which row is canonical and which post *represents* the Event are two
 separate questions:
 
-- **Canonical row**: the most complete row, then the oldest. A later post of
-  the same night (same date, place and start time) is folded under the
+- **Canonical row** (identity): the row that already heads a group, else
+  the row that existed first (older `event_id`). Never source directness,
+  authority or field completeness - a later post of the same night (same
+  date, place and start time), however much fuller, folds under the
   existing row, so the Event keeps its id and its public URL.
 - **Representative post** (`events.primary_source_item_id`): elected across
   the canonical row and every folded duplicate by evidence priority

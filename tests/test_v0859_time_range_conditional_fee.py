@@ -166,13 +166,21 @@ def test_line2_ordering_is_name_dj_fee_address():
 
 # --- source priority regression (Section 29-32) -----------------------------
 #
-# source_priority.py and duplicates._canonical_of() are unchanged this
-# release. These pin that a PRIMARY organiser's own post (now carrying a
-# real fee_display_text where it used to carry an unpriced/None fee) still
-# outranks a DIRECTORY aggregator's folded copy of the same event, exactly
-# as it did before this release touched anything fee-related.
+# These pin that a PRIMARY organiser's own post (now carrying a real
+# fee_display_text where it used to carry an unpriced/None fee) still
+# outranks a DIRECTORY aggregator's copy of the same event as the
+# *representative source*, exactly as it did before this release touched
+# anything fee-related.
+#
+# v0.94.0 (stable Event identity): "representative" is the elected primary
+# source (runtime.source_evidence), never which row survives. The row that
+# existed first - here the aggregator's, with the lower id - keeps the
+# Event's id whatever the organiser's post carries; the organiser's post
+# represents it. _canonical_of() is asserted on identity only.
 
 def test_primary_stays_representative_over_miltang_directory():
+    from runtime import source_evidence
+
     primary = {
         "event_id": 221245, "event_date": date(2026, 9, 8), "start_time": time(20, 0),
         "end_time": time(23, 30), "venue_id": 187, "venue_status": "RESOLVED",
@@ -183,11 +191,15 @@ def test_primary_stays_representative_over_miltang_directory():
     miltang = dict(primary, event_id=88436, source_role="AGGREGATOR",
                    fee=None, fee_display_text=None)
     canonical, duplicate = duplicates._canonical_of(primary, miltang)
-    assert canonical["event_id"] == 221245
-    assert duplicate["event_id"] == 88436
+    assert canonical["event_id"] == 88436, "the row that existed first keeps the id"
+    assert duplicate["event_id"] == 221245
+    assert (source_evidence.rank(source_evidence.classify("ORGANIZER"))
+            < source_evidence.rank(source_evidence.classify("AGGREGATOR")))
 
 
 def test_primary_stays_representative_over_tangonow_directory():
+    from runtime import source_evidence
+
     primary = {
         "event_id": 221245, "event_date": date(2026, 9, 8), "start_time": time(20, 0),
         "end_time": time(23, 30), "venue_id": 187, "venue_status": "RESOLVED",
@@ -198,8 +210,10 @@ def test_primary_stays_representative_over_tangonow_directory():
     tangonow = dict(primary, event_id=99001, source_role="DIRECTORY",
                     fee=None, fee_display_text=None)
     canonical, duplicate = duplicates._canonical_of(primary, tangonow)
-    assert canonical["event_id"] == 221245
-    assert duplicate["event_id"] == 99001
+    assert canonical["event_id"] == 99001, "the row that existed first keeps the id"
+    assert duplicate["event_id"] == 221245
+    assert (source_evidence.rank(source_evidence.classify("ORGANIZER"))
+            < source_evidence.rank(source_evidence.classify("DIRECTORY")))
 
 
 def test_promotion_board_beats_miltang_and_tangonow():

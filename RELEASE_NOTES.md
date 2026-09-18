@@ -19,10 +19,12 @@ saw. v0.85.0 made source directness the tiebreak, so the organizer's later
 post took over the listing's row - and its public id.
 
 **Event Source Evidence.** Which row is canonical and which post represents
-the Event are now two questions. The canonical row is the most complete
-one, then the oldest (`duplicates._canonical_of`, directness removed from
-the tiebreak): a later post of the same date/place/time folds under the
-existing Event, whose id and URL never move. The representative is
+the Event are now two questions. The canonical row is identity, not
+quality: the row that already heads a group, else the row that existed
+first (`duplicates._canonical_of` - directness *and* completeness both
+removed from the choice; see "Stable Event identity" below). A later post
+of the same date/place/time folds under the existing Event, whose id and
+URL never move. The representative is
 `events.primary_source_item_id`, elected across the canonical row and every
 folded duplicate by `runtime/source_evidence.py` - a class derived at read
 time from `sources.source_role`/`authority_level`/`platform` and the item's
@@ -65,14 +67,29 @@ reason, lets a person choose the representative or hand it back to the
 rules, and shows the history. The public detail marks the representative
 post and each post's evidence class.
 
+**Stable Event identity (pre-release correction).** The first cut of this
+release still let field completeness pick the canonical row (the v0.77
+rule), so an organizer's *fuller* post found after a directory listing
+took over the listing's row - and its public id - exactly the churn the
+release set out to end. Event identity is now stable across later,
+higher-quality source discovery: `_canonical_of` keeps the row that
+already heads a group, else the older id, and consults neither source
+directness, authority, completeness nor the primary source. Primary source
+and field quality improve the existing Event (representative election,
+history, the NULL-only DJ/fee fill) without replacing its id. Better
+information makes an Event more accurate; it never makes it a different
+Event. `get_event()` on a folded id still answers with its Event, and
+rows folded before this correction are left exactly as they are.
+
 **Contract change, stated plainly.** v0.85.1's "representative flip" tests
-asserted that the PRIMARY row becomes canonical. They now assert the new
-contract - the listed row keeps its id, the PRIMARY post is its
-representative - and the v0.85.2 Solo Tango scenario re-checks the same
-guarantees (source link, tier, DJ from the direct post, freshness, evidence
-KPI) under it. Not touched: Event Region Attribution (reads the canonical
-row's own source, unchanged), Venue resolution, Community CRUD, the Source
-Data Pipeline, and every collector.
+asserted that the PRIMARY row becomes canonical, and v0.77's duplicate
+tests that the more complete row does. They now assert the new contract -
+the row that existed first keeps its id whatever a later post carries, the
+PRIMARY post is its representative - and the v0.85.2 Solo Tango scenario
+re-checks the same guarantees (source link, tier, DJ from the direct post,
+freshness, evidence KPI) under it. Not touched: Event Region Attribution
+(reads the canonical row's own source, unchanged), Venue resolution,
+Community CRUD, the Source Data Pipeline, and every collector.
 
 Verification: 34 new tests, 45 cases (`tests/test_v0940_source_reconciliation.py`:
 evidence classes, aggregator-first/organizer-later with id preserved,

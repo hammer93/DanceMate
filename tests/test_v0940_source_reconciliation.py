@@ -251,19 +251,80 @@ def test_organizer_first_then_aggregator_keeps_the_organizer_as_representative(p
     assert events_api.get_event(pg, org_event)["source_link"]["url"] == org_url
 
 
-def test_a_richer_later_post_still_becomes_canonical_by_completeness(pg, unique):
-    """Completeness still decides the row (v0.77 rule, unchanged): a sparse
-    directory listing does not hide a full organizer post's fields. Only
-    directness stopped being a reason to flip rows."""
-    pair = _aggregator_then_organizer(pg, unique)
+def test_a_more_complete_organizer_post_found_later_never_changes_the_event_id(pg, unique):
+    """Case A - the contract this release exists for. A TangoNOW-like Event
+    with gaps exists first; the organizer's own, clearly fuller post (DJ,
+    fee, end time) is found later. Better information makes the Event more
+    accurate; it never becomes a different Event."""
+    pair = _aggregator_then_organizer(
+        pg, unique, organizer_overrides={"dj": "DJ 유진", "fee": 8000, "end_time": "23:30"})
+    old_event_id_before = pair["agg_event"]
     with pg.cursor() as cur:
-        cur.execute("UPDATE events SET fee = NULL, end_time = NULL WHERE event_id = %s",
-                    (pair["agg_event"],))
+        cur.execute("UPDATE events SET fee = NULL, end_time = NULL, dj = NULL WHERE event_id = %s",
+                    (old_event_id_before,))
+    before = _row(pg, old_event_id_before)
+    assert duplicates.completeness(_row(pg, pair["org_event"])) > duplicates.completeness(before)
+
+    found = duplicates.scan(pg, on=EVENT_DATE)
+    assert found["auto_merged"] >= 1
+
+    canonical_event_id_after = duplicates.canonical_id_of(pg, pair["org_event"])
+    assert old_event_id_before == canonical_event_id_after
+    agg, org = _row(pg, old_event_id_before), _row(pg, pair["org_event"])
+    assert agg["canonical_event_id"] is None
+    assert org["canonical_event_id"] == old_event_id_before
+    # Primary source = the organizer's post; the aggregator's stays as
+    # supporting evidence.
+    assert agg["primary_source_item_id"] == pair["org_item"]
+    posts = duplicates.sources_of(pg, old_event_id_before)
+    assert {p["source_url"] for p in posts} == {pair["agg_url"], pair["org_url"]}
+    assert [p["source_url"] for p in posts if p["is_primary"]] == [pair["org_url"]]
+    assert next(p for p in posts if p["source_url"] == pair["agg_url"])["is_canonical"]
+    # Both ids answer, with the same Event.
+    shown = events_api.get_event(pg, old_event_id_before)
+    assert shown["id"] == old_event_id_before
+    assert events_api.get_event(pg, pair["org_event"])["id"] == old_event_id_before
+    assert shown["source_link"]["url"] == pair["org_url"]
+    assert shown["source_evidence"]["class"] == source_evidence.PRIMARY_ORGANIZER
+    # The allowed fields (v0.94.0's NULL-only fill: DJ, fee pair) are
+    # absorbed; the row itself is not rewritten, and its Region attribution
+    # (read from its own source) did not move.
+    assert shown["dj"] == "DJ 유진" and shown["fee"] == 8000
+    assert _row(pg, old_event_id_before)["dj"] is None
+    assert _row(pg, old_event_id_before)["region_id"] == before["region_id"]
+    assert agg["source_item_id"] == before["source_item_id"]
+
+
+def test_an_aggregator_that_is_fuller_than_the_direct_event_it_joins_never_takes_the_id(pg, unique):
+    """Case C: Direct Event first, a richer aggregator listing later."""
+    organizer = _source(pg, unique, key="ORG", role="ORGANIZER", authority="PRIMARY_ORGANIZER")
+    aggregator = _source(pg, unique, key="MILTANG", role="DIRECTORY", authority="AGGREGATOR")
+    org_url, agg_url = f"https://org.test/{unique}", f"https://miltang.test/{unique}"
+    org_item, agg_item = _item(pg, organizer, org_url), _item(pg, aggregator, agg_url)
+    org_event = _event(pg, unique, "1", org_item, source_url=org_url, fee=None, end_time=None)
+    agg_event = _event(pg, unique, "2", agg_item, source_url=agg_url, dj="DJ X", fee=15000)
     duplicates.scan(pg, on=EVENT_DATE)
-    assert _row(pg, pair["agg_event"])["canonical_event_id"] == pair["org_event"]
-    assert _row(pg, pair["org_event"])["canonical_event_id"] is None
-    # The representative is the organizer's own post either way.
-    assert events_api.get_event(pg, pair["org_event"])["source_link"]["url"] == pair["org_url"]
+    assert _row(pg, org_event)["canonical_event_id"] is None
+    assert _row(pg, agg_event)["canonical_event_id"] == org_event
+    assert _row(pg, org_event)["primary_source_item_id"] is None
+    assert events_api.get_event(pg, agg_event)["id"] == org_event
+    assert events_api.get_event(pg, org_event)["source_link"]["url"] == org_url
+
+
+def test_a_fuller_post_of_the_same_evidence_class_never_takes_the_id(pg, unique):
+    """Case D: same authority, only completeness differs - identity stays,
+    and the representative does not churn within one class either."""
+    pair = _aggregator_then_organizer(pg, unique)
+    duplicates.scan(pg, on=EVENT_DATE)
+    second = _source(pg, unique, key="ORG2", role="COMMUNITY", authority="PRIMARY_ORGANIZER")
+    second_url = f"https://org2.test/{unique}"
+    second_item = _item(pg, second, second_url)
+    second_event = _event(pg, unique, "3", second_item, source_url=second_url,
+                          dj="DJ 둘", fee=12000, end_time="23:59")
+    duplicates.scan(pg, on=EVENT_DATE)
+    assert _row(pg, pair["agg_event"])["canonical_event_id"] is None
+    assert _row(pg, second_event)["canonical_event_id"] == pair["agg_event"]
+    assert _row(pg, pair["agg_event"])["primary_source_item_id"] == pair["org_item"]
 
 
 # === 3. promotion, conflicts, humans =========================================

@@ -70,9 +70,11 @@ def _row(cur) -> dict[str, Any] | None:
 def completeness(event: dict[str, Any]) -> int:
     """How much of an event this row actually carries.
 
-    Used only to pick which of two identical events is the canonical one, so
-    the surviving row is the one a reader learns the most from. It is a tie
-    break, never a reason to merge.
+    A tiebreak within one evidence class when the representative source is
+    elected (``reconcile_primary_source``), and a number the Admin shows
+    beside each post. v0.94.0: it no longer decides which row is canonical -
+    an Event's id is identity, not a prize for the fullest post - and it was
+    never a reason to merge.
     """
     score = 0
     if event.get("venue_status") == "RESOLVED":
@@ -93,20 +95,24 @@ def completeness(event: dict[str, Any]) -> int:
 
 
 def _canonical_of(left: dict[str, Any], right: dict[str, Any]) -> tuple[dict, dict]:
-    """(canonical, duplicate). Deterministic: completeness first, then the
-    oldest id.
+    """(canonical, duplicate). Identity only, never quality: the row that
+    already heads a group (``folded_count`` > 0, when the caller joined it
+    in), else the older ``event_id`` - the id that existed first.
 
-    v0.94.0: source directness is no longer a reason to change which row
-    is canonical. It used to be the tiebreak here (v0.85.0), which meant an
-    organizer's post arriving after a directory listing took over the
-    listing's row - and its public id - whenever the two were equally
-    complete. Directness now decides the representative *source*
-    (``reconcile_primary_source``) instead, across the whole group, so the
-    incumbent row keeps its id and the reader is still sent to the most
-    direct post. Completeness still wins outright: a sparser post never
-    hides a richer one's fields.
+    v0.94.0 (stable Event identity): an Event's id is the one thing a later
+    discovery must not change. Source directness (the v0.85.0 tiebreak) and
+    field completeness (the v0.77 rule) both used to decide which *row*
+    survived, so an organizer's fuller post arriving after a directory
+    listing took over the listing's row and its public id. Neither is a
+    reason any more: directness elects the representative *source*
+    (``reconcile_primary_source``) and completeness is what a folded post
+    lends the canonical row through ``events_api``'s NULL-only fill - both
+    across the whole group, both without moving the id. ``event_id`` is a
+    BIGSERIAL, so "older" is exactly "existed first"; a row that already
+    has duplicates folded under it is kept as the root so no chain forms.
     """
-    ranked = sorted((left, right), key=lambda e: (-completeness(e), e["event_id"]))
+    ranked = sorted((left, right),
+                    key=lambda e: (-(int(e.get("folded_count") or 0) > 0), e["event_id"]))
     return ranked[0], ranked[1]
 
 
@@ -254,12 +260,15 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
 
     with con.cursor() as cur:
         cur.execute(
-            # source_role joined in for _canonical_of()'s own tiebreak
-            # (v0.85.0) - left join, since an event whose source_item/source
-            # row has since gone missing (should not happen, but nothing
-            # here should 500 over it) still gets compared, just with
-            # source_priority.rank(None)'s safe DIRECTORY default.
-            "SELECT e.*, src.source_role AS source_role FROM events e "
+            # source_role is joined for the Admin's and the tests' benefit
+            # (a left join: an event whose source row has since gone missing
+            # still gets compared); folded_count tells _canonical_of() which
+            # side already heads a group, so an established root is never
+            # folded under a newcomer (v0.94.0).
+            "SELECT e.*, src.source_role AS source_role, "
+            "       (SELECT count(*) FROM events d WHERE d.canonical_event_id = e.event_id) "
+            "         AS folded_count "
+            "FROM events e "
             "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
             "LEFT JOIN sources src ON src.source_id = si.source_id "
             "WHERE " + " AND ".join(where) +
@@ -361,7 +370,10 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
         if canonical_event_id is None:
             with con.cursor() as cur:
                 cur.execute(
-                    "SELECT e.*, src.source_role AS source_role FROM events e "
+                    "SELECT e.*, src.source_role AS source_role, "
+                    "       (SELECT count(*) FROM events d "
+                    "        WHERE d.canonical_event_id = e.event_id) AS folded_count "
+                    "FROM events e "
                     "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
                     "LEFT JOIN sources src ON src.source_id = si.source_id "
                     "WHERE e.event_id = ANY(%s)", (list(members),))
