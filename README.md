@@ -11,9 +11,10 @@ DanceMate는
 
 - Product Runtime: v0.96.2 (direct-source venue and schedule extraction precision on top of the v0.96.1 queue starvation fix)
   - v0.94.0은 ROCKPro64의 직전 운영 기준점이었다 (migration 041, 변경 없음).
-- Information Engine: v0.90 (`engine/`) — "@사람·계정"을 장소로 읽지 않고,
-  여러 프로그램이 있는 글을 시간 토큰을 자르지 않는 구조적 경계로 나누며,
-  검토 대상 segment를 행사 단어+시각 기준으로 고른다 (RELEASE_NOTES 참고).
+- Information Engine: v0.91 (`engine/`) — "@사람·계정"을 장소로 읽지 않고
+  (존칭에 조사가 붙은 "선배님은"도 사람으로 본다), 여러 프로그램이 있는 글을
+  시간 토큰을 자르지 않는 구조적 경계로 나누며, 검토 대상 segment를 행사
+  단어+시각 기준으로 고른다 (RELEASE_NOTES 참고).
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
   확장됨 (실제 데이터가 있는 지역은 소스 수집 현황에 따라 다름)

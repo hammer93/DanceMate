@@ -1,4 +1,5 @@
-"""v0.96.2 direct-source venue and schedule precision (Information Engine 0.90).
+"""v0.96.2 direct-source venue and schedule precision (Information Engine 0.90;
+0.91 adds the attached-particle person rule, see test_v0962_person_mentions.py).
 
 Two real misreads from the v0.96.0 Production verification, fixed without
 loosening anything:

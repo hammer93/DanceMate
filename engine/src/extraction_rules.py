@@ -527,10 +527,29 @@ _ACCOUNT_CONTEXT_BEFORE = 12
 # prose. No list of real venues is consulted.
 _DETACHED_PARTICLE = re.compile(
     r"\s+(?:은|는|이|가|을|를|도|의|에|에서|께서|과|와|로|으로|한테|에게|께)(?=\s|$)")
-_PERSON_TOKEN = re.compile(
-    r"^(?:\S*님|형|누나|언니|오빠|쌤|선생|강사|대표|회원|여러분|친구들?|분들?)(?=\s|$)")
+# Engine 0.91: the same body's second mention was "루 @ 선배님은 지금까지
+# 묵묵부답이다… 기다림에 지친 142기" - the particle attached to the honorific
+# ("선배님은"), which the detached-particle cut never sees, and the
+# predicate in the middle of the value, which a last-token check never
+# sees. A person mention is PERSON + optional plural + optional attached
+# particle as one token ("선배님", "선배님은", "선배님께서", "회원님들을");
+# a longer proper noun that merely starts with an honorific ("선배님카페",
+# "대표님스튜디오") is not one, because nothing in the particle list follows
+# the honorific. No venue names, no sentence fragments, are listed.
+_PERSON_BASE = r"(?:\S*님|형|누나|언니|오빠|쌤|선생|강사|대표|회원|여러분|친구들?|분들?)"
+_ATTACHED_PARTICLE = r"(?:께서|에게|한테|에서|으로|은|는|이|가|을|를|도|과|와|께|로|의|에)"
+_PERSON_TOKEN = re.compile(rf"^{_PERSON_BASE}들?{_ATTACHED_PARTICLE}?(?=\s|$)")
+# A finite sentence ending on the LAST token ("이번주는 쉽니다", "형님 감사합니다").
 _PREDICATE_END = re.compile(
-    r"(?:니다|했다|하신다|한다|세요|해요|어요|아요|네요|겠죠|죠)[.!?]*$")
+    r"(?:니다|했다|하신다|한다|세요|해요|어요|아요|네요|겠죠|죠)[.!?…]*$")
+# A finite sentence ending on ANY token of a multi-word value ("선배님은
+# 지금까지 묵묵부답이다… 기다림에 지친 142기", "형님이 오셨습니다 감사"): a
+# place name has no verb in the middle. Checked only when the value has
+# more than one word, so a one-word name that happens to end in 이다/있다
+# is still judged by the narrower last-token rule above.
+_PREDICATE_WORD = re.compile(
+    r"(?:이다|입니다|였다|했다|합니다|한다|된다|됩니다|있다|있습니다|없다|없습니다|"
+    r"왔다|왔습니다|니다|세요|해요|어요|아요|네요|죠)[.!?…]*$")
 # v0.96.2: a bare room word is a room in some venue, not a venue - "메인홀",
 # "안쪽홀", "큰홀", "2홀" were unresolved venue noise in Production. Only the
 # generic size/position words are refused; "아미고 큰홀" / "세뇨홀" still
@@ -551,11 +570,16 @@ def _looks_like_account(text: str, match: re.Match, name: str) -> bool:
 
 
 def _looks_like_person_or_prose(name: str) -> bool:
-    """"선배님", "형님 감사합니다", "이번주는 쉽니다": not a place (v0.96.2)."""
+    """"선배님", "선배님은 …", "형님 감사합니다", "이번주는 쉽니다": not a place
+    (v0.96.2; attached particle and mid-value predicate since engine 0.91)."""
     if _PERSON_TOKEN.match(name):
         return True
-    last = name.split()[-1] if name.split() else name
-    return bool(_PREDICATE_END.search(last))
+    words = name.split()
+    if not words:
+        return False
+    if len(words) > 1 and any(_PREDICATE_WORD.search(word) for word in words):
+        return True
+    return bool(_PREDICATE_END.search(words[-1]))
 # v0.96.0: an unlabelled name that ends in a venue word - "이데알 탱고 까페
 # 저녁 8시", "홍대 스윙바 20:00" - read only when nothing labels a venue and
 # the name sits right before the night's clock, so the suffix alone

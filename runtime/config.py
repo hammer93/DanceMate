@@ -47,7 +47,12 @@ PRODUCT_VERSION = "0.96.2"
 # ambiguous post by the classifier's own vocabulary; parse_time_range()'s
 # other-programme window stops at a bracket heading / line break. What the
 # engine reads changed, so by the same rule every earlier bump followed.
-DEFAULT_ENGINE_VERSION = "0.90"
+# v0.96.2 (release-blocker fix, product version unchanged) bumped this to
+# 0.91: extract_venue() now reads an honorific with an attached particle
+# ("선배님은", "선배님께서") as a person and a multi-word "@" value with a
+# finite predicate on any word as prose - Production item 2020's second
+# mention had slipped through 0.90's detached-particle / last-token rules.
+DEFAULT_ENGINE_VERSION = "0.91"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

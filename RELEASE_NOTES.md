@@ -2,8 +2,9 @@
 
 ## v0.96.2 Direct Source Venue and Schedule Extraction Precision
 
-Product Runtime 0.96.2; Information Engine **0.90** (extraction behaviour
-changed); no migration (head 041). Fixed the two real misreads the v0.96.0
+Product Runtime 0.96.2; Information Engine **0.91** (extraction behaviour
+changed; 0.90 was the first cut, 0.91 the release-blocker fix below); no
+migration (head 041). Fixed the two real misreads the v0.96.0
 / v0.96.1 Production verification found in direct-source bodies: an "@"
 that addresses a person or names an account was read as the venue, and a
 multi-program schedule post was cut inside its own clock so a rehearsal's
@@ -95,6 +96,31 @@ boundary 5 -> 0, meridiem forms 9/9 -> 9/9. Existing v0.81.2 context, v0.96.0
 yield (including the ~100-post before/after), v0.94.0 identity, Region and
 v0.96.1 acquisition tests unchanged and green; engine full suite and
 fresh-database runtime full regression 0 failed.
+
+**Release-blocker fix (Information Engine 0.91).** Engine 0.90 went to
+Production (commit 0f15fcb, untagged) and item 2020's re-extraction still
+carried a person as the venue: the body's *second* mention, "루 @ 선배님은
+지금까지 묵묵부답이다… 기다림에 지친 142기", glues the particle to the
+honorific ("선배님은") - which the detached-particle cut never sees - and
+puts its predicate in the middle of the value - which the last-token check
+never sees. Two grammar rules, no sentence list: a person mention is
+PERSON + optional 들 + optional attached particle (은/는/이/가/을/를/도/과/와/
+에게/한테/께/께서/에서/으로/로/의/에) as one token, so "선배님은", "선배님께서",
+"회원님들을" are people while "선배님카페" / "대표님스튜디오" (nothing from
+the particle list follows the honorific) survive; and a multi-word "@"
+value with a finite predicate on any word (이다/입니다/였다/했다/합니다/한다/
+된다/있다/없다/왔다/…니다/세요/해요/…) is prose - a one-word name keeps the
+narrower last-token rule, so a one-word venue that happens to end in 이다
+is untouched. `engine/tests/test_v0962_person_mentions.py` (27 person
+mentions incl. both Production mentions -> None; honorific-prefixed proper
+nouns survive; every v0.96.2 "@" venue form and the handle/account
+refusals unchanged; item 3132 unchanged). Before/after against engine 0.90
+on that fixture: person-mention false positives 16 -> 0 (the 11 that 0.90
+already refused are the detached-particle and last-token shapes it was
+built for), valid "@" recall 15/15 -> 15/15. On the 183 stored Production bodies (21 with "@") the only
+difference between 0.90 and 0.91 is item 2020 -> no venue; the single real
+"@" venue (스튜디오242) and the four "세뇨홀" suffix readings (known
+limitation) are identical. Product version stays 0.96.2 (not yet tagged).
 
 **Operations note (not code).** "이데알" still does not resolve to Venue
 Master 4222 (이데알 탱고 까페), which keeps the 월간가또 direct post and its
