@@ -1,5 +1,51 @@
 # DanceMate Release Notes
 
+## v0.93.0 Discovery Provider Protocol
+
+Product Runtime 0.93.0; Information Engine remains 0.88; no migration (head
+040, unchanged). A request to build a "replaceable Multi-Source Discovery
+Framework, with Community discovery as its first real use" found that
+framework already exists and has been in Production since v0.89.0: Community
+Discovery's `NaverProvider`/`KakaoProvider` already share one shape
+(`name`, `kinds`, `search(kind, query, size)`), `collect_hits()` already
+dispatches to either by name alone, and everything from there on - identity,
+name/genre/region/activity/kind analysis, duplicate matching, classification
+(`VERIFIED_NEW`/`VERIFIED_EXISTING`/`POSSIBLE_DUPLICATE`/`UNVERIFIED`/...),
+the Review Queue, and registration through the existing
+`communities.create_community()` contract - already has no idea which
+provider a candidate came from. No new provider, schema, Admin screen, or
+scheduler job was needed or added.
+
+What this release actually adds is the one piece that request asked for by
+name and did not yet exist: `community_discovery.DiscoveryProvider`, a
+`typing.Protocol` that names the contract explicitly instead of leaving it as
+an unwritten convention, so a future provider (a Direct/Public Web source, or
+another search API) is a single class satisfying that Protocol, wired into
+`PROVIDERS`/`PROVIDER_LABELS`/`PROVIDER_PLATFORM`/`default_provider_factory`.
+`test_a_third_provider_needs_no_core_change` (new) proves the claim itself:
+a fixture-only third provider, under a provider name the schema has never
+seen, is run through `collect_hits` and the full analysis pipeline
+(`identify`, `detect_genres`, `detect_region`, `assess_activity`,
+`detect_kind`) with no core code path touched to make it work. A second new
+test confirms `NaverProvider`/`KakaoProvider` already satisfy the Protocol
+structurally. No real external API call was made by either test or by this
+release - both run entirely against fixtures, exactly as the rest of the
+Provider test suite already did.
+
+Not touched, on purpose: Event Region Attribution, official Source Region
+fallback, Venue resolution, Community CRUD, and the Source Data Pipeline -
+all already correct, none of them needed to change for this.
+
+Regression: the full suite passes clean on a fresh PostgreSQL database -
+**2,484 passed, 16 skipped, 0 failed**. The shared development database
+(`dancemate`, not `dancemate_fresh_*`) shows 15 unrelated failures from
+pre-existing seed-data pollution accumulated across past manual sessions
+(stale `SRC-D-` community/organizer rows from v0.85.1 direct-source-expansion
+testing, leftover usage/region counters, a duplicate `cafe.daum.net/latindance`
+source row) - none in `community_discovery`, none touching anything this
+release changed, and all absent on the fresh database above. No Production
+data is affected by this; Production is not touched by this release at all.
+
 ## v0.92.6 Acquired Structured Event Location
 
 Product Runtime 0.92.6; Information Engine remains 0.88; no migration (head

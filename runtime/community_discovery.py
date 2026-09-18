@@ -52,7 +52,7 @@ import urllib.parse
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Protocol, Sequence, runtime_checkable
 
 from . import acquisition, collector_errors, collectors, communities, events_api, master_data
 from .directory import DirectoryError, clean_line, parse_id, public_link
@@ -599,9 +599,52 @@ def plan_queries(query_rows: Iterable[dict[str, Any]], *, genre_codes: Sequence[
 
 
 # --- providers (the engine's clients) ----------------------------------------------------------
+#
+# v0.93.0 (Discovery Provider Protocol): NaverProvider and KakaoProvider
+# already shared this exact shape by convention since v0.89.0;
+# DiscoveryProvider names it explicitly so a third source (a Direct/Public
+# Web provider, a future search API, ...) can be
+# added by writing one class and adding it to PROVIDERS/PROVIDER_LABELS/
+# PROVIDER_PLATFORM/default_provider_factory - nothing from Hit onward
+# (identify, analyze, classify, store_hits, the Review Queue) is aware a new
+# provider exists. test_a_third_provider_needs_no_core_change in
+# tests/test_v0890_community_discovery.py exercises exactly this claim with a
+# fixture-only stand-in provider - no real web crawler is implied or needed.
+
+
+@runtime_checkable
+class DiscoveryProvider(Protocol):
+    """What ``collect_hits`` needs from any Community-discovery source.
+
+    A provider owns exactly one thing: turning one query into plain dicts
+    with a public URL. Everything after that - identity, name, genre, region,
+    activity, kind, duplicate matching, classification, the Review Queue - is
+    the same code no matter which provider a candidate came from.
+    """
+
+    name: str
+    kinds: tuple[str, ...]
+
+    def search(self, kind: str, query: str, size: int) -> list[dict[str, Any]]:
+        """Up to ``size`` raw results for one query of one ``kind``.
+
+        Each dict may carry ``url``, ``title``, ``snippet``, ``published``,
+        ``source_name``, ``source_url`` - ``to_hit()`` reads whichever of
+        these are present and drops a result with no usable ``url``, so a
+        provider need not populate every key. Never raise for "no results";
+        raise the underlying exception for a real failure (auth, rate limit,
+        malformed response) and let ``call_outcome()`` classify it.
+        """
+        ...
+
 
 @dataclass
 class Hit:
+    """One provider result, already reduced to what Community Discovery
+    needs - the ``DiscoveryCandidate`` every downstream step reads. Only
+    short, redacted text is kept (see ``clean_snippet``); no raw API payload
+    is ever stored."""
+
     provider: str
     kind: str
     query: str
@@ -615,7 +658,11 @@ class Hit:
 
 
 class NaverProvider:
-    """NAVER API HUB search through the engine's NaverSearchCollector."""
+    """NAVER API HUB search through the engine's NaverSearchCollector.
+
+    Satisfies DiscoveryProvider structurally (see the module-level note
+    above); it does not inherit from it; a Protocol does not require that.
+    """
 
     name = NAVER
     kinds = ("cafe", "web")
@@ -670,7 +717,7 @@ def provider_availability() -> list[dict[str, Any]]:
     return out
 
 
-def default_provider_factory(settings) -> Callable[[str], Any]:
+def default_provider_factory(settings) -> Callable[[str], DiscoveryProvider]:
     def make(name: str):
         missing = collectors.missing_credentials(PROVIDER_PLATFORM[name])
         if missing:
@@ -748,7 +795,7 @@ def _provider_summary(entry: dict[str, Any]) -> str:
 
 
 def collect_hits(planned: Sequence[PlannedQuery], providers: Sequence[str],
-                 provider_factory: Callable[[str], Any], *,
+                 provider_factory: Callable[[str], DiscoveryProvider], *,
                  sleep: Callable[[float], None] = time.sleep) -> tuple[list[Hit], dict[str, Any]]:
     """Run the planned searches. A provider that cannot run, or a search kind
     that is refused or throttled, is recorded and skipped for the rest of the
@@ -1483,7 +1530,7 @@ def claim_next_run(con) -> int | None:
     return row[0] if row else None
 
 
-def execute_run(con, run_id: int, *, provider_factory: Callable[[str], Any],
+def execute_run(con, run_id: int, *, provider_factory: Callable[[str], DiscoveryProvider],
                 sleep: Callable[[float], None] = time.sleep,
                 today: date | None = None) -> dict[str, Any]:
     run = get_run(con, run_id)
@@ -1519,7 +1566,7 @@ def execute_run(con, run_id: int, *, provider_factory: Callable[[str], Any],
     return get_run(con, run_id)
 
 
-def run_pending(settings, *, provider_factory: Callable[[str], Any] | None = None,
+def run_pending(settings, *, provider_factory: Callable[[str], DiscoveryProvider] | None = None,
                 sleep: Callable[[float], None] = time.sleep) -> str:
     """The scheduler job: run the oldest queued search, if there is one."""
     from . import db  # noqa: PLC0415

@@ -215,6 +215,56 @@ def test_results_without_a_web_url_are_dropped_and_personal_data_redacted():
     assert "open.kakao.com" not in hits[0].snippet and "정모" in hits[0].snippet
 
 
+def test_naver_and_kakao_providers_satisfy_the_discovery_provider_protocol():
+    """The contract collect_hits already relies on, named explicitly."""
+    assert isinstance(cd.NaverProvider(SimpleNamespace(search=lambda *a, **k: [])), cd.DiscoveryProvider)
+    assert isinstance(cd.KakaoProvider({}), cd.DiscoveryProvider)
+
+
+def test_a_third_provider_needs_no_core_change():
+    """A provider DanceMate has never registered before (a Direct/Public Web
+    style source, standing in without a real crawler) flows through
+    collect_hits and the whole analysis pipeline unchanged: nothing between
+    collect_hits and classification names NAVER or KAKAO specifically.
+    """
+    class DirectWebProvider:
+        name = "WEB_DIRECT"
+        kinds = ("cafe",)
+
+        def __init__(self):
+            self.calls = []
+
+        def search(self, kind: str, query: str, size: int) -> list[dict]:
+            self.calls.append((kind, query, size))
+            return [{"url": "https://community.example/salsa-seoul", "title": "서울 살사 동호회",
+                     "snippet": "매주 정모 살사 소셜", "published": "2026-09-01",
+                     "source_name": "서울 살사 동호회"}]
+
+    provider = DirectWebProvider()
+    assert isinstance(provider, cd.DiscoveryProvider)
+
+    planned = [cd.PlannedQuery(provider="WEB_DIRECT", text="서울 살사 동호회", genre_code="SALSA")]
+    hits, status = cd.collect_hits(planned, ["WEB_DIRECT"], {"WEB_DIRECT": provider}.__getitem__,
+                                   sleep=lambda s: None)
+
+    assert provider.calls == [("cafe", "서울 살사 동호회", 15)]
+    assert status["WEB_DIRECT"]["status"] == cd.CALL_SUCCESS
+    assert [h.provider for h in hits] == ["WEB_DIRECT"]
+
+    # The rest of the pipeline reads the Hit, never the provider name.
+    ident = cd.identify(hits[0].url)
+    assert ident is not None and ident.platform == "WEB"
+    ctx = ctx_for()
+    name, _ = cd.extract_name(ident, hits)
+    genres = cd.detect_genres(hits[0].snippet + " " + hits[0].title, ctx.genre_ids)
+    region_id, _ = cd.detect_region(hits[0].snippet, ctx.regions)
+    activity = cd.assess_activity(hits, ctx.today)
+    kind, _reason = cd.detect_kind(ident, name, hits[0].snippet + " " + hits[0].title, ctx)
+    assert "SALSA" in genres
+    assert kind == cd.KIND_COMMUNITY
+    assert activity.verdict in (cd.ACTIVE, "STALE", "INACTIVE", "UNVERIFIED")
+
+
 # === 3. Identity =========================================================================
 
 @pytest.mark.parametrize("url, source, key", [
