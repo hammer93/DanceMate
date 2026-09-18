@@ -291,3 +291,24 @@ stack never removes any of them.
 unauthenticated staging admin surface. PostgreSQL is never published to the
 host. Set `DANCEMATE_BIND_ADDRESS` to the board's LAN address in production
 staging.
+
+## Credential handling in shared artifacts
+
+Before sharing a session transcript, log, or packaged output outside this
+machine, secrets must be scrubbed **by key identity, not by value shape**.
+Matching on value length or content (e.g. "long strings look like secrets")
+produces false positives on perfectly ordinary settings - `POSTGRES_DB` is
+just the word `dancemate` - and rewrites harmless values across paths, image
+names, and docs instead of the credential that mattered.
+
+Match on the `.env` key name instead. A key is sensitive when it ends in one
+of:
+
+```
+PASSWORD, SECRET, TOKEN, API_KEY, _KEY
+```
+
+(e.g. `NAVER_CLIENT_SECRET`, `KAKAO_REST_API_KEY`, `POSTGRES_PASSWORD`).
+Never include the actual value of a matched key in anything meant to leave
+this machine - redact it (`NAVER_CLIENT_SECRET=<redacted>`), don't paraphrase
+or truncate it.
