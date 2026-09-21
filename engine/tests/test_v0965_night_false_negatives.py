@@ -236,16 +236,25 @@ def test_t7_a_rescued_night_reads_the_same_way_twice():
 # --- T9/T10: what must not move -------------------------------------------
 
 def test_t9_a_multi_programme_schedule_post_is_unchanged():
-    """Item 3132's shape: a week's programme under a title that names no
-    night at all. The new rule never looks past a title like this, and its
-    body carries a term opening besides."""
+    """Item 3132: a week's programme under a title that names no night.
+
+    Measured on Production, the real post classifies MILONGA_WITH_CLASS both
+    before and after this release - through the *open-class* rule, because
+    its Thursday line says "초급 원데이클라스". What matters here is that the
+    new rule is never the thing deciding it: the title names no night, so
+    announced_night_evidence() refuses before any of its other tests run.
+    Take that one phrase away and the same post is a CLASS, and stays one.
+    """
     title = "[부산_탱고동호회]가또땅고 9월 둘째주 열탱즐탱 일정..."
     body = ("9/14(월) 8:00~11:00pm 군무 연습 (이데알)\n"
             "9/16(수)_8:00~9:10pm ① 무료 일일 특강 좁은공간 테크닉 (아미고 큰홀)\n"
             "② 초급입문 4주차 (미오)\n[가또땅고 쁘롱가] 9:15~11:15pm (DJ 알루, 아미고 큰홀)\n"
-            "☆9/23(수) 8시 개강☆")
+            "9/17(목) 자율연습 Practica (초급 원데이클라스)\n☆9/23(수) 8시 개강☆")
     assert announced_night_evidence(title, body) is False
-    assert classify(title, body) == "CLASS"
+    assert classify(title, body) == "MILONGA_WITH_CLASS"
+    without_the_open_class = body.replace(" (초급 원데이클라스)", "")
+    assert announced_night_evidence(title, without_the_open_class) is False
+    assert classify(title, without_the_open_class) == "CLASS"
 
 
 @pytest.mark.parametrize("title,body", [
