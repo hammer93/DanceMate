@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import date
 from typing import Any
 
 from . import acquisition, content_store, db, image_fallback, intake
@@ -271,6 +272,14 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                             image_fallback.mark_used_as_fallback(pg, item["source_item_id"], used)
                     engine_con.commit()
                     intake.mark_ingested(pg, item["source_item_id"], intake.INGEST_DONE)
+                    if is_new and content is not None:
+                        # v0.96.3: first ingest already ran the *current*
+                        # engine over whatever body it had, so the row does
+                        # not belong in the re-extract queue. Not
+                        # `mark_reprocessed()`: a body that arrives later
+                        # must still trigger the ordinary body-arrived pass.
+                        content_store.mark_extracted_engine_version(
+                            pg, item["source_item_id"], settings.engine_version)
                     ingested += 1
                 except Exception as exc:
                     engine_con.rollback()
@@ -296,8 +305,44 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
     }
 
 
+def _iso_dates(values) -> list[str]:
+    """The non-empty dates in a candidate set, as comparable ISO strings."""
+    return [str(v) for v in values if v]
+
+
+def _events_of(pg, candidate_ids: list[int]) -> list[tuple[int, int]]:
+    """(event_id, candidate_id) for the runtime Events built from these
+    candidates - what a re-extraction either keeps or orphans."""
+    if not candidate_ids:
+        return []
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT event_id, candidate_id FROM events WHERE candidate_id = ANY(%s)",
+            (list(candidate_ids),),
+        )
+        return [(int(r[0]), int(r[1])) for r in cur.fetchall()]
+
+
+def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dict[str, Any]:
+    return {
+        "pending": 0, "selected": 0, "reprocessed": 0, "succeeded": 0,
+        "skipped_reviewed": 0, "skipped_blocked": 0, "failed": 0,
+        "candidates_before": 0, "candidates_after": 0,
+        "events_before": 0, "events_after": 0,
+        "events_preserved": 0, "events_dropped": 0,
+        "newly_dated": 0, "newly_upcoming": 0, "lost_upcoming": 0,
+        "multi_event_changed": 0,
+        "engine_version": engine_version,
+        "next_after_item_id": None,
+        "remaining": backlog["outdated"],
+        "stalled": backlog["stalled"],
+        "failures": [],
+    }
+
+
 def reprocess_acquired(settings: Settings, *, limit: int = 25,
-                       force: bool = False) -> dict[str, Any]:
+                       force: bool = False,
+                       after_item_id: int | None = None) -> dict[str, Any]:
     """Re-extract candidates for items whose original post has now been fetched.
 
     The v0.75 items were already ingested from a search snippet, so the normal
@@ -314,21 +359,33 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
       `verify()` see complete core fields; whether that reaches VERIFIED is the
       engine's decision, exactly as it is for any other acquisition path.
 
-    ``force`` re-extracts items already reprocessed. Needed when the extractor
-    itself changes -- an engine version bump leaves every stored candidate
-    holding values the current engine would no longer produce. Both safeguards
-    above still apply, so a forced pass cannot overwrite anyone's review.
+    v0.96.3: the ordinary scheduler pass now also selects items whose stored
+    extraction came from a *different engine version* than the running one
+    (`content_store.needing_reprocess()`, branch 3). That is what makes an
+    engine bump finishable in small batches: each success stamps
+    `extracted_engine_version`, so the row leaves the queue permanently and
+    the next tick necessarily gets different rows. Restarting the process
+    changes nothing - the cursor is the DB row, never anything in memory.
+
+    ``force`` re-extracts items already reprocessed, including ones with no
+    fetched body at all. It is the admin diagnostic path; page it with
+    ``after_item_id``, since a forced selection is ordered by
+    `source_item_id` and does not shrink as rows are stamped.
     """
     engine_db, RawPostRecord, process_discovered_post, extract_single, needs_image_fallback = \
         _engine(settings)
+    engine_version = settings.engine_version
+    today = date.today().isoformat()
 
     with db.connect(settings, autocommit=True) as pg:
-        items = content_store.needing_reprocess(pg, limit=limit, force=force)
+        items = content_store.needing_reprocess(
+            pg, limit=limit, force=force,
+            engine_version=engine_version, after_item_id=after_item_id,
+        )
         detection = _detection_terms_by_source(pg)
         if not items:
-            return {"pending": 0, "reprocessed": 0, "skipped_reviewed": 0,
-                    "skipped_blocked": 0,
-                    "candidates_before": 0, "candidates_after": 0, "failed": 0}
+            return _empty_reprocess_result(
+                engine_version, content_store.reprocess_backlog(pg, engine_version))
 
         with pg.cursor() as cur:
             cur.execute("SELECT DISTINCT candidate_id FROM human_review_actions")
@@ -337,6 +394,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         engine_con = _open_engine_store(settings, engine_db)
         reprocessed = skipped = skipped_blocked = failed = 0
         before_total = after_total = 0
+        events_before = events_preserved = events_dropped = 0
+        newly_dated = newly_upcoming = lost_upcoming = multi_event_changed = 0
         failures: list[str] = []
         try:
             for item in items:
@@ -347,16 +406,24 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     post_id, _ = engine_db.persist_raw_post(engine_con, post)
 
                     existing = engine_con.execute(
-                        "SELECT candidate_id FROM event_candidates WHERE post_id=?",
+                        "SELECT candidate_id, event_date FROM event_candidates "
+                        "WHERE post_id=?",
                         (post_id,),
                     ).fetchall()
                     existing_ids = [row[0] for row in existing]
                     if any(cid in reviewed for cid in existing_ids):
-                        content_store.mark_reprocessed(pg, source_item_id)
+                        # Stamped, not just skipped: an unstamped skip would
+                        # be re-selected first on every following tick and
+                        # the rows behind it would never be reached.
+                        content_store.mark_reprocessed(
+                            pg, source_item_id, engine_version=engine_version)
                         skipped += 1
                         continue
 
                     before_total += len(existing_ids)
+                    before_dates = _iso_dates(row[1] for row in existing)
+                    item_events = _events_of(pg, existing_ids)
+                    events_before += len(item_events)
 
                     # Give the engine the article text in place of the snippet.
                     engine_db.update_raw_post_acquisition(
@@ -410,9 +477,23 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     # and retry once a real fetch (full or partial) comes in.
                     if not events and existing_ids and \
                             item.get("acquisition_status") == acquisition.FETCH_BLOCKED:
-                        content_store.mark_reprocessed(pg, source_item_id)
+                        content_store.mark_reprocessed(
+                            pg, source_item_id, engine_version=engine_version)
+                        events_preserved += len(item_events)
                         skipped_blocked += 1
                         continue
+
+                    after_dates = _iso_dates(ev.date for ev in events)
+                    if after_dates and not before_dates:
+                        newly_dated += 1
+                    before_upcoming = any(d >= today for d in before_dates)
+                    after_upcoming = any(d >= today for d in after_dates)
+                    if after_upcoming and not before_upcoming:
+                        newly_upcoming += 1
+                    if before_upcoming and not after_upcoming:
+                        lost_upcoming += 1
+                    if len(events) != len(existing_ids):
+                        multi_event_changed += 1
 
                     # v0.96.0: the common shape - one candidate before, one
                     # after - is re-read *into the same candidate_id*, so the
@@ -430,8 +511,10 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         if used:
                             image_fallback.mark_used_as_fallback(pg, source_item_id, used)
                         after_total += 1
+                        events_preserved += len(item_events)
                         engine_con.commit()
-                        content_store.mark_reprocessed(pg, source_item_id)
+                        content_store.mark_reprocessed(
+                            pg, source_item_id, engine_version=engine_version)
                         reprocessed += 1
                         continue
 
@@ -465,24 +548,62 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         if used:
                             image_fallback.mark_used_as_fallback(pg, source_item_id, used)
                     after_total += len(events)
+                    # The candidate ids these Events were built from are gone,
+                    # so normalization's own orphan pass will retire the Event
+                    # rows. Counted rather than prevented: forcing an id to
+                    # survive a genuine 1->N cardinality change is what the
+                    # duplicate/canonical machinery exists to decide, not this
+                    # loop. The 1->1 shape above never reaches here.
+                    events_dropped += len(item_events)
                     engine_con.commit()
-                    content_store.mark_reprocessed(pg, source_item_id)
+                    content_store.mark_reprocessed(
+                        pg, source_item_id, engine_version=engine_version)
                     reprocessed += 1
                 except Exception as exc:
                     engine_con.rollback()
                     failed += 1
-                    failures.append(f"{source_item_id}: {type(exc).__name__}: {exc}")
+                    detail = f"{type(exc).__name__}: {exc}"
+                    failures.append(f"{source_item_id}: {detail}")
+                    # Count the failure on the row itself so the queue can
+                    # step over it after a few tries instead of re-selecting
+                    # the same broken item forever - and so the reason stays
+                    # readable afterwards rather than only in a log line.
+                    try:
+                        content_store.record_reprocess_failure(pg, source_item_id, detail)
+                    except Exception:  # noqa: BLE001 - never mask the real failure
+                        log.exception("could not record reprocess failure for %s",
+                                      source_item_id)
                     log.exception("reprocess failed for source item %s", source_item_id)
         finally:
             engine_con.close()
 
+        backlog = content_store.reprocess_backlog(pg, engine_version)
+
     return {
+        # `pending` is what the scheduler has always reported; `selected` is
+        # the same number under the name the v0.96.3 rollout measures with.
         "pending": len(items),
+        "selected": len(items),
         "reprocessed": reprocessed,
+        "succeeded": reprocessed,
         "skipped_reviewed": skipped,
         "skipped_blocked": skipped_blocked,
+        "failed": failed,
         "candidates_before": before_total,
         "candidates_after": after_total,
-        "failed": failed,
+        "events_before": events_before,
+        "events_after": events_preserved,
+        "events_preserved": events_preserved,
+        "events_dropped": events_dropped,
+        "newly_dated": newly_dated,
+        "newly_upcoming": newly_upcoming,
+        "lost_upcoming": lost_upcoming,
+        "multi_event_changed": multi_event_changed,
+        "engine_version": engine_version,
+        # Where a forced pass got to, so the next call starts after it. The
+        # incremental pass ignores this: its cursor is the stamped row.
+        "next_after_item_id": max(int(i["source_item_id"]) for i in items),
+        "remaining": backlog["outdated"],
+        "stalled": backlog["stalled"],
         "failures": failures[:3],
     }

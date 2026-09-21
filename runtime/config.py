@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.2"
+PRODUCT_VERSION = "0.96.3"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -47,6 +47,12 @@ PRODUCT_VERSION = "0.96.2"
 # ambiguous post by the classifier's own vocabulary; parse_time_range()'s
 # other-programme window stops at a bracket heading / line break. What the
 # engine reads changed, so by the same rule every earlier bump followed.
+# v0.96.3 deliberately does NOT bump this: it adds the operational path for
+# re-reading stored bodies with whatever engine version is running
+# (`extracted_engine_version`, migration 042), and changes nothing about what
+# the engine reads. Bumping it would have made every row stale for no reason
+# and, worse, thrown away the 0.91 baseline the re-extract is measured
+# against.
 # v0.96.2 (release-blocker fix, product version unchanged) bumped this to
 # 0.91: extract_venue() now reads an honorific with an attached particle
 # ("선배님은", "선배님께서") as a person and a multi-word "@" value with a

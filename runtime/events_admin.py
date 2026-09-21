@@ -860,18 +860,50 @@ def api_unresolved_venues(_: str = Depends(require_admin)) -> JSONResponse:
 
 
 @api.post("/events/reextract")
-def api_reextract(limit: int = 50, _: str = Depends(require_admin)) -> JSONResponse:
-    """Re-run the current engine over every post whose body we already hold.
+def api_reextract(limit: int = 50, after_item_id: int | None = None,
+                  force: bool = False,
+                  _: str = Depends(require_admin)) -> JSONResponse:
+    """Re-run the current engine over stored bodies, a batch at a time.
 
-    For an engine version bump: the stored candidates were extracted by the
-    previous version and nothing about the article says so. Candidates a person
-    has acted on are skipped, so this cannot overwrite a review.
+    This is the *diagnostic* path. The operational one is the
+    `engine-reprocess` scheduler job, which walks the same queue in small
+    batches without holding an HTTP request open.
+
+    Default (`force=false`): the incremental queue - bodies whose stored
+    extraction came from another ENGINE_VERSION. Every success stamps the
+    running version, so repeating the call advances instead of re-reading
+    the same first rows, which is exactly what the pre-v0.96.3 endpoint did
+    (`WHERE true ORDER BY fetched_at LIMIT n`, with nothing in
+    `mark_reprocessed()` changing that order).
+
+    `force=true` selects every item, already-current ones included, ordered
+    by `source_item_id`. That set does not shrink as rows are stamped, so
+    page it with `after_item_id`: pass back the `next_after_item_id` the
+    previous response returned.
+
+    Candidates a person has acted on are skipped either way, so this can
+    never overwrite a review.
     """
     from . import engine_ingest
 
-    return admin._dump(
-        engine_ingest.reprocess_acquired(admin._settings(), limit=limit, force=True)
-    )
+    return admin._dump(engine_ingest.reprocess_acquired(
+        admin._settings(), limit=limit, force=force, after_item_id=after_item_id,
+    ))
+
+
+@api.get("/events/reextract-backlog")
+def api_reextract_backlog(_: str = Depends(require_admin)) -> JSONResponse:
+    """How much stored content the running engine has not read yet.
+
+    The read-only counterpart of the endpoint above: what a re-extract
+    rollout is measured against, with no work done and nothing written.
+    """
+    from . import content_store
+
+    settings = admin._settings()
+    with _connection() as con:
+        return admin._dump(
+            content_store.reprocess_backlog(con, settings.engine_version))
 
 
 @api.post("/events/normalize")

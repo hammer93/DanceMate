@@ -78,14 +78,29 @@ def content_acquisition(settings: Settings) -> str:
 
 
 def engine_reprocess(settings: Settings) -> str:
-    """Re-extract candidates for items whose body arrived after first ingest."""
+    """Re-extract items whose body arrived late, or whose stored extraction
+    came from an older engine version (v0.96.3).
+
+    One small batch per tick, deliberately: the incremental backlog after an
+    engine bump is every body the runtime holds, and the DB row - not this
+    job - is what remembers how far it has got, so the pass survives a
+    restart and never re-reads a row it already finished.
+    """
     result = engine_ingest.reprocess_acquired(settings)
     detail = (
         f"pending={result['pending']} reprocessed={result['reprocessed']} "
         f"skipped_reviewed={result['skipped_reviewed']} "
         f"skipped_blocked={result['skipped_blocked']} failed={result['failed']} "
-        f"candidates {result['candidates_before']}->{result['candidates_after']}"
+        f"candidates {result['candidates_before']}->{result['candidates_after']} "
+        f"events {result['events_before']}->{result['events_after']} "
+        f"dropped={result['events_dropped']} "
+        f"newly_dated={result['newly_dated']} "
+        f"upcoming +{result['newly_upcoming']}/-{result['lost_upcoming']} "
+        f"multi_changed={result['multi_event_changed']} "
+        f"engine={result['engine_version']} remaining={result['remaining']}"
     )
+    if result.get("stalled"):
+        detail += f" stalled={result['stalled']}"
     if result.get("failures"):
         detail += f" first_failures={result['failures']}"
     return detail

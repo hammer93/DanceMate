@@ -278,14 +278,60 @@ def content_changed(existing: dict[str, Any] | None, outcome) -> bool:
     return (existing.get("content_hash") or "") != (outcome.content_hash or "")
 
 
-def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict[str, Any]]:
-    """Items with fetched text the engine has not seen since it was fetched.
+# v0.96.3: how many times one item may fail re-extraction before the
+# incremental pass steps over it. Without a cap the first broken row would be
+# selected first on every tick forever and nothing behind it would ever be
+# reached; with one, the row leaves the queue and stays visible through
+# `reprocess_error` / `reprocess_backlog()["stalled"]` instead of vanishing.
+MAX_REPROCESS_ATTEMPTS = 3
 
-    ``force`` returns every item with text, whether or not it has already been
-    reprocessed. That is the case when the *extractor* changed rather than the
-    content: engine v0.74 reads a time out of ``PM 07:30~11:30`` that v0.73
-    got wrong, and nothing about the stored article says so. Re-extraction is
-    then an explicit operator decision, not something a scheduler infers.
+# "We hold something the engine can read for this item": a fetched body, or a
+# blocked fetch that at least produced a poster for the image fallback. The
+# same pair of conditions the two freshness branches below already used, named
+# once because the engine-version branch needs exactly the same gate.
+_HAS_READABLE_CONTENT = (
+    "((c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL) "
+    " OR (c.acquisition_status = %(blocked)s "
+    "     AND c.poster_candidates IS NOT NULL "
+    "     AND jsonb_array_length(c.poster_candidates) > 0))"
+)
+
+
+def needing_reprocess(con, *, limit: int = 50, force: bool = False,
+                      engine_version: str | None = None,
+                      after_item_id: int | None = None,
+                      max_attempts: int = MAX_REPROCESS_ATTEMPTS,
+                      ) -> list[dict[str, Any]]:
+    """Items the engine should read again, newest reason first.
+
+    Three reasons, OR'd:
+
+    1. the body arrived after the last re-extract (the v0.76 case),
+    2. a blocked fetch gained a poster since the last one (v0.84.3),
+    3. ``engine_version`` is given and the row's stored
+       ``extracted_engine_version`` is not it (v0.96.3).
+
+    (3) is what makes an engine bump finishable. Re-extraction after a bump
+    is not a content event - the bodies did not change, so (1) and (2) are
+    false for every one of them - and the only previous answer was ``force``,
+    which selects *everything* in `fetched_at` order. Because
+    `mark_reprocessed()` does not change that order, repeating a forced batch
+    re-read the same first rows forever and the only terminating call was a
+    single synchronous pass over the whole table. With (3) the DB row is the
+    cursor: a successful re-extract stamps the running version, the row
+    leaves the queue for good, and the next tick necessarily gets new rows.
+    Nothing here knows *which* version 0.91 is, so the next bump needs no
+    code change.
+
+    Note this deliberately includes `settle_full_body()` rows (a discovery
+    module's own synthesized body, stamped `reprocessed_at = fetched_at` so
+    branch (1) never fires for it). v0.82.2's rule is that a *lesser* body
+    must never overwrite a good one; re-reading the same stored body with a
+    newer extractor is the opposite of that, and is the whole point here.
+
+    ``force`` returns every item, reprocessed or not, in `source_item_id`
+    order so `after_item_id` can page through it deterministically - the
+    admin diagnostic path, not the operational one.
     """
     # Normally only items whose article body we actually fetched are worth
     # re-reading: nothing else has changed. A forced pass is the other case --
@@ -307,21 +353,41 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
     # set at all (every item that has been through ordinary ingest once).
     # `record_outcome()` bumps `updated_at` on every fetch regardless of
     # outcome, so that is this branch's own freshness signal instead.
+    params: dict[str, Any] = {}
     if force:
         where = "true"
     else:
-        where = (
-            "((c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL "
-            "  AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at)) "
-            "OR (c.acquisition_status = %(blocked)s "
+        params = {
+            "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
+            "blocked": acquisition.FETCH_BLOCKED,
+        }
+        reasons = [
+            "(c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL "
+            "  AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.fetched_at))",
+            "(c.acquisition_status = %(blocked)s "
             "    AND c.poster_candidates IS NOT NULL "
             "    AND jsonb_array_length(c.poster_candidates) > 0 "
-            "    AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.updated_at)))"
-        )
-    params: dict[str, Any] = {} if force else {
-        "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
-        "blocked": acquisition.FETCH_BLOCKED,
-    }
+            "    AND (c.reprocessed_at IS NULL OR c.reprocessed_at < c.updated_at))",
+        ]
+        if engine_version:
+            params["engine"] = engine_version
+            reasons.append(
+                "(" + _HAS_READABLE_CONTENT + " AND (c.extracted_engine_version IS NULL "
+                " OR c.extracted_engine_version <> %(engine)s))"
+            )
+        where = "(" + " OR ".join(reasons) + ")"
+        # The failure cap applies to every operational reason, not only the
+        # engine-version one: an item that raises on re-extract wedges the
+        # queue in exactly the same way whichever branch selected it.
+        params["max_attempts"] = max_attempts
+        where += " AND COALESCE(c.reprocess_attempts, 0) < %(max_attempts)s"
+    # The cursor is the caller's, for the forced pass; the incremental pass
+    # needs none, because a stamped row stops matching `where` at all.
+    if after_item_id is not None:
+        params["after"] = after_item_id
+        where += " AND c.source_item_id > %(after)s"
+    order = "c.source_item_id" if (force or after_item_id is not None) \
+        else "c.fetched_at NULLS LAST, c.source_item_id"
     with con.cursor() as cur:
         cur.execute(
             # i.title as its own alias: c.* already carries a `title` column
@@ -338,19 +404,112 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False) -> list[dict
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
             "WHERE " + where +
-            " ORDER BY c.fetched_at NULLS LAST, c.source_item_id LIMIT %(limit)s",
+            " ORDER BY " + order + " LIMIT %(limit)s",
             {**params, "limit": limit},
         )
         return _rows(cur)
 
 
-def mark_reprocessed(con, source_item_id: int) -> None:
+def mark_reprocessed(con, source_item_id: int, *,
+                     engine_version: str | None = None) -> None:
+    """Record that the engine has now read this content.
+
+    ``engine_version`` is what takes the row out of the incremental queue
+    (see `needing_reprocess()`), so every path that finishes with an item -
+    re-extracted, skipped because a person reviewed it, or preserved because
+    a blocked fetch had nothing better to offer - passes it. A skip that did
+    not stamp would be re-selected on every tick forever and the rows behind
+    it would never be reached, which is the very failure this release exists
+    to remove.
+
+    A successful pass also clears any previous failure: the item is healthy
+    again, and a stale count would otherwise retire it early next time.
+    """
     with con.cursor() as cur:
         cur.execute(
-            "UPDATE source_item_content SET reprocessed_at = now(), updated_at = now() "
+            "UPDATE source_item_content SET reprocessed_at = now(), updated_at = now(), "
+            "  extracted_engine_version = COALESCE(%s, extracted_engine_version), "
+            "  reprocess_attempts = 0, reprocess_error = NULL "
             "WHERE source_item_id = %s",
-            (source_item_id,),
+            (engine_version, source_item_id),
         )
+
+
+def mark_extracted_engine_version(con, source_item_id: int, engine_version: str) -> None:
+    """Stamp the engine version without claiming a re-extract happened.
+
+    First ingest already runs the *current* engine over the body it has, so
+    the row does not belong in the incremental re-extract queue; but it has
+    not been "reprocessed" either, and moving `reprocessed_at` would suppress
+    the genuine body-arrived-later pass that `needing_reprocess()` branch (1)
+    exists for.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "UPDATE source_item_content SET extracted_engine_version = %s, "
+            "  updated_at = now() WHERE source_item_id = %s",
+            (engine_version, source_item_id),
+        )
+
+
+def record_reprocess_failure(con, source_item_id: int, error: str) -> int:
+    """Count a failed re-extraction and keep its reason on the row.
+
+    Returns the new attempt count. Past `MAX_REPROCESS_ATTEMPTS` the item
+    stops being selected - the queue keeps moving - but `reprocess_error`
+    and `reprocess_failed_at` stay, and `reprocess_backlog()` reports it as
+    stalled, so nothing is lost quietly.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "UPDATE source_item_content SET "
+            "  reprocess_attempts = COALESCE(reprocess_attempts, 0) + 1, "
+            "  reprocess_error = %s, reprocess_failed_at = now(), updated_at = now() "
+            "WHERE source_item_id = %s RETURNING reprocess_attempts",
+            ((error or "")[:500] or None, source_item_id),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+def reprocess_backlog(con, engine_version: str, *,
+                      max_attempts: int = MAX_REPROCESS_ATTEMPTS) -> dict[str, int]:
+    """How much of the stored content the running engine has not read yet.
+
+    `outdated` is what the incremental pass still has to work through,
+    `stalled` what it gave up on, `current` what this engine version has
+    already produced. The three sum to every item holding readable content,
+    which is the denominator a re-extract rollout is measured against.
+    """
+    params = {
+        "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
+        "blocked": acquisition.FETCH_BLOCKED,
+        "engine": engine_version,
+        "max_attempts": max_attempts,
+    }
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT "
+            "  count(*) FILTER (WHERE c.extracted_engine_version IS NOT DISTINCT FROM "
+            "                         %(engine)s), "
+            "  count(*) FILTER (WHERE c.extracted_engine_version IS DISTINCT FROM "
+            "                         %(engine)s "
+            "                     AND COALESCE(c.reprocess_attempts, 0) < %(max_attempts)s), "
+            "  count(*) FILTER (WHERE c.extracted_engine_version IS DISTINCT FROM "
+            "                         %(engine)s "
+            "                     AND COALESCE(c.reprocess_attempts, 0) >= %(max_attempts)s), "
+            "  count(*) "
+            "FROM source_item_content c WHERE " + _HAS_READABLE_CONTENT,
+            params,
+        )
+        current, outdated, stalled, total = cur.fetchone()
+    return {
+        "engine_version": engine_version,
+        "current": int(current),
+        "outdated": int(outdated),
+        "stalled": int(stalled),
+        "with_content": int(total),
+    }
 
 
 def summary(con) -> dict[str, Any]:

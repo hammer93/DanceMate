@@ -1,5 +1,88 @@
 # DanceMate Release Notes
 
+## v0.96.3 Incremental Engine Re-extraction
+
+Product Runtime 0.96.3; Information Engine **0.91, unchanged**; migration
+**042** (`source_item_content.extracted_engine_version`, plus a reprocess
+failure counter and the queue's own index). No change to what the engine
+reads, to Event identity, Region, Source authority, the acquisition queue
+or the duplicate/canonical contracts.
+
+**The problem, measured on Production b1784ff (2026-09-19, read-only).**
+2,201 content rows, 1,039 of them holding a fetched body - and only 20 had
+been re-read since the engine moved past 0.90. The extraction improvements
+of v0.96.0-v0.96.2 were therefore in the code and almost nowhere in the
+data. The reason was structural, not operational: re-extraction after an
+engine bump is not a content event (the stored bodies did not change), so
+`content_store.needing_reprocess()`'s ordinary branches - "the body arrived
+after the last re-extract", "a blocked fetch gained a poster" - are false
+for every one of those rows. The only other answer was
+`needing_reprocess(force=True)`, which is `WHERE true ORDER BY fetched_at
+NULLS LAST LIMIT n`, and nothing in `mark_reprocessed()` changes that
+ordering. So `POST /api/admin/events/reextract?limit=50` re-read the *same*
+first 50 rows on every call, and the only call that ever terminated was a
+single synchronous pass over all 2,201 (~80 minutes at the observed 2.2
+s/item, OCR provider calls included) holding an HTTP request open against a
+live scheduler.
+
+**The fix is a column, not a worker.** `extracted_engine_version` records
+which ENGINE_VERSION produced the candidates a content row currently has.
+`needing_reprocess()` gains a third reason - "the stored extraction is not
+from the running engine" - and every path that finishes with an item
+(re-extracted, skipped because a person reviewed it, preserved because a
+blocked fetch had nothing better) stamps the running version. The row then
+stops matching the query, so the next scheduler tick necessarily selects
+different rows: the DB state *is* the cursor. Nothing is held in memory, so
+a restart resumes where the pass was rather than rewinding to the first
+batch, and a future 0.91 -> 0.92 bump makes every row stale again with no
+code change, no backfill and no further migration. Nothing here refetches
+anything - v0.82.2's rule that a lesser body must never overwrite a good one
+is untouched; this re-reads the body already stored.
+
+**Operational path: the existing `engine-reprocess` job, unchanged in
+shape.** 25 items per tick, one scheduler, no new worker, queue or thread.
+The job detail now carries what the rollout is measured by:
+`candidates a->b`, `events a->b`, `dropped`, `newly_dated`, `upcoming
++n/-m`, `multi_changed`, `engine=` and `remaining=`, so "is the re-extract
+finishing, and is it making events better or worse" is answerable from
+`job_runs` alone. `GET /api/admin/events/reextract-backlog` reports
+current / outdated / stalled / with_content for the running engine.
+
+**A failing item cannot wedge the queue, and is not lost.**
+`reprocess_attempts` / `reprocess_error` / `reprocess_failed_at` are written
+when a re-extraction raises; past three consecutive failures the incremental
+pass steps over the row (the rows behind it were otherwise unreachable
+forever) and reports it as `stalled`, with the reason still on the row. A
+later success clears the record.
+
+**Identity contracts, unchanged and now measured.** A reviewed candidate is
+still never re-extracted (review state is keyed by candidate_id). The 1->1
+shape - 1,235 of the 1,236 Production posts that hold candidates - is still
+re-read *into the same candidate_id* through `replace_candidate()`, so the
+Event keeps its id; `events_preserved` counts exactly that. A post whose
+event cardinality genuinely changes (a schedule post that expands) is
+recorded (`multi_event_changed`, `events_dropped`) and left to the existing
+duplicate/canonical machinery rather than having an old id forced onto one
+of its new events. The v0.84.3 FETCH_BLOCKED preservation guard is
+unchanged.
+
+**Admin force path.** `POST /api/admin/events/reextract` now defaults to the
+incremental queue, which advances by itself. `force=true` still selects
+everything, but in `source_item_id` order, paged by `after_item_id` (the
+response returns `next_after_item_id`) - so repeating a forced batch can no
+longer re-read the same first N rows. It stays a diagnostic path; the
+scheduler is the operational one.
+
+**Tests.** `tests/test_v0963_incremental_reextract.py` (19): batch paging
+over a 60-item backlog (25/25/10/0, disjoint), unmarked batches offered
+again, restart safety, current-engine exclusion, the *next* version bump
+making current rows stale again (a 0.91-only implementation fails this one),
+settled discovery bodies included and metadata-only rows excluded, the
+failure cap and its visibility, backlog arithmetic, reviewed-candidate skip
+that still leaves the queue, 1->1 candidate_id/event_id preservation,
+cardinality change without touching another post's Event, and the admin
+endpoint advancing over two calls.
+
 ## v0.96.2 Direct Source Venue and Schedule Extraction Precision
 
 Product Runtime 0.96.2; Information Engine **0.91** (extraction behaviour
