@@ -714,3 +714,73 @@ def test_the_master_revision_moves_when_a_row_is_removed_as_well(pg, unique, seo
     with pg.cursor() as cur:
         cur.execute("DELETE FROM venues WHERE venue_id = %s", (venue["venue_id"],))
     assert normalization.master_revision(pg) != added
+
+
+# --- and the master revision has to be quiet ------------------------------
+#
+# Found on Production, twenty minutes after the v0.96.6 rollout. The revision
+# originally took `max(sources.updated_at)`, which the intake job touches
+# every time it collects from a source - several times an hour. Every
+# candidate's digest therefore changed on every tick, the queue reset to its
+# first 500 rows by collected_at each time, and the 764 behind them were
+# never reached: the starvation this release removes, reintroduced through
+# the door meant to keep master edits reaching old events.
+#
+#   candidates=500 normalized=229 no_date=271 created=0 current=0 remaining=764
+#   candidates=500 normalized=383 no_date=117 created=6 current=500 remaining=264
+#   candidates=500 normalized=229 no_date=271 created=0 current=0 remaining=764
+#
+# The third line is the bug: a tick that had advanced, undone. So the
+# revision now digests `sources` over the columns normalization actually
+# joins it for, and this test holds it there - a new operational column on
+# any of these tables must not reach the queue.
+
+def test_collecting_from_a_source_does_not_disturb_the_queue(pg, unique):
+    from runtime import sources as source_store
+
+    source = source_store.create_source(
+        pg, source_key=f"QUIET-{unique}", name=f"quiet {unique}",
+        platform="WEB", source_role="DIRECTORY", authority_level="SECONDARY",
+    )
+    before = normalization.master_revision(pg)
+
+    # Exactly what an intake tick leaves behind: bookkeeping, no change to
+    # anything normalization reads. `clock_timestamp()`, not `now()`: inside
+    # one transaction `now()` is the transaction's own start time and would
+    # write the value that is already there, which is a test that passes
+    # while proving nothing. A real intake tick is a later transaction.
+    with pg.cursor() as cur:
+        cur.execute(
+            "UPDATE sources SET updated_at = clock_timestamp() + interval '1 hour', "
+            "  last_collected_at = clock_timestamp() + interval '1 hour' "
+            "WHERE source_id = %s", (source["source_id"],),
+        )
+        cur.execute("SELECT max(updated_at) > now() FROM sources")
+        assert cur.fetchone()[0], "the fixture has to actually move the column"
+    assert normalization.master_revision(pg) == before, (
+        "an intake collection must not restage every candidate - that is the "
+        "window bug with a different cause"
+    )
+
+
+def test_changing_what_normalization_reads_off_a_source_does_move_it(pg, unique):
+    from runtime import sources as source_store
+
+    source = source_store.create_source(
+        pg, source_key=f"LOUD-{unique}", name=f"loud {unique}",
+        platform="WEB", source_role="DIRECTORY", authority_level="SECONDARY",
+    )
+    before = normalization.master_revision(pg)
+    with pg.cursor() as cur:
+        cur.execute("UPDATE sources SET authority_level = 'PRIMARY_ORGANIZER' "
+                    "WHERE source_id = %s", (source["source_id"],))
+    assert normalization.master_revision(pg) != before, (
+        "the region rule reads authority_level, so events built against the "
+        "old value are owed a re-read"
+    )
+
+
+def test_the_revision_holds_still_when_nothing_changes(pg):
+    """The property the whole queue rests on: two reads in a row agree, so a
+    tick that changed nothing leaves every candidate current."""
+    assert normalization.master_revision(pg) == normalization.master_revision(pg)

@@ -89,6 +89,27 @@ did that too, for its newest 500 rows only; this reaches all of them. Cost on
 the board, measured: 33 ms for the candidate scan, 46 ms for the master
 counts, per tick.
 
+**And the revision has to be quiet.** Found on Production twenty minutes
+after this release first rolled out. The token originally took
+`max(sources.updated_at)` - which the intake job touches every time it
+collects from a source, several times an hour. Every candidate's digest
+therefore changed on every tick, the queue reset to its first 500 rows by
+`collected_at` each time, and the 764 behind them were never reached: this
+release's own bug, through the door meant to keep master edits reaching old
+events. The job detail caught it in three lines, a tick that had advanced
+followed by one that had not:
+
+    normalized=229 no_date=271 created=0 current=0   remaining=764
+    normalized=383 no_date=117 created=6 current=500 remaining=264
+    normalized=229 no_date=271 created=0 current=0   remaining=764
+
+`sources` is now digested over exactly the columns normalization joins it
+for - genre, region, authority level, platform, role and config - and over
+nothing operational. A test holds it there, and it is verified to fail
+against the original expression rather than merely to pass against the fixed
+one. Nothing bookkeeping-shaped belongs in this token: an expression that
+moves on its own turns every tick's queue back into "the newest N".
+
 **What normalization still does not decide.** Nothing here folds, unfolds or
 re-keys an Event. A candidate promoted late is a new `events` row built by
 the same `normalize_candidate()` upsert, keyed on candidate_id as it always

@@ -747,27 +747,51 @@ NO_DATE = "NO_DATE"
 FAILED = "FAILED"
 
 
-# The master tables `normalize_candidate()` reads that are not keyed on a
+# The master data `normalize_candidate()` reads that is not keyed on a
 # candidate: a venue registered today changes how every unresolved candidate
-# resolves, a new Settings term changes every title's formats. Each is counted
-# and dated, because a delete moves no timestamp and an insert moves no count
-# on its own. They fold into one revision token that is part of every digest,
-# so a master edit puts the whole store back in the queue - which the old
-# window did too, but only for its newest 500 rows.
+# resolves, a new Settings term changes every title's formats. One scalar per
+# input, folded into a revision token that is part of every digest, so a
+# master edit puts the whole store back in the queue a batch at a time. The
+# old window did that too, for its newest 500 rows only.
 #
-# Deliberately not here: the per-item board data (`source_items`,
+# Each expression has to move when, and only when, the thing normalization
+# reads moves. Counted *and* dated where a timestamp exists, because a delete
+# moves no timestamp and an insert moves no count on its own - and, for
+# `sources`, neither, because `sources.updated_at` is intake bookkeeping. It
+# is touched every time a source is collected from, several times an hour,
+# and taking it here made every candidate stale on every tick: the queue
+# reset to its first 500 rows each time and nothing behind them was ever
+# reached, which is precisely the starvation this release exists to remove.
+# Measured on Production 0.96.6 within twenty minutes of the rollout. So
+# `sources` is digested over exactly the columns normalization joins it for -
+# the genre, the region, the authority level, the platform, the role and the
+# config - and over nothing else.
+#
+# Deliberately absent: the per-item board data (`source_items`,
 # `source_item_content`, `source_item_image`) the region and genre rules also
 # read. That changes through acquisition, which re-extracts the item, which
 # rewrites the candidate - so the candidate's own digest already moves.
-_MASTER_TABLES = (
-    ("genres", "updated_at"),
-    ("regions", "updated_at"),
-    ("venues", "updated_at"),
-    ("venue_aliases", "created_at"),
-    ("venue_genres", "created_at"),
-    ("event_terms", "updated_at"),
-    ("event_term_formats", None),
-    ("sources", "updated_at"),
+_MASTER_REVISION_SELECTS = (
+    "(SELECT count(*) FROM genres)",
+    "(SELECT max(updated_at) FROM genres)",
+    "(SELECT count(*) FROM regions)",
+    "(SELECT max(updated_at) FROM regions)",
+    "(SELECT count(*) FROM venues)",
+    "(SELECT max(updated_at) FROM venues)",
+    "(SELECT count(*) FROM venue_aliases)",
+    "(SELECT max(created_at) FROM venue_aliases)",
+    "(SELECT count(*) FROM venue_genres)",
+    "(SELECT max(created_at) FROM venue_genres)",
+    "(SELECT count(*) FROM event_terms)",
+    "(SELECT max(updated_at) FROM event_terms)",
+    "(SELECT count(*) FROM event_term_formats)",
+    "(SELECT md5(string_agg("
+    "   source_id || ':' || coalesce(genre_id::text, '') "
+    "   || ':' || coalesce(region_id::text, '') "
+    "   || ':' || coalesce(authority_level, '') "
+    "   || ':' || coalesce(platform, '') || ':' || coalesce(source_role, '') "
+    "   || ':' || coalesce(config::text, ''), '|' ORDER BY source_id)) "
+    " FROM sources)",
 )
 
 
@@ -775,17 +799,17 @@ def master_revision(con) -> str:
     """One token standing for the master data every candidate is read against.
 
     Cheap enough to take on each tick (counts and a max over small operator-
-    maintained tables) and blunt on purpose: we cannot tell which candidates a
-    new venue alias would change, so all of them are re-examined, a batch at a
-    time, rather than a guess being made about it.
+    maintained tables, plus a digest of 47 source rows) and blunt on purpose:
+    we cannot tell which candidates a new venue alias would change, so all of
+    them are re-examined, a batch at a time, rather than a guess being made.
+
+    Blunt is only safe while it is also *quiet*. An expression in here that
+    moves on its own turns every tick's queue back into "the newest N", so
+    nothing operational - a collection timestamp, a counter, a last-seen -
+    belongs in it.
     """
-    selects = []
-    for table, stamp in _MASTER_TABLES:
-        selects.append(f"(SELECT count(*) FROM {table})")
-        if stamp:
-            selects.append(f"(SELECT max({stamp}) FROM {table})")
     with con.cursor() as cur:
-        cur.execute("SELECT " + ", ".join(selects))
+        cur.execute("SELECT " + ", ".join(_MASTER_REVISION_SELECTS))
         return "|".join("" if value is None else str(value) for value in cur.fetchone())
 
 
