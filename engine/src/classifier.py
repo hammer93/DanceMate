@@ -194,6 +194,135 @@ def notice_evidence_bundle(title: str, body: str) -> bool:
     )
 
 
+# v0.96.0: the practica, in its standard spellings (PRACTICA / 프락티카 /
+# Práctica), is the same kind of tango night the existing "쁘락" already
+# counted - a community that writes it out in full was being read as OTHER.
+# v0.96.5 lifted this out of classify()'s body so announced_night_evidence()
+# below asks "does the title name a night" with the very same vocabulary the
+# type decision uses; the list itself is unchanged.
+MILONGA_WORDS = ["milonga", "밀롱가", "쁘롱", "쁘락", "프락티카", "practica",
+                 "práctica", "쁘락띠까"]
+
+# v0.96.5: a night announced in the title of a post whose body also teaches.
+#
+# social_evidence() has let a title do exactly this for the other scenes
+# since v0.79 - a 소셜 or 파티 in the heading *is* the announcement, and the
+# has_class branch below defers to it. The milonga family never had that
+# rule, so twelve Production posts whose titles name a real night
+# ("2026년 9월 19일 토요일 밀롱가 La Vida No.802", "💢대전까미니또
+# 초고급밀롱가", "스물다섯번째 수요 쁘롱가 with DJ 웅이_12월 13일(수)")
+# were read as CLASS and produced no candidate at all, because somewhere in
+# the body a lesson is mentioned: the milonga's own warm-up ("7:30
+# 오픈강습"), the club's beginners' round starting the same week ("이번주부터
+# 72기 왕초급 강습이 시작됩니다"), a visiting couple's workshop ("금토일
+# 워크샵은 마감"), even an instructor's CV line ("20여년 강습경력"). Half
+# of them were still in the future when they were collected; one still is.
+#
+# The milonga family cannot simply be given social_evidence()'s title rule,
+# because a lesson advert names the milonga it teaches you to dance at:
+#
+#   "[금요특강] 26년 9월 18일 시작!! 밀롱가/땅고 실전패턴!!"   (item 205)
+#   "[부산_탱고수업]데이브y지브릴's 쁘롱가 적응 시퀀스..."      (item 3202)
+#
+# Both carry the night's word and a date in the title, and a bare keyword
+# rule would sell either as a night out. So the title has to clear three
+# separate tests, not one:
+#
+#   1. it names a night AND does not call itself a lesson. Both adverts
+#      above say so in their own heading - "특강", "탱고수업" - and not
+#      one of the twelve real announcements says anything of the kind.
+#      This is the *title*, deliberately: a body may mention a class (that
+#      is the entire false negative), a title that sells one is selling one.
+#   2. the post carries no course evidence anywhere - a fee for tuition, a
+#      curriculum, a week number, a term opening. Item 205 has "수강료",
+#      "커리큐럼", "6회 수업(2달 과정)"; item 3202 has "참가비용: 6주
+#      10만원", "커리큘럼", "1주차", "개강". No real announcement has any of
+#      it. This is the second, independent layer: an advert whose heading
+#      happens not to say "수업" is still caught here.
+#   3. the post carries a night's logistics: a clock, backed by a day, a
+#      place, an admission fee or a DJ - the same "an announcement carries
+#      logistics, a mention does not" test notice_evidence_bundle() already
+#      applies to the other scenes. Two real posts carry no day at all and
+#      still announce plainly: item 3643 says only "내일은 행복한 월요일"
+#      (which the extractor resolves; the classifier must not demand it),
+#      and items 3243/3251 put the week in words - "12월 둘째주" - behind a
+#      "☆ 입장료", a "☆ 장소" and a named DJ. For the first of those, the
+#      night written directly beside its own clock ("💢밀롱가 8시~10시30")
+#      stands alone as the tie, exactly as social_evidence()'s
+#      _SOCIAL_BY_CLOCK already reads one.
+#
+# A title carrying a class word is left alone on purpose, even when the
+# lesson is plainly the free extra rather than the product ("비비밀 AM
+# 밀롱가 + 살바 무료강습", item 256): that post is genuinely ambiguous, and
+# widening the rule to rescue it is the one change that could also rescue an
+# advert. It classifies exactly as it did before this rule existed.
+_MILONGA = "|".join(MILONGA_WORDS)
+
+# The milonga family's twin of _SOCIAL_BY_CLOCK, same shape, same joins: a
+# night written next to its own clock, in either order.
+_MILONGA_BY_CLOCK = re.compile(
+    rf"(?:{_CLOCK})(?:{_JOIN}){{0,6}}(?:{_MILONGA})"
+    rf"|(?:{_MILONGA})(?:{_JOIN}){{0,6}}(?:{_CLOCK})",
+    re.I,
+)
+
+# What a *title* says when the post is selling the lesson itself. Latin
+# terms need their own word boundaries - a "Milonga Clásica" is not a class.
+_TITLE_SELLS_A_CLASS_RE = re.compile(
+    r"강습|수업|강좌|특강|개강|레슨|세미나|클래스|워크샵|워크숍|커리큘럼|커리큐럼|"
+    r"[초중고]급반|입문반|기초반|안무반|공연반|전문가반|모집|"
+    r"(?<![a-z])(?:class|lesson|workshop|seminar)(?![a-z])",
+    re.I,
+)
+
+# What a course looks like anywhere in the post: tuition, a curriculum, a
+# numbered week, a term that opens or closes. A night charges admission
+# ("입장료 5,000원") and never any of this.
+_COURSE_EVIDENCE_RE = re.compile(
+    r"수강료|수강\s*신청|수강생|커리큘럼|커리큐럼|개강|종강|"
+    r"\d+\s*주\s*차|\d+\s*회\s*차|"
+    r"\d+\s*주\s*(?:과정|코스)|\d+\s*회\s*수업|\d+\s*주\s*[0-9][0-9,]*\s*만?\s*원",
+    re.I,
+)
+
+# What a night charges at its own door, and who plays it. Neither is a
+# price list or a line-up on its own - both are only ever read together
+# with a clock, below.
+_ADMISSION_RE = re.compile(r"입장\s*료|입장\s*비|admission", re.I)
+_DJ_LINE_RE = re.compile(r"(?<![a-z])dj(?![a-z])|디제이|디징", re.I)
+
+
+def announced_night_evidence(title: str, body: str, event_terms=None) -> bool:
+    """Does this post's own *title* announce a milonga/practica night?
+
+    True only when all three of the tests in the comment above hold: the
+    title names a night without selling a lesson, no course evidence appears
+    anywhere in the post, and the post carries a night's logistics.
+    """
+    heading = title or ""
+    names_a_night = any(word in heading.lower() for word in MILONGA_WORDS)
+    if not names_a_night and event_terms:
+        folded = normalize_term_text(heading)
+        names_a_night = any(term_occurs(t, folded) for t in event_terms)
+    if not names_a_night:
+        return False
+    if _TITLE_SELLS_A_CLASS_RE.search(heading):
+        return False
+    whole = f"{heading} {body or ''}"
+    if _COURSE_EVIDENCE_RE.search(whole):
+        return False
+    if _MILONGA_BY_CLOCK.search(whole):
+        return True
+    if not _NOTICE_CLOCK_RE.search(whole):
+        return False
+    return bool(
+        _EXPLICIT_DAY_DATE_RE.search(whole)
+        or _NOTICE_PLACE_RE.search(whole)
+        or _ADMISSION_RE.search(whole)
+        or _DJ_LINE_RE.search(whole)
+    )
+
+
 def classify(title: str, body: str, known_event_type=None, event_terms=None) -> str:
     if known_event_type:
         # Source Registry / known series context is admissible evidence for type classification.
@@ -203,12 +332,8 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
     text = f"{title} {body}".lower()
     class_words = ["lesson", "강습", "개강", "모집", "안무반", "공연반", "초중급",
                    "전문가반", "워크샵", "워크숍", "workshop"]
-    # v0.96.0: the practica, in its standard spellings (PRACTICA / 프락티카 /
-    # Práctica), is the same kind of tango night the existing "쁘락" already
-    # counted - a community that writes it out in full was being read as OTHER.
-    milonga_words = ["milonga", "밀롱가", "쁘롱", "쁘락", "프락티카", "practica", "práctica", "쁘락띠까"]
     has_class = any(w in text for w in class_words)
-    has_milonga = any(w in text for w in milonga_words)
+    has_milonga = any(w in text for w in MILONGA_WORDS)
     if not has_milonga and event_terms:
         folded = normalize_term_text(f"{title} {body}")
         has_milonga = any(term_occurs(t, folded) for t in event_terms)
@@ -240,6 +365,17 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
         # social_evidence() would have produced -- no new type is invented.
         if party_evidence_bundle(title, body):
             return "SOCIAL_WITH_CLASS"
+        # v0.96.5: the milonga family's own missing version of the rule
+        # social_evidence() has always given the other scenes - a night
+        # announced in the post's own title, on a post that also teaches.
+        # Checked last, so every judgment above it is reached exactly as
+        # before and only a post that was about to be called CLASS can be
+        # read again (announced_night_evidence()'s own comment has the real
+        # Production posts, and the two real lesson adverts, this was built
+        # against). Still MILONGA_WITH_CLASS, the canonical type the open-
+        # class rule above already produces for a night with a lesson on it.
+        if announced_night_evidence(title, body, event_terms=event_terms):
+            return "MILONGA_WITH_CLASS"
         return "CLASS"
     if has_milonga:
         return "MILONGA"

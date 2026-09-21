@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.4"
+PRODUCT_VERSION = "0.96.5"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -69,7 +69,17 @@ PRODUCT_VERSION = "0.96.4"
 # version does. v0.96.3's incremental re-extract needs nothing else: every
 # stored body is stale against 0.92 by definition and the scheduler works
 # through them 25 at a time.
-DEFAULT_ENGINE_VERSION = "0.92"
+# v0.96.5 bumps this to 0.93: classifier.classify() reads a night announced
+# in a post's own title through a body that also teaches - the rule
+# social_evidence() has given the other scenes since v0.79, which the milonga
+# family never had, and which cannot simply be copied because a lesson
+# advert names the milonga it teaches you to dance at. Twelve Production
+# items stop being CLASS-with-no-candidate; sweeping all 2,267 collected
+# items changes those twelve and nothing else in either direction. What
+# the engine reads out of a stored body changed, so the version does, and
+# v0.96.3's incremental pass re-reads every row against 0.93 with no
+# migration and no cursor hack.
+DEFAULT_ENGINE_VERSION = "0.93"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

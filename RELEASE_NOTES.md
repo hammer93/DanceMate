@@ -1,5 +1,121 @@
 # DanceMate Release Notes
 
+## v0.96.5 Announced Night Classification
+
+Product Runtime 0.96.5; Information Engine **0.93** (classification behaviour
+changed); no migration (head 042). No change to Event identity, Region,
+Source authority, the acquisition queue, the duplicate/canonical rules or
+the v0.96.3 re-extract machinery.
+
+**Measured, not guessed.** v0.96.4's 0.92 re-extraction had fully converged
+on Production before this was measured - 1,180 stored bodies with content,
+all 1,180 at 0.92, remaining 0, failed 0, stalled 0 - so nothing here is a
+stale reading. All 2,267 collected items were then classified twice, once
+with the running engine and once with the change, each with its own
+`known_event_type` and the Settings event terms, and compared item by item.
+
+**The defect.** `social_evidence()` has let a post's own *title* announce a
+night for the other scenes since v0.79: a 소셜 or 파티 in the heading **is**
+the announcement, and `classify()`'s CLASS branch defers to it. The milonga
+family never had that rule. So a post whose title names a real night -
+"2026년 9월 19일 토요일 밀롱가 La Vida No.802", "💢대전까미니또 초고급밀롱가",
+"[부산_가또땅고] 스물다섯번째 수요 쁘롱가 with DJ..." - was read as CLASS the
+moment its body mentioned a lesson anywhere, and `EVENT_CLASSIFICATIONS` does
+not hold CLASS, so `process_discovered_post()` returned `events=[]`. Not a
+wrong date, not a wrong venue: **no candidate at all**.
+
+What the bodies actually say is the point. The milonga's own half-hour
+warm-up ("반복: 매주 목요일 7:30 오픈강습"), the club's new beginners' round
+starting that week ("이번주부터 밀롱가전에 72기 왕초급 강습이 시작됩니다"), a
+visiting couple's workshop already sold out ("금토일 워크샵은 마감"), the
+studio's own history in the cafe boilerplate ("20여년 강습경력"). Every one
+of them a night, lost to a word about a class.
+
+**Why the title rule could not simply be copied.** A lesson advert names the
+milonga it teaches you to dance at, in its own title, next to its own start
+date:
+
+    [금요특강] 26년 9월 18일 시작!! 밀롱가/땅고 실전패턴!!       (item 205)
+    [부산_탱고수업]데이브y지브릴's 쁘롱가 적응 시퀀스...          (item 3202)
+
+"밀롱가 in the title" would sell either as a night out. So
+`announced_night_evidence()` is three independent tests, and a post must
+clear all three:
+
+1. **the title names a night and does not sell a lesson.** Both adverts say
+   so in their own heading - "특강", "탱고수업" - and no real announcement
+   does. The *title*, deliberately: a body may mention a class (that is the
+   entire defect); a title that sells one is selling one.
+2. **no course evidence anywhere in the post** - tuition, a curriculum, a
+   numbered week, a term opening or closing. Item 205 has 수강료, 커리큐럼,
+   "6회 수업(2달 과정)"; item 3202 has "참가비용: 6주 10만원", 커리큘럼,
+   1주차, 개강. No real announcement carries any of it. This is the second,
+   independent layer: an advert whose heading happens not to say 수업 is
+   still refused here.
+3. **the post carries a night's logistics** - a clock, backed by a day, a
+   place, an admission fee or a DJ, the same "an announcement carries
+   logistics, a mention does not" test `notice_evidence_bundle()` already
+   applies. Two real posts name no day at all and still announce plainly:
+   item 3643 says only "내일은 행복한 월요일" and item 3243 writes the week in
+   words ("12월 둘째주") behind a "☆ 입장료", a "☆ 장소" and a named DJ. For
+   the first, the night written directly beside its own clock ("💢밀롱가
+   8시~10시30") stands alone as the tie, exactly as `_SOCIAL_BY_CLOCK`
+   already reads one for the other scenes.
+
+The rule is checked **last** in the CLASS branch, after the open-class rule,
+`social_evidence()` and `party_evidence_bundle()`, so every judgment already
+made is reached exactly as before and only a post about to be called CLASS
+can be read again. The answer is `MILONGA_WITH_CLASS` - the canonical type
+the open-class rule already produces for a night with a lesson on it. No new
+type, no new field, no new table.
+
+**The Production result.** Sweeping all 2,267 collected items - each one
+classified exactly as the runtime classifies it, with its own
+`known_event_type` and the Settings event terms - changes **twelve**, every
+one of them CLASS -> MILONGA_WITH_CLASS, and nothing else in either
+direction: no OTHER promoted, no event type altered, no post that already
+classified as an event touched.
+
+| | |
+|---|---|
+| true nights rescued | 12 |
+| lesson adverts promoted to an event | **0** |
+| any other classification change | 0 |
+| upcoming nights recovered | 1 (item 3643, today) |
+
+Items 2, 625, 968, 1264, 1311, 1976, 2045, 2334, 3230, 3243, 3251, 3643.
+Six further posts of the same aggregator shape (1304, 2103, 2123, 2132,
+2272, 2805) would also be rescued by the rule and are *not* in that count:
+their collector already tags them `known_event_type=MILONGA`, `classify()`
+returns on that before any of this is reached, and all six are already
+LISTED events. The rule changes nothing for them, which is the right
+answer - it is a second route to the same reading, not a competing one.
+
+**The post left on the line.** Item 256 ("♥️9월 13일(SUN) 비비밀 AM 밀롱가 +
+살바 무료강습") is a real, dated, timed night whose *title* offers a free
+lesson an hour before it. Reading it would mean letting a title say 강습 and
+still announce - the one widening that could also rescue an advert. It
+classifies exactly as it did before v0.96.5, and a test holds it there so
+that stays a decision rather than an accident.
+
+**ENGINE_VERSION 0.92 -> 0.93.** What the engine reads out of a stored body
+changed, so the version does. Nothing else was needed: every stored body is
+stale against 0.93 by definition, and v0.96.3's incremental pass re-reads
+them at 25 per scheduler tick with the DB row as its cursor - no migration,
+no backfill, no forced pass, no cursor hack.
+
+**What this release does not touch, on purpose.** The normalization window,
+Naver robots, Daum BODY_UNAVAILABLE, venue extraction, the unresolved-venue
+workflow, Source Evidence Priority, Event dedupe, the date parser and the
+title date reader are all unchanged. One thing this release *found* and did
+not fix: `class_words` holds 강습/개강/워크샵 but not 수업/특강/클래스/강좌/
+레슨/수강료, so a lesson advert written only in those words never enters the
+CLASS branch at all and classifies as a plain MILONGA/SOCIAL. Seventy-seven
+Production items are in exactly that state today - "3주 완성! 밀롱가 리듬
+클래스", "토욜 스페셜 원데이 클래스", "9월의 토요특강" among them. It is a
+false *positive*, the opposite direction to this release, and it is the next
+real bottleneck. This release changes none of those 77 in either direction.
+
 ## v0.96.4 Title Date Precision
 
 Product Runtime 0.96.4; Information Engine **0.92** (extraction behaviour

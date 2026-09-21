@@ -9,14 +9,17 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.4 (제목이 한 달의 두 날짜를 같이 적는 형태 "9월 19,20일"을
-  날짜로 읽고, 구역 표시(■) 너머의 제목이 옆 프로그램의 시계를 가져가지 않게 한다)
-  - v0.96.3은 engine 버전이 올라간 뒤 기존 본문을 scheduler가 작은 batch로 계속
+- Product Runtime: v0.96.5 (제목이 실제 밤 행사를 선언하는 글이, 본문에 강습이
+  언급됐다는 이유만으로 CLASS로 떨어져 candidate가 하나도 생기지 않던 문제를
+  고친다)
+  - v0.96.4는 "9월 19,20일" 형태의 제목 날짜와 구역 표시 너머의 시계 문제였고,
+    v0.96.3은 engine 버전이 올라간 뒤 기존 본문을 scheduler가 작은 batch로 계속
     재추출하는 incremental 경로였다 (migration 042, 이후 변경 없음).
-- Information Engine: v0.92 (`engine/`) — 한 달의 두 날짜를 함께 적은 제목
-  ("9월 19,20일")을 첫날 + MULTI_DAY_EVENT로 읽고, 구역 표시(■ ▣ ◆ ●) 너머의
-  단어가 옆 프로그램의 시계를 자기 것으로 가져가지 못하게 한다. 0.91까지의
-  "@사람·계정"을 장소로 읽지 않는 규칙과 구조적 segment 분리는 그대로다
+- Information Engine: v0.93 (`engine/`) — 제목이 밀롱가/쁘롱가/쁘락띠까를
+  선언하고 그 제목이 스스로 강습을 파는 글이 아니며, 본문에 수강료·커리큘럼·
+  개강 같은 과정 증거가 없고, 행사 logistics(시계 + 날짜/장소/입장료/DJ)가 있으면
+  본문의 강습 언급이 그 행사를 덮어쓰지 못한다. 0.92까지의 제목 날짜 읽기,
+  "@사람·계정"을 장소로 읽지 않는 규칙, 구조적 segment 분리는 그대로다
   (RELEASE_NOTES 참고).
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
@@ -80,7 +83,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.4"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.5"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
