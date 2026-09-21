@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.3"
+PRODUCT_VERSION = "0.96.4"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -58,7 +58,18 @@ PRODUCT_VERSION = "0.96.3"
 # ("선배님은", "선배님께서") as a person and a multi-word "@" value with a
 # finite predicate on any word as prose - Production item 2020's second
 # mention had slipped through 0.90's detached-particle / last-token rules.
-DEFAULT_ENGINE_VERSION = "0.91"
+# v0.96.4 bumps this to 0.92: extractor.DATE_PATTERNS reads a month that
+# names two of its own days ("9월 19,20일" - four Production items, all one
+# weekly social series, previously dateless), flagging the span with the same
+# MULTI_DAY_EVENT evidence the existing "9.18-20" range uses; and
+# extraction_rules._near_window() stops the window a word may *qualify* a
+# clock through at a structural break, exactly as the window that
+# disqualifies one already did, so a section heading can no longer claim a
+# neighbouring programme's clock. What the engine reads changed, so the
+# version does. v0.96.3's incremental re-extract needs nothing else: every
+# stored body is stale against 0.92 by definition and the scheduler works
+# through them 25 at a time.
+DEFAULT_ENGINE_VERSION = "0.92"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

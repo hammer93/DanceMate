@@ -9,13 +9,15 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.3 (엔진 버전이 올라간 뒤 기존에 확보한 본문을 scheduler가
-  작은 batch로 계속 재추출하는 incremental 경로, migration 042)
-  - v0.96.2는 direct-source venue/schedule 추출 정밀도 릴리스였다 (migration 041).
-- Information Engine: v0.91 (`engine/`) — "@사람·계정"을 장소로 읽지 않고
-  (존칭에 조사가 붙은 "선배님은"도 사람으로 본다), 여러 프로그램이 있는 글을
-  시간 토큰을 자르지 않는 구조적 경계로 나누며, 검토 대상 segment를 행사
-  단어+시각 기준으로 고른다 (RELEASE_NOTES 참고).
+- Product Runtime: v0.96.4 (제목이 한 달의 두 날짜를 같이 적는 형태 "9월 19,20일"을
+  날짜로 읽고, 구역 표시(■) 너머의 제목이 옆 프로그램의 시계를 가져가지 않게 한다)
+  - v0.96.3은 engine 버전이 올라간 뒤 기존 본문을 scheduler가 작은 batch로 계속
+    재추출하는 incremental 경로였다 (migration 042, 이후 변경 없음).
+- Information Engine: v0.92 (`engine/`) — 한 달의 두 날짜를 함께 적은 제목
+  ("9월 19,20일")을 첫날 + MULTI_DAY_EVENT로 읽고, 구역 표시(■ ▣ ◆ ●) 너머의
+  단어가 옆 프로그램의 시계를 자기 것으로 가져가지 못하게 한다. 0.91까지의
+  "@사람·계정"을 장소로 읽지 않는 규칙과 구조적 segment 분리는 그대로다
+  (RELEASE_NOTES 참고).
 - Initial Server: ROCKPro64 (PINE64 v2.1 / RK3399 / ARM64 / Debian 13)
 - Region: 전국 - Region master가 서울/부산/대전/인천을 포함한 광역시·도 단위로
   확장됨 (실제 데이터가 있는 지역은 소스 수집 현황에 따라 다름)
@@ -78,7 +80,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.3"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.4"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -181,13 +183,21 @@ is recorded with the reviewer and the fields that differed.
 The pipeline runs as five scheduler jobs: `source-intake` discovers posts
 through a provider's search API, `content-acquisition` fetches the original
 post behind each result, `engine-ingest` hands new items to the Information
-Engine, `engine-reprocess` re-extracts items whose body arrived later, and
+Engine, `engine-reprocess` re-extracts items whose body arrived later — or whose stored
+extraction came from an older ENGINE_VERSION (v0.96.3) — and
 `event-normalization` builds the searchable event rows and then resolves
 duplicates — one job so that order is guaranteed.
 
-When the *extractor* changes rather than the content, `POST
-/api/admin/events/reextract` re-runs the current engine over every post whose
-body we already hold. Candidates a person has acted on are skipped.
+When the *extractor* changes rather than the content, the bodies already stored
+hold candidates an older engine produced. `source_item_content.extracted_engine_version`
+records which version last read each body, so the `engine-reprocess` job walks exactly
+those rows — 25 per tick, the DB row itself acting as the cursor, so a restart resumes
+instead of re-reading the first batch. That scheduler pass is the operational path.
+`GET /api/admin/events/reextract-backlog` reports what is left
+(current/outdated/stalled). `POST /api/admin/events/reextract` runs one batch by hand
+for diagnosis: by default the same engine-version-aware queue, and `force=true` to
+re-read everything regardless, paged with the `after_item_id` cursor the response
+returns. Candidates a person has acted on are skipped on every path.
 
 An operator registers a source, presses **Test**, then **Enable**. The
 scheduler collects only from enabled sources whose interval has elapsed

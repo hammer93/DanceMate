@@ -1,5 +1,71 @@
 # DanceMate Release Notes
 
+## v0.96.4 Title Date Precision
+
+Product Runtime 0.96.4; Information Engine **0.92** (extraction behaviour
+changed); no migration (head 042). No change to Event identity, Region,
+Source authority, the acquisition queue, the duplicate/canonical rules or
+the v0.96.3 re-extract machinery.
+
+**Measured, not guessed.** v0.96.3 finished re-extracting all 1,179 stored
+Production bodies under engine 0.91 (remaining 0, failed 0, stalled 0), so
+this release's baseline contains no stale extraction at all. Of those
+bodies, 193 carry a date in their title and 114 already produce a dated
+candidate. Exactly **four** lose the date inside the reader - and all four
+are one written form and one weekly series: "■ 스윙타임빠 (9월 19,20일)
+토,일 소셜 공지" (items 131, 623, 2113, 2800). The other 75 are refused by
+the *classifier*, not by the date reader, and are left alone here (see
+"what this release does not fix").
+
+**A month that names two of its own days** ("9월 19,20일", "10월 1일 & 3일",
+"9월 19~20일") matched no pattern: the plain `M월 D일` needs the 일 directly
+after its day, which "19,20일" does not have, and the bare `m/d` fallback
+needs a "." or "/" separator. `event_date` is now the **first** day named,
+with the span flagged as `MULTI_DAY_EVENT` - the same answer the existing
+"9.18-20" range has always given, because `events` holds one date and a
+list the post never split into programmes is not two events. The pattern is
+ordered *after* the plain `M월 D일` on purpose: `_norm_date()` searches the
+whole post with each pattern in turn, so an earlier pattern outranks a later
+one wherever it sits, and a list further down the body must never take the
+title's own day.
+
+**A section heading no longer claims a neighbouring clock.** Giving item
+2800 a date exposed a second real defect in the same post: its candidate
+read **09:00-10:30** - a morning clock on an evening social - because the
+streaming notice's own heading ("■ 타임빠소셜 실시간 스트리밍") sat within
+sixteen characters of the 2부 set's marker-less clock and qualified it as
+the social's own. `_is_other_programme()` already stopped at a structural
+break; `parse_time_range()`/`parse_start_time()`'s event-word windows did
+not. They now share one `_near_window()`, and the break set gains the
+section markers (■ ▣ ◆ ● ▶ ★ 【 】). Numbering marks (①②, "-", "·") are
+deliberately still not breaks: they number the items *of* a clock's slot.
+Item 2800 now reads its own explicit "PM 8:15~10:15" instead.
+
+**ENGINE_VERSION 0.91 -> 0.92.** What the engine reads changed, so the
+version does. Nothing else was needed: every stored body is stale against
+0.92 by definition, and v0.96.3's incremental pass re-reads all 1,179 at 25
+per scheduler tick with the DB row as its cursor - no migration, no
+backfill, no cursor hack.
+
+**What this release does not fix, on purpose.** Production item 2334
+("2026년 9월 19일 토요일 밀롱가 La Vida No.802") is *not* a date miss: the
+reader already returns 2026-09-19 EXPLICIT_YEAR, 19:30-23:30 and
+아미고스튜디오 from that post. It is lost at classification - its body says
+"밀롱가전에 72기 왕초급 강습이 시작됩니다", the class-word rule wins, and a
+CLASS post is not an event. Six Production items are non-events despite a
+title that names both a night and a day; about four of those look genuinely
+wrong. That is a classifier change, not a date one, and belongs to its own
+release with its own negatives (a lesson advert must not become a night
+out).
+
+**Tests.** `engine/tests/test_v0964_title_date_precision.py` (29): the two
+real Production posts verbatim, the day-list forms a community actually
+writes and the look-alikes that must stay dateless ("9월~10월", "20~30은",
+"회비 9월 1, 000원"), a title date never becoming a clock, the body's own
+date keeping precedence, UNKNOWN_YEAR still a refusal, the v0.96.2
+multi-programme shape unchanged, a two-day lesson advert still a lesson,
+and every documented time reading.
+
 ## v0.96.3 Incremental Engine Re-extraction
 
 Product Runtime 0.96.3; Information Engine **0.91, unchanged**; migration

@@ -26,6 +26,32 @@ DATE_PATTERNS = [
     re.compile(r"(?P<y>20\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<y>\d{2})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
     re.compile(r"(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
+    # v0.92.0: a month naming more than one of its days at once - "9월 19,20일",
+    # "10월 1일 & 3일", "9월 19~20일". Written that way by a community whose
+    # weekend runs on both days, and read as *no date at all* before this:
+    # the plain "M월 D일" above needs the 일 directly after its day, which
+    # "19,20일" does not have, and the bare "m/d" fallback below needs a "."
+    # or "/" separator. Production carried four of these, all one weekly
+    # series (스윙타임빠 8/29, 9/5, 9/12, 9/19), each a real social nobody
+    # could place on a calendar.
+    #
+    # `event_date` is the FIRST day named, exactly as the existing "9.18-20"
+    # range already resolves (PHASE 5): `events` holds one date, and
+    # inventing a second event out of a list the post never separated into
+    # programmes would be guessing. The other days are flagged on the
+    # evidence trail as MULTI_DAY_EVENT, the same way that range is, so a
+    # person sees the real span.
+    #
+    # Deliberately checked AFTER the plain "M월 D일": `_norm_date()` tries
+    # patterns in order and searches the whole post with each, so a pattern
+    # placed earlier beats every later one *wherever it sits in the text*.
+    # Ordering this one first would let a list further down the body ("9월
+    # 26,27일 워크샵") outrank the title's own "9월 19일". Nothing is lost by
+    # going second: a list the plain pattern can read at all ("9월 19일, 20일")
+    # resolves to the same first day either way.
+    re.compile(
+        r"(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일?\s*[,，·&~\-]\s*\d{1,2}\s*일"
+    ),
     # Bounded on both sides, or it reads a date out of the middle of a longer
     # number. "2010.12" -- a recording date in a post about a tango camp --
     # matched as 10.12 and became an event this October.
@@ -37,6 +63,12 @@ DATE_PATTERNS = [
 # on the evidence trail (see below); `event_date` itself still comes from
 # DATE_PATTERNS above and is always just the range's first day.
 _DAY_RANGE_RE = re.compile(r"(?<!\d)\d{1,2}[./]\d{1,2}\s*-\s*\d{1,2}(?!\d)")
+# v0.92.0: the Korean way of writing that same span - "9월 19,20일",
+# "10월 1일 & 3일". Flagged identically (MULTI_DAY_EVENT on the first day),
+# for the same reason: the post names days this schema holds one of.
+_KOREAN_DAY_LIST_RE = re.compile(
+    r"\d{1,2}\s*월\s*\d{1,2}\s*일?\s*[,，·&~\-]\s*\d{1,2}\s*일"
+)
 
 # Kept for callers that still reference it. Time reading itself moved to
 # extraction_rules.parse_time_range, which also handles a meridiem marker
@@ -611,7 +643,7 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         # date - flagged the same way an ambiguous multi-program post already
         # is (MULTI_EVENT_CONTEXT), so a human sees the real span rather than
         # a silently-truncated single day.
-        range_match = _DAY_RANGE_RE.search(text)
+        range_match = _DAY_RANGE_RE.search(text) or _KOREAN_DAY_LIST_RE.search(text)
         if range_match:
             ev.evidences.append(Evidence(
                 "context", "MULTI_DAY_EVENT", range_match.group(0),

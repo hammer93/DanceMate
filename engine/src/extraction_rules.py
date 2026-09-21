@@ -188,20 +188,45 @@ _TIME_NEAR_AFTER = 16
 # but a "[...]" heading stands between them. Bullets are deliberately not a
 # break: "8:00~9:10pm ① 무료 일일 특강" (Production) numbers the items *of*
 # that clock's slot, so the word after the bullet still qualifies it.
-_PROGRAMME_BREAK = re.compile(r"[\n\[\]/|]")
+#
+# v0.92.0: a section marker ("■", "▣", "◆", "●", "▶", "★") is a break for
+# the same reason a "[" heading is - it starts a new section of the post,
+# not another item of this clock's slot. Production item 2800 is the case:
+# "... 2부 DJ '조커' 9:00~10:30 ■ 타임빠소셜 실시간 스트리밍 서비스 안내".
+# The streaming notice's own heading put the word 소셜 within sixteen
+# characters of the 2부 set's marker-less clock, so that reading - 09:00,
+# an ambiguous morning hour on an evening social - was preferred over the
+# same post's explicit "PM 8:15~10:15". Numbering marks (①②, -, ·) stay out
+# of this set: they qualify items of a slot, exactly as before.
+_PROGRAMME_BREAK = re.compile(r"[\n\[\]/|■▣◆●▶★【】]")
 
 
-def _is_other_programme(text: str, match: re.Match) -> bool:
-    """True when this range belongs to something priced apart from the event."""
-    before = text[max(0, match.start() - _TIME_NEAR_BEFORE):match.start()]
-    after = text[match.end():match.end() + _TIME_NEAR_AFTER]
+def _near_window(text: str, start: int, end: int) -> str:
+    """The text close enough to a clock to say what that clock is for.
+
+    v0.92.0: one definition, used by every rule that reads a word beside a
+    clock. `_is_other_programme()` already stopped at a structural break;
+    `parse_time_range()`/`parse_start_time()`'s own event-word windows did
+    not, so a heading on the far side of a break could still claim a clock
+    that was never its own (Production item 2800 - see `_PROGRAMME_BREAK`).
+    A word that qualifies a clock and a word that disqualifies one should
+    reach exactly as far as each other.
+    """
+    before = text[max(0, start - _TIME_NEAR_BEFORE):start]
+    after = text[end:end + _TIME_NEAR_AFTER]
     breaks = list(_PROGRAMME_BREAK.finditer(before))
     if breaks:
         before = before[breaks[-1].end():]
     cut = _PROGRAMME_BREAK.search(after)
     if cut:
         after = after[:cut.start()]
-    return bool(_OTHER_PROGRAMME_TIME.search(before + after))
+    return before + after
+
+
+def _is_other_programme(text: str, match: re.Match) -> bool:
+    """True when this range belongs to something priced apart from the event."""
+    return bool(_OTHER_PROGRAMME_TIME.search(
+        _near_window(text, match.start(), match.end())))
 
 
 def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | None:
@@ -235,9 +260,7 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
     words = _EVENT_WORDS.get((event_type or "").upper())
     if words:
         for reading, start, end in readings:
-            window = ((text or "")[max(0, start - _TIME_NEAR_BEFORE):start]
-                      + (text or "")[end:end + _TIME_NEAR_AFTER])
-            if re.search(words, window, re.I):
+            if re.search(words, _near_window(text or "", start, end), re.I):
                 return reading
     # No reading named the event type nearby (or none was given): the same
     # post can still repeat its own time, once plainly and once with an
@@ -307,8 +330,7 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
     words = _EVENT_WORDS.get((event_type or "").upper())
     if words:
         for reading, start, end in found:
-            window = body[max(0, start - _TIME_NEAR_BEFORE):start] + body[end:end + _TIME_NEAR_AFTER]
-            if re.search(words, window, re.I):
+            if re.search(words, _near_window(body, start, end), re.I):
                 return reading
     # Two different lone clocks for two different things ("클럽 오픈 오후
     # 8시 ... 오후 7시 핸슨") and neither beside the event's word: which one
