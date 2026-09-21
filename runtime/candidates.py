@@ -56,37 +56,54 @@ def _connect(settings: Settings) -> sqlite3.Connection:
     return con
 
 
+# One candidate row as every reader of this module expects it. Shared so
+# `candidates_by_id()` below cannot drift from the list the console shows.
+_CANDIDATE_SELECT = """
+    SELECT c.candidate_id,
+           c.name        AS event_name,
+           c.event_date,
+           c.start_time,
+           c.end_time,
+           c.venue,
+           c.event_type,
+           c.status      AS candidate_status,
+           c.fee,
+           c.fee_display_text,
+           c.dj,
+           p.post_id,
+           p.source_id,
+           p.source_url,
+           p.title       AS post_title,
+           p.collected_at,
+           p.cafe_name
+    FROM event_candidates c
+    LEFT JOIN raw_posts p ON p.post_id = c.post_id
+"""
+
+
+def _decorate(item: dict[str, Any]) -> dict[str, Any]:
+    """The engine's lifecycle word, narrowed to the vocabulary we display."""
+    status = (item.get("candidate_status") or "UNKNOWN").upper()
+    item["candidate_status"] = status if status in STATUSES else "UNKNOWN"
+    item["status_tone"] = STATUS_TONE.get(item["candidate_status"], "muted")
+    return item
+
+
 def list_candidates(settings: Settings, *, limit: int = 200) -> list[dict[str, Any]]:
-    """Recent Event Candidates with their source provenance."""
+    """Recent Event Candidates with their source provenance.
+
+    "Recent" is the point: this is the review console's list. Normalization
+    used to read it too and inherited the window as a hard ceiling on which
+    candidates could ever become events - see `normalization_inputs()`.
+    """
     try:
         con = _connect(settings)
     except EngineStoreUnavailable:
         return []
     try:
         rows = con.execute(
-            """
-            SELECT c.candidate_id,
-                   c.name        AS event_name,
-                   c.event_date,
-                   c.start_time,
-                   c.end_time,
-                   c.venue,
-                   c.event_type,
-                   c.status      AS candidate_status,
-                   c.fee,
-                   c.fee_display_text,
-                   c.dj,
-                   p.post_id,
-                   p.source_id,
-                   p.source_url,
-                   p.title       AS post_title,
-                   p.collected_at,
-                   p.cafe_name
-            FROM event_candidates c
-            LEFT JOIN raw_posts p ON p.post_id = c.post_id
-            ORDER BY p.collected_at DESC, c.candidate_id DESC
-            LIMIT ?
-            """,
+            f"{_CANDIDATE_SELECT} ORDER BY p.collected_at DESC, c.candidate_id DESC "
+            "LIMIT ?",
             (limit,),
         ).fetchall()
     except sqlite3.Error as exc:  # schema drift must not 500 the console
@@ -94,14 +111,7 @@ def list_candidates(settings: Settings, *, limit: int = 200) -> list[dict[str, A
     finally:
         con.close()
 
-    candidates = []
-    for row in rows:
-        item = dict(row)
-        status = (item.get("candidate_status") or "UNKNOWN").upper()
-        item["candidate_status"] = status if status in STATUSES else "UNKNOWN"
-        item["status_tone"] = STATUS_TONE.get(item["candidate_status"], "muted")
-        candidates.append(item)
-    return candidates
+    return [_decorate(dict(row)) for row in rows]
 
 
 # --- DB-level review pagination (v0.81.2) ------------------------------------
@@ -424,6 +434,117 @@ def venue_alias_candidates(settings: Settings,
         if isinstance(value, dict) and value.get("alias_candidates"):
             found[row["candidate_id"]] = [str(a) for a in value["alias_candidates"]]
     return found
+
+
+# --- the normalization queue's own view of the store (v0.96.6) ---------------
+#
+# `list_candidates()` above answers "the newest N candidates", which is the
+# right question for the review console and was the wrong one for
+# normalization: a candidate older than that window could never be normalised
+# again, whatever changed about it. The two functions below answer the
+# question normalization actually has instead - "which candidates are these,
+# and what do their inputs look like right now" for every candidate, then
+# "give me the full rows for exactly these ids" for the small batch the
+# scheduler is about to do real work on.
+#
+# The scan stays deliberately narrow: it reads the scalar fields that feed
+# `normalize_candidate()` plus a marker for the evidence rows behind them, so
+# its cost stays a cheap local SQLite read as the store grows, while the
+# expensive part (venue resolution, the Postgres upsert) is bounded by the
+# batch size.
+
+# Exactly the engine-side inputs `normalization.normalize_candidate()` reads.
+# A column that normalization ignores is deliberately absent: changing it must
+# not cost a re-normalization, and a column normalization starts reading must
+# be added here in the same change.
+NORMALIZATION_INPUT_COLUMNS = (
+    "post_id", "event_name", "event_type", "event_date", "start_time",
+    "end_time", "venue", "candidate_status", "fee", "fee_display_text", "dj",
+    "source_url", "evidence_count", "last_evidence_id",
+)
+
+
+def normalization_inputs(settings: Settings) -> list[dict[str, Any]] | None:
+    """Every candidate with the inputs normalization reads, newest first.
+
+    None when the engine store cannot be read, for the same reason
+    `all_candidate_ids()` returns it: "I cannot see the candidates" must never
+    act as "there are no candidates", which here would report an empty
+    normalization backlog and quietly stop the queue.
+
+    The evidence marker is a count plus the highest evidence_id. The engine
+    replaces a candidate's evidences wholesale whenever it re-reads the post
+    (`database.replace_candidate()`), and evidence_id is AUTOINCREMENT, so the
+    pair moves on every re-extract even when the extracted values happen to
+    come out identical.
+
+    Ordered newest-collected-first, which is the order `list_candidates()`
+    used to impose as a *limit*: a candidate collected a minute ago still
+    reaches `events` on the very next tick, and the backlog behind it drains
+    from the newest end. Ordering alone starves nothing, because a normalised
+    candidate leaves the queue.
+    """
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return None
+    try:
+        rows = con.execute(
+            """
+            SELECT c.candidate_id,
+                   c.post_id,
+                   c.name        AS event_name,
+                   c.event_type,
+                   c.event_date,
+                   c.start_time,
+                   c.end_time,
+                   c.venue,
+                   c.status      AS candidate_status,
+                   c.fee,
+                   c.fee_display_text,
+                   c.dj,
+                   p.source_url,
+                   count(e.evidence_id) AS evidence_count,
+                   max(e.evidence_id)   AS last_evidence_id
+            FROM event_candidates c
+            LEFT JOIN raw_posts p ON p.post_id = c.post_id
+            LEFT JOIN evidences e ON e.candidate_id = c.candidate_id
+            GROUP BY c.candidate_id
+            ORDER BY p.collected_at DESC, c.candidate_id DESC
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return [dict(row) for row in rows]
+
+
+def candidates_by_id(settings: Settings,
+                     candidate_ids: list[int]) -> list[dict[str, Any]]:
+    """The full rows `list_candidates()` returns, for these ids, in this order.
+
+    The caller has already decided which candidates are worth the work; this
+    fetches only those, so a batch costs the batch rather than the store.
+    """
+    if not candidate_ids:
+        return []
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return []
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            f"{_CANDIDATE_SELECT} WHERE c.candidate_id IN ({placeholders})",
+            tuple(candidate_ids),
+        ).fetchall()
+    except sqlite3.Error as exc:  # schema drift must not 500 the console
+        raise EngineStoreUnavailable(str(exc)) from exc
+    finally:
+        con.close()
+    by_id = {row["candidate_id"]: _decorate(dict(row)) for row in rows}
+    return [by_id[cid] for cid in candidate_ids if cid in by_id]
 
 
 def all_candidate_ids(settings: Settings) -> set[int] | None:

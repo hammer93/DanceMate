@@ -479,10 +479,22 @@ def test_a_failed_live_test_never_auto_enables_a_source(seeded, settings, monkey
 # project. Not caused by v0.85.1's source additions themselves; caught by
 # them, on a properly fresh (not volume-reused) staging Postgres.
 
-def test_normalize_all_returns_every_key_even_with_zero_candidates(settings, monkeypatch):
+#
+# v0.96.6 moved the pass's first read from `list_candidates()` to
+# `normalization_inputs()`, so the patched function changed; the contract this
+# test exists for did not, and now covers the new keys the scheduler's detail
+# line formats too - a missing one is the same KeyError crash in the same job.
+
+@pytest.mark.parametrize("engine_store", [[], None],
+                         ids=["no-candidates", "unreadable-store"])
+def test_normalize_all_returns_every_key_even_with_zero_candidates(
+        settings, monkeypatch, engine_store):
     from runtime import candidates as candidate_store
 
-    monkeypatch.setattr(candidate_store, "list_candidates", lambda *a, **kw: [])
+    monkeypatch.setattr(candidate_store, "normalization_inputs",
+                        lambda *a, **kw: engine_store)
     result = normalization.normalize_all(settings)
-    for key in ("candidates", "normalized", "skipped_no_date", "unresolved_venues", "pruned"):
+    for key in ("candidates", "normalized", "skipped_no_date", "unresolved_venues",
+                "pruned", "selected", "created", "created_upcoming", "created_past",
+                "updated", "failed", "skipped_current", "remaining"):
         assert key in result, f"normalize_all()'s zero-candidates return is missing '{key}'"

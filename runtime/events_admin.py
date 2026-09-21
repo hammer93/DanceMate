@@ -906,9 +906,26 @@ def api_reextract_backlog(_: str = Depends(require_admin)) -> JSONResponse:
             content_store.reprocess_backlog(con, settings.engine_version))
 
 
+@api.get("/events/normalization-backlog")
+def api_normalization_backlog(_: str = Depends(require_admin)) -> JSONResponse:
+    """How many candidates the running normalization has not built yet.
+
+    The read-only counterpart of the normalize endpoint below, and what a
+    v0.96.6 rollout is measured against: `pending` falling to 0 is the whole
+    convergence criterion, and the breakdown says why each one is queued.
+    """
+    return admin._dump(normalization.backlog(admin._settings()))
+
+
 @api.post("/events/normalize")
 def api_normalize(_: str = Depends(require_admin)) -> JSONResponse:
-    """Rebuild the event rows now, rather than waiting for the next tick."""
+    """Rebuild the event rows now, rather than waiting for the next tick.
+
+    One batch, the same one the scheduler does - not "everything". A backlog
+    is drained by letting the scheduler run, or by calling this repeatedly;
+    either way each call advances, because the candidates it finishes leave
+    the queue for good.
+    """
     built = normalization.normalize_all(admin._settings())
     with _connection() as con:
         found = duplicates.scan(con)

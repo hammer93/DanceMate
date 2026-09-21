@@ -1,5 +1,115 @@
 # DanceMate Release Notes
 
+## v0.96.6 Normalization Reaches Every Candidate
+
+Product Runtime 0.96.6; Information Engine **0.93, unchanged** (nothing about
+extraction or classification changed); migration **043**. No change to Event
+identity, Region, Source authority, the acquisition queue, the duplicate and
+canonical rules, the v0.96.3 re-extract machinery, the classifier or the date
+parser.
+
+**Measured, not guessed.** Read-only against Production c34ee25 / 0.96.5 /
+engine 0.93, with its 0.93 re-extraction fully converged (stale 0, failed 0,
+stalled 0), so nothing below is a stale reading.
+
+**The defect.** `normalize_all()` read `list_candidates(limit=500)`. That is
+not "the 500 candidates most in need of work" - it is "the newest 500 posts
+by `raw_posts.collected_at`", the review console's list, which normalization
+had been borrowing since v0.77. The engine store holds 1,264 candidates. The
+window therefore ended at a post collected on 17 September, in a store
+reaching back to 3 September: **764 candidates were outside every scheduler
+tick's reach**, and not because of anything about them.
+
+The job detail line said so, tick after identical tick:
+
+    candidates=500 normalized=229 no_date=271 unresolved_venues=25
+
+The same 500 rows, the same 229 events rebuilt, the same 271 date-less
+candidates re-read and re-skipped, five minutes apart, indefinitely.
+
+**What it cost.** 853 candidates carry a date; **624 of them were outside the
+window**. Eighteen dated candidates had no `events` row at all - and **all
+eighteen were outside the window**, every one of them a real post we had read
+correctly and then never built:
+
+| candidate | date | what it is |
+|---|---|---|
+| 2390 | 2026-09-19 20:15 | ■ 스윙타임빠 (9월 19,20일) 토,일 소셜 공지 |
+| 2930 | 2026-09-19 19:30 | 2026년 9월 19일 토요일 밀롱가 La Vida No.802 DJ 조앤 |
+| 2926 | 2026-09-17 20:00 | milonga_tu |
+| 1923 | 2026-09-12 20:15 | ■ 스윙타임빠 (9월 12,13일) 토,일 소셜 공지 |
+| 2925 | 2026-09-10 20:00 | milonga_tu |
+| 2908 | 2026-09-09 | 2026 Korea Special Tango Week 2nd Edition |
+| 2928 | 2026-09-08 15:00 | Milonga Dorada |
+| 1432 | 2026-09-05 20:15 | ■ 스윙타임빠 (9월 5,6일) 토,일 소셜 공지 |
+| 2922 | 2026-09-05 19:00 | [대구탱고카니발] 9월 첫토의 낭만밀롱가 |
+
+Nine of the eighteen, and every one of them was **upcoming on the day it was
+collected**. About three a week, read and thrown away. Worse, they are the
+releases immediately before this one: v0.96.4 taught the title reader "9월
+19,20일" and v0.96.5 taught the classifier to read a night announced in a
+title through a body that also teaches - 2390, 2930, 1923, 1432 and 2922 are
+those two fixes working exactly as designed, and then not reaching `events`
+because of when their posts happened to have been collected.
+
+**Why not a bigger limit.** `LIMIT 5000` moves the cliff to 5,000 and the
+store keeps growing. Dropping the limit re-normalises all 1,264 candidates
+every five minutes forever, which is the cost the window existed to avoid.
+Neither answers the actual question, which is not "how many" but "which".
+
+**The fix: the DB row is the cursor, again.** Exactly the shape v0.96.3 gave
+re-extraction. `candidate_normalization` (migration 043) holds one row per
+candidate recording the sha256 digest of the inputs normalization actually
+read - the candidate's own fields, a marker for the evidence rows behind
+them, the human review state overlaid on top, and a revision token for the
+master data every candidate is read against - plus the normalization version
+that read them. The queue is then a fact rather than a position:
+
+    no row yet | a different normalization version | a different digest |
+    the last attempt raised and has tries left | we recorded an event and
+    there is no longer one
+
+A stamped candidate leaves the queue permanently, so the next tick
+necessarily gets different candidates and a backlog drains one batch at a
+time. A candidate that changes re-enters on its own - including one that
+v0.96.0 re-extraction rewrote **in place**, keeping its candidate_id, which
+is why the digest is over values and not over ids. A date-less candidate is
+answered `NO_DATE` once instead of being re-read on every tick forever. And
+the selection is a pure function of four pieces of database state, so a
+scheduler that dies mid-batch re-derives the identical queue on restart:
+there is no offset, no page and no in-memory cursor to lose.
+
+The batch stays 500, the scheduler stays exactly one job, and steady state is
+a batch of nothing: `skipped_current=1264 remaining=0`.
+
+**What it deliberately still does.** A master-data edit - a venue registered,
+an alias added, a Settings term changed - moves the revision token and so
+puts the **whole** store back in the queue, a batch at a time. The old window
+did that too, for its newest 500 rows only; this reaches all of them. Cost on
+the board, measured: 33 ms for the candidate scan, 46 ms for the master
+counts, per tick.
+
+**What normalization still does not decide.** Nothing here folds, unfolds or
+re-keys an Event. A candidate promoted late is a new `events` row built by
+the same `normalize_candidate()` upsert, keyed on candidate_id as it always
+was - so a 1-to-1 re-normalization keeps its event_id - and it is then
+settled by the same `duplicates.scan()` the job has always run immediately
+afterwards. Review state, canonical folding and source evidence are
+untouched.
+
+**ENGINE_VERSION stays 0.93.** Nothing about what the engine reads out of a
+body changed. This is a runtime scheduling and selection defect, and bumping
+the engine version to mark it would have re-extracted 1,180 bodies to prove a
+point about normalization.
+
+**What this release does not touch, on purpose.** The classifier,
+`class_words`, `announced_night_evidence`, `notice_evidence_bundle`, the date
+parser, venue extraction, Source Evidence Priority, the Event dedupe
+structure, Naver robots and Daum BODY_UNAVAILABLE are all unchanged. The
+`class_words` gap v0.96.5 found - 수업/특강/클래스/강좌/레슨/수강료 missing
+from the word list, 77 Production items in that state - is untouched and
+remains the next real bottleneck.
+
 ## v0.96.5 Announced Night Classification
 
 Product Runtime 0.96.5; Information Engine **0.93** (classification behaviour

@@ -21,6 +21,7 @@ Three things it deliberately does not do:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -726,54 +727,368 @@ def source_of(con, source_url: str | None) -> dict[str, Any]:
     }
 
 
-def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
-    """Normalise every engine candidate the runtime can see.
+# --- the normalization queue (v0.96.6) --------------------------------------
+#
+# Bump when normalization starts reading the same inputs differently - a new
+# field on the events row, a changed venue key, a different genre rule. Every
+# candidate then becomes stale and the scheduler re-flows the whole store in
+# its ordinary batches, the way an ENGINE_VERSION bump re-flows re-extraction.
+# It is deliberately not the product version: a release that does not change
+# normalization must not re-normalise everything to prove it.
+NORMALIZATION_VERSION = "1"
 
-    Idempotent: a candidate already normalised is updated in place, so this can
-    run on a schedule, after an ingest, or after a person edits a candidate.
+# A candidate whose normalization raises steps aside after this many tries,
+# with its error still on the row. Without a cap it would be selected first on
+# every tick forever and the candidates behind it would never be reached.
+MAX_NORMALIZATION_ATTEMPTS = 3
+
+NORMALIZED = "NORMALIZED"
+NO_DATE = "NO_DATE"
+FAILED = "FAILED"
+
+
+# The master tables `normalize_candidate()` reads that are not keyed on a
+# candidate: a venue registered today changes how every unresolved candidate
+# resolves, a new Settings term changes every title's formats. Each is counted
+# and dated, because a delete moves no timestamp and an insert moves no count
+# on its own. They fold into one revision token that is part of every digest,
+# so a master edit puts the whole store back in the queue - which the old
+# window did too, but only for its newest 500 rows.
+#
+# Deliberately not here: the per-item board data (`source_items`,
+# `source_item_content`, `source_item_image`) the region and genre rules also
+# read. That changes through acquisition, which re-extracts the item, which
+# rewrites the candidate - so the candidate's own digest already moves.
+_MASTER_TABLES = (
+    ("genres", "updated_at"),
+    ("regions", "updated_at"),
+    ("venues", "updated_at"),
+    ("venue_aliases", "created_at"),
+    ("venue_genres", "created_at"),
+    ("event_terms", "updated_at"),
+    ("event_term_formats", None),
+    ("sources", "updated_at"),
+)
+
+
+def master_revision(con) -> str:
+    """One token standing for the master data every candidate is read against.
+
+    Cheap enough to take on each tick (counts and a max over small operator-
+    maintained tables) and blunt on purpose: we cannot tell which candidates a
+    new venue alias would change, so all of them are re-examined, a batch at a
+    time, rather than a guess being made about it.
+    """
+    selects = []
+    for table, stamp in _MASTER_TABLES:
+        selects.append(f"(SELECT count(*) FROM {table})")
+        if stamp:
+            selects.append(f"(SELECT max({stamp}) FROM {table})")
+    with con.cursor() as cur:
+        cur.execute("SELECT " + ", ".join(selects))
+        return "|".join("" if value is None else str(value) for value in cur.fetchone())
+
+
+def input_digest(inputs: dict[str, Any], review_marker: str,
+                 master: str = "") -> str:
+    """One value standing for everything normalization reads about a candidate.
+
+    Engine side: the candidate's own fields and a marker for the evidence rows
+    behind them (`candidates.normalization_inputs()`). Runtime side: the human
+    review state overlaid on top - an EDIT changes the event without changing
+    anything in the engine store - and the master-data revision above.
+
+    Hashed rather than compared field by field so the stored form is one small
+    column, and so adding an input is a change in one place.
+    """
+    from . import candidates as candidate_store
+
+    parts = [str(inputs.get("candidate_id"))]
+    parts += [
+        "" if inputs.get(column) is None else str(inputs.get(column))
+        for column in candidate_store.NORMALIZATION_INPUT_COLUMNS
+    ]
+    parts += [review_marker, master]
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def review_markers(con) -> dict[int, str]:
+    """How many times each candidate has been reviewed, and when.
+
+    Only candidates a person has actually acted on have a row, so this is far
+    smaller than the candidate pool. A candidate with no row gets the empty
+    marker, which is stable - an unreviewed candidate must not look changed.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT candidate_id, action_count, updated_at FROM candidate_review_state"
+        )
+        return {row[0]: f"{row[1]}@{row[2].isoformat()}" for row in cur.fetchall()}
+
+
+def normalization_states(con) -> dict[int, dict[str, Any]]:
+    """What the runtime last did with each candidate, keyed by candidate_id."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT candidate_id, input_digest, normalization_version, outcome, "
+            "       attempts FROM candidate_normalization"
+        )
+        names = [c.name for c in cur.description]
+        return {row[0]: dict(zip(names, row)) for row in cur.fetchall()}
+
+
+def _candidate_ids_with_events(con) -> set[int]:
+    with con.cursor() as cur:
+        cur.execute("SELECT candidate_id FROM events")
+        return {row[0] for row in cur.fetchall()}
+
+
+def needs_normalization(state: dict[str, Any] | None, digest: str, *,
+                        has_event: bool,
+                        max_attempts: int = MAX_NORMALIZATION_ATTEMPTS) -> bool:
+    """Is this candidate's events row built from the inputs it has now?
+
+    Five ways the answer is no, and every one of them is a fact in the
+    database rather than a position in a window:
+
+      * never normalised at all - the whole pre-v0.96.6 backlog starts here,
+      * normalised by an older normalization version,
+      * its inputs have changed since (a re-extract, or a review action),
+      * the last attempt raised and has tries left,
+      * we recorded an events row for it and there is no longer one.
+
+    A candidate with no readable date is *not* one of them: NO_DATE is a
+    durable answer, so a post we cannot place on a calendar is re-read when it
+    changes and never before.
+    """
+    if state is None:
+        return True
+    if state["normalization_version"] != NORMALIZATION_VERSION:
+        return True
+    if state["input_digest"] != digest:
+        return True
+    if state["outcome"] == FAILED:
+        return state["attempts"] < max_attempts
+    if state["outcome"] == NORMALIZED and not has_event:
+        return True
+    return False
+
+
+def select_stale(inputs: list[dict[str, Any]], states: dict[int, dict[str, Any]],
+                 markers: dict[int, str], with_event: set[int],
+                 master: str = "") -> tuple[list[int], dict[int, str]]:
+    """The candidates whose events row is not built from their current inputs.
+
+    A pure function of four pieces of database state and nothing else, which
+    is what makes the pass restart-safe: a scheduler that dies mid-batch
+    re-derives the identical queue on the next tick, minus whatever it had
+    already stamped. There is no position, no offset and no in-memory cursor
+    to lose - the thing a window over `collected_at` could never offer.
+
+    Returns the stale ids in the order they arrived (newest collected first)
+    and every candidate's digest, so the caller can stamp what it processes
+    without hashing twice.
+    """
+    stale: list[int] = []
+    digests: dict[int, str] = {}
+    for row in inputs:
+        candidate_id = row["candidate_id"]
+        digest = input_digest(row, markers.get(candidate_id, ""), master)
+        digests[candidate_id] = digest
+        if needs_normalization(states.get(candidate_id), digest,
+                               has_event=candidate_id in with_event):
+            stale.append(candidate_id)
+    return stale, digests
+
+
+def _stamp(con, candidate_id: int, digest: str, *, outcome: str,
+           event_id: int | None = None, error: str | None = None) -> None:
+    """Record what normalization did, so the candidate leaves the queue.
+
+    Every outcome is stamped, success and skip and failure alike. An unstamped
+    candidate is selected again on the next tick and, being first in the
+    order, keeps the candidates behind it from ever being reached - the exact
+    shape of the bug this release exists to remove.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "INSERT INTO candidate_normalization (candidate_id, input_digest, "
+            "  normalization_version, outcome, event_id, normalized_at, attempts, "
+            "  last_error, failed_at) "
+            "VALUES (%(id)s, %(digest)s, %(version)s, %(outcome)s, %(event_id)s, "
+            "        now(), %(attempts)s, %(error)s, "
+            "        CASE WHEN %(outcome)s = %(failed)s THEN now() END) "
+            "ON CONFLICT (candidate_id) DO UPDATE SET "
+            "  input_digest = EXCLUDED.input_digest, "
+            "  normalization_version = EXCLUDED.normalization_version, "
+            "  outcome = EXCLUDED.outcome, event_id = EXCLUDED.event_id, "
+            "  normalized_at = now(), last_error = EXCLUDED.last_error, "
+            "  failed_at = EXCLUDED.failed_at, "
+            # A retry of the same inputs counts up; changed inputs start over,
+            # so a candidate fixed upstream is never refused its tries.
+            "  attempts = CASE WHEN EXCLUDED.outcome <> %(failed)s THEN 0 "
+            "    WHEN candidate_normalization.input_digest = EXCLUDED.input_digest "
+            "     AND candidate_normalization.normalization_version "
+            "         = EXCLUDED.normalization_version "
+            "    THEN candidate_normalization.attempts + 1 ELSE 1 END",
+            {
+                "id": candidate_id, "digest": digest,
+                "version": NORMALIZATION_VERSION, "outcome": outcome,
+                "event_id": event_id, "failed": FAILED,
+                "attempts": 1 if outcome == FAILED else 0,
+                "error": error,
+            },
+        )
+
+
+def backlog(settings, *, con=None) -> dict[str, Any]:
+    """How many candidates the running normalization has not built yet.
+
+    The read-only counterpart of a scheduler tick: what a rollout is measured
+    against, with no work done and nothing written.
+    """
+    from . import candidates as candidate_store
+    from . import db
+
+    unreadable = {
+        "readable": False, "candidates": 0, "pending": 0, "current": 0,
+        "never_normalized": 0, "stale_inputs": 0, "stale_version": 0,
+        "missing_event": 0, "failed": 0, "exhausted": 0,
+    }
+    inputs = candidate_store.normalization_inputs(settings)
+    if inputs is None:
+        return unreadable
+
+    def _count(open_con) -> dict[str, Any]:
+        # The same selection the scheduler makes, then a reason per queued
+        # candidate. Sharing select_stale() is the point: a report that could
+        # disagree with the pass it describes is worse than no report.
+        states = normalization_states(open_con)
+        stale, digests = select_stale(
+            inputs, states, review_markers(open_con),
+            _candidate_ids_with_events(open_con), master_revision(open_con),
+        )
+        queued = set(stale)
+        report = dict(unreadable, readable=True, candidates=len(inputs),
+                      pending=len(stale), current=len(inputs) - len(stale))
+        for row in inputs:
+            candidate_id = row["candidate_id"]
+            state = states.get(candidate_id)
+            if candidate_id not in queued:
+                if state is not None and state["outcome"] == FAILED:
+                    report["exhausted"] += 1
+                continue
+            if state is None:
+                report["never_normalized"] += 1
+            elif state["normalization_version"] != NORMALIZATION_VERSION:
+                report["stale_version"] += 1
+            elif state["input_digest"] != digests[candidate_id]:
+                report["stale_inputs"] += 1
+            elif state["outcome"] == FAILED:
+                report["failed"] += 1
+            else:
+                report["missing_event"] += 1
+        return report
+
+    if con is not None:
+        return _count(con)
+    with db.connect(settings, autocommit=True) as opened:
+        return _count(opened)
+
+
+def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
+    """Normalise the engine candidates whose events row is not current.
+
+    Idempotent: a candidate already normalised is updated in place, so this
+    can run on a schedule, after an ingest, or after a person edits a
+    candidate.
+
+    ``limit`` bounds the work, not the visibility. Before v0.96.6 the two were
+    the same thing - the pass read "the newest 500 candidates" and could not
+    see past them, so a candidate that aged out of that window was excluded
+    from normalization permanently, whatever later happened to it. Now the
+    whole store is examined cheaply and the limit applies to the candidates
+    that actually need building, so a backlog drains a batch per tick and
+    steady state is a batch of nothing.
     """
     from . import candidates as candidate_store  # local: engine store is optional
     from . import db
 
-    rows = candidate_store.list_candidates(settings, limit=limit)
-    if not rows:
-        return {
-            "candidates": 0, "normalized": 0, "skipped_no_date": 0,
-            "unresolved_venues": 0, "pruned": 0,
-        }
+    empty = {
+        "candidates": 0, "normalized": 0, "skipped_no_date": 0,
+        "unresolved_venues": 0, "pruned": 0, "selected": 0, "created": 0,
+        "updated": 0, "failed": 0, "skipped_current": 0, "remaining": 0,
+        "created_upcoming": 0, "created_past": 0,
+    }
 
-    ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
-    aliases = candidate_store.venue_alias_candidates(settings, ids)
-    time_evidence = candidate_store.time_evidence(settings, ids)
-    ambiguous_times = candidate_store.ambiguous_time_ids(settings, ids)
-    genre_hint_map = candidate_store.genre_hints(settings, ids)
+    inputs = candidate_store.normalization_inputs(settings)
+    if not inputs:
+        return empty
 
-    normalized = skipped = 0
-    unresolved = 0
     with db.connect(settings, autocommit=True) as con:
-        states = review.states(con, ids)
+        with_event = _candidate_ids_with_events(con)
+        stale, digests = select_stale(
+            inputs, normalization_states(con), review_markers(con), with_event,
+            master_revision(con),
+        )
+        selected = stale if limit is None else stale[:limit]
+        rows = candidate_store.candidates_by_id(settings, selected)
+
+        ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
+        aliases = candidate_store.venue_alias_candidates(settings, ids)
+        time_evidence = candidate_store.time_evidence(settings, ids)
+        ambiguous_times = candidate_store.ambiguous_time_ids(settings, ids)
+        genre_hint_map = candidate_store.genre_hints(settings, ids)
+
+        normalized = skipped = unresolved = failed = 0
+        created = updated = created_upcoming = created_past = 0
+        review_states = review.states(con, ids)
         terms_map = _terms_map(con)
+        today = date.today()
         for row in rows:
             candidate_id = row.get("candidate_id")
-            origin = source_of(con, row.get("source_url"))
-            enriched = dict(row)
-            enriched["source_item_id"] = origin["source_item_id"]
-            enriched["provenance"] = origin["provenance"]
-            enriched["time_evidence"] = time_evidence.get(candidate_id)
-            stored = normalize_candidate(
-                con, enriched,
-                review_state=states.get(candidate_id),
-                alias_candidates=aliases.get(candidate_id),
-                terms_map=terms_map,
-                genre_hints=genre_hint_map.get(candidate_id),
-                time_ambiguous=candidate_id in ambiguous_times,
-            )
+            digest = digests[candidate_id]
+            existed = candidate_id in with_event
+            try:
+                origin = source_of(con, row.get("source_url"))
+                enriched = dict(row)
+                enriched["source_item_id"] = origin["source_item_id"]
+                enriched["provenance"] = origin["provenance"]
+                enriched["time_evidence"] = time_evidence.get(candidate_id)
+                stored = normalize_candidate(
+                    con, enriched,
+                    review_state=review_states.get(candidate_id),
+                    alias_candidates=aliases.get(candidate_id),
+                    terms_map=terms_map,
+                    genre_hints=genre_hint_map.get(candidate_id),
+                    time_ambiguous=candidate_id in ambiguous_times,
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad row, not the queue
+                # Stamped, not merely counted: an unstamped failure would be
+                # selected first on every following tick and the candidates
+                # behind it would never be reached.
+                failed += 1
+                _stamp(con, candidate_id, digest, outcome=FAILED,
+                       error=f"{type(exc).__name__}: {exc}"[:500])
+                continue
+
             if stored is None:
                 skipped += 1
+                _stamp(con, candidate_id, digest, outcome=NO_DATE)
                 continue
             if stored["venue_status"] == VENUE_UNRESOLVED:
                 unresolved += 1
             normalized += 1
+            if existed:
+                updated += 1
+            else:
+                created += 1
+                if stored["event_date"] >= today:
+                    created_upcoming += 1
+                else:
+                    created_past += 1
+            _stamp(con, candidate_id, digest, outcome=NORMALIZED,
+                   event_id=stored["event_id"])
 
         pruned = _prune_orphans(con, candidate_store.all_candidate_ids(settings))
 
@@ -783,6 +1098,14 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
         "skipped_no_date": skipped,
         "unresolved_venues": unresolved,
         "pruned": pruned,
+        "selected": len(selected),
+        "created": created,
+        "updated": updated,
+        "failed": failed,
+        "skipped_current": len(inputs) - len(stale),
+        "remaining": len(stale) - len(selected),
+        "created_upcoming": created_upcoming,
+        "created_past": created_past,
     }
 
 
@@ -830,7 +1153,15 @@ def _prune_orphans(con, current_ids: set[int] | None) -> int:
             "DELETE FROM events WHERE NOT (candidate_id = ANY(%s)) RETURNING event_id",
             (keep,),
         )
-        return len(cur.fetchall())
+        dropped = len(cur.fetchall())
+        # v0.96.6: the queue's own bookkeeping goes with them. A state row for
+        # a candidate the engine no longer holds describes nothing, and left
+        # behind it would grow without bound as re-extraction issues new ids.
+        cur.execute(
+            "DELETE FROM candidate_normalization WHERE NOT (candidate_id = ANY(%s))",
+            (keep,),
+        )
+        return dropped
 
 
 def metrics(con) -> dict[str, Any]:

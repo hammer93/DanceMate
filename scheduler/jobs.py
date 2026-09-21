@@ -112,12 +112,22 @@ def event_normalization(settings: Settings) -> str:
     One job rather than two so the order is guaranteed: duplicates are found by
     comparing normalised rows, and comparing a half-built table would flag
     pairs that stop existing on the next tick.
+
+    v0.96.6: one small batch of the candidates that actually need building,
+    not the newest 500 regardless. `remaining` is the rest of the backlog and
+    is what a rollout is watched on; `skipped_current` is everything the pass
+    correctly did no work for, and in steady state is nearly all of the store.
     """
     built = normalization.normalize_all(settings)
     detail = (
         f"candidates={built['candidates']} normalized={built['normalized']} "
-        f"no_date={built['skipped_no_date']} unresolved_venues={built['unresolved_venues']}"
+        f"no_date={built['skipped_no_date']} unresolved_venues={built['unresolved_venues']} "
+        f"created={built['created']} (upcoming={built['created_upcoming']} "
+        f"past={built['created_past']}) updated={built['updated']} "
+        f"current={built['skipped_current']} remaining={built['remaining']}"
     )
+    if built["failed"]:
+        detail += f" failed={built['failed']}"
     with db.connect(settings, autocommit=True) as con:
         found = duplicates.scan(con)
     detail += (
