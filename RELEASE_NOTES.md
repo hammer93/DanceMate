@@ -1,5 +1,124 @@
 # DanceMate Release Notes
 
+## v0.96.8 A Club's Archive Is Not Tonight
+
+Product Runtime 0.96.8; Information Engine **0.95** (classification changed,
+so the version does); migration **043, unchanged**. No change to Event
+identity, Region, Source authority, the acquisition queue, the duplicate and
+canonical rules, the normalization queue, the v0.96.3 re-extract machinery,
+the collectors, the date parser or venue extraction.
+
+**Measured, not guessed.** Read-only against Production 42fd488 / 0.96.7 /
+engine 0.94, with its 0.94 re-extraction fully converged (outdated 0, failed
+0, stalled 0) and the normalization queue at `remaining=0`, so nothing below
+is a stale reading. The sweep is all 2,327 collected items, each classified
+exactly the way the runtime classifies it - its own `known_event_type`, its
+source's Settings event terms - and then re-classified by this release's
+actual `classify()`, not by a description of it.
+
+**The defect.** `classify()` opened like this:
+
+```python
+if known_event_type:
+    return known_event_type
+if is_non_event_notice(title):
+    return "OTHER"
+```
+
+`known_event_type` is a collector saying "the page structure I read this off
+already guarantees the kind of night this is" - a dedicated event board, a
+milonga listing page. It is a good answer to *which kind of night a post
+announces*. It was being read as though it also answered *whether the post
+announces one at all*, and the evidence behind it - which board the post sits
+on - cannot decide that: a club posts the recap to the same board as the
+announcement. Because it returned on the first line, the guard on the second
+never ran, and with it every rule underneath: v0.96.0's own recap gate,
+v0.96.5's announced-night rule, v0.96.7's education branch. All of it was
+dead for the **452** Production items that carry the prior.
+
+What that put on public display:
+
+| item | title | what it actually is |
+|---|---|---|
+| **3635** | 26년9월25일(금) 수라댄 금요정모 휴강 | the club saying Friday is **off**. LISTED, and still upcoming when measured. |
+| 2989 / 3003 / 2716 … | 정기모임 영상 #01 … 영상 #26, 살사정모 (23/07/31) 영상 #14 | a club's own video archive, twenty-odd rows per gathering |
+| 2645-2649 | 진주 라틴 피루나 정모 … 사진 | the same night's photo album, posted five times |
+| 2912 / 2829 | 18주년 파티 후기, 정모 후기 이벤트 | recaps |
+
+SRC-N-016 turned **100 collected items into 100 events** this way.
+
+**Why the prior was not removed, weakened, or re-run through the classifier.**
+That was measured first and rejected. **324 of Production's 851 events exist
+only because of it, and 56 of the 179 upcoming ones do** - the whole milonga
+listing directory (SRC-W-005: 195 events, 51 upcoming, **0** false positives),
+whose entries are brand names with no scene word in them at all ("orange",
+"디디디", "바모스"), and every Naver community board's real announcement,
+which is exactly as title-only as its archive rows are. Letting a post with a
+prior fall through the whole classifier and using the prior only as a
+tie-break is the same mistake in a different direction: item 2103's
+"7:30 오픈강습" line reads MILONGA_WITH_CLASS on its own, which is not the
+type its listing page guarantees.
+
+**The change is precedence, and nothing else.** The two lines are swapped, so
+one existing guard - and only that one - is asked before the prior. Every
+judgment below it still defers to the prior exactly as before: a body full of
+수강료 / 커리큘럼 / 개강 does not move a post the guard does not recognise.
+
+**One word joined the guard.** 휴강, in its administrative half beside the
+취소 안내 / 취소 및 already there. Precedence alone does not reach item 3635:
+the Daum board collector's own title test asks whether a heading names the
+club's own night on a specific day, and "26년9월25일(금) 수라댄 금요정모
+휴강" answers yes to both, with no way to see that the sentence goes on to
+cancel it. Across the whole corpus that word changes **3** posts and exactly
+one of them carries an `events` row. No other cancellation vocabulary was
+admitted - 폐강, 연기, 변경 are deliberately absent until they carry the same
+evidence, and a bare 취소 is still read only in the two bound forms the guard
+already had.
+
+**The measured effect.** Sweeping all 2,327 items changes **154**
+classifications, every one of them a post whose own title is matched by
+`is_non_event_notice()`:
+
+| change | count | what they are |
+|---|---|---|
+| event → OTHER (with a prior) | 152 | a club's archive of a night already danced, and one cancellation |
+| event → OTHER (no prior) | 2 | the 휴강 word; neither has an `events` row, before or after |
+| non-event → event | **0** | nothing is promoted |
+
+**126 `events` rows are corrected**, every one reviewed by hand: 116 titled
+영상, 6 사진, 2 후기, 1 경품이벤트, 1 휴강. By source: SRC-N-016 60,
+SRC-N-013 57, SRC-N-012 5, SRC-N-015 3, SRC-D-022 1.
+
+**Genuine nights lost: 0. Genuine upcoming nights lost: 0. False-positive
+upcoming removed: 1** - item 3635, the cancelled Friday round. 121 of the 126
+are dated 2022-2025 and were never visible on the default public list, which
+starts at today; the release's user-visible effect is that nobody is sent to
+a 정모 that its own club cancelled.
+
+**Held as regression fixtures**
+(`engine/tests/fixture_v0968_known_event_type_precedence.py`, 61 cases): the
+corrected archive posts and the cancellation; the two further posts the 휴강
+word reaches, so its blast radius is a fact of the suite rather than a claim
+here; ten posts the prior must still decide, each carrying **what the
+classifier reads for it without one, measured rather than asserted** - eight
+lose their type, and the two that would not notice are named instead of
+quietly padding the set; and v0.96.5's and v0.96.7's release regressions,
+which have no prior and so cannot be touched by a precedence change.
+
+**Not fixed here, and named rather than guessed at.** The Naver collector
+still sets `known_event_type` source-wide with no per-item test at all
+(`_apply_naver_structure_trust`), where the Daum board collector validates
+each title; that asymmetry is why 215 of the 452 priors come from five Naver
+boards, and it is a collector change, not this one. The `FETCH_BLOCKED`
+rows among the corrected 126 cannot re-extract themselves - `needing_reprocess()`
+excludes a blocked row with no poster, and the blocked-preserve guard would
+keep their candidates even under a forced pass - so they are corrected for
+every future read but their existing rows stay until that reconciliation is
+its own release. Three further false-positive families measured alongside
+this one are untouched: a personal note with no announcement in it (items
+198-203, 1922, 2034, 3261 …), a lesson whose *name* contains 소셜
+(items 2240, 2242, 2257), and the blocked-fetch stale set (2405, 3117, 3273).
+
 ## v0.96.7 A Lesson Advert Is Not The Night It Teaches
 
 Product Runtime 0.96.7; Information Engine **0.94** (classification changed,

@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.7"
+PRODUCT_VERSION = "0.96.8"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -90,7 +90,19 @@ PRODUCT_VERSION = "0.96.7"
 # the engine reads out of a stored body changed, so the version does, and
 # v0.96.3's incremental pass re-reads every row against 0.94 with no
 # migration and no cursor hack.
-DEFAULT_ENGINE_VERSION = "0.94"
+# v0.96.8 bumps this to 0.95: classifier.classify() asks its recap/
+# administrative guard before the collector's own `known_event_type`, so a
+# post whose title says it is a club's archive of a night already danced
+# ("정기모임 영상 #01", "금요정모 사진") or a notice that the night is off
+# ("금요정모 휴강" - the one word the guard gained) is read as OTHER even on
+# a dedicated event board. Sweeping all 2,327 collected items changes 154
+# classifications; 126 stop being events, every one an archive post or a
+# cancellation, one of them still upcoming (item 3635). 0 genuine nights and
+# 0 genuine upcoming nights are lost, and nothing becomes an event that was
+# not one. What the engine reads out of a stored title changed, so the
+# version does, and v0.96.3's incremental pass re-reads every row against
+# 0.95 with no migration and no cursor hack.
+DEFAULT_ENGINE_VERSION = "0.95"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

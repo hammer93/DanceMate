@@ -162,7 +162,7 @@ _RECAP_TITLE_RE = re.compile(
 )
 _ADMIN_NOTICE_TITLE_RE = re.compile(
     r"가입\s*안내|가입\s*문의|가입방법|회비|회원비|대관|강사\s*소개|자기\s*소개|인사드립니다|"
-    r"조직도|환불|신청\s*마감|마감\s*안내|마감되었|취소\s*안내|취소\s*및|마니또|운영진\s*모집|"
+    r"조직도|환불|신청\s*마감|마감\s*안내|마감되었|취소\s*안내|취소\s*및|휴강|마니또|운영진\s*모집|"
     r"설문|투표|경품|추첨|판매|할인|공동구매|공구|계정|에티켓|예절|매너|추천|드레스코드|"
     r"이전\s*안내|주차\s*안내",
     re.I,
@@ -177,7 +177,21 @@ _NOTICE_PLACE_RE = re.compile(r"(?:장소|위치|venue|place|location)\s*[:：]|
 
 
 def is_non_event_notice(title: str) -> bool:
-    """A title that says the post is a recap or an administrative notice."""
+    """A title that says the post is a recap or an administrative notice.
+
+    v0.96.8 added exactly one word to the administrative half, 휴강 - a
+    community saying its regular round is *off* this week. It is in the same
+    family as the 취소 안내 / 취소 및 already there, and it is the one thing
+    the Daum board collector's own title test cannot see: that test asks
+    whether the heading names the club's own night on a specific day
+    ("26년9월25일(금) 수라댄 금요정모 휴강" answers yes to both) and has no
+    way to notice that the sentence goes on to cancel it. Measured on the
+    whole Production corpus, this word changes 3 posts and exactly one of
+    them carries an events row - item 3635, the cancelled Friday round that
+    was on public display as somewhere to dance. No other cancellation
+    vocabulary is admitted here; 폐강/변경/연기 were deliberately left out
+    until they have the same evidence behind them.
+    """
     heading = title or ""
     return bool(_RECAP_TITLE_RE.search(heading) or _ADMIN_NOTICE_TITLE_RE.search(heading))
 
@@ -341,11 +355,40 @@ def announced_night_evidence(title: str, body: str, event_terms=None) -> bool:
 
 
 def classify(title: str, body: str, known_event_type=None, event_terms=None) -> str:
+    # v0.96.8: the recap/administrative guard is asked *before* the collector's
+    # own answer, and it is the only thing that may overrule it.
+    #
+    # `known_event_type` is a collector saying "the page structure I read this
+    # off already guarantees the kind of night this is" - a dedicated event
+    # board, a milonga listing page. It is a strong prior and it stays one:
+    # 324 of Production's 851 events exist only because of it, 56 of them
+    # still upcoming, so nothing here weakens or removes it. But it answers
+    # *which kind of event* a post announces, and it was being read as though
+    # it also answered *whether the post announces one at all* - a question
+    # its own evidence (which board the post sits on) cannot decide, because
+    # the recap and the announcement sit on the same board.
+    #
+    # Returning it first meant this function ended before the guard on the
+    # next line was ever reached, so every rule underneath - this one, the
+    # v0.96.5 night rule, the v0.96.7 education branch - was dead for the 452
+    # Production items that carry the prior. What that cost, measured on the
+    # whole stored corpus: 126 events that are a club's own archive of a night
+    # that already happened ("정기모임 영상 #01", "살사정모 (23/07/31) 영상
+    # #13", "금요정모 사진") or, in item 3635's case, a Friday round the post
+    # exists to say is *off* - all of it on public display as somewhere to go
+    # dancing. The guard already recognised every one of them; it simply never
+    # ran. Putting it first corrects all 126 and loses no legitimate event and
+    # no upcoming one, because a title that declares itself a recap or an
+    # administrative notice is not an announcement whatever board it came from.
+    #
+    # Deliberately the *only* rule placed above the prior. Everything below
+    # still defers to it exactly as before: a collector that knows the night
+    # is a milonga is still trusted over any keyword reading of the body.
+    if is_non_event_notice(title):
+        return "OTHER"
     if known_event_type:
         # Source Registry / known series context is admissible evidence for type classification.
         return known_event_type
-    if is_non_event_notice(title):
-        return "OTHER"
     text = f"{title} {body}".lower()
     class_words = ["lesson", "강습", "개강", "모집", "안무반", "공연반", "초중급",
                    "전문가반", "워크샵", "워크숍", "workshop"]
