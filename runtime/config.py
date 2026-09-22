@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.6"
+PRODUCT_VERSION = "0.96.7"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -79,7 +79,18 @@ PRODUCT_VERSION = "0.96.6"
 # the engine reads out of a stored body changed, so the version does, and
 # v0.96.3's incremental pass re-reads every row against 0.93 with no
 # migration and no cursor hack.
-DEFAULT_ENGINE_VERSION = "0.93"
+# v0.96.7 bumps this to 0.94: classifier.classify() reads a post whose own
+# title sells a lesson in the education vocabulary `class_words` never
+# carried (수업, 특강, 클래스, 클라스, 강좌, 레슨) as a class rather than as
+# the night it teaches you to dance at. Sweeping all 2,298 collected items
+# changes 61: 18 stop being events (every one a lesson advert, a course
+# syllabus, a recap or a guitar-school post - 0 genuine nights, 0 upcoming
+# nights), 6 become SOCIAL_WITH_CLASS instead of SOCIAL (still events, now
+# naming the lesson they carry) and 37 become CLASS instead of OTHER. What
+# the engine reads out of a stored body changed, so the version does, and
+# v0.96.3's incremental pass re-reads every row against 0.94 with no
+# migration and no cursor hack.
+DEFAULT_ENGINE_VERSION = "0.94"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

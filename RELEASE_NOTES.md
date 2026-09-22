@@ -1,5 +1,113 @@
 # DanceMate Release Notes
 
+## v0.96.7 A Lesson Advert Is Not The Night It Teaches
+
+Product Runtime 0.96.7; Information Engine **0.94** (classification changed,
+so the version does); migration **043, unchanged**. No change to Event
+identity, Region, Source authority, the acquisition queue, the duplicate and
+canonical rules, the normalization queue, the v0.96.3 re-extract machinery,
+the date parser or venue extraction.
+
+**Measured, not guessed.** Read-only against Production f147af7 / 0.96.6 /
+engine 0.93, with its 0.93 re-extraction fully converged and the v0.96.6
+normalization queue at `pending=0`, so nothing below is a stale reading. The
+sweep is all 2,298 collected items, each classified exactly the way the
+runtime classifies it - its own `known_event_type`, its source's Settings
+event terms.
+
+**The defect.** `classify()`'s `class_words` is the list that decides whether
+a post is judged as a class at all. It has known 강습, 개강, 모집 and 워크샵
+since the beginning, and it has never known **수업, 특강, 클래스, 클라스,
+강좌 or 레슨** - which is what a studio actually advertises in. A course
+written only in those words never entered the CLASS branch. It fell straight
+through to the milonga/social keyword test below it and became a plain
+MILONGA or SOCIAL, because a lesson advert names the night it teaches you to
+dance at:
+
+| item | title | what became an event |
+|---|---|---|
+| 977 / 2051 | 토욜 스페셜 원데이 클래스 | "10월 31일 – 밀롱가 & 발스", the last line of a six-week syllabus. No clock, no venue, no night. **Both still upcoming.** |
+| 1968 | 3주 완성! 밀롱가 리듬 클래스 | the course's own name |
+| 2005 / 2012 / 2031 / 2046 | 9월의 토요특강, 6월의 목요특강 … | a curriculum, a week number, tuition, a bank transfer - and 밀롱가 in an instructor's award list, 쁘락 in the class timetable |
+| 3271 / 3272 / 3273 | Lady Leaders Class | an eight-week course, 수강료 8주 8만원 |
+| 2416 | [창원기타레슨] Milonga (춤곡) / Jorge Cardoso | a guitar school |
+
+121 Production items carry one of those words and classify as an event; 82
+produced a real `events` row.
+
+**Why the six words were not simply added to `class_words`.** That was
+simulated first and rejected. It corrects 19 of the misreadings and changes
+131 classifications in all, **destroying six genuine nights, one of them
+still upcoming** - item 3127, 가또땅고's 한가위밀롱가 (9월 24일 8시pm-12시am,
+DJ 스톤, 밀롱가 참가비 12,000원), along with the weekly 쁘롱가 (items 3134,
+3150, priced at their own door), the D'ARIENZO CUP championship weekend (item
+2048) and two more. The CLASS branch judges them with rules built for a
+different question: the open-class rule promotes item 977's course to
+MILONGA_WITH_CLASS on the word 원데이 alone, and item 3127 fails
+`announced_night_evidence()` because its night is announced as a "Special
+Event" rather than in a scene word.
+
+**What actually separates them.** Not vocabulary - structure. Both 977 and
+3127 carry a specific day, a place and `notice_evidence_bundle()`. On
+Production a title education word appears on **62%** of the false positives
+and **8%** of the genuine nights; a night announced with no lesson sold in
+its own heading appears on **45%** of the genuine nights and **0%** of the
+false positives. So the test is the one v0.96.5 already trusts to keep a
+lesson advert out of the milonga family - `_TITLE_SELLS_A_CLASS_RE` on the
+post's own **title**, never its body, because a body may legitimately mention
+a class (that is the entire v0.96.5 false negative) while a title that sells
+one is selling one.
+
+It is its own branch, checked **after** the whole existing CLASS branch, so
+every judgment the classifier already made is reached exactly as before and
+only a post that was about to fall through to the keyword test can be read
+again. What still beats it is what beats a class today: a social or a party
+announced in that same title, or a priced door on a named day. A night out
+that teaches says so in its heading and stays an event - "바사라 25주년
+빅파티 감사특강", "금요소셜데이 ... 칸쌤 특강", "드림발 8주년 파티 & 특강".
+And it loses to a night that has hours of its own - the difference between
+"3주 완성! 밀롱가 리듬 클래스", where 밀롱가 is what the six weeks are about
+and the post carries no clock at all, and "원데이 오픈클래스 & 밀롱가
+9/25(금)", whose body reads "오픈클래스 19:00 / 밀롱가 20:00-23:00". That
+test is `_MILONGA_BY_CLOCK`, which `announced_night_evidence()` already
+accepts as a tie on its own and which `social_evidence()` has read for the
+other scenes since v0.79; both halves are required - the title names the
+night *and* the night is written beside its own clock - so the 자율쁘락 slot
+in a class timetable (item 3271, title "Lady Leaders Class") rescues nothing.
+It costs zero changes on the Production sweep and keeps v0.96.0's own
+open-class fixture reading as the night it is.
+
+**The measured effect.** Sweeping all 2,298 items changes **61**:
+
+| change | count | what they are |
+|---|---|---|
+| event → CLASS | 18 | lesson adverts, course syllabuses, a recap, a guitar school, one blocked snippet |
+| SOCIAL → SOCIAL_WITH_CLASS | 6 | still events, now naming the lesson they carry |
+| OTHER → CLASS | 37 | neither is an event; a more accurate label |
+| non-event → event | **0** | nothing is promoted |
+
+**Genuine nights lost: 0. Upcoming events lost: 0.** The two upcoming events
+that go are items 977 and 2051 - the syllabus line, which is the defect. 14
+`events` rows are pruned in total, none of them reviewed, none canonical and
+none carrying a duplicate pointer.
+
+**Held as regression fixtures** (`engine/tests/fixture_v0967_class_false_positives.py`,
+50 cases): the corrected posts, the six nights a word list would have
+destroyed, four nights that teach and keep their heading, three nights whose
+*body* is full of course words (item 882's aggregator files the door price
+under the label 수강료), and four posts on the line - a week's timetable, a
+paid guided practica, a festival form - asserted to classify exactly as they
+did. v0.96.5's twelve rescued nights, and its two negative samples (205,
+3202) and its deliberate ambiguity (256), are unchanged.
+
+**Not fixed here, and named rather than guessed at.** Three further kinds of
+false positive in the same 82 need their own rules and are out of this
+release's scope: a personal note with no announcement in it at all (items
+198-202, 2034, 3261 - a travel diary, a 근황 post), a lesson whose *name*
+contains 소셜 so `social_evidence()`'s title rule fires (item 2257), and a
+board whose collector sets `known_event_type` before `classify()` is ever
+asked (items 2829, 2909, 2989, 2990).
+
 ## v0.96.6 Normalization Reaches Every Candidate
 
 Product Runtime 0.96.6; Information Engine **0.93, unchanged** (nothing about

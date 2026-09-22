@@ -268,8 +268,11 @@ _MILONGA_BY_CLOCK = re.compile(
 
 # What a *title* says when the post is selling the lesson itself. Latin
 # terms need their own word boundaries - a "Milonga Clásica" is not a class.
+# v0.96.7 added 클라스, the spelling one Production board writes its courses
+# in ("밀롱가집중 클라스", "음악수업 푸글리에쎄 클라스"), and gave this
+# expression a second reader: classify()'s own education branch, below.
 _TITLE_SELLS_A_CLASS_RE = re.compile(
-    r"강습|수업|강좌|특강|개강|레슨|세미나|클래스|워크샵|워크숍|커리큘럼|커리큐럼|"
+    r"강습|수업|강좌|특강|개강|레슨|세미나|클래스|클라스|워크샵|워크숍|커리큘럼|커리큐럼|"
     r"[초중고]급반|입문반|기초반|안무반|공연반|전문가반|모집|"
     r"(?<![a-z])(?:class|lesson|workshop|seminar)(?![a-z])",
     re.I,
@@ -292,6 +295,24 @@ _ADMISSION_RE = re.compile(r"입장\s*료|입장\s*비|admission", re.I)
 _DJ_LINE_RE = re.compile(r"(?<![a-z])dj(?![a-z])|디제이|디징", re.I)
 
 
+def title_names_a_night(title: str, event_terms=None) -> bool:
+    """Does this post's own *title* name a milonga/practica?
+
+    The built-in words plus whatever the operator's Settings terminology adds
+    for this source's genre, matched the same way ``has_milonga`` matches them
+    in the body (v0.86.9). Lifted out of announced_night_evidence() in v0.96.7
+    so the education branch below asks the question with exactly the same
+    vocabulary.
+    """
+    heading = title or ""
+    if any(word in heading.lower() for word in MILONGA_WORDS):
+        return True
+    if not event_terms:
+        return False
+    folded = normalize_term_text(heading)
+    return any(term_occurs(t, folded) for t in event_terms)
+
+
 def announced_night_evidence(title: str, body: str, event_terms=None) -> bool:
     """Does this post's own *title* announce a milonga/practica night?
 
@@ -300,11 +321,7 @@ def announced_night_evidence(title: str, body: str, event_terms=None) -> bool:
     anywhere in the post, and the post carries a night's logistics.
     """
     heading = title or ""
-    names_a_night = any(word in heading.lower() for word in MILONGA_WORDS)
-    if not names_a_night and event_terms:
-        folded = normalize_term_text(heading)
-        names_a_night = any(term_occurs(t, folded) for t in event_terms)
-    if not names_a_night:
+    if not title_names_a_night(heading, event_terms):
         return False
     if _TITLE_SELLS_A_CLASS_RE.search(heading):
         return False
@@ -377,6 +394,81 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
         if announced_night_evidence(title, body, event_terms=event_terms):
             return "MILONGA_WITH_CLASS"
         return "CLASS"
+    # v0.96.7: a lesson advert whose own title sells the lesson in words
+    # `class_words` above never carried - 수업, 특강, 클래스, 클라스, 강좌,
+    # 레슨.
+    #
+    # `class_words` is the list that decides whether a post is judged as a
+    # class at all, and it knows 강습 and 워크샵 but none of the education
+    # vocabulary a studio actually advertises in. A course written only in
+    # those words therefore never reached the branch above; it fell through
+    # to the milonga/social keyword test below and became a plain MILONGA or
+    # SOCIAL, because a lesson advert names the night it teaches you to dance
+    # at ("밀롱가 & 발스" on the last line of a six-week syllabus, "Milonga
+    # Autumn Edition" over a three-week rhythm course). 121 Production posts
+    # use one of those words and classify as an event today; 82 produced a
+    # real events row, and about 29 of those are lesson adverts, course
+    # schedules or personal notes on public display as dance nights.
+    #
+    # Simply adding those words to `class_words` was measured and rejected:
+    # it corrects 19 of the 29, changes 131 classifications in all and
+    # destroys 6 genuine events (one of them still upcoming), because the
+    # branch above then reads them with rules
+    # built for a different question - the open-class rule promotes item 977's
+    # "원데이 클래스" course to MILONGA_WITH_CLASS on the strength of the word
+    # 원데이 alone, and item 3127's real night ("가또땅고 Special Event
+    # 9월24일 한가위밀롱가", 20:00-24:00, DJ 스톤, 참가비 12,000원) is judged
+    # by announced_night_evidence(), which its title does not satisfy because
+    # the night is announced as a "Special Event" rather than in a scene word.
+    #
+    # So this is its own branch, reached only after every judgment above has
+    # been made exactly as it was, and it asks the structural question the
+    # Production evidence actually separates on rather than a vocabulary one.
+    # A title education word appears on 62% of the false positives and 8% of
+    # the genuine events; a night announced with no lesson sold in its own
+    # heading (notice_evidence_bundle(), announced_night_evidence()) appears
+    # on 45% of the genuine events and none of the false positives. Both
+    # 977 ("토욜 스페셜 원데이 클래스") and 3127 carry a day, a place and
+    # notice_evidence_bundle() - the one thing that tells them apart is
+    # whether the post's own title is selling a lesson, which is exactly the
+    # test v0.96.5 already trusts to keep a lesson advert out of the milonga
+    # family (_TITLE_SELLS_A_CLASS_RE, and see announced_night_evidence()'s
+    # own comment for why it is the *title* and never the body).
+    #
+    # What still beats it, by the same rules the branch above uses: a social
+    # or a party announced in this post's own title or written beside its own
+    # clock, and a priced door on a named day. A night out that teaches
+    # ("바사라 25주년 빅파티 감사특강", "금요소셜데이 ... 칸쌤 특강",
+    # "드림발 8주년 파티 & 특강") says so in its heading and stays an event.
+    # The open-class promotion above is deliberately *not* repeated here as
+    # a word test: "원데이"/"오픈클래스" read as a one-off lesson attached to
+    # a night only for a post already judged to be about a night, and item
+    # 977's whole title is "토욜 스페셜 원데이 클래스".
+    #
+    # What takes its place is the structure behind it, and it is the whole
+    # difference between a
+    # night named *inside* a course ("3주 완성! 밀롱가 리듬 클래스" - 밀롱가
+    # is what the six weeks are about) and a night the same heading announces
+    # alongside the class ("원데이 오픈클래스 & 밀롱가 9/25(금)", whose body
+    # reads "오픈클래스 19:00 / 밀롱가 20:00-23:00"): whether the night has
+    # hours of its own. That is not a new idea either - it is _MILONGA_BY_CLOCK,
+    # the tie announced_night_evidence() already accepts on its own, and
+    # social_evidence() has read a social beside its own clock since v0.79. A
+    # course names no hours but the ones it teaches in; item 977's syllabus
+    # carries no clock at all. Both halves are required, so the 자율쁘락 slot
+    # inside a class timetable ("8:10-8:40 자율쁘락 8:40-9:50 수업", item
+    # 3271, whose title is "Lady Leaders Class") rescues nothing.
+    if _TITLE_SELLS_A_CLASS_RE.search(title or ""):
+        if has_social:
+            return "SOCIAL_WITH_CLASS"
+        if party_evidence_bundle(title, body):
+            return "SOCIAL_WITH_CLASS"
+        announces_its_own_night = (
+            title_names_a_night(title, event_terms)
+            and _MILONGA_BY_CLOCK.search(f"{title or ''} {body or ''}")
+        )
+        if not announces_its_own_night:
+            return "CLASS"
     if has_milonga:
         return "MILONGA"
     if has_social:
