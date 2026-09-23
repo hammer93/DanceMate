@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.10"
+PRODUCT_VERSION = "0.96.11"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -120,7 +120,24 @@ PRODUCT_VERSION = "0.96.10"
 # engine reads out of a stored title and body changed, so the version does,
 # and v0.96.3's incremental pass re-reads every row against 0.96 with no
 # migration and no cursor hack.
-DEFAULT_ENGINE_VERSION = "0.96"
+# v0.96.11 bumps this to 0.97: classifier.is_non_event_notice() recognises
+# three more things a heading can say that are not an announcement - a trip
+# counting its own days ("아르헨티나 29일차"), somebody saying where they have
+# been ("베트남에서 귀국했습니다"), and a call for sponsorship ("협찬 공지의
+# 건"). The first is never admitted on the number alone: a multi-day event
+# could count its days too, so that arm steps aside whenever the same title
+# names a night. Sweeping all 2,351 collected items changes 9
+# classifications; 8 stop being events, every one a travel diary, a personal
+# note or a solicitation - 0 genuine nights and 0 genuine upcoming nights are
+# lost, and nothing becomes an event that was not one. One of the corrected
+# rows was on public display as upcoming (item 2034). Two further measured
+# tokens (풍경, 어나운스) were deliberately left out: 102 of Production's 143
+# upcoming events carry a bare brand-name title, so a bare-noun token can
+# delete a night outright - and this guard is asked above the collector's own
+# prior. What the engine reads out of a stored title changed, so the version
+# does, and v0.96.3's incremental pass re-reads every row against 0.97 with
+# no migration and no cursor hack.
+DEFAULT_ENGINE_VERSION = "0.97"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

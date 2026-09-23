@@ -1,5 +1,115 @@
 # DanceMate Release Notes
 
+## v0.96.11 A Month Abroad Is Not Eight Nights
+
+Product Runtime 0.96.11; Information Engine **0.97** (classification
+behaviour changed); migration **043, unchanged** - this release adds three
+arms to a function that reads a title and nothing else. No change to Event
+identity, Region, Source authority, the acquisition queue, the duplicate and
+canonical rules, the normalization queue, the collectors, the date parser or
+venue extraction.
+
+**Measured, not guessed.** Read-only against Production 0ee6a9d / 0.96.10 /
+engine 0.96, fully converged (re-extract current 2,351, outdated 0, stalled
+0, failed 0; normalization remaining 0, FAILED 0; 738 events, 661 visible,
+143 public upcoming). Every number below comes from re-classifying all 2,351
+collected items twice - once with the engine the board is running and once
+with this one - on exactly the title and body
+`engine_ingest._to_raw_post()` hands the engine, with each item's own
+`known_event_type`, `source_category` and Settings event terms.
+
+**The defect: a post can carry a date, a time and every dance word in the
+language and still not be an announcement.** `is_non_event_notice()` has
+refused a heading that calls itself a recap since v0.96.0, and one that
+calls itself an administrative notice since the same release. Three shapes
+fall between them, and every one is somebody writing about themselves:
+
+| item | date shown | title | what it is |
+|---|---|---|---|
+| 198, 200, 201, 202, 203, 1922 | 2026-08-04 … 09-05 | 🇦🇷아르헨티나 24–30일차 | day *N* of a month in Buenos Aires |
+| **2034** | **2026-10-01** | 초급발표회 준비로 베트남에서 귀국했습니다 | somebody has come home |
+| 2009 | 2026-09-12 | 「우리SAI 142기 초급발표회 협찬 공지의 건 | a call for sponsorship |
+
+**Item 2034 was the one on public display** as somewhere to dance on 1
+October, dated off a body that mentions a Saigon tango marathon its writer
+attended.
+
+**The three arms, and why each is written the way it is.**
+
+* **A trip counts its own days, and the number is not a night's.** The date
+  in "🇦🇷아르헨티나 29일차 (9월 2일ㆍ수)" is the day being written *about*.
+  Never admitted on the number alone: a multi-day event could count its days
+  too, so the arm steps aside the moment the same heading names a night, in
+  the vocabulary `classify()` already reads one by. Of the 34 festival and
+  marathon titles the stored corpus holds, **not one numbers a day this
+  way** - so the second question costs nothing today and is there for the
+  first festival that does.
+* **`귀국했`, beside the `다녀왔` that has been in the recap half since
+  v0.96.0**, and conjugated for exactly the same reason. The bare noun would
+  also take "귀국 환영 밀롱가", which is a night for the person who came home.
+* **`협찬 공지/안내/모집/신청`**, in the same family as the 가입 안내 / 신청
+  마감 / 경품 / 추첨 already in the administrative half. The shape, not the
+  word: "협찬사 감사 파티" is a night thanking its sponsors.
+
+**No prose detector, and the reason is a measurement.** The obvious rule - a
+long first-person post with no venue, no fee and no DJ - corrects 10 of the
+sixteen and **destroys 6 genuine nights**, because a real announcement often
+names none of the three ("🥳대전까미니또 9월 첫토밀롱가" carries a day and
+nothing else). Title evidence only, in the place v0.96.0 and v0.96.8 already
+put it.
+
+**Two measured tokens were deliberately left out.** 풍경 and 어나운스 each
+catch exactly one stored false positive and nothing legitimate *today* -
+which is how the audit first scored them, and it is not enough. **102 of
+Production's 143 public upcoming events carry a heading that is a bare name
+with no digits in it** - "cabeceo", "이뚜밀", "La Noche", "Sueño Dulce" - and
+**81 of those are events only because their collector's own prior says so**,
+a prior this guard is asked *above* since v0.96.8. A bare noun here does not
+merely risk a false refusal; it overrules the one signal that knows better.
+어나운스 is worse than a coincidence: it is what this scene calls the
+announcement segment *of* a milonga, and a real La Vida night announces its
+own "매니저님 어나운스 타임" in its body. 포토 was already excluded in the
+audit for taking 포토파티.
+
+**The measured effect**, over all 2,351 items:
+
+| | |
+|---|---|
+| classifications changed | 9 |
+| stopped being events | 8 |
+| of those, public upcoming | **1** (item 2034) |
+| **became events** | **0** |
+| **genuine events lost** | **0** |
+| **genuine upcoming lost** | **0** |
+| KET-backed upcoming events moved | **0** of 107 |
+| protection fixtures moved | **0** of 47 |
+
+Every changed row was read by hand: six travel-diary days, one sponsorship
+notice, one note about coming home, and item 204 - a seventh diary day that
+already produced no event and simply moves CLASS → OTHER.
+
+**Four of the sixteen are deliberately not reached**, and they are named
+rather than quietly left out: 3194 ("쁘롱가 풍경"), 3160 ("주년파티 뮬매
+어나운스"), 3161 ("생일파티 포토s") and 3214 ("3주년 생일파티, 축하해주셔서").
+All four are past-dated and none is on public display as somewhere to go
+tonight. Removing them would mean guessing, and zero genuine loss outranks
+the count.
+
+**Held as regression fixtures**
+(`engine/tests/test_v09611_prose_false_positives.py`, 36 cases): all seven
+diary days and the whole family asserted together rather than only the six
+that broke through; the hard gate; the sponsorship notice; four written
+shapes a multi-day event would use ("춘천탱고마라톤 2일차 밀롱가") asserted to
+keep their night; "귀국 환영 밀롱가" and "협찬사 감사 파티" asserted to keep
+theirs; five real currently-upcoming Production milongas whose whole heading
+is a brand name, asserted to survive - the standing argument against any
+bare-noun token; the rejected tokens asserted to still be absent, so a later
+release that adds one has to delete that test and say why; the four this
+release does not reach; every earlier release's own reading (v0.96.0's
+recap, v0.96.5's rescue, v0.96.7's course, v0.96.8's 휴강 and its prior,
+v0.96.10's course and the night that teaches); and the guard still answering
+a bare title with no Settings terms at all.
+
 ## v0.96.10 A Course Is Not A Night
 
 Product Runtime 0.96.10; Information Engine **0.96** (classification

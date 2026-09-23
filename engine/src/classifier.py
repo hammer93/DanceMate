@@ -156,15 +156,20 @@ def term_occurs(normalized_term: str, normalized_text: str) -> bool:
 # night (소셜, 정모, 밀롱가) and used to become events dated in the past, or
 # not at all. Judged on the title only: a real announcement's title does not
 # call itself a recap, and a body may legitimately say "지난 파티 영상 참고".
+# v0.96.11 added 귀국했 beside 다녀왔, and the conjugation is the whole point:
+# "초급발표회 준비로 베트남에서 귀국했습니다" is somebody telling you where
+# they have been, while "귀국 환영 밀롱가" is a night for the same person.
+# The bare noun would take both; the past tense can only be the first.
 _RECAP_TITLE_RE = re.compile(
-    r"영상|동영상|후기|사진|스케치|리뷰|다녀왔|되돌아|지난|recap|vlog|photo|video|하이라이트|highlight",
+    r"영상|동영상|후기|사진|스케치|리뷰|다녀왔|귀국했|되돌아|지난|recap|vlog|photo|video|"
+    r"하이라이트|highlight",
     re.I,
 )
 _ADMIN_NOTICE_TITLE_RE = re.compile(
     r"가입\s*안내|가입\s*문의|가입방법|회비|회원비|대관|강사\s*소개|자기\s*소개|인사드립니다|"
     r"조직도|환불|신청\s*마감|마감\s*안내|마감되었|취소\s*안내|취소\s*및|휴강|마니또|운영진\s*모집|"
     r"설문|투표|경품|추첨|판매|할인|공동구매|공구|계정|에티켓|예절|매너|추천|드레스코드|"
-    r"이전\s*안내|주차\s*안내",
+    r"이전\s*안내|주차\s*안내|협찬\s*(?:공지|안내|모집|신청)",
     re.I,
 )
 # A community's own night announced with a word that is not a scene word -
@@ -175,8 +180,39 @@ _NOTICE_WORDS_RE = re.compile(r"정모|행사|event|특별|스페셜|special|게
 _NOTICE_CLOCK_RE = re.compile(_CLOCK, re.I)
 _NOTICE_PLACE_RE = re.compile(r"(?:장소|위치|venue|place|location)\s*[:：]|[@＠]\s*\S{2,}", re.I)
 
+# v0.96.11: a trip numbers its days, and the number is not a night's.
+# "🇦🇷아르헨티나 29일차 (9월 2일ㆍ수)" is day 29 of a month in Buenos Aires -
+# the date in the bracket is the day being written *about*, not a day anyone
+# can turn up to - and six of those were on public display as Korean events
+# dated across August and September.
+#
+# Never admitted on the number alone, because a multi-day event could count
+# its days the same way ("2일차 밀롱가"). The arm below steps aside the moment
+# the same title names a night, in the vocabulary classify() already reads one
+# by. Measured first: of the 34 festival and marathon titles the stored corpus
+# holds, not one numbers a day like this, so the guard costs nothing today and
+# is there for the first one that does.
+_TRIP_DAY_TITLE_RE = re.compile(r"\d+\s*일\s*차")
 
-def is_non_event_notice(title: str) -> bool:
+
+def _title_names_a_night_at_all(title: str, event_terms=None) -> bool:
+    """Any night vocabulary in the heading, across every scene.
+
+    The union of what the three readings below already use - the milonga
+    words (and the operator's Settings terms) via title_names_a_night(), the
+    social words social_evidence() reads a heading by, and the non-scene
+    notice words notice_evidence_bundle() accepts. Deliberately generous:
+    this is only ever asked in order to *decline* to refuse a post.
+    """
+    heading = title or ""
+    if any(word in heading.lower() for word in SOCIAL_WORDS):
+        return True
+    if _NOTICE_WORDS_RE.search(heading):
+        return True
+    return title_names_a_night(heading, event_terms)
+
+
+def is_non_event_notice(title: str, event_terms=None) -> bool:
     """A title that says the post is a recap or an administrative notice.
 
     v0.96.8 added exactly one word to the administrative half, 휴강 - a
@@ -191,9 +227,38 @@ def is_non_event_notice(title: str) -> bool:
     was on public display as somewhere to dance. No other cancellation
     vocabulary is admitted here; 폐강/변경/연기 were deliberately left out
     until they have the same evidence behind them.
+
+    v0.96.11 added two words and one arm. The words go where they belong -
+    귀국했 in the recap half beside 다녀왔, 협찬 공지/안내/모집/신청 in the
+    administrative half beside 가입 안내 and 신청 마감 - and both are written
+    as a conjugation and a phrase rather than as bare nouns, because "귀국
+    환영 밀롱가" and "협찬사 감사 파티" are nights.
+
+    The arm is the trip diary, and it is the first thing here that asks a
+    second question before it refuses: see _TRIP_DAY_TITLE_RE. ``event_terms``
+    is optional and only that arm reads it, so every caller that passes a
+    title alone behaves exactly as it did.
+
+    **Two measured words were deliberately left out**: 풍경 and 어나운스 each
+    take exactly one stored false positive and nothing legitimate today, and
+    that is not enough to admit a bare noun *here*. This function is asked
+    above the collector's own prior, and 102 of Production's 143 public
+    upcoming events have a heading that is a bare name with no digits in it
+    ("cabeceo", "이뚜밀", "La Noche"); 81 of them are events only because that
+    prior says so. A bare noun in this guard does not risk a false refusal, it
+    overrules the one signal that knows better. 어나운스 is besides what this
+    scene calls the announcement segment *of* a milonga.
     """
     heading = title or ""
-    return bool(_RECAP_TITLE_RE.search(heading) or _ADMIN_NOTICE_TITLE_RE.search(heading))
+    if _RECAP_TITLE_RE.search(heading) or _ADMIN_NOTICE_TITLE_RE.search(heading):
+        return True
+    # The third arm, and the only one that asks a second question before it
+    # refuses - see _TRIP_DAY_TITLE_RE's own comment for why the number on
+    # its own is not enough.
+    return bool(
+        _TRIP_DAY_TITLE_RE.search(heading)
+        and not _title_names_a_night_at_all(heading, event_terms)
+    )
 
 
 def notice_evidence_bundle(title: str, body: str) -> bool:
@@ -486,7 +551,7 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None,
     # Deliberately the *only* rule placed above the prior. Everything below
     # still defers to it exactly as before: a collector that knows the night
     # is a milonga is still trusted over any keyword reading of the body.
-    if is_non_event_notice(title):
+    if is_non_event_notice(title, event_terms):
         return "OTHER"
     if known_event_type:
         # Source Registry / known series context is admissible evidence for type classification.
