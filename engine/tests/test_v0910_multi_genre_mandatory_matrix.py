@@ -56,13 +56,19 @@ def test_a_swing_social_is_a_real_event():
 
 
 def test_a_swing_balboa_class_gets_the_balboa_hint():
+    """The subject here is the BALBOA hint, which fires on the post's own
+    words whatever the post is. v0.96.10 reads this shape - a heading selling
+    a class, a social named nowhere but beside a clock in the body - as the
+    course it is, so the reading asserted below changed; the hint is asserted
+    on the same text either way."""
     title = "발보아 강습 안내"
     body = "9월 20일 발보아 기초를 배우는 시간입니다. 수업 후 소셜 20:00~22:00"
-    classification = classify(title, body)
-    assert classification == "SOCIAL_WITH_CLASS"
-    candidate = extract_single(title, body, event_type=classification, published="2026-09-01")
+    assert classify(title, body) == "CLASS"
+    candidate = extract_single(title, body, event_type="SOCIAL_WITH_CLASS",
+                               published="2026-09-01")
     hints = {e.value for e in candidate.evidences if e.field == "genre_hint"}
     assert hints == {"BALBOA"}
+    assert detect_genre_hints(title, body) == {"BALBOA"}
 
 
 # --- BACHATA workshop: precise about the CLASS-only policy -------------------

@@ -51,6 +51,15 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
     see its own docstring. An image-only post that fails every one of those
     checks classifies exactly as it did before this parameter existed.
 
+    ``post.source_category`` (v0.96.10, RawPostRecord): what the source
+    itself files this post as - a night ("EVENT") or a course ("CLASS") -
+    when the source publishes a category per item and the collector carries
+    it instead of discarding it. Distinct from ``known_event_type`` below,
+    which answers *which kind of night*; this answers *whether the source
+    calls it a night at all*, and classify() reads it only as a reason to
+    decline, never as a reason to promote. Defaults to None, which is every
+    collector that has no such category to carry.
+
     ``post.known_event_type`` (v0.80, RawPostRecord): admissible when the
     collector's own page/section structure already guarantees the event
     type - classify()'s own docstring already calls this "Source Registry /
@@ -68,6 +77,7 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         known_event_type=getattr(post, "known_event_type", None),
         published=getattr(post, "published_at", None),
         event_terms=getattr(post, "event_terms", None),
+        source_category=getattr(post, "source_category", None),
     )
     class_instance = (classification == "CLASS"
                       and getattr(post, "class_event_opt_in", False)

@@ -28,6 +28,14 @@ class RawPostRecord:
     # recognise, handed in by the runtime from its Settings terminology.
     # None (the default) leaves classification exactly as it was.
     event_terms: Optional[tuple] = None
+    # v0.96.10: what the SOURCE itself files this post as, when the source
+    # keeps a category of its own per item and the runtime can read it -
+    # "EVENT" (a night: a party, a 출빠 listing, a 정모) or "CLASS" (a
+    # course). Not known_event_type: that answers *which kind of night*,
+    # this answers *whether the source calls it a night at all*, and only
+    # a source that labels each post itself may set it. None (the default)
+    # leaves classification exactly as it was for every other collector.
+    source_category: Optional[str] = None
 
     def to_dict(self):
         return asdict(self)

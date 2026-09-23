@@ -285,8 +285,14 @@ _MILONGA_BY_CLOCK = re.compile(
 # v0.96.7 added 클라스, the spelling one Production board writes its courses
 # in ("밀롱가집중 클라스", "음악수업 푸글리에쎄 클라스"), and gave this
 # expression a second reader: classify()'s own education branch, below.
+# v0.96.10 added 배우기, how a studio advertises the thing itself rather than
+# the course ("수원 서울 남부에서 탱고 배우기", "강남 바차타 라틴댄스 배우기
+# 좋은 곳"). Measured on the whole stored corpus before it was written: nine
+# items carry it in their title, exactly one of them holds an events row, and
+# that row is one of this release's own false positives - the other eight are
+# already non-events and stay that way.
 _TITLE_SELLS_A_CLASS_RE = re.compile(
-    r"강습|수업|강좌|특강|개강|레슨|세미나|클래스|클라스|워크샵|워크숍|커리큘럼|커리큐럼|"
+    r"강습|수업|강좌|특강|개강|레슨|세미나|클래스|클라스|워크샵|워크숍|커리큘럼|커리큐럼|배우기|"
     r"[초중고]급반|입문반|기초반|안무반|공연반|전문가반|모집|"
     r"(?<![a-z])(?:class|lesson|workshop|seminar)(?![a-z])",
     re.I,
@@ -295,12 +301,39 @@ _TITLE_SELLS_A_CLASS_RE = re.compile(
 # What a course looks like anywhere in the post: tuition, a curriculum, a
 # numbered week, a term that opens or closes. A night charges admission
 # ("입장료 5,000원") and never any of this.
+#
+# v0.96.10 added one alternative, the exact twin of the "N주 N만원" already
+# here: a block of sessions priced as a block ("일 3회(10/11·18·25) ... 3회
+# 12만원 / 1회 4만원", item 3746). A night prices its own door - "입장료
+# 12,000원" - and never sells attendance N sessions at a time. Measured on
+# the whole stored corpus before it was written: it matches no post that
+# carries a genuine event row.
 _COURSE_EVIDENCE_RE = re.compile(
     r"수강료|수강\s*신청|수강생|커리큘럼|커리큐럼|개강|종강|"
     r"\d+\s*주\s*차|\d+\s*회\s*차|"
-    r"\d+\s*주\s*(?:과정|코스)|\d+\s*회\s*수업|\d+\s*주\s*[0-9][0-9,]*\s*만?\s*원",
+    r"\d+\s*주\s*(?:과정|코스)|\d+\s*회\s*수업|"
+    r"\d+\s*주\s*[0-9][0-9,]*\s*만?\s*원|\d+\s*회\s*[0-9][0-9,]*\s*만\s*원",
     re.I,
 )
+
+# A word that sells training and is *not*, on its own, a lesson: a real
+# night is written this way too. Item 2367 - "[방배 금요쁘락] 5/22 Dani's
+# 라비다 쁘락띠까 바디 트레이닝 & 가이드 쁘락" - is a Friday practica, and
+# putting 트레이닝 into _TITLE_SELLS_A_CLASS_RE above was measured and
+# rejected for exactly that reason: it costs that event and four others of
+# the same shape. It is admitted only bundled with course evidence, never
+# alone - see sold_as_a_course().
+_TITLE_TRAINS_RE = re.compile(r"트레이닝|training", re.I)
+
+# What a SOURCE says about one of its own posts, when it keeps a category
+# per item and the runtime can read it off the page's own structured data
+# rather than guessing from prose. Two values only, because only two
+# answers change anything here: the source calls this a night, or it calls
+# it a course. Anything else it might say is None - including a category
+# that sits between the two, which must go on classifying exactly as it did.
+SOURCE_CATEGORY_EVENT = "EVENT"
+SOURCE_CATEGORY_CLASS = "CLASS"
+
 
 # What a night charges at its own door, and who plays it. Neither is a
 # price list or a line-up on its own - both are only ever read together
@@ -354,7 +387,76 @@ def announced_night_evidence(title: str, body: str, event_terms=None) -> bool:
     )
 
 
-def classify(title: str, body: str, known_event_type=None, event_terms=None) -> str:
+def sold_as_a_course(title: str, body: str, *, source_category=None,
+                     event_terms=None) -> bool:
+    """Is this post selling enrolment in a course rather than announcing a
+    night?
+
+    v0.96.10. The milonga family has had a version of this question since
+    v0.96.5 - announced_night_evidence() refuses a post whose own heading
+    sells a lesson, and v0.96.7 gave classify() its own education branch on
+    the same test. The social family never had one: social_evidence()
+    returns True the moment a 소셜 or a 파티 appears in the heading, or beside
+    a clock anywhere in the body, and the has_class branch defers to it. Ten
+    Production posts reach a reader through that gap, four of them while the
+    date they carry is still in the future, which is the whole difference
+    between a dirty archive and someone turning up to a paid six-week course
+    expecting a night out.
+
+    Three independent readings say "course", and each brings a different
+    answer to what a social word in the heading means:
+
+    * **the source filed it under one.** danceinfo.net keeps a category on
+      every listing it publishes and the collector now carries it
+      (``source_category``). When the site itself says 강습, a social word in
+      the title is the *subject being taught* - "살사 소셜 트레이닝", "살사
+      소셜패턴", "위드라틴 살사 진짜소셜 시즌8" are three real Production
+      false positives and all three are lessons about dancing at a social.
+      Nothing in the text separates them from "서울살사위크 소셜이벤트" or
+      "[월간 슬로우 소셜파티_SlowJam 12월12일]", which are real; the source
+      already had. So this reading, and only this one, outranks the heading.
+    * **the post's own title sells a lesson**, the test v0.96.5/v0.96.7
+      already trust. Here a social named in that same title still wins, so
+      "금요소셜데이 ... 챔피온 칸쌤 특강" and "포토파티 ... 무료 오픈강습"
+      go on being nights that teach. What is left is the venue's standing
+      slot written into a course timetable - "⏰매주 토요일: 16:00~18:00
+      (소셜타임 18:00~22:00)" on a 강습 신청 post - which is a fact about the
+      hall, not an announcement.
+    * **the title trains and the post prices a block of sessions.**
+      _TITLE_TRAINS_RE on its own is not admissible (see its own comment);
+      together with course evidence it reads item 3746, "대회실전 트레이닝",
+      sold as "3회 12만원 / 1회 4만원".
+
+    Whichever reading brought us here, a night this post announces *in its
+    own right* still wins, by the same three tests the other scenes are
+    already read with and no new one: notice_evidence_bundle() (a night
+    named with a non-scene word, backed by a day and a clock or a place -
+    this is what keeps "🌊BAL&SHAG 스페셜 워크샵 in 대전" and its two dated
+    socials), party_evidence_bundle() (a door and a price on a named day),
+    and a night named in the title beside its own clock.
+    """
+    heading = title or ""
+    whole = f"{heading} {body or ''}"
+    by_source = source_category == SOURCE_CATEGORY_CLASS
+    by_title = bool(_TITLE_SELLS_A_CLASS_RE.search(heading))
+    by_training = bool(
+        _TITLE_TRAINS_RE.search(heading) and _COURSE_EVIDENCE_RE.search(whole)
+    )
+    if not (by_source or by_title or by_training):
+        return False
+    if notice_evidence_bundle(title, body) or party_evidence_bundle(title, body):
+        return False
+    if title_names_a_night(title, event_terms) and _MILONGA_BY_CLOCK.search(whole):
+        return False
+    if by_source:
+        return True
+    return not any(
+        word in _PRODUCT_SUFFIX.sub(" ", heading.lower()) for word in SOCIAL_WORDS
+    )
+
+
+def classify(title: str, body: str, known_event_type=None, event_terms=None,
+             source_category=None) -> str:
     # v0.96.8: the recap/administrative guard is asked *before* the collector's
     # own answer, and it is the only thing that may overrule it.
     #
@@ -402,6 +504,13 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
     # and a workshop weekend with a Saturday night party is exactly the shape
     # these posts take.
     has_social = social_evidence(title, body)
+    # v0.96.10: ... and a post that is selling the course itself says so in
+    # ways social_evidence() cannot see - the source's own category, its own
+    # heading, a block of sessions priced as a block. Asked once here and
+    # read by both branches below; it never promotes anything, it only
+    # declines to let a mentioned social carry a lesson advert.
+    course = sold_as_a_course(title, body, source_category=source_category,
+                              event_terms=event_terms)
 
     if has_class:
         # The tango rule is left exactly as it was. "Special Milonga Lesson
@@ -415,7 +524,11 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
             return "MILONGA_WITH_CLASS"
         # The same discipline for the other scenes: mentioning a social is not
         # announcing one, and social_evidence is what tells them apart.
-        if has_social:
+        # v0.96.10: and when the post is selling the course itself, a social
+        # it merely carries is not the announcement either - see
+        # sold_as_a_course() for the three readings and what still outranks
+        # all of them.
+        if has_social and not course:
             return "SOCIAL_WITH_CLASS"
         # A second, narrower kind of evidence social_evidence() cannot see:
         # a priced admission to the social itself, on a post that also names
@@ -502,7 +615,7 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
     # inside a class timetable ("8:10-8:40 자율쁘락 8:40-9:50 수업", item
     # 3271, whose title is "Lady Leaders Class") rescues nothing.
     if _TITLE_SELLS_A_CLASS_RE.search(title or ""):
-        if has_social:
+        if has_social and not course:
             return "SOCIAL_WITH_CLASS"
         if party_evidence_bundle(title, body):
             return "SOCIAL_WITH_CLASS"
@@ -512,6 +625,13 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None) -> 
         )
         if not announces_its_own_night:
             return "CLASS"
+    elif course:
+        # v0.96.10: the two readings the branch above cannot reach, because
+        # neither is written in the post's own heading - the source's own
+        # category, and a title that trains over a block of sessions priced
+        # as a block. Everything that outranks them has already been asked
+        # inside sold_as_a_course(); what is left is a course.
+        return "CLASS"
     if has_milonga:
         return "MILONGA"
     if has_social:
@@ -538,7 +658,7 @@ MIN_TEXT_FOR_IMAGE_TRUST = 20
 
 def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None,
                                  known_event_type=None, published=None,
-                                 event_terms=None):
+                                 event_terms=None, source_category=None):
     """classify(), then - only when the body itself was too thin to decide -
     a second, stricter look at each trusted poster OCR text (v0.84.4).
 
@@ -572,7 +692,8 @@ def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None
     an already-decided (non-OTHER) classification.
     """
     classification = classify(title, body, known_event_type=known_event_type,
-                              event_terms=event_terms)
+                              event_terms=event_terms,
+                              source_category=source_category)
     if classification != "OTHER":
         return classification, None
     if known_event_type:
@@ -590,7 +711,8 @@ def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None
     for image_ref, image_text in trusted_image_texts:
         if not image_text or len(image_text.strip()) < MIN_TEXT_FOR_IMAGE_TRUST:
             continue
-        image_classification = classify(title, image_text, event_terms=event_terms)
+        image_classification = classify(title, image_text, event_terms=event_terms,
+                                        source_category=source_category)
         if image_classification not in _SOCIAL_CONTEXT_CLASSIFICATIONS:
             continue
         # More than one distinct date on this one poster - a multi-event

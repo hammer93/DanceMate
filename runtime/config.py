@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.9"
+PRODUCT_VERSION = "0.96.10"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -102,7 +102,25 @@ PRODUCT_VERSION = "0.96.9"
 # not one. What the engine reads out of a stored title changed, so the
 # version does, and v0.96.3's incremental pass re-reads every row against
 # 0.95 with no migration and no cursor hack.
-DEFAULT_ENGINE_VERSION = "0.95"
+# v0.96.10 bumps this to 0.96: classifier.classify() asks whether a post is
+# selling the course itself before it lets a social it merely carries make it
+# a night - the check announced_night_evidence() has made for the milonga
+# family since v0.96.5, which the social family never had. Three readings say
+# "course": the source's own per-item category (danceinfo.net publishes one
+# and the collector now carries it instead of discarding it), the post's own
+# title, and a title that trains over a block of sessions priced as a block.
+# A night the post announces in its own right still wins, by the same
+# logistics bundles the other scenes are already read with. Sweeping all
+# 2,345 collected items changes 8 classifications with the stored rows as
+# they are and 12 once the category is flowing; 5 and 8 respectively stop
+# being events, every one of them a lesson advert, a course timetable or a
+# priced training block - 0 genuine nights and 0 genuine upcoming nights are
+# lost, and nothing becomes an event that was not one. Two of the corrected
+# rows were on public display as upcoming (items 186 and 3746). What the
+# engine reads out of a stored title and body changed, so the version does,
+# and v0.96.3's incremental pass re-reads every row against 0.96 with no
+# migration and no cursor hack.
+DEFAULT_ENGINE_VERSION = "0.96"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

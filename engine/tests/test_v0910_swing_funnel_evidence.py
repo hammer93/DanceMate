@@ -62,16 +62,28 @@ _ITEM_186_BODY = (
 )
 
 
-def test_item_186_is_a_social_with_class_and_why():
-    """has_class=True ("강습" in the title/body) and social_evidence()=True:
-    the class's own end time, "16:00~18:00", sits immediately before "(소셜
-    타임 18:00~22:00)" - a clock directly followed by an announced social
-    hour in the same parenthetical, which is exactly the "written next to
-    its own clock" shape social_evidence() has recognised since PHASE 2,
-    unrelated to and unchanged by the PHASE 4 priced-party bundle."""
+def test_item_186_is_a_course_and_why():
+    """**Reversed by v0.96.10, deliberately.** Until then this read
+    SOCIAL_WITH_CLASS, and the reason given was mechanically correct:
+    has_class=True ("강습" in the title/body) and social_evidence()=True,
+    because the class's own end time "16:00~18:00" sits immediately before
+    "(소셜타임 18:00~22:00)" - the "written next to its own clock" shape
+    social_evidence() has recognised since PHASE 2.
+
+    What v0.91.0 never asked is whether the post is *selling the course*,
+    the question announced_night_evidence() has asked for the milonga family
+    since v0.96.5. It is: the title sells enrolment ("강습 신청"), it names
+    no social at all, and the parenthesis is the hall's standing Saturday
+    slot written into a course timetable. On Production this post was a
+    public upcoming event dated 2026-09-26 - someone reading "where can I
+    dance" was being sent to a six-week course they would have had to
+    enrol in.
+
+    The venue and the date/time the v0.91.0 fix is actually about are
+    unchanged and still asserted below."""
     classification = classify(_ITEM_186_TITLE, _ITEM_186_BODY)
-    assert classification == "SOCIAL_WITH_CLASS"
-    assert classification in EVENT_CLASSIFICATIONS
+    assert classification == "CLASS"
+    assert classification not in EVENT_CLASSIFICATIONS
 
 
 def test_item_186_keeps_its_real_date_and_time_but_never_the_false_venue():

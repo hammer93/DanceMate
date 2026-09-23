@@ -67,11 +67,17 @@ def test_a_class_notice_that_only_mentions_a_social_stays_a_class():
 # either.
 
 def test_a_swing_class_with_a_social_and_a_cut_off_venue_has_no_false_venue():
+    """The subject here is the truncation guard, not the classification.
+    v0.96.10 reads this shape as the course it is - a title selling
+    enrolment, a social that appears only beside a clock in the body - so
+    the reading asserted below changed; the extractor is still handed the
+    type it would have had, because the false venue must stay gone whatever
+    the post turns out to be."""
     title = "린디베이직 강습 신청"
     body = "매주 토요일: 16:00~18:00 (소셜타임 18:00~22:00) 장소: 강습 인원..."
-    classification = classify(title, body)
-    assert classification == "SOCIAL_WITH_CLASS"
-    candidate = extract_single(title, body, event_type=classification, published="2026-08-05")
+    assert classify(title, body) == "CLASS"
+    candidate = extract_single(title, body, event_type="SOCIAL_WITH_CLASS",
+                               published="2026-08-05")
     assert candidate.venue is None
 
 

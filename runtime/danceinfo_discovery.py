@@ -33,6 +33,56 @@ DEFAULT_TIMEOUT = acquisition.DEFAULT_TIMEOUT
 
 TANGO_GENRE_NAME = "탱고"
 
+# danceinfo.net files every listing under a category of its own, and keeps
+# it on the listing object in the page's own hydration payload. Until
+# v0.96.10 this module read `title` and `genreName` off that object and
+# dropped the rest, so a site that had already sorted its courses from its
+# nights handed us the answer and we threw it away - the exact mirror of
+# the Naver structure-trust defect, which invents a prior the source never
+# gave. The audit that found it measured three Production events that exist
+# only because of the loss ("오스틴 & 카이닝의 살사 소셜 트레이닝", "위드라틴
+# 살사 진짜소셜 시즌8", "살사 소셜패턴"), against 59 stored 강습 listings and
+# every 출빠정보 listing correctly left alone.
+#
+# `categoryIdx` is the site's own stable key and `categoryName` the compound
+# label it renders ("출빠정보/강습" is a night that also teaches, and stays a
+# night). Read on the idx, so a relabelled category keeps working and a new
+# one the site invents falls through to None - which classifies exactly as
+# this module's output always has. Counted over 485 listings across 13 days
+# of the live list pages:
+#
+#   1  파티(페스티발)/...   54   a party or festival            -> EVENT
+#   2  출빠정보/...         91   a night to turn up to          -> EVENT
+#   3  정모                  1   the club's own regular night   -> EVENT
+#   4  오픈강습/...         10   a one-off class, often attached
+#                               to a night: deliberately neither
+#   5  강습                329   a course                       -> CLASS
+#
+# 오픈강습 is left unmapped on purpose. v0.96.0 already decided that an open
+# class attached to a night is part of the night, and the one Production
+# event in that category ("바사라 25주년 빅파티 감사특강") is genuinely
+# ambiguous; deciding it needs its own evidence, not a mapping written while
+# looking the other way.
+SOURCE_CATEGORY_EVENT = "EVENT"
+SOURCE_CATEGORY_CLASS = "CLASS"
+_CATEGORY_BY_IDX = {
+    1: SOURCE_CATEGORY_EVENT,
+    2: SOURCE_CATEGORY_EVENT,
+    3: SOURCE_CATEGORY_EVENT,
+    5: SOURCE_CATEGORY_CLASS,
+}
+
+
+def source_category(lesson: dict[str, Any]) -> str | None:
+    """What danceinfo.net itself files one listing as, in the engine's own
+    two words - or None when it says something this release does not read."""
+    try:
+        idx = int(lesson.get("categoryIdx"))
+    except (TypeError, ValueError):
+        return None
+    return _CATEGORY_BY_IDX.get(idx)
+
+
 _NEXT_DATA = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S
 )
@@ -125,6 +175,12 @@ def parse_list(
                 "body": "",
                 "published_at": None,
                 "acquisition_quality": "METADATA_ONLY",
+                # The site's own filing, kept as structure rather than left
+                # to be guessed back out of the detail page's prose later.
+                # The label travels beside the reading so a person looking at
+                # a stored row can check the mapping was right.
+                "source_category": source_category(lesson),
+                "source_category_label": lesson.get("categoryName") or None,
             })
     return posts
 

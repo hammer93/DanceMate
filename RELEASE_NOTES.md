@@ -1,5 +1,158 @@
 # DanceMate Release Notes
 
+## v0.96.10 A Course Is Not A Night
+
+Product Runtime 0.96.10; Information Engine **0.96** (classification
+behaviour changed); migration **043, unchanged** - the two keys this release
+adds travel in `source_items.raw`, a jsonb column that has carried every
+collector's own record since v0.75. No change to Event identity, Region,
+Source authority, the acquisition queue, the duplicate and canonical rules,
+the normalization queue, the date parser or venue extraction.
+
+**Measured, not guessed.** Read-only against Production fe212b2 / 0.96.9 /
+engine 0.95, fully converged (re-extract outdated 0, failed 0; normalization
+remaining 0, FAILED 0; 741 events, 664 visible, 162 public upcoming). Every
+number below comes from re-classifying all 2,345 collected items twice - once
+with the engine the board is running and once with this one - on exactly the
+title and body `engine_ingest._to_raw_post()` hands the engine, with each
+item's own `known_event_type` and its source's Settings event terms.
+
+**The defect: the social family never had to ask whether the post was selling
+the course.** `announced_night_evidence()` has refused a post whose own
+heading sells a lesson since v0.96.5, and v0.96.7 gave `classify()` an
+education branch on the same test - both for the milonga family only.
+`social_evidence()` still returns True the moment a 소셜 or a 파티 appears in
+a heading, or beside a clock anywhere in the body, and the CLASS branch
+defers to it. Ten Production items reach a reader through that gap, and
+**two of them are upcoming right now**:
+
+| item | date | title | what it actually is |
+|---|---|---|---|
+| **186** | 2026-09-26 | Lv3.린디베이직 강습 신청 | a six-week course; "(소셜타임 18:00~22:00)" is the hall's standing Saturday slot |
+| **3746** | 2026-10-11 | 대회실전 트레이닝 | three sessions, 120,000 won |
+
+**The evidence was being thrown away at the collector.** danceinfo.net files
+every listing under a category of its own and keeps it on the listing object
+in the page's own hydration payload. `danceinfo_discovery.parse_list()` read
+`title` and `genreName` off that object and dropped the rest - so a site that
+had already sorted its courses from its nights handed us the answer and we
+discarded it. That is the exact mirror of the Naver structure-trust defect,
+which invents a prior the source never gave; this one refused a prior the
+source did give. Over 485 live listings across 13 days:
+
+| `categoryIdx` | `categoryName` | n | reading |
+|---|---|---|---|
+| 1 | 파티(페스티발)/... | 54 | EVENT |
+| 2 | 출빠정보/... | 91 | EVENT |
+| 3 | 정모 | 1 | EVENT |
+| 4 | 오픈강습/... | 10 | *deliberately none* |
+| 5 | 강습 | 329 | CLASS |
+
+The reading is taken from `categoryIdx`, the site's own stable numeric key,
+and never from the label: `categoryName` is a compound, "출빠정보/강습" is a
+night that also teaches, and a substring test for 강습 would throw away both
+of the danceinfo events that were public upcoming when this was measured.
+
+**Three of the ten cannot be separated by text, and are not.** "오스틴 &
+카이닝의 살사 소셜 트레이닝", "위드라틴 살사 진짜소셜 시즌8", "살사
+소셜패턴" name a social in their own titles and are lessons *about* dancing
+at one. Nothing in their words tells them from "서울살사위크 소셜이벤트" or
+"[월간 슬로우 소셜파티_SlowJam 12월12일]", which are real; every rule that
+catches the first three was measured to cost at least one of the second. The
+source's category is the only reading admitted to outrank a social named in a
+heading, and it is admitted for exactly that reason.
+
+**What still wins, and why the obvious fix was rejected.**
+`sold_as_a_course()` never promotes anything - it only declines to let a
+mentioned social carry a lesson advert - and a night the post announces in
+its own right beats all three readings, by the bundles the other scenes are
+already read with: `notice_evidence_bundle()`, `party_evidence_bundle()`, and
+a night named in the title beside its own clock. The symmetric port of the
+milonga family's rule ("title sells a lesson **and** course evidence
+anywhere") was simulated first and rejected: it catches one of the ten and
+**destroys item 136**, "BAL&SHAG 스페셜 워크샵 in 대전", whose own body
+carries 커리큘럼 and whose two dated, timed socials in a named hall are the
+reason it is an event at all. What separates 136 from 186 is not course
+evidence - 136 has more of it - but `notice_evidence_bundle()`, which 136
+clears and 186 does not.
+
+**트레이닝 is never admissible on its own.** Putting it in
+`_TITLE_SELLS_A_CLASS_RE` was measured and rejected: item 2367, "[방배
+금요쁘락] 5/22 라비다 쁘락띠까 바디 트레이닝 & 가이드 쁘락", is a real
+Friday practica written in the same word. It is admitted only bundled with
+course evidence, which item 3746 supplies ("3회 12만원 / 1회 4만원") and item
+2367 does not. One alternative joined `_COURSE_EVIDENCE_RE` for it - the
+exact twin of the "N주 N만원" already there - and one word joined
+`_TITLE_SELLS_A_CLASS_RE`: 배우기, which nine stored items carry in their
+title, exactly one of which holds an events row and that row is one of these
+ten.
+
+**The measured effect**, over all 2,345 items:
+
+| | stored rows as they are | once the category is flowing |
+|---|---|---|
+| classifications changed | 8 | 12 |
+| stopped being events | 5 | 8 |
+| of those, public upcoming | **2** | **2** |
+| **became events** | **0** | **0** |
+| **genuine events lost** | **0** | **0** |
+| **genuine upcoming lost** | **0** | **0** |
+
+Every changed row was read by hand. The five (eight) are items 186, 187, 196,
+2385 (+ 2240, 2242, 2257) - lesson adverts and course timetables - and the
+rest are OTHER becoming CLASS, which changes nothing a reader sees.
+
+**Why existing danceinfo rows keep classifying by text, on purpose.**
+`intake.RawItem.content_hash()` deliberately hashes the content and not the
+metadata we add ourselves, so re-collecting an unchanged listing is a
+DUPLICATE and never rewrites `raw` - which is correct, and this release does
+not touch it. Three routes to the 70 already-stored rows were investigated:
+reading the category back out of the stored detail text agrees with the site
+67 times in 70, is blind twice and is **wrong once** (item 872, filed 강습,
+whose description reads 출빠정보/정모) - a structural signal recovered from
+prose 96% of the time is the same mistake in different clothes; a
+self-healing refresh on the DUPLICATE path would reach only listings still
+inside the site's own 8-day window, of which **none** is a 강습 listing that
+is still upcoming; and a Production SQL patch is not something a release does.
+So the collector's change takes effect for every listing first seen from
+0.96.10 onward, the three stored 강습 events stay until they age out - all
+three are already past-dated and invisible to "where can I dance tonight" -
+and nothing was built that would have to be trusted more than it can be.
+
+**Item 2909 is a course and is deliberately not corrected here.** Its
+classification without a prior is already CLASS; it holds an events row only
+because its Naver source hands every item a source-level `known_event_type`
+that `classify()` returns before any of this is reached. That is the Naver
+structure-trust defect the v0.96.10 audit measured and did not select - 81
+false positives, every one past-dated, none upcoming - and reaching it here
+would mean weakening a prior that **119 of Production's 162 public upcoming
+events** depend on. It is held as a named fixture instead.
+
+**Three v0.91.0 tests asserted the behaviour this release reverses, and
+were updated rather than worked around.** One said so in its own name:
+`test_item_186_is_a_social_with_class_and_why`. Its reason was mechanically
+correct - the class's own end time sits immediately before "(소셜타임
+18:00~22:00)", which is the "written next to its own clock" shape
+`social_evidence()` has read since v0.91.0 PHASE 2 - but it never asked
+whether the post was selling the course, which is the question this release
+adds. The other two use `classify()` only as scaffolding to hand
+`extract_single()` a type: their subjects are v0.91.0's truncated-venue
+guard and the BALBOA genre hint, and both still assert exactly what they
+always did, on the same text, with the type passed explicitly.
+
+**Held as regression fixtures**
+(`engine/tests/test_v09610_course_false_positives.py`, 31 cases, and
+`tests/test_v09610_danceinfo_category.py`, 16): all ten false positives; the
+source category doing nothing on its own in the promoting direction; an
+unmapped 오픈강습 classifying exactly as no category does; a compound
+"출빠정보/강습" label never substring-matched into a course; 트레이닝 without
+a priced block staying a practica; item 136 asserted to carry both halves of
+the rejected symmetric rule and stay an event; the 221 / 136 / 256 boundary;
+every earlier release's own reading (v0.96.5's rescue and its refusal,
+v0.96.7's course and its protected "Special Event", v0.96.8's recap and its
+휴강); the collector prior still returning before all of it; and a record from
+a source with no category being the record it always was.
+
 ## v0.96.9 A Refusal Is Not An Answer
 
 Product Runtime 0.96.9; Information Engine **0.95, unchanged** (no
