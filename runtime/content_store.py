@@ -285,16 +285,37 @@ def content_changed(existing: dict[str, Any] | None, outcome) -> bool:
 # `reprocess_error` / `reprocess_backlog()["stalled"]` instead of vanishing.
 MAX_REPROCESS_ATTEMPTS = 3
 
-# "We hold something the engine can read for this item": a fetched body, or a
-# blocked fetch that at least produced a poster for the image fallback. The
-# same pair of conditions the two freshness branches below already used, named
-# once because the engine-version branch needs exactly the same gate.
+# "We hold something the engine can read for this item": a fetched body, a
+# blocked fetch that produced a poster for the image fallback, or - v0.96.9 -
+# a blocked fetch whose *discovery* payload still carries readable text.
+#
+# The third arm asks about `source_items`, not about the content row, because
+# that is where `engine_ingest._to_raw_post()` reads a blocked item from: a
+# FETCH_BLOCKED row is handed the collector's own title and snippet and never
+# its `extracted_text`, which `record_outcome()` overwrites with NULL on every
+# refusal. Gating re-extraction on the content row's own body therefore asked
+# a question about a column the blocked path does not use, and answered "no"
+# for 1,081 of Production's 1,105 blocked items - including 641 carrying a
+# candidate and 271 carrying an Event that no engine bump could ever reach.
+#
+# Readable is not the same question as trustworthy. Whether the *existing*
+# candidates may be replaced by what the current engine makes of this text is
+# decided separately, per item, by `engine_ingest._blocked_input_lost()`.
 _HAS_READABLE_CONTENT = (
     "((c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL) "
-    " OR (c.acquisition_status = %(blocked)s "
-    "     AND c.poster_candidates IS NOT NULL "
-    "     AND jsonb_array_length(c.poster_candidates) > 0))"
+    " OR (c.acquisition_status = %(blocked)s AND ("
+    "        (c.poster_candidates IS NOT NULL "
+    "         AND jsonb_array_length(c.poster_candidates) > 0) "
+    "     OR length(btrim(coalesce(i.raw->>%(body_key)s, ''))) >= %(min_text)s "
+    "     OR length(btrim(coalesce(i.title, ''))) > 0)))"
 )
+
+# The parameters `_HAS_READABLE_CONTENT` needs beyond `full`/`blocked`, which
+# both of its call sites already bind for their own reasons.
+_READABLE_PARAMS = {
+    "body_key": "body",
+    "min_text": acquisition.MINIMUM_USEFUL_TEXT,
+}
 
 
 def needing_reprocess(con, *, limit: int = 50, force: bool = False,
@@ -322,6 +343,13 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False,
     leaves the queue for good, and the next tick necessarily gets new rows.
     Nothing here knows *which* version 0.91 is, so the next bump needs no
     code change.
+
+    v0.96.9: (3)'s readable-content gate now also admits a blocked item
+    whose discovery title or snippet the engine can still read, not only
+    one carrying a poster - see `_HAS_READABLE_CONTENT`. Selecting a row
+    is not the same as trusting the result over what is already stored;
+    that stays `engine_ingest.reprocess_acquired()`'s own decision, made
+    per item from the fetch log.
 
     Note this deliberately includes `settle_full_body()` rows (a discovery
     module's own synthesized body, stamped `reprocessed_at = fetched_at` so
@@ -360,6 +388,7 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False,
         params = {
             "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
             "blocked": acquisition.FETCH_BLOCKED,
+            **_READABLE_PARAMS,
         }
         reasons = [
             "(c.acquisition_status = ANY(%(full)s) AND c.extracted_text IS NOT NULL "
@@ -452,6 +481,38 @@ def mark_extracted_engine_version(con, source_item_id: int, engine_version: str)
         )
 
 
+def best_fetched_text_length(con, source_item_ids: list[int]) -> dict[int, int]:
+    """The longest body we have ever actually been served for each item.
+
+    `content_fetch_log` is append-only, which is the only reason this can be
+    asked at all. `record_outcome()` writes every fetch over the same content
+    row: a refusal sets `extracted_text` to NULL, `content_length` to 0 and
+    `fetched_at` back to NULL, so an item that *was* fetched once and blocked
+    afterwards is, in `source_item_content` alone, indistinguishable from one
+    that was never served a body in its life. The log keeps both, and telling
+    those two apart is the whole question v0.96.9's preserve rule turns on -
+    see `engine_ingest._blocked_input_lost()`.
+
+    Only a fetch that actually produced text counts: `FETCH_BLOCKED` rows are
+    logged too, with `text_length` 0. Items with no successful fetch are
+    absent from the result rather than present as 0, so a caller's own
+    ``.get(id, 0)`` says "nothing was ever lost here".
+
+    One query per batch, never per item.
+    """
+    if not source_item_ids:
+        return {}
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT source_item_id, max(text_length) FROM content_fetch_log "
+            "WHERE source_item_id = ANY(%s) AND outcome = ANY(%s) "
+            "  AND text_length > 0 GROUP BY source_item_id",
+            (list(source_item_ids),
+             [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL]),
+        )
+        return {int(row[0]): int(row[1]) for row in cur.fetchall()}
+
+
 def record_reprocess_failure(con, source_item_id: int, error: str) -> int:
     """Count a failed re-extraction and keep its reason on the row.
 
@@ -486,6 +547,7 @@ def reprocess_backlog(con, engine_version: str, *,
         "blocked": acquisition.FETCH_BLOCKED,
         "engine": engine_version,
         "max_attempts": max_attempts,
+        **_READABLE_PARAMS,
     }
     with con.cursor() as cur:
         cur.execute(
@@ -499,7 +561,12 @@ def reprocess_backlog(con, engine_version: str, *,
             "                         %(engine)s "
             "                     AND COALESCE(c.reprocess_attempts, 0) >= %(max_attempts)s), "
             "  count(*) "
-            "FROM source_item_content c WHERE " + _HAS_READABLE_CONTENT,
+            # The same join `needing_reprocess()` makes, for the same reason:
+            # v0.96.9's readable-content rule asks about the discovery payload
+            # a blocked item is actually re-read from.
+            "FROM source_item_content c "
+            "JOIN source_items i ON i.source_item_id = c.source_item_id "
+            "WHERE " + _HAS_READABLE_CONTENT,
             params,
         )
         current, outdated, stalled, total = cur.fetchone()

@@ -1,5 +1,130 @@
 # DanceMate Release Notes
 
+## v0.96.9 A Refusal Is Not An Answer
+
+Product Runtime 0.96.9; Information Engine **0.95, unchanged** (no
+classification rule moves here); migration **043, unchanged** - the evidence
+this release needs was already being recorded. No change to Event identity,
+Region, Source authority, the acquisition queue, the duplicate and canonical
+rules, the normalization queue, the collectors, the date parser or venue
+extraction.
+
+**Measured, not guessed.** Read-only against Production f9a719e / 0.96.8 /
+engine 0.95, fully converged (re-extract outdated 0, failed 0, stalled 0;
+normalization remaining 0, FAILED 0; 860 events, 178 upcoming). Every number
+below is the whole blocked population - 1,105 items - re-decided offline by
+the engine the board is actually running, with this release's own selection
+and preserve rules restated in the simulation rather than described.
+
+**The defect: one status, two completely different situations.**
+`FETCH_BLOCKED` says a fetch was refused. It was being read as though it also
+said *we know less about this post than whoever built its candidates did* -
+and that is true of only six items in the database.
+
+Two places acted on the wrong reading:
+
+* `needing_reprocess()` called a blocked row re-readable only if it carried a
+  poster. But a blocked item is not re-read from the content row at all:
+  `_to_raw_post()` hands the engine the collector's own title and snippet,
+  because `record_outcome()` overwrites `extracted_text` with NULL on every
+  refusal. The gate asked about a column the blocked path does not use, and
+  answered "nothing to read" for **1,081 of the 1,105** - including 641 that
+  carry an engine candidate and 271 that carry an Event. No engine bump could
+  ever reach them.
+* `reprocess_acquired()` preserved a blocked item's candidates whenever a
+  re-extraction produced no events, on the grounds that the pass must be
+  reading less than the candidates were built from. For an item refused from
+  the start it is reading *exactly* what they were built from.
+
+Together those are why v0.96.8 corrected 126 `events` rows and only **1** of
+them left the database.
+
+**The evidence that tells the two apart, and it was already there.**
+`content_fetch_log` is append-only. It still records that item 647 was served
+a 722-character body once, long after `source_item_content` stopped being able
+to: a refusal wipes `extracted_text`, zeroes `content_length` and sets
+`fetched_at` back to NULL, so a row fetched once and refused since is, in the
+content row alone, indistinguishable from one refused from the start. No
+migration was needed; **043 stands.**
+
+| | blocked items | what re-extraction is |
+|---|---|---|
+| never served a body | **1,099** | the same input, a newer classifier - the point of a bump |
+| served a body it no longer holds | **6** | a verdict on less evidence than the stored one |
+
+The six are one family: K-TANGO items 643, 644, 646, 647, 648, 649, fetched
+once at 720-735 characters and refused four times since. Simulated without the
+guard, three of them have a correct `event_date` replaced by NULL - the
+v0.84.3 regression 647 is named for, reproduced before the code was written.
+A second, narrower form of the same loss is kept too: a candidate whose fields
+came off a poster was never explained by the post's own text, so a pass that
+cannot read the poster this time preserves it, whatever the fetch log says.
+
+**Arbitrary text lengths were considered and rejected.** "Re-extract if the
+body is over 20/100 characters" fits the samples and means nothing: it would
+protect item 3437 (15 characters) while reconciling 2405 (133), though both
+hold precisely the input their candidates were built from, and it would not
+protect 647 (0 characters, 722 lost) for the right reason. The rule is about
+provenance, not size.
+
+**The measured effect.** The queue gains 1,100 blocked rows. Of those:
+
+| | count |
+|---|---|
+| re-read in place, candidate and Event ids unchanged | 905 |
+| stale Event retired | **129** |
+| candidate retired, no Event attached | 59 |
+| skipped - a person has reviewed the candidate | 4 |
+| preserved - the body it held is gone | 1 (of 6; the other 5 are already stamped) |
+| new candidate the current engine does find | 2 |
+
+**Genuine Events lost: 0. Genuine upcoming lost: 0.** All 129 retirements were
+read by hand: 126 are the club's-own-video / photo / 후기 / 경품 recaps
+v0.96.8 corrected and could not reach, and 3 are lessons v0.96.7
+reclassified - 2405, 3117 and 3273, named in v0.96.8's own "not fixed here".
+None is upcoming, none is reviewed, and the oldest is 2022. In the other
+direction the pass *gains* one real upcoming night: item 2079, a Daum board
+post refused since 2026-09-09, which announces 추석 살사데이 on 9월 25일(금)
+at 8pm.
+
+**Item 3437 is reconciled, not preserved, and that is a deliberate departure**
+from the brief's protection set. Its 15-character body looks like loss and is
+not: the fetch log shows it was never served anything - `ROBOTS_DISALLOWED` on
+its only attempt - so the title its candidate was built from, "천안올어바웃
+스윙 1주년 & 98학기 개강 이벤트 **영상**", is the title the engine reads now.
+It is a video recap of a past night, the same family as the other 125.
+
+**Both protected shapes are stamped.** A row preserved on purpose leaves the
+queue exactly as a reconciled one does, so "deliberately kept" is a finished
+state rather than a backlog that never drains and starves everything behind
+it - v0.96.1's own lesson, applied to the other end of the same queue.
+`engine-reprocess` now reports the blocked population on its own terms:
+selected, reconciled, preserved for input loss, preserved for review, failed -
+which always sum to selected - plus `stale_event_removed`.
+
+**A person's decision still outranks all of it.** The reviewed-candidate skip
+runs before any question about input is asked, on a queue this release
+deliberately widens: 4 blocked rows holding Events are protected by it.
+
+**Held as regression fixtures**
+(`tests/test_v0969_blocked_state_reconciliation.py`, 12 cases): a refusal
+erasing the body from the content row but not from the log; a refused fetch
+not counting as a body we once held; the widened queue, and a blocked row with
+genuinely nothing readable staying out of it; the backlog report adding up
+over the rows it now selects; both preserve shapes keeping their Event and
+still stamping; a stale recap reconciling and its Event going the ordinary
+orphan-and-prune way, with a live event on the same source proving the prune
+was not simply declining to act; a blocked event keeping its candidate_id and
+event_id; a reviewed candidate untouched; a second tick selecting neither
+outcome again; and the blocked counters accounting for every row selected.
+
+**Not fixed here.** The Naver collector still sets `known_event_type`
+source-wide with no per-item test (`_apply_naver_structure_trust`); the
+personal-note false positives (items 198-203, 1922, 2034, 3261) and the lesson
+named 소셜 (2240, 2242, 2257) are untouched; and the 6 protected K-TANGO rows
+stay protected until a real fetch succeeds for them, which is an acquisition
+question, not this one.
+
 ## v0.96.8 A Club's Archive Is Not Tonight
 
 Product Runtime 0.96.8; Information Engine **0.95** (classification changed,

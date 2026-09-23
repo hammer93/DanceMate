@@ -310,6 +310,60 @@ def _iso_dates(values) -> list[str]:
     return [str(v) for v in values if v]
 
 
+# The engine's own evidence_type for a field it read off a poster
+# (engine.extractor.IMAGE_OCR). Restated rather than imported, the way
+# image_fallback.MIN_TEXT_FOR_CLASSIFICATION_TRUST already restates the
+# engine's own constant: this module reaches the engine store through plain
+# SQL and does not need the engine importable to answer the question.
+IMAGE_OCR_EVIDENCE = "IMAGE_OCR"
+
+
+def _blocked_body_lost(item: dict[str, Any], post, best_fetched: int) -> bool:
+    """Was this blocked item once served a body it no longer holds?
+
+    FETCH_BLOCKED is a fetch outcome, not a statement about what we know.
+    Two completely different items wear it:
+
+    * one we were **refused from the start** - no body was ever served, and
+      its candidates were built from the very discovery title and snippet
+      `_to_raw_post()` still hands the engine today. Re-reading that text
+      with a newer classifier is not a downgrade; it is the entire point of
+      an engine bump, and refusing it is what left 126 of v0.96.8's own
+      corrections stranded in the database.
+    * one we **did** fetch once and were refused afterwards. A refusal wipes
+      `extracted_text`, so this item's candidates were built from text that
+      is simply gone. Whatever the engine now makes of the remaining title is
+      a verdict on less evidence, and must never retire the older, better-
+      informed one.
+
+    `best_fetched` is `content_store.best_fetched_text_length()`'s answer for
+    this item - the append-only fetch log, the only place the difference
+    survives. Production, 2026-09-23: exactly six blocked items (the K-TANGO
+    643/644/646/647/648/649 group) were ever served a real body, and
+    re-extracting three of them without this guard replaced a correct
+    `event_date` with NULL - the v0.84.3 regression, reproduced.
+    """
+    if item.get("acquisition_status") != acquisition.FETCH_BLOCKED:
+        return False
+    if best_fetched < acquisition.MINIMUM_USEFUL_TEXT:
+        return False
+    return len(post.body or "") < best_fetched
+
+
+def _candidates_used_image_ocr(engine_con, candidate_ids: list[int]) -> bool:
+    """Did a poster, rather than the post's own text, give these candidates a
+    field? Then the post's text alone never explained them."""
+    if not candidate_ids:
+        return False
+    marks = ",".join("?" * len(candidate_ids))
+    row = engine_con.execute(
+        "SELECT 1 FROM evidences WHERE evidence_type = ? "
+        f"AND candidate_id IN ({marks}) LIMIT 1",
+        (IMAGE_OCR_EVIDENCE, *candidate_ids),
+    ).fetchone()
+    return row is not None
+
+
 def _events_of(pg, candidate_ids: list[int]) -> list[tuple[int, int]]:
     """(event_id, candidate_id) for the runtime Events built from these
     candidates - what a re-extraction either keeps or orphans."""
@@ -327,6 +381,12 @@ def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dic
     return {
         "pending": 0, "selected": 0, "reprocessed": 0, "succeeded": 0,
         "skipped_reviewed": 0, "skipped_blocked": 0, "failed": 0,
+        "blocked_selected": 0, "blocked_reconciled": 0,
+        "blocked_preserved_input_loss": 0,
+        "blocked_preserved_body_lost": 0,
+        "blocked_preserved_image_evidence_lost": 0,
+        "blocked_preserved_reviewed": 0, "blocked_failed": 0,
+        "stale_event_removed": 0,
         "candidates_before": 0, "candidates_after": 0,
         "events_before": 0, "events_after": 0,
         "events_preserved": 0, "events_dropped": 0,
@@ -371,6 +431,17 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
     fetched body at all. It is the admin diagnostic path; page it with
     ``after_item_id``, since a forced selection is ordered by
     `source_item_id` and does not shrink as rows are stamped.
+
+    v0.96.9: a `FETCH_BLOCKED` item is no longer preserved for being
+    blocked. The first safeguard above is unchanged; the second now asks
+    the question the status was standing in for - is the classification
+    input these candidates were built from still here? An item refused
+    from the start still holds exactly the discovery text that made them,
+    and reconciles normally; one whose fetched body a later refusal wiped
+    (`_blocked_body_lost()`), or whose candidates were read off a poster
+    this pass cannot see (`_candidates_used_image_ocr()`), keeps them.
+    Both protected shapes are stamped, so "deliberately preserved" is a
+    finished state and never an unshrinking backlog.
     """
     engine_db, RawPostRecord, process_discovered_post, extract_single, needs_image_fallback = \
         _engine(settings)
@@ -391,8 +462,18 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
             cur.execute("SELECT DISTINCT candidate_id FROM human_review_actions")
             reviewed = {row[0] for row in cur.fetchall()}
 
+        # v0.96.9: one query for the whole batch, never one per item.
+        best_fetched = content_store.best_fetched_text_length(
+            pg, [int(i["source_item_id"]) for i in items])
+
         engine_con = _open_engine_store(settings, engine_db)
         reprocessed = skipped = skipped_blocked = failed = 0
+        blocked_selected = sum(
+            1 for i in items
+            if i.get("acquisition_status") == acquisition.FETCH_BLOCKED)
+        blocked_reconciled = blocked_reviewed = blocked_failed = 0
+        preserved_body_lost = preserved_image_lost = 0
+        stale_event_removed = 0
         before_total = after_total = 0
         events_before = events_preserved = events_dropped = 0
         newly_dated = newly_upcoming = lost_upcoming = multi_event_changed = 0
@@ -400,6 +481,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         try:
             for item in items:
                 source_item_id = item["source_item_id"]
+                blocked = item.get("acquisition_status") == acquisition.FETCH_BLOCKED
                 try:
                     post = _to_raw_post(RawPostRecord, item, item,
                                         event_terms=detection(item.get("source_id")))
@@ -418,6 +500,24 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         content_store.mark_reprocessed(
                             pg, source_item_id, engine_version=engine_version)
                         skipped += 1
+                        if blocked:
+                            blocked_reviewed += 1
+                        continue
+
+                    # v0.96.9: a blocked item whose stored classification
+                    # input is gone is decided here, before the engine is
+                    # asked anything - there is no question to put to it. It
+                    # is stamped, not merely skipped, for the same reason the
+                    # review skip above is: an unstamped row is re-selected
+                    # first on every following tick forever, and "protected"
+                    # would become indistinguishable from "backlog".
+                    if blocked and _blocked_body_lost(
+                            item, post, best_fetched.get(source_item_id, 0)):
+                        content_store.mark_reprocessed(
+                            pg, source_item_id, engine_version=engine_version)
+                        events_preserved += len(_events_of(pg, existing_ids))
+                        skipped_blocked += 1
+                        preserved_body_lost += 1
                         continue
 
                     before_total += len(existing_ids)
@@ -461,26 +561,38 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     )
                     events = result.get("events") or []
 
-                    # v0.84.3: a FETCH_BLOCKED item is, by definition, one
-                    # this reprocess has *less* text for than whatever
-                    # produced its existing candidates - needing_reprocess()
-                    # only ever selects one when a poster arrived to make up
-                    # for that gap, not because the body genuinely improved.
-                    # Zero events here means "we could not classify this from
-                    # a blocked fetch", never "the engine has decided this
-                    # is no longer an event" - the delete below cannot tell
-                    # those apart, and guessing wrong deletes a real event.
-                    # This is exactly what happened to K-TANGO source_item
-                    # 647 before this guard existed: its real, previously
-                    # OCR'd event was wiped the moment a later fetch came
-                    # back blocked. Preserve the existing candidates instead
-                    # and retry once a real fetch (full or partial) comes in.
-                    if not events and existing_ids and \
-                            item.get("acquisition_status") == acquisition.FETCH_BLOCKED:
+                    # v0.84.3, narrowed by v0.96.9: the second way a blocked
+                    # item's classification input can be gone.
+                    #
+                    # The original guard read FETCH_BLOCKED itself as "we
+                    # have less text than whatever made these candidates",
+                    # because the only blocked items it could ever be handed
+                    # were poster-carrying ones. That is no longer true, and
+                    # as a rule about the status it was always too wide: an
+                    # item refused from the start has *exactly* the text its
+                    # candidates were built from, so zero events really does
+                    # mean "the engine has decided this is no longer an
+                    # event". `_blocked_body_lost()` above answers that half,
+                    # from the fetch log, before the engine is even asked.
+                    #
+                    # This is the half that can only be answered here: a
+                    # candidate whose fields came off a poster was never
+                    # explained by the post's own text, so a pass that could
+                    # not read the poster this time - the image fetch failed,
+                    # the host was down, OCR returned nothing - is reading
+                    # less than the candidate was built from even though the
+                    # stored text never changed. That is the shape of the
+                    # K-TANGO 647 regression this guard was written for, and
+                    # the shape it still covers.
+                    if not events and existing_ids and blocked \
+                            and not image_texts \
+                            and not trusted_classification_texts \
+                            and _candidates_used_image_ocr(engine_con, existing_ids):
                         content_store.mark_reprocessed(
                             pg, source_item_id, engine_version=engine_version)
                         events_preserved += len(item_events)
                         skipped_blocked += 1
+                        preserved_image_lost += 1
                         continue
 
                     after_dates = _iso_dates(ev.date for ev in events)
@@ -516,6 +628,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         content_store.mark_reprocessed(
                             pg, source_item_id, engine_version=engine_version)
                         reprocessed += 1
+                        if blocked:
+                            blocked_reconciled += 1
                         continue
 
                     # Replace this post's candidates with whatever the current
@@ -555,13 +669,23 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     # duplicate/canonical machinery exists to decide, not this
                     # loop. The 1->1 shape above never reaches here.
                     events_dropped += len(item_events)
+                    if not events:
+                        # An Event the current engine no longer stands
+                        # behind, retired from input it could read -
+                        # v0.96.9's whole reason for existing, and the
+                        # number a rollout of it is watched on.
+                        stale_event_removed += len(item_events)
                     engine_con.commit()
                     content_store.mark_reprocessed(
                         pg, source_item_id, engine_version=engine_version)
                     reprocessed += 1
+                    if blocked:
+                        blocked_reconciled += 1
                 except Exception as exc:
                     engine_con.rollback()
                     failed += 1
+                    if blocked:
+                        blocked_failed += 1
                     detail = f"{type(exc).__name__}: {exc}"
                     failures.append(f"{source_item_id}: {detail}")
                     # Count the failure on the row itself so the queue can
@@ -588,6 +712,18 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         "succeeded": reprocessed,
         "skipped_reviewed": skipped,
         "skipped_blocked": skipped_blocked,
+        # v0.96.9: the blocked population on its own terms. `selected`
+        # minus the four outcomes below is always zero, so a tick that
+        # neither reconciled nor protected a blocked row is visible as
+        # such instead of hiding inside the totals.
+        "blocked_selected": blocked_selected,
+        "blocked_reconciled": blocked_reconciled,
+        "blocked_preserved_input_loss": preserved_body_lost + preserved_image_lost,
+        "blocked_preserved_body_lost": preserved_body_lost,
+        "blocked_preserved_image_evidence_lost": preserved_image_lost,
+        "blocked_preserved_reviewed": blocked_reviewed,
+        "blocked_failed": blocked_failed,
+        "stale_event_removed": stale_event_removed,
         "failed": failed,
         "candidates_before": before_total,
         "candidates_after": after_total,
