@@ -9,7 +9,13 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.12 (danceinfo.net의 `genreName`은 `바차타/살사`처럼
+- Product Runtime: v0.96.13 (danceinfo.net 상세 페이지의 본문을 og:description
+  (약 140자에서 `…`로 잘리는 미리보기)이 아니라, 그 페이지가 이미 싣고 있는
+  Next.js payload에서 읽는다. 저장된 181건 중 162건이 잘린 미리보기였고,
+  DanceInfo가 Event로 분류한 글 중 candidate를 못 만든 22건의 19건이 그것이었다.
+  분류기는 손대지 않았다 — 본문이 온전해지자 기존 규칙이 스스로 밤을 찾는다
+  — migration 043 유지, engine 0.97 유지)
+- v0.96.12 (danceinfo.net의 `genreName`은 `바차타/살사`처럼
   여러 장르를 한 문자열에 담는 복합 label인데, 이것을 `==`로 읽어서 "이 밤이
   *오직* 살사인가?"를 묻고 있었다. 살사 source는 봐야 할 120건 중 23건만
   보고 있었고, 나머지는 source_item조차 되지 못해 재추출로도 복구할 수 없었다.
@@ -92,7 +98,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.12"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.13"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

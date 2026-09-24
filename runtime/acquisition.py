@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 import time
 import urllib.error
@@ -252,9 +253,78 @@ _TEMPLATE_BOARD_END = '<div class="readBottom">'
 _DANCEINFO_START = "행사일"
 _DANCEINFO_END = "다가오는 추천"
 
+# v0.96.13: the same page's own hydration payload, which carries every field
+# the visible-text region above was scraping and carries them on *every*
+# lesson page - not only the ~10% that render a "행사일" heading.
+#
+# Measured on Production's stored DanceInfo corpus before this was written:
+# 162 of 181 items fell past the marker to og:description, whose text the
+# site truncates at ~140 characters with an ellipsis (avg 139, max 160, 152
+# of the 162 visibly cut). 19 items reached the marker and averaged 411.
+# Of the 22 items DanceInfo itself files under an Event category that
+# produced no candidate at all, 19 were og:description ones - the body they
+# were judged on stopped before the post said anything.
+#
+# What is lost in those 140 characters is exactly what decides the reading.
+# 클럽 하바나's stored body ends at "...바차타 무료 오픈강습"; the sentence it
+# is cut from continues "🕣 20:30 ~ 21:30 바차타 무료 오픈강습 🕤 21:30 ~ 미니
+# 소셜 파티" - a social beside its own clock, which is the evidence
+# classifier.social_evidence() has asked for since v0.79. 브라비오크루's
+# `schedule` field reads "9:15 PM - 11:35 PM" and its body never reached it.
+#
+# The composed shape is the one the marker path already produces (date,
+# 전체일정, 일정정보, 장소, DJ, 강의 소개), so nothing downstream is asked to
+# read a new format: extract_venue()'s 장소 label and extractor.DJ_RE see the
+# text they already see on the 19 pages that worked. Only the number of pages
+# that reach them changes. Fields the payload does not carry are left out
+# rather than written as empty labels, because an empty "장소" is a label
+# extract_venue() would try to read a venue out of.
+_DANCEINFO_PAYLOAD = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S
+)
+# (label, payload key) in the order the rendered page lays them out.
+_DANCEINFO_FIELDS = (
+    ("전체일정", "eventDays"),
+    ("일정정보", "schedule"),
+    ("장소", "placeName"),
+    ("DJ", "djNames"),
+    ("강의 소개", "description"),
+)
+
+
+def danceinfo_payload_body(raw_html: str) -> str:
+    """One danceinfo.net lesson page's own fields, as the page lays them out.
+
+    Empty string when this is not such a page, or when its payload carries
+    nothing worth reading - the caller then falls through exactly as before.
+    """
+    match = _DANCEINFO_PAYLOAD.search(raw_html)
+    if not match:
+        return ""
+    try:
+        payload = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        return ""
+    lesson = (payload.get("props") or {}).get("pageProps") or {}
+    lesson = lesson.get("initialLesson")
+    if not isinstance(lesson, dict):
+        return ""
+    parts = []
+    date = lesson.get("date")
+    if date:
+        parts.append(str(date))
+    for label, key in _DANCEINFO_FIELDS:
+        value = lesson.get(key)
+        if value in (None, "", [], {}):
+            continue
+        parts.append(f"{label} {value}")
+    return _WHITESPACE.sub(" ", " ".join(parts)).strip()
+
+
 METHOD_TEMPLATE_BOARD = "template_board"
 METHOD_ARTICLE_REGION = "article_region"
 METHOD_DANCEINFO = "danceinfo_region"
+METHOD_DANCEINFO_PAYLOAD = "danceinfo_payload"
 METHOD_OG_DESCRIPTION = "og_description"
 METHOD_VISIBLE_TEXT = "visible_text"
 METHOD_NONE = "none"
@@ -346,6 +416,10 @@ def extract_article(raw_html: str) -> tuple[str, str]:
         body = text[start + len(_ARTICLE_START):end].strip()
         if len(body) >= MINIMUM_USEFUL_TEXT:
             return body, METHOD_ARTICLE_REGION
+
+    body = danceinfo_payload_body(raw_html)
+    if len(body) >= MINIMUM_USEFUL_TEXT:
+        return body, METHOD_DANCEINFO_PAYLOAD
 
     start = text.find(_DANCEINFO_START)
     end = text.find(_DANCEINFO_END, start + 1 if start >= 0 else 0)

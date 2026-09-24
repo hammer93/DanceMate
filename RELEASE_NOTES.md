@@ -1,5 +1,87 @@
 # DanceMate Release Notes
 
+## v0.96.13 A Post Judged On Its Own Preview
+
+Product Runtime 0.96.13; Information Engine **0.97, unchanged**; migration
+**043, unchanged**. This release changes which text one host's detail page
+yields to `acquisition.extract_article()`. No change to classification, Event
+identity, Region, Source authority, the duplicate and canonical rules, the
+normalization queue, the date parser, venue extraction, or danceinfo.net's
+category and genre contracts.
+
+**Measured, not guessed.** Read-only against Production 01cec75 / 0.96.12 /
+engine 0.97 and against the live danceinfo.net pages on 2026-09-25.
+
+**The defect: the body stopped before the post had said anything.**
+danceinfo.net renders a "행사일" heading - the event's date, schedule, venue and
+DJ - on only some of its lesson pages. `extract_article()` looked for that
+heading in the page's *visible text* and, not finding it, fell through to
+og:description, which the site truncates at about 140 characters with an
+ellipsis. Production's stored DanceInfo corpus:
+
+| method | n | ends "…" | avg chars | max |
+|---|---|---|---|---|
+| `og_description` | 162 | 152 | 139 | 160 |
+| `danceinfo_region` | 19 | 0 | 411 | 806 |
+
+**Of the 22 items DanceInfo itself files under an Event category that produced
+no candidate at all, 19 were og:description ones.** v0.96.12 got those items
+collected; this is what they were judged on once they arrived.
+
+**What the cut removes is exactly what decides the reading.** 클럽 하바나's
+stored body ends at "…바차타 무료 오픈강습". The sentence it is cut from
+continues: "🕣 20:30 ~ 21:30 바차타 무료 오픈강습 🕤 21:30 ~ 미니 소셜 파티" - a
+social written beside its own clock, which is the evidence
+`classifier.social_evidence()` has asked for since v0.79. 브라비오크루's
+`schedule` field reads "9:15 PM - 11:35 PM" and its stored body never reached
+it. The classifier was not wrong about these posts; it was answering about a
+preview.
+
+**Read from the page's own payload, not from its rendered text.** Every one of
+those fields is already in the Next.js hydration payload that
+`danceinfo_discovery.parse_list()` has read the *list* stage out of since
+v0.82. `danceinfo_payload_body()` reads the *detail* stage out of the same
+place and composes it in the shape the "행사일" region already produced - date,
+전체일정, 일정정보, 장소, DJ, 강의 소개 - so `extract_venue()`'s 장소 label and
+`extractor.DJ_RE` see the text they already saw on the 19 pages that worked.
+Only the number of pages that reach them changes. A field the payload does not
+carry is left out rather than written as an empty label, because an empty
+"장소" is a label `extract_venue()` would try to read a venue out of.
+
+**The engine is not touched, and the version says so.** Re-running the
+*unchanged* classifier over today's 40 live listings with the old body and the
+new one: average body 194 → 526 characters, and five classifications change.
+
+| listing | before | after |
+|---|---|---|
+| 홍턴 추석 연휴 수~토요일 스페셜 이벤트! | OTHER | SOCIAL_WITH_CLASS |
+| 부산 루에다 추석 연휴 일정 | OTHER | SOCIAL_WITH_CLASS |
+| 9월 브라비오크루 정모 | OTHER | SOCIAL |
+| 추석연휴 CHUSEOK SPECIAL PARTY | SOCIAL | SOCIAL_WITH_CLASS |
+| 보니따에서 보내는 추석연휴 | OTHER | CLASS |
+
+24 courses stay courses, and **no event of any kind is lost**. 비 수도권 주요
+일정 (a roundup of other clubs' schedules) and NEW.SOL BAR 추석 영업안내
+(opening hours) stay OTHER on the full body, which is the right answer and not
+one a structural prior would have given. 보니따 becomes CLASS because its full
+body is a 워크샵 8시간 + 4일파티 풀패스 sold at 100,000원 - it produced no event
+before and produces none now.
+
+**Why not a classifier change.** The obvious reading of "a real party is being
+called OTHER" is that the classifier needs a structural prior:
+`source_category == EVENT` should count as evidence. Measured, that would have
+been calibrated against 140-character previews - and would then be
+systematically over-permissive the moment the body was fixed. The body was the
+defect. The classifier's existing evidence rules find these nights on their own
+once they can see them.
+
+**Existing items need a re-acquisition, not a re-extraction.** v0.96.3's
+incremental pass re-reads a *stored* body against a new engine version; here
+the stored body itself is what was wrong, and engine/ has not changed. The 162
+affected items are re-fetched through the Admin re-acquire path that already
+exists (`POST /admin/intake/{id}/reacquire`); new items get the new reading on
+their first fetch.
+
 ## v0.96.12 A Night For Two Genres Was Filed Under None
 
 Product Runtime 0.96.12; Information Engine **0.97, unchanged**; migration
