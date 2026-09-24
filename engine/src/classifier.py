@@ -509,12 +509,42 @@ def sold_as_a_course(title: str, body: str, *, source_category=None,
     )
     if not (by_source or by_title or by_training):
         return False
+    if by_source:
+        # v0.96.13: when the SITE filed the listing under 강습, the notice
+        # bundle is not allowed to overturn it, and the other two readings
+        # still are.
+        #
+        # notice_evidence_bundle() asks for a non-scene word in the heading
+        # (정모/행사/특별/스페셜/special/게스트/나이트) backed by a day and a
+        # clock or a place. On a post whose own source says "course", every
+        # one of those three is something a course has: "Largo Special
+        # KIZOMBA" is a four-week Wednesday kizomba course, and its own
+        # timetable ("매주 수요일, 4주 17:10~20:00") supplies the day and the
+        # clock. The heading word carrying it is the adjective "Special".
+        #
+        # This only became reachable when v0.96.13 stopped reading
+        # danceinfo.net posts from a 140-character preview: the day and the
+        # clock were simply absent before, so the bundle never fired and the
+        # source's own filing stood. Swept over all 2,467 stored Production
+        # items, restricting the escape here changes exactly one
+        # classification - that course, from SOCIAL back to CLASS - and
+        # nothing else.
+        #
+        # The two readings kept are the ones a course does not have:
+        # party_evidence_bundle() is a priced door on a named day, and a
+        # night named in the title beside its own clock is the title
+        # announcing the night rather than the subject being taught. Both
+        # still let "포토파티 ... 무료 오픈강습" and the venue's own dated
+        # milonga through a 강습 filing, which is what they were added for.
+        if party_evidence_bundle(title, body):
+            return False
+        if title_names_a_night(title, event_terms) and _MILONGA_BY_CLOCK.search(whole):
+            return False
+        return True
     if notice_evidence_bundle(title, body) or party_evidence_bundle(title, body):
         return False
     if title_names_a_night(title, event_terms) and _MILONGA_BY_CLOCK.search(whole):
         return False
-    if by_source:
-        return True
     return not any(
         word in _PRODUCT_SUFFIX.sub(" ", heading.lower()) for word in SOCIAL_WORDS
     )

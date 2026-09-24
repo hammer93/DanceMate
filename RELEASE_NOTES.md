@@ -2,12 +2,12 @@
 
 ## v0.96.13 A Post Judged On Its Own Preview
 
-Product Runtime 0.96.13; Information Engine **0.97, unchanged**; migration
-**043, unchanged**. This release changes which text one host's detail page
-yields to `acquisition.extract_article()`. No change to classification, Event
-identity, Region, Source authority, the duplicate and canonical rules, the
-normalization queue, the date parser, venue extraction, or danceinfo.net's
-category and genre contracts.
+Product Runtime 0.96.13; Information Engine **0.98** (one escape narrowed -
+see the last section); migration **043, unchanged**. This release changes which
+text one host's detail page yields to `acquisition.extract_article()`. No
+change to Event identity, Region, Source authority, the duplicate and canonical
+rules, the normalization queue, the date parser, venue extraction, or
+danceinfo.net's category and genre contracts.
 
 **Measured, not guessed.** Read-only against Production 01cec75 / 0.96.12 /
 engine 0.97 and against the live danceinfo.net pages on 2026-09-25.
@@ -75,12 +75,34 @@ systematically over-permissive the moment the body was fixed. The body was the
 defect. The classifier's existing evidence rules find these nights on their own
 once they can see them.
 
-**Existing items need a re-acquisition, not a re-extraction.** v0.96.3's
-incremental pass re-reads a *stored* body against a new engine version; here
-the stored body itself is what was wrong, and engine/ has not changed. The 162
-affected items are re-fetched through the Admin re-acquire path that already
-exists (`POST /admin/intake/{id}/reacquire`); new items get the new reading on
-their first fetch.
+**Existing items need a re-acquisition first.** v0.96.3's incremental pass
+re-reads a *stored* body; here the stored body itself was what was wrong. The
+162 affected items were re-fetched through the path that already exists
+(`acquisition_job.reacquire()`, the Admin console's own): all 162 came back as
+`danceinfo_payload`, 159 FETCHED_FULL and 3 FETCHED_PARTIAL, average 139 → 472
+characters, longest 1,696.
+
+**Engine 0.98: one escape narrowed, because reading a post whole reached a
+rule a preview never could.** `sold_as_a_course()` let
+`notice_evidence_bundle()` overturn the source's own 강습 filing. That bundle
+asks for a non-scene word in the heading (정모/행사/특별/스페셜/special/게스트/
+나이트) backed by a day and a clock or a place - and on a *course* every one of
+those is present: "Largo Special KIZOMBA" is a four-week Wednesday kizomba
+course whose own timetable ("매주 수요일, 4주 17:10~20:00") supplies the day and
+the clock, and the heading word carrying it is the adjective "Special". On the
+truncated body neither the day nor the clock existed, so the bundle never fired
+and the site's filing stood; with the body read whole the course went live in
+Production as a SOCIAL on 23 October.
+
+So when `by_source` is the reading that brought us there, the notice bundle no
+longer clears it. The two escapes a course does not have are kept:
+`party_evidence_bundle()` (a priced door on a named day) and a night named in
+the title beside its own clock - both still let a real night through a 강습
+filing, which is what they were added for. **Swept over all 2,467 stored
+Production items, this changes exactly one classification** - that course, back
+to CLASS - and nothing else. What the engine reads out of a stored body
+changed, so the version does, and v0.96.3's incremental pass re-reads every row
+against 0.98 with no migration.
 
 ## v0.96.12 A Night For Two Genres Was Filed Under None
 

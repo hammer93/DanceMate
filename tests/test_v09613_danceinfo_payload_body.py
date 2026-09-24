@@ -164,3 +164,48 @@ def test_danceinfo_payload_body_on_a_page_of_another_shape_is_empty():
     assert acquisition.danceinfo_payload_body("<html><body>no script</body></html>") == ""
     assert acquisition.danceinfo_payload_body(_page(None)) == ""
     assert acquisition.danceinfo_payload_body(_page("not a dict")) == ""
+
+
+# --- the one rule reading the post whole reached ------------------------------
+
+def test_a_course_the_site_filed_as_a_course_stays_one_once_its_timetable_is_read():
+    """v0.96.13's own regression, and the reason engine 0.98 exists.
+
+    "Largo Special KIZOMBA" is a four-week Wednesday kizomba course. Once its
+    body is read whole, its own timetable ("매주 수요일, 4주 17:10~20:00")
+    supplies the day and the clock `notice_evidence_bundle()` asks for, and
+    the heading word carrying it is the adjective "Special" - so the bundle
+    overturned danceinfo.net's own 강습 filing and the course went live as a
+    SOCIAL. On the truncated body neither the day nor the clock was there.
+    """
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    if str(repo / "engine") not in sys.path:
+        sys.path.insert(0, str(repo / "engine"))
+    from src import classifier
+
+    title = "Largo Special KIZOMBA"
+    body = ("2026-09-29 전체일정 2026-09-29,2026-10-02,2026-10-09,2026-10-16,2026-10-23 "
+            "일정정보 매주 수요일, 4주 17:10~20:00 강의 소개 레이디 집중 케어반, "
+            "쏘셜 스킬/뮤지커리티 클래스, 커플 할인")
+    assert classifier.notice_evidence_bundle(title, body) is True
+    assert classifier.sold_as_a_course(title, body, source_category="CLASS") is True
+    assert classifier.classify(title, body, None, None, "CLASS") == "CLASS"
+
+
+def test_a_priced_door_on_a_named_day_still_beats_the_sites_course_filing():
+    """The escape that is kept: a night with a door and a price is announced
+    in its own right, whatever category the listing sits in."""
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[1]
+    if str(repo / "engine") not in sys.path:
+        sys.path.insert(0, str(repo / "engine"))
+    from src import classifier
+
+    title = "포토파티 with 무료 오픈강습"
+    body = "9월 26일(토) 파티 오픈 20:00 소셜 15,000원"
+    assert classifier.party_evidence_bundle(title, body) is True
+    assert classifier.sold_as_a_course(title, body, source_category="CLASS") is False
+    assert classifier.classify(title, body, None, None, "CLASS") == "SOCIAL_WITH_CLASS"

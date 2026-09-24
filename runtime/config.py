@@ -144,13 +144,20 @@ PRODUCT_VERSION = "0.96.13"
 # re-extracting those items would re-derive exactly what is stored; the
 # listings this release recovers were never stored to re-read. They arrive
 # through an ordinary collection cycle instead.
-# v0.96.13 deliberately does NOT bump this either. It changes which text a
-# danceinfo.net page yields to `acquisition.extract_article()` - what the
-# engine is handed, not how the engine reads it. Nothing in engine/ changes,
-# so re-extracting a stored body against 0.98 would re-derive exactly what is
-# stored; what those items need is a re-acquisition, through the Admin path
-# that already exists for it.
-DEFAULT_ENGINE_VERSION = "0.97"
+# v0.96.13's own change is in acquisition, not the engine: it changes which
+# text a danceinfo.net page yields to `acquisition.extract_article()`, so the
+# items it affects need a re-acquisition (the Admin path that already exists)
+# rather than a re-extraction. But reading those posts whole reached one rule
+# that had never been reachable on a truncated body, and that rule IS in the
+# engine: sold_as_a_course() let notice_evidence_bundle() overturn the
+# source's own 강습 filing, and a four-week course's own timetable supplies
+# exactly the day and clock that bundle asks for ("Largo Special KIZOMBA",
+# live in Production as a SOCIAL on 23 October). Restricting that escape is a
+# change in what the engine reads out of a stored body, so this bumps to 0.98
+# and v0.96.3's incremental pass re-reads every row against it. Swept over all
+# 2,467 stored items the restriction changes exactly one classification - that
+# course, back to CLASS - and nothing else.
+DEFAULT_ENGINE_VERSION = "0.98"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
