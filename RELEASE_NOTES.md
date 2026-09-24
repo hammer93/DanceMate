@@ -1,5 +1,90 @@
 # DanceMate Release Notes
 
+## v0.96.12 A Night For Two Genres Was Filed Under None
+
+Product Runtime 0.96.12; Information Engine **0.97, unchanged**; migration
+**043, unchanged**. This release changes one comparison in one collector's
+discovery filter. No change to classification, Event identity, Region, Source
+authority, the duplicate and canonical rules, the normalization queue, the
+date parser, venue extraction, or danceinfo.net's category contract.
+
+**Measured, not guessed.** Read-only against the live danceinfo.net list
+pages on 2026-09-24 (235 distinct listings across today+7 days) and against
+Production 3671b7d / 0.96.11 / engine 0.97, fully converged (re-extract
+outdated 0, stalled 0, failed 0; normalization remaining 0, FAILED 0).
+
+**The defect: `genreName` is a compound label, and it was read as an enum.**
+A night that plays bachata and salsa is filed by the site as `바차타/살사`.
+`parse_list()` compared that whole string to the source's configured genre
+with `==`, which asks danceinfo.net whether its night is *only* salsa - a
+question it never answers yes to. The live vocabulary:
+
+| label | n | label | n | label | n |
+|---|---|---|---|---|---|
+| 바차타/살사 | 83 | 바차타 | 71 | 살사 | 23 |
+| 키좀바 | 16 | 탱고 | 14 | 기타 | 7 |
+| 바차타/살사/키좀바 | 5 | 바차타/주크 | 5 | 살사/키좀바 | 4 |
+| 바차타/살사/주크 | 2 | 주크 | 2 | 살사/탱고 | 1 |
+| 살사/기타 | 1 | 바차타/살사/기타 | 1 | | |
+
+The salsa source (`SRC-W-012`, config `genre_name` = 살사) therefore saw **23
+of the 120 listings it should have.** This is a discovery filter, so the
+other 97 never became a source_item at all - no stored body, nothing for
+v0.96.3's incremental pass to re-read, nothing an engine bump could recover.
+The v0.96.11 audit measured what that cost a reader: on 2026-09-24,
+**salsa/bachata recall 0 of 7** against the source's own listing, while tango
+ran at 41 of 42 over the same four days.
+
+**The separator is `/` and nothing else** - the only non-hangul character
+inside any of those 235 labels, all 11 occurrences of it. `genre_tokens()`
+splits on that and strips, and does not accept the `·`, `,` or whitespace
+separators the site does not use: reading the schema that is there rather
+than inventing a wider one it might someday have (Section 34/35).
+
+**Deliberately a token set, not a substring test.** `살사 in "바차타/살사"` is
+also true of `살사 in "살사바"`, which is a bar, and of `차타 in "바차타/살사"`,
+which is half a word. Membership in the split set answers the actual question
+- *is the configured genre one of the genres this listing is filed under* -
+and an absent or empty label still yields no tokens and so still matches
+nothing, exactly as the `!=` it replaces did.
+
+**What it recovers, and what it correctly still refuses.** Simulated over the
+same live payload, per source:
+
+| source | genre | accepted before | after | newly reachable |
+|---|---|---|---|---|
+| `SRC-W-012` DanceInfo 살사 | 살사 | 23 | **120** | 97 |
+| `SRC-W-004` DanceInfo | 탱고 | 14 | 15 | 1 |
+
+Of the salsa source's 97: **50 are filed 강습** by the site (categoryIdx 5)
+and every one of them is still read as a course by v0.96.10's contract - 0
+leak. 2 more are 오픈강습, still deliberately unmapped. **45 are filed under a
+category this module already reads as an EVENT** (파티/출빠정보/정모), which is
+the whole of what was being thrown away.
+
+The tango source gains exactly one listing - `살사/탱고` "라우탱고아카데미
+☆9월 무료특강안내", an 오픈강습 - so the genre whose recall was already good is
+untouched.
+
+**Cross-genre collection is one item, not an explosion.** Exactly one listing
+in 235 names two genres that both have a configured source. Two sources
+collecting one upstream post is a shape Production already runs: the
+uniqueness key is `(source_id, external_id)`, so each stores its own row, and
+two Daum boards watching `clubelmar/ew3I/787` already do this. The existing
+duplicate/canonical machinery settles them on `identity_key`.
+
+**The honest limit of this release.** Getting a listing collected is not the
+same as publishing it. Re-running the engine over today's 20 newly reachable
+salsa listings *with their real fetched detail bodies*: 4 become events, 10
+are read as courses (6 of them filed 강습, correctly), and 6 fall to OTHER.
+Several of the 6 are genuinely not nights ("비 수도권 주요 일정" is a roundup,
+"NEW.SOL BAR 추석 영업안내" is opening hours) - but "보니따에서 보내는 추석연휴"
+and "THURSDAY BONITA 추석연휴시작!" are real socials, and they fall because
+danceinfo.net renders a structured schedule block for some listings (BAYA,
+CASS: 일정정보 / 장소 / DJ) and only prose for others. That is a reading
+problem, in the engine, on items that now exist to be read. It is the next
+bottleneck and it is deliberately not in this release.
+
 ## v0.96.11 A Month Abroad Is Not Eight Nights
 
 Product Runtime 0.96.11; Information Engine **0.97** (classification

@@ -33,6 +33,54 @@ DEFAULT_TIMEOUT = acquisition.DEFAULT_TIMEOUT
 
 TANGO_GENRE_NAME = "탱고"
 
+# v0.96.12: `genreName` is a compound label, not a single enum value. A night
+# that plays bachata and salsa is filed under "바차타/살사", and reading that
+# field with `==` asked the site whether its night was *only* salsa - a
+# question it never answers yes to. Measured against the live list pages on
+# 2026-09-24, over 235 distinct listings across today+7 days:
+#
+#   바차타/살사        83     바차타               71     살사            23
+#   키좀바             16     탱고                 14     기타             7
+#   바차타/살사/키좀바   5     바차타/주크            5     살사/키좀바       4
+#   바차타/살사/주크     2     주크                  2     살사/탱고        1
+#   살사/기타           1     바차타/살사/기타        1
+#
+# The salsa source (config.genre_name "살사") therefore saw 23 of the 120
+# listings it should have: every composite night was dropped at discovery,
+# 45 of them filed by the site itself under a category this module already
+# reads as an EVENT (파티/출빠정보/정모). The audit that found it measured
+# salsa recall for 2026-09-24 at 0 of 7 real socials.
+#
+# The separator is "/" and nothing else - the only non-hangul character
+# appearing inside any of those 235 labels, all 11 occurrences. Splitting on
+# a wider set of punctuation the site does not use would be inventing a
+# schema instead of reading one (Section 34/35), so this splits on what is
+# there and will fail loudly - by dropping a listing, the same way today
+# does - if the site ever changes it.
+#
+# Deliberately a token set, not a substring test: "살사" is a token of
+# "바차타/살사" but must not match a longer word that merely contains it, and
+# an empty or missing label still yields no tokens and so matches nothing,
+# exactly as the `!=` it replaces did.
+_GENRE_SEPARATOR = "/"
+
+
+def genre_tokens(raw_genre_name: str | None) -> set[str]:
+    """The genres danceinfo.net files one listing under.
+
+    "바차타/살사" is a night for both, and belongs to a bachata source and a
+    salsa source alike; "살사" alone is unchanged from the exact match this
+    replaces.
+    """
+    if not raw_genre_name:
+        return set()
+    return {
+        token.strip()
+        for token in raw_genre_name.split(_GENRE_SEPARATOR)
+        if token.strip()
+    }
+
+
 # danceinfo.net files every listing under a category of its own, and keeps
 # it on the listing object in the page's own hydration payload. Until
 # v0.96.10 this module read `title` and `genreName` off that object and
@@ -159,7 +207,7 @@ def parse_list(
     seen_ids: set[Any] = set()
     for day in days:
         for lesson in day.get("lessons") or []:
-            if lesson.get("genreName") != genre_name:
+            if genre_name not in genre_tokens(lesson.get("genreName")):
                 continue
             content_id = lesson.get("contentIdx")
             if content_id is None or content_id in seen_ids:

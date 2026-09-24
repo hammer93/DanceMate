@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.11"
+PRODUCT_VERSION = "0.96.12"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -137,6 +137,13 @@ PRODUCT_VERSION = "0.96.11"
 # prior. What the engine reads out of a stored title changed, so the version
 # does, and v0.96.3's incremental pass re-reads every row against 0.97 with
 # no migration and no cursor hack.
+# v0.96.12 deliberately does NOT bump this. The defect it fixes is in
+# danceinfo_discovery.parse_list(), which decides whether a listing is ever
+# collected at all - a discovery filter, not a reading of a stored title or
+# body. Nothing the engine extracts from an item it already holds changes, so
+# re-extracting those items would re-derive exactly what is stored; the
+# listings this release recovers were never stored to re-read. They arrive
+# through an ordinary collection cycle instead.
 DEFAULT_ENGINE_VERSION = "0.97"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

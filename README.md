@@ -9,15 +9,22 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.6 (normalization이 "가장 최근에 수집된 candidate
-  500개"만 보던 window를 없앤다. candidate가 오래됐다는 이유만으로 Event가
-  되지 못하는 일이 사라지고, 실제로 build가 필요한 candidate만 scheduler의
-  작은 batch로 처리된다 — migration 043)
-  - v0.96.5는 제목이 밤 행사를 선언하는 글이 본문의 강습 언급 때문에 CLASS로
-    떨어지던 문제였고, v0.96.4는 "9월 19,20일" 형태의 제목 날짜와 구역 표시
-    너머의 시계 문제, v0.96.3은 engine 버전이 올라간 뒤 기존 본문을 작은
-    batch로 재추출하는 incremental 경로였다 (migration 042).
-- Information Engine: v0.93 (`engine/`) — 제목이 밀롱가/쁘롱가/쁘락띠까를
+- Product Runtime: v0.96.12 (danceinfo.net의 `genreName`은 `바차타/살사`처럼
+  여러 장르를 한 문자열에 담는 복합 label인데, 이것을 `==`로 읽어서 "이 밤이
+  *오직* 살사인가?"를 묻고 있었다. 살사 source는 봐야 할 120건 중 23건만
+  보고 있었고, 나머지는 source_item조차 되지 못해 재추출로도 복구할 수 없었다.
+  `genre_tokens()`가 `/`로 나눈 token 집합에 configured genre가 있는지 묻는다
+  — migration 043 유지, engine 0.97 유지)
+  - v0.96.11은 여행기·귀국 인사·협찬 공지를 행사로 읽지 않게 했고, v0.96.10은
+    source가 이미 분류해 둔 강습 category를 버리지 않게, v0.96.9는
+    FETCH_BLOCKED 항목의 본문 출처를, v0.96.8은 collector의 known_event_type
+    위에 recap/공지 guard를 두는 순서를, v0.96.7은 과정 증거 판정을 고쳤다.
+  - v0.96.6은 normalization이 "가장 최근 candidate 500개"만 보던 window를
+    없앴고(migration 043), v0.96.5는 제목이 밤 행사를 선언하는 글이 본문의
+    강습 언급 때문에 CLASS로 떨어지던 문제, v0.96.4는 "9월 19,20일" 형태의
+    제목 날짜와 구역 표시 너머의 시계 문제, v0.96.3은 engine 버전이 올라간 뒤
+    기존 본문을 작은 batch로 재추출하는 incremental 경로였다 (migration 042).
+- Information Engine: v0.97 (`engine/`, v0.96.12에서 변경 없음) — 제목이 밀롱가/쁘롱가/쁘락띠까를
   선언하고 그 제목이 스스로 강습을 파는 글이 아니며, 본문에 수강료·커리큘럼·
   개강 같은 과정 증거가 없고, 행사 logistics(시계 + 날짜/장소/입장료/DJ)가 있으면
   본문의 강습 언급이 그 행사를 덮어쓰지 못한다. 0.92까지의 제목 날짜 읽기,
@@ -85,7 +92,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.6"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.12"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
