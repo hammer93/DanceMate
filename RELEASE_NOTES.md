@@ -1,5 +1,121 @@
 # DanceMate Release Notes
 
+## v0.96.15 A Run Of Nights Stored As One Day
+
+Product Runtime 0.96.15; Information Engine **1.00**; migration **043,
+unchanged**. This release changes how one stored body's dates are read. No
+change to classification, acquisition, the collectors, Event identity,
+Region, Source authority, the duplicate and canonical rules, the
+normalization queue, venue extraction, or the time rules.
+
+**Measured, not guessed.** Read-only against Production 25cd038 / 0.96.14 /
+engine 0.99, fully converged, over all 2,472 stored items, and re-checked
+against the live danceinfo.net pages on 2026-09-25.
+
+**The defect: a club that opens for four nights was one event on one of
+them.** A holiday run writes its own list of days and then details each of
+them. danceinfo.net renders the list as a field of its own:
+
+```
+2026-09-24 전체일정 2026-09-24,2026-09-25,2026-09-26,2026-09-27
+일정정보 매일 2시간 워크샵 및 파티 7-8시, 8-9시 장소 보니따 DJ DJ 깔리드
+...
+9/24 목 - 코코&무신, 바차타 워크샵 2시간 + 파티+ 1drink
+9/25 금 - 용수&팅커벨, 바차타 워크샵 2시간 + 파티+ 1drink
+9/26 토 - 시니&세라, 살사 - 원궁&요니, 바차타 워크샵 2시간 + 파티+ 1drink
+9/27일 발 - 니르바나&썬, 바차타 워크샵 2시간 + 파티+ 1drink
+```
+
+Production held that as a single event on **2026-09-27**. Of the nine
+Salsa/Bachata listings missing from 25 September's results, **eight were this
+shape, and every one of them already held a real, visible event** — on the
+wrong day of its own run. One was a classifier miss.
+
+**Two things were in the way, and both are fixed here.**
+
+*The days could not be read at all.* `danceinfo_discovery` publishes no
+`published_at` on purpose — the list JSON's date is the *event's* date, and
+feeding it back in as a posting date would make the yearless-date safety
+check circular. Without one, `9/25` and `9월 26일` resolve to nothing, so the
+only dates left were the ISO ones in the header, packed comma-to-comma with
+no program text between them. The last of those swallowed the rest of the
+body, which is exactly how the run became 9/27.
+
+*And the expansion was gated on the title.* `extract_schedule()` has produced
+one candidate per dated program since v0.96.0, but only for a post whose own
+title says 일정 / 스케줄 / 안내 / 공지. "보니따에서 보내는 추석연휴" says none
+of them; nor does "BACHATA, SALSA, SOCIAL PARTY".
+
+**A post may now date its own yearless days against its own date list.**
+`own_explicit_dates()` is the set of days the post wrote down *with a year*.
+A yearless day resolves against it only when exactly one listed day has that
+month and day, and only when the post has no `published_at` — a post that
+carries one is untouched by every line of this release. This is not an
+inference about when the post was written; it is the post's prose matched
+back to the post's own header.
+
+**A day being in the list is not being a night.** The expansion keeps only
+the days whose own line names the event — the test `extract_schedule()` has
+applied since v0.96.0 — so nothing here reads 휴무 as a word and none was
+added:
+
+| post | the closed day | why it produces nothing |
+|---|---|---|
+| 클럽 하바나 | `9월 24일(목) 🌙 하루 쉬어갑니다` | in 전체일정, names no social |
+| 강턴 | `☑9월 24일(목) 강턴휴무` | the site omits it *and* the line names nothing |
+| 서울살사위크 | `9월 30일 (수) 제이오 워크샵` | listed, but its line is a workshop |
+
+**The date-list route is narrower than the title route, by three tests the
+title route does not get.** A title is a statement of intent; a list of days
+is not, and a course lists its sessions in precisely the same shape.
+
+1. **every program day must be one the post itself wrote with a year.** This
+   is what keeps "그리고 다가오는 10월 24일 SNS 4주년 파티까지" — a forward
+   reference on a single-day post — from becoming an October event.
+2. **no course evidence anywhere**, read with the classifier's own
+   `_COURSE_EVIDENCE_RE`. 위드라틴's "전체일정 2026-09-17,2026-10-01,
+   2026-10-08,2026-10-15" with "4주 과정 매주 목요일 8시" is four Thursdays
+   of a course, not four nights.
+3. **the day the post is already read as must survive, with its time.**
+   홍턴's own 9/26 line names a LATIN NIGHT and neither 소셜 nor 파티, so an
+   expansion would have traded that real night for 9/23-25; 수원쿠바's 9/26
+   line carries no clock, and the 8:00 PM the post states once at the top
+   belongs to the whole run. Both posts are left exactly as they are.
+
+**A price is not a date, and this release is why that started to matter.**
+The bare `m.d` fallback is bounded by digits on both sides — which is what
+stops it reading a date out of "2010.12" — and "1.5만원" has no digit on
+either side. Production writes admission and workshop prices that way
+constantly: **28 occurrences across 21 items, every one a price and not one a
+date.** They were harmless while nothing could supply a year and would have
+become 5 January 2027 the moment something did. Measured against the whole
+corpus, the guard changes no existing extraction at all.
+
+**A day written twice keeps the line that carries its clock.** 강턴 names
+each day once in a summary sentence and once as its own block; taking the
+first by position took the summary and threw the hours away. The day's own
+block is kept instead, which also corrects that post's 9/27 from the
+workshop's 20:00 to the party's 21:00.
+
+**Swept over all 2,472 stored Production items, five posts change, every one
+of them from one candidate to several:**
+
+| item | before | after |
+|---|---|---|
+| 3766 보니따에서 보내는 추석연휴 | 9/27 | 9/24, 9/25, 9/26, 9/27 |
+| 3772 클럽 하바나 추석 연휴 공지 | 9/27 | 9/23, 9/27 |
+| 3788 부산 루에다 추석 연휴 일정 | 9/27 | 9/25, 9/26, 9/27 |
+| 3792 BACHATA, SALSA, SOCIAL PARTY | 9/27 | 9/23, 9/25, 9/26, 9/27 |
+| 3734 서울살사위크 소셜이벤트 | 10/3 | 10/1, 10/2, 10/3 |
+
+**No date is lost anywhere.** Zero events removed, zero event types changed,
+zero posts outside those five read differently, and the 680 items carrying a
+collector's `known_event_type` are untouched. The cardinality change is the
+one candidate-identity audit already calls a true one: a post that really did
+announce four nights now holds four. What the engine reads out of a stored
+body changed, so the version does, and v0.96.3's incremental pass re-reads
+every row against 1.00 with no migration.
+
 ## v0.96.14 A Night Judged By The Workshop Inside It
 
 Product Runtime 0.96.14; Information Engine **0.99**; migration **043,

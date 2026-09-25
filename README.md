@@ -9,7 +9,19 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.14 (source가 "밤"으로 분류해 둔 글을 그 방향으로도
+- Product Runtime: v0.96.15 (연휴 동안 문을 여는 클럽은 자기 날짜 목록을
+  스스로 적어 두고(`전체일정 2026-09-24,2026-09-25,2026-09-26,2026-09-27`)
+  그 날들을 하나씩 설명하는데, Production은 그 전체를 **하루짜리 Event 하나**로
+  저장하고 있었다. 어느 하루의 Salsa/Bachata 누락 9건 중 8건이 이 모양이었고,
+  전부 이미 실제 Event를 — 자기 기간 중 엉뚱한 하루에 — 가지고 있었다.
+  danceinfo는 `published_at`을 일부러 비워 두므로 본문의 `9/25` 같은 날짜가
+  아예 해석되지 않았고, `extract_schedule()`은 제목에 일정/공지가 있어야만
+  동작했다. 이제 글이 스스로 연도까지 적어 둔 날짜 목록이 있으면 그 목록에
+  한해 본문의 날짜를 읽고, 날짜별 프로그램이 있는 날만 Event가 된다
+  — migration 043 유지, engine 1.00: 전체 2,472건 중 5건만 1→N으로 바뀌고
+  날짜를 잃는 글은 하나도 없다. 4주 과정·주간 roundup·당첨자 발표·휴무일은
+  그대로다)
+- v0.96.14 (source가 "밤"으로 분류해 둔 글을 그 방향으로도
   읽는다. v0.96.10 이후 `sold_as_a_course()`는 danceinfo.net이 강습으로
   분류한 글에서만 그 category를 읽었고, 출빠정보·파티·정모로 분류한 글에서는
   아무도 읽지 않았다. 그래서 본문에 워크샵·무료강습이 있다는 이유만으로
@@ -38,7 +50,10 @@ DanceMate는
     강습 언급 때문에 CLASS로 떨어지던 문제, v0.96.4는 "9월 19,20일" 형태의
     제목 날짜와 구역 표시 너머의 시계 문제, v0.96.3은 engine 버전이 올라간 뒤
     기존 본문을 작은 batch로 재추출하는 incremental 경로였다 (migration 042).
-- Information Engine: v0.99 (`engine/`) — source가 자기 글을 밤으로 분류해
+- Information Engine: v1.00 (`engine/`) — 글이 자기 날짜 목록을 연도까지
+  적어 두고 그 날들을 하나씩 설명하면, 프로그램이 있는 날마다 candidate를
+  만든다. 목록에 없는 날, 프로그램이 없는 날(휴무), 과정의 회차 날짜는
+  만들지 않는다. 0.99까지의, source가 자기 글을 밤으로 분류해
   두었고, 그 글이 특정 날짜와 시계를 함께 싣고 있으며, 소셜·파티·정모를
   이름으로 부르면, 본문의 강습 언급이 그 밤을 덮어쓰지 못한다. 0.98까지의,
   제목이 밀롱가/쁘롱가/쁘락띠까를
@@ -109,7 +124,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.14"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.15"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

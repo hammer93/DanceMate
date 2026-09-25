@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.14"
+PRODUCT_VERSION = "0.96.15"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -171,7 +171,19 @@ PRODUCT_VERSION = "0.96.14"
 # OTHER becomes an event, and the 680 items carrying a collector's
 # known_event_type are untouched. v0.96.3's incremental pass re-reads every
 # stored row against it.
-DEFAULT_ENGINE_VERSION = "0.99"
+# v0.96.15 bumps to 1.00, and it is a change in how a stored body is read:
+# extractor.extract_schedule() now also reaches a post that wrote its own
+# list of days with years and then detailed each of them, and a yearless day
+# inside such a post resolves against that list. A club opening for a holiday
+# ("전체일정 2026-09-24,2026-09-25,2026-09-26,2026-09-27") was stored as one
+# event on one arbitrary day of its run - eight of the nine listings missing
+# from one day's Production results were that shape, every one of them
+# already holding a real event on the wrong day. Swept over all 2,472 stored
+# items the change moves five posts, each from one candidate to several, and
+# loses no date anywhere: no event removed, no event type changed, no other
+# post read differently. v0.96.3's incremental pass re-reads every stored row
+# against it.
+DEFAULT_ENGINE_VERSION = "1.00"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

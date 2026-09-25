@@ -285,12 +285,20 @@ def _yearless_date(month: int, day: int, published):
     return best[1], SOURCE_YEAR
 
 
-def _resolve_date_match(m: "re.Match", published):
+def _resolve_date_match(m: "re.Match", published, own_dates=None):
     """One date pattern match, resolved to (date_iso_or_None, provenance).
 
     Isolated from `_norm_date` so the same per-match resolution can run on
     every date match a multi-program post carries (`_context_segments`), not
     only the first one `_norm_date` itself stops at.
+
+    ``own_dates`` (v0.96.15) is the set of dates this same post already wrote
+    with a year of its own (`own_explicit_dates`). It is read only when there
+    is no ``published`` to anchor against and only for a day the post has
+    already listed in full, so it never invents a year - it matches the
+    post's prose back to the post's own date list. Passed by
+    `extract_schedule()` alone; every other caller leaves it None and
+    resolves exactly as before.
     """
     from datetime import date as _date
 
@@ -307,10 +315,18 @@ def _resolve_date_match(m: "re.Match", published):
             return None, UNKNOWN_YEAR
         return f"{y:04d}-{mo:02d}-{d:02d}", EXPLICIT_YEAR
     resolved, provenance = _yearless_date(mo, d, published)
+    if resolved is None and published is None and own_dates:
+        # Exactly one of the post's own stated days, or none: two different
+        # years with the same month and day in one post is not a match this
+        # may guess between.
+        same = [o for o in own_dates
+                if int(o[5:7]) == mo and int(o[8:10]) == d]
+        if len(same) == 1:
+            return same[0], EXPLICIT_YEAR
     return (resolved.isoformat() if resolved else None), provenance
 
 
-def _norm_date(text: str, published=None, default_year=None):
+def _norm_date(text: str, published=None, default_year=None, own_dates=None):
     """The event's date, and where its year came from.
 
     ``published`` is the date the post was written. Without it a bare 9/25
@@ -319,6 +335,10 @@ def _norm_date(text: str, published=None, default_year=None):
 
     ``default_year`` is accepted only so older callers keep working; when it is
     given it stands in for the post's date, as those callers intended.
+
+    ``own_dates`` (v0.96.15) is forwarded to `_resolve_date_match` and reaches
+    here only from `extract_schedule()`'s per-program read - see that
+    function and `own_explicit_dates()`.
     """
     from datetime import date as _date
 
@@ -330,7 +350,7 @@ def _norm_date(text: str, published=None, default_year=None):
         m = p.search(text)
         if not m:
             continue
-        resolved, provenance = _resolve_date_match(m, published)
+        resolved, provenance = _resolve_date_match(m, published, own_dates)
         return resolved, m.group(0), provenance
     # v0.96.0: the ways a community names a day without writing one -
     # a month's nth weekday, this/next/every week's weekday, every month's
@@ -381,7 +401,52 @@ def _all_date_matches(text: str) -> list["re.Match"]:
             found.append(m)
             covered.append((m.start(), m.end()))
     found.sort(key=lambda m: m.start())
-    return found
+    return [m for m in found if not _is_a_price(text, m)]
+
+
+# v0.96.15: a price written with a decimal point is not a date. The bare
+# "m.d" fallback above is bounded on both sides by digits, which is what
+# stops it reading one out of "2010.12" - but "1.5만원" has no digit on
+# either side and is exactly the shape it was built for. Production writes
+# admission and workshop prices that way constantly ("예매 1.5만원 / 현매
+# 2만원", "입장료 1.2만원", "3.5만원/2hr워크샵"): 28 occurrences across 21
+# items, every one of them a price and not one of them a date.
+#
+# Harmless until v0.96.15 and not harmless after it. A yearless date only
+# resolves against something that supplies the year, and the posts these
+# prices sit in carry no `published_at`, so every one of them resolved to
+# nothing. This release gives a post a way to date its own yearless days
+# (see `own_explicit_dates`), and a price would have been dated with them -
+# "1.5만원" on a 2026 post reading as 5 January 2027. Measured against the
+# whole stored corpus, the guard changes no existing extraction at all: it
+# only refuses a reading nothing was using.
+_PRICE_TAIL = re.compile(r"\s*만\s*원")
+_BARE_MD = re.compile(r"^\d{1,2}[./]\d{1,2}$")
+
+
+def _is_a_price(text: str, m: "re.Match") -> bool:
+    if m.groupdict().get("y") or not _BARE_MD.match(m.group(0)):
+        return False
+    return _PRICE_TAIL.match(text, m.end()) is not None
+
+
+def own_explicit_dates(text: str) -> set:
+    """Every date this post writes down *with a year of its own*.
+
+    v0.96.15. Not an inference and not a guess about when the post was
+    written - only what it says. Used to let the same post's own yearless
+    days ("9/25", "9월 26일") be read as the days it already listed in full
+    ("2026-09-25", "09/25 (금)" under a "2026년 9월 24일" heading), and for
+    nothing else.
+    """
+    out = set()
+    for m in _all_date_matches(text):
+        if not m.groupdict().get("y"):
+            continue
+        iso, _ = _resolve_date_match(m, None)
+        if iso:
+            out.add(iso)
+    return out
 
 
 # --- segment boundaries (v0.96.2) -------------------------------------------
@@ -468,7 +533,7 @@ def _boundary_before(text: str, gap_start: int, date_start: int) -> int:
     return date_start
 
 
-def _context_segments(text: str, published):
+def _context_segments(text: str, published, own_dates=None):
     """(context_id, start, end, date_iso) for each program the text names.
 
     One entry, `context_id=None` spanning the whole text, when there is only
@@ -479,7 +544,7 @@ def _context_segments(text: str, published):
     """
     resolved = []
     for m in _all_date_matches(text):
-        date_iso, _ = _resolve_date_match(m, published)
+        date_iso, _ = _resolve_date_match(m, published, own_dates)
         if date_iso:
             resolved.append((m, date_iso))
 
@@ -589,7 +654,8 @@ def _norm_time(text: str, event_type: str | None = None):
 
 
 def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=None,
-                   event_type=None, published=None, event_terms=None):
+                   event_type=None, published=None, event_terms=None,
+                   own_dates=None):
     """One event read out of one post.
 
     ``event_type`` is the classifier's verdict. It decides which words the time
@@ -603,13 +669,18 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     ``event_terms`` (v0.96.2) are the source's own words for its night, the
     same ones classify() accepted; they only help choose which program of an
     ambiguous multi-program post is reviewed, never what is read from it.
+
+    ``own_dates`` (v0.96.15) is passed by `extract_schedule()` alone, so that
+    one program's own slice of a schedule post can read the yearless day that
+    heads it against the day list the whole post already wrote out. Left out -
+    which is every other caller - nothing about date resolution changes.
     """
     text = f"{title} {body}"
     name = name_hint or re.sub(r"\s+", " ", title).strip()
     ev = EventCandidate(name=name, event_type=event_type or "MILONGA")
 
     published_date = _as_date(published)
-    segments = _context_segments(text, published_date)
+    segments = _context_segments(text, published_date, own_dates)
     (context_id, seg_start, seg_end, seg_date), ambiguous = _select_context(
         segments, text, ev.event_type, event_terms
     )
@@ -619,7 +690,8 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     scope = text[seg_start:seg_end]
 
     if context_id is None:
-        date, raw, inference = _norm_date(text, published=published_date)
+        date, raw, inference = _norm_date(text, published=published_date,
+                                          own_dates=own_dates)
     else:
         # Already resolved while segmenting - re-running _norm_date on just
         # this segment's text would find the same date, but the match object
@@ -627,7 +699,7 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         date, raw, inference = seg_date, None, EXPLICIT_YEAR if seg_date else None
         if seg_date:
             for m in _all_date_matches(scope):
-                candidate, _ = _resolve_date_match(m, published_date)
+                candidate, _ = _resolve_date_match(m, published_date, own_dates)
                 if candidate == seg_date:
                     raw = m.group(0)
                     break
@@ -778,17 +850,95 @@ SCHEDULE_DAYS_BEFORE = 7
 SCHEDULE_DAYS_AHEAD = 70
 
 
+def _own_day_list_qualifies(title, body, text, matching, expanded, own_dates,
+                            event_type, published_date, source_role) -> bool:
+    """The three extra tests the date-list route must pass (v0.96.15).
+
+    A title that calls itself a schedule is a statement of intent; a list of
+    days is not, so a post that only has the list has to clear more. Each of
+    these was measured against the whole stored corpus - see
+    `extract_schedule()`'s own comment for the post each one is there for.
+    """
+    dates = {seg_date for _, _, _, seg_date in matching}
+    # 1. every program day is one the post itself wrote with a year.
+    if not dates <= set(own_dates or ()):
+        return False
+    # 2. a course lists its sessions in exactly this shape. The words are
+    #    the classifier's own - the same ones sold_as_a_course() reads.
+    if classifier._COURSE_EVIDENCE_RE.search(text):
+        return False
+    # 3. the day this post is already read as has to survive the expansion -
+    #    and with what it already said. An expansion that keeps the day but
+    #    drops its start time trades a night somebody could turn up to for
+    #    one they only know the date of (item 3810, "수원쿠바 라틴댄스 소셜":
+    #    its own 9/26 line carries no clock, and the 8:00 PM the post states
+    #    once at the top belongs to the whole run, not to that one day).
+    current = extract_single(title, body, source_role=source_role,
+                             event_type=event_type, published=published_date)
+    if current.date not in dates:
+        return False
+    if current.start_time is None:
+        return True
+    kept = next(e for e in expanded if e.date == current.date)
+    return kept.start_time is not None
+
+
 def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=None,
                      published=None):
     """One candidate per dated program of a schedule post, or None when the
-    post is not one (single date, no schedule title, programs that do not
-    each name the event, or dates outside the announcement window)."""
+    post is not one (single date, programs that do not each name the event,
+    or dates outside the announcement window).
+
+    **v0.96.15: a post reaches here two ways, not one.**
+
+    The first is unchanged since v0.96.0 - the post's own title says it is a
+    schedule (일정 / 스케줄 / 안내 / 공지 / schedule / calendar).
+
+    The second is the structure that word was always standing in for: **the
+    post wrote its own list of days, with years, and then detailed each of
+    them.** A holiday run announces itself as "전체일정 2026-09-24,
+    2026-09-25, 2026-09-26, 2026-09-27" and then gives each of those days its
+    own line, and none of its titles says 일정 - "보니따에서 보내는 추석연휴",
+    "BACHATA, SALSA, SOCIAL PARTY", "홍턴 추석 연휴 수~토요일 스페셜
+    이벤트!". Eight of the nine listings missing from one day's Production
+    results were this shape, every one of them already holding a real event
+    on one arbitrary day of its own run.
+
+    That route is deliberately narrower than the title one, because a title
+    is a statement of intent and a date list is not:
+
+    * **every program date must be one the post itself wrote with a year.**
+      A yearless day resolved from the post's own list (`own_explicit_dates`)
+      is the post matching its own prose to its own header; a yearless day
+      that is *not* in that list is a mention of something else and stays
+      unread. This is what keeps "그리고 다가오는 10월 24일 SNS 4주년
+      파티까지" - a forward reference on a single-day post - from becoming an
+      October event.
+    * **no course evidence anywhere.** A four-week course lists its session
+      dates in exactly this shape ("전체일정 2026-09-17,2026-10-01,
+      2026-10-08,2026-10-15", "4주 과정 매주 목요일 8시") and must never
+      become four nights. Read with the classifier's own
+      `_COURSE_EVIDENCE_RE`, the same words `sold_as_a_course()` reads.
+    * **the day the post is already read as must survive.** If the expansion
+      does not contain the date `extract_single()` gives this post today,
+      the post is left exactly as it is rather than trading one real night
+      for others: 홍턴's own 9/26 LATIN NIGHT names no 소셜 and no 파티 in
+      its own line, so that post keeps its single 9/26 candidate instead of
+      being rewritten into 9/23-25.
+
+    A post whose title *does* say schedule is judged exactly as before, with
+    none of these three extra tests - v0.96.0's contract is not narrowed.
+    """
     from datetime import date as _date, timedelta
 
-    if not _SCHEDULE_TITLE_RE.search(title or ""):
-        return None
     text = f"{title} {body}"
     published_date = _as_date(published)
+    by_title = bool(_SCHEDULE_TITLE_RE.search(title or ""))
+    # Only a post with no publication date of its own needs (or may use) its
+    # own date list to read its own yearless days.
+    own_dates = own_explicit_dates(text) if published_date is None else set()
+    if not by_title and len(own_dates) < 2:
+        return None
     words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
     if not words:
         return None
@@ -805,20 +955,33 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
     if published_date is not None:
         low = published_date - timedelta(days=SCHEDULE_DAYS_BEFORE)
         high = published_date + timedelta(days=SCHEDULE_DAYS_AHEAD)
-    matching = []
-    seen_dates = set()
+    # v0.96.15: a post can write the same day twice - once in a sentence
+    # summarising the week ("9월 27일 일요일에는 월간 무차살사:소셜 파티가
+    # 예정되어 있습니다") and once as that day's own block ("☑9월 27일(일)
+    # PM9:00~ 월간 무차살사:소셜 ... 🎧DJ 리키"). Taking the first one by
+    # position took the summary and threw the hours away, which turned an
+    # event that already had a start time into one with none. A day's own
+    # block is the one that carries its clock, so that is the one kept;
+    # position only breaks a tie. Nothing else about the selection changes -
+    # a post that names each day once behaves exactly as it did.
+    by_date = {}
     for index, match in enumerate(matches):
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        seg_date, _ = _resolve_date_match(match, published_date)
-        if not seg_date or seg_date in seen_dates:
+        seg_date, _ = _resolve_date_match(match, published_date, own_dates)
+        if not seg_date:
             continue
         own = text[start:end]
         if not re.search(words, own, re.I):
             continue
         if low is not None and not (low <= _date.fromisoformat(seg_date) <= high):
             continue  # a program outside the announcement window is not read
-        seen_dates.add(seg_date)
+        has_clock = bool(_CLOCK_CUE_RE.search(own))
+        kept = by_date.get(seg_date)
+        if kept is None or (has_clock and not kept[0]):
+            by_date[seg_date] = (has_clock, start, end)
+    matching = []
+    for seg_date, (_clock, start, end) in sorted(by_date.items(), key=lambda kv: kv[1][1]):
         matching.append((f"sched{len(matching) + 1}", start, end, seg_date))
     if len(matching) < 2:
         return None
@@ -827,7 +990,8 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
         scope = text[max(start, title_end):end]
         ev = extract_single(title, scope, source_role=source_role,
                             name_hint=f"{re.sub(r'\s+', ' ', title).strip()} {seg_date[5:].replace('-', '/')}",
-                            event_type=event_type, published=published_date)
+                            event_type=event_type, published=published_date,
+                            own_dates=own_dates)
         if ev.date != seg_date:
             return None
         for e in ev.evidences:
@@ -836,6 +1000,10 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
             "context", SCHEDULE_ITEM, scope[:160], source_role=source_role, context_id=context_id,
         ))
         out.append(ev)
+    if not by_title and not _own_day_list_qualifies(
+            title, body, text, matching, out, own_dates, event_type,
+            published_date, source_role):
+        return None
     return out
 
 
