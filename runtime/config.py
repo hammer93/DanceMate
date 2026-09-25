@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.13"
+PRODUCT_VERSION = "0.96.14"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -157,7 +157,21 @@ PRODUCT_VERSION = "0.96.13"
 # and v0.96.3's incremental pass re-reads every row against it. Swept over all
 # 2,467 stored items the restriction changes exactly one classification - that
 # course, back to CLASS - and nothing else.
-DEFAULT_ENGINE_VERSION = "0.98"
+# v0.96.14 bumps to 0.99, and this one is a plain engine change: classify()
+# reads the source's own per-item category in the direction it never read it.
+# sold_as_a_course() has honoured danceinfo.net's 강습 filing since v0.96.10,
+# but nothing read the same field when the site says 출빠정보 / 파티 / 정모 -
+# a night to turn up to - so a post that also ran a workshop was judged by
+# the workshop alone. Eleven of the 52 night-filed listings classified CLASS
+# and produced no candidate; seven of them are real nights that also teach
+# (night_event_bundle()'s own comment lists all seven and the four courses
+# it must not take). Swept over all 2,468 stored items the new reading
+# changes exactly those seven classifications, every one CLASS ->
+# SOCIAL_WITH_CLASS: no event is lost, no post filed as a course moves, no
+# OTHER becomes an event, and the 680 items carrying a collector's
+# known_event_type are untouched. v0.96.3's incremental pass re-reads every
+# stored row against it.
+DEFAULT_ENGINE_VERSION = "0.99"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

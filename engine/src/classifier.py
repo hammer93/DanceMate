@@ -550,6 +550,93 @@ def sold_as_a_course(title: str, body: str, *, source_category=None,
     )
 
 
+# v0.96.14: the night vocabulary night_event_bundle() reads a heading or a
+# body by. The social words, plus the one word a Korean scene names its own
+# regular night with - 정모, which _NOTICE_WORDS_RE below already counts as a
+# night word for a post that does not teach. It is admitted here and nowhere
+# else: putting it into SOCIAL_WORDS would change social_evidence()'s title
+# rule, _SOCIAL_BY_CLOCK, _PRODUCT_SUFFIX and sold_as_a_course()'s last line
+# all at once, and every one of those is calibrated on the four words it has.
+_NIGHT_EVENT_WORDS = SOCIAL_WORDS + ["정모"]
+
+
+def night_event_bundle(title: str, body: str, *, source_category=None) -> bool:
+    """A night the *source* filed as a night, on a post that also teaches.
+
+    v0.96.14, and the counterpart of the `by_source` reading in
+    sold_as_a_course() above. danceinfo.net files each listing under its own
+    category, and the collector carries it (danceinfo_discovery.
+    source_category()). When the site says 강습, sold_as_a_course() lets that
+    outrank a social word in the heading. When it says 출빠정보 / 파티 / 정모
+    - a night to turn up to - nothing read it at all, and a post that also
+    ran a workshop was called a course on the strength of the workshop alone.
+
+    Eleven of Production's 52 EVENT-filed listings classified CLASS and
+    produced no candidate. Seven of them are real nights that also teach:
+
+      "보니따에서 보내는 추석연휴"     4일 파티, DJ 깔리드, 파티 7-8시/8-9시
+      "클럽 하바나 추석 연휴 공지"      미니 소셜 파티 21:30~, 정상 영업 25-27
+      "THURSDAY BONITA 추석연휴시작!"  19:00-23:30, 소셜 오픈 9PM, 파티입장료
+      "루에다 홈커밍 데이"             파티포함 9시~12시, DJ 유니크
+      "더크루 일요정모"                정모 6시~9시, DJ DJIAX, 정모비 1만원
+      "강북살사 정모&바차타특강"        7-8 강습, 8:00-9:40 / 9:40-10:30 쇼셜
+      "추석 연휴 워크샵 - LATIN..."    4일 파티 입장료 48,000원, Kizomba 파티
+
+    The other four are not, and none of them names a night at all: "니르바나
+    &썬 바차타 무료 오픈강습" and "MAX NIGHT Free Salsa On1 Class" are the
+    class by itself (the second one in a practice studio, not the club),
+    "LATIN NIGHTS" is a body that holds one 8-9PM workshop and nothing else,
+    and "10월 스케줄♥️" is a month of Thursdays with no day and no clock of
+    its own. The naming test alone separates three of the four.
+
+    **The category is a reason to look, never a verdict.** Asked on its own
+    it is wrong twice in today's corpus: 비 수도권 주요 일정 is a roundup of
+    other clubs' schedules and NEW.SOL BAR 추석 영업안내 is opening hours,
+    both filed 출빠정보 and both correctly OTHER. So the category is one of
+    three conditions, and the other two are the test
+    notice_evidence_bundle() already applies to a night named with a
+    non-scene word: **an announcement carries logistics, a mention does
+    not** - a specific day, and a clock.
+
+    That is not enough for the second of those two on its own, and the limit
+    is written here rather than left to be discovered: the roundup fails the
+    bundle (it carries no clock), but the opening-hours notice *passes* it -
+    "아침 6시까지" is a clock, the four holiday dates are days, and
+    "연휴 크레이지 파티 즐기고" names a party. What keeps it OTHER is that
+    it never reaches here: a bar announcing its hours uses no word from
+    classify()'s `class_words`, so it does not enter the branch this bundle
+    is asked in at all. A business-hours notice that also mentioned a 강습
+    would be read as a night. That is a real edge and it costs nothing
+    today - it is one post, it is correctly OTHER, and narrowing the bundle
+    to exclude it was measured to cost 루에다 홈커밍 데이 and 보니따에서
+    보내는 추석연휴, which are real. Named here so the next person sees it
+    before the corpus does.
+
+    Measured over all 2,468 stored Production items before it was written:
+    this changes exactly seven classifications, the seven above, every one
+    of them CLASS -> SOCIAL_WITH_CLASS. No event of any kind is lost, no
+    post the source filed as a course moves, and the 680 items carrying a
+    collector's known_event_type are untouched.
+
+    Deliberately *not* required: that the post carry no course evidence.
+    danceinfo.net labels its price field 수강료 whatever the price is, so
+    "수강료 현매 1만원" on 루에다 홈커밍 데이 is the door price of a party;
+    refusing on that word costs two of the seven and reads a site's form
+    label as a fact about the event. The category already keeps every real
+    course out, because the site files those under 강습.
+    """
+    if source_category != SOURCE_CATEGORY_EVENT:
+        return False
+    heading = _PRODUCT_SUFFIX.sub(" ", (title or "").lower())
+    text = _PRODUCT_SUFFIX.sub(" ", (body or "").lower())
+    whole = f"{heading} {text}"
+    if not any(word in whole for word in _NIGHT_EVENT_WORDS):
+        return False
+    return bool(
+        _EXPLICIT_DAY_DATE_RE.search(whole) and _NOTICE_CLOCK_RE.search(whole)
+    )
+
+
 def classify(title: str, body: str, known_event_type=None, event_terms=None,
              source_category=None) -> str:
     # v0.96.8: the recap/administrative guard is asked *before* the collector's
@@ -644,6 +731,17 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None,
         # class rule above already produces for a night with a lesson on it.
         if announced_night_evidence(title, body, event_terms=event_terms):
             return "MILONGA_WITH_CLASS"
+        # v0.96.14: and the reading none of the four above can reach, because
+        # it is not written in this post's prose at all - the source's own
+        # category, backed by the day and the clock a night announces itself
+        # with (night_event_bundle()'s own comment has the seven real
+        # Production nights, and the four real courses, this was built
+        # against). Checked last, after every judgment above has been made
+        # exactly as it was, so only a post that was about to be called CLASS
+        # is read again. Still SOCIAL_WITH_CLASS, the canonical type the
+        # social branch above already produces for a night that teaches.
+        if night_event_bundle(title, body, source_category=source_category):
+            return "SOCIAL_WITH_CLASS"
         return "CLASS"
     # v0.96.7: a lesson advert whose own title sells the lesson in words
     # `class_words` above never carried - 수업, 특강, 클래스, 클라스, 강좌,

@@ -1,5 +1,111 @@
 # DanceMate Release Notes
 
+## v0.96.14 A Night Judged By The Workshop Inside It
+
+Product Runtime 0.96.14; Information Engine **0.99**; migration **043,
+unchanged**. This release changes one reading in `classify()`. No change to
+acquisition, the collectors, Event identity, Region, Source authority, the
+duplicate and canonical rules, the normalization queue, the date parser,
+venue extraction, or danceinfo.net's category and genre contracts.
+
+**Measured, not guessed.** Read-only against Production e131945 / 0.96.13 /
+engine 0.98, fully converged, over all 2,468 stored items, and against the
+live danceinfo.net pages on 2026-09-25 - every body below was re-fetched and
+reads the same way live.
+
+**The defect: the source's own category was read in one direction only.**
+danceinfo.net files every listing under a category and the collector has
+carried it since v0.96.10 as `source_category`. `sold_as_a_course()` reads it
+when the site says 강습: the site's filing then outranks a social named in
+the heading, which is what stopped three lessons *about* dancing at a social
+from being sold as nights. Nothing ever read the same field when the site
+says 출빠정보 / 파티 / 정모 — *a night to turn up to*. So a post that
+announced a night and also ran a workshop was judged by the workshop alone,
+by the oldest rule in the branch: a class word anywhere in the text puts the
+post in the CLASS branch, and it leaves as a night only if `social_evidence()`
+can see one.
+
+**What `social_evidence()` could not see.** It is deliberately strict — a
+social is announced in the *title*, or written directly beside its own clock —
+and on these posts the announcement is neither:
+
+| item | what the post says | why the strict rule misses it |
+|---|---|---|
+| 클럽 하바나 추석 연휴 공지 | `🕤 21:30 ~ 미니 소셜 파티` | "미니" sits between the clock and the word |
+| 보니따에서 보내는 추석연휴 | `워크샵 및 파티 7-8시, 8-9시` | the clock is two tokens past the party |
+| 강북살사 정모&바차타특강 | `PM 8:00-9:40 … 쇼셜` | 쇼셜 is not one of the four social words |
+| 더크루 일요정모 | `정모 6시~9시 까지` | 정모 is not a social word at all |
+
+**Eleven of the 52 night-filed listings produced no candidate. Seven are real
+nights.** All seven teach, and five are still upcoming:
+
+| item | filed as | the night in it |
+|---|---|---|
+| 3766 보니따에서 보내는 추석연휴 | 파티(페스티발)/출빠정보 | 4일 파티, DJ 깔리드, 파티 7-8시/8-9시 |
+| 3769 추석 연휴 워크샵 - LATIN | 파티/출빠정보/오픈강습 | 4일 파티 입장료 48,000원, Kizomba 파티 |
+| 3772 클럽 하바나 추석 연휴 공지 | 출빠정보 | 미니 소셜 파티 21:30~, 정상 영업 25-27 |
+| 3775 THURSDAY BONITA | 출빠정보 | 19:00-23:30, 소셜 오픈 9PM, 파티입장료 |
+| 3820 루에다 홈커밍 데이 | 파티/출빠정보/오픈강습 | 파티포함 9시~12시, DJ 유니크 |
+| 3869 더크루 일요정모 | 출빠정보/정모 | 정모 6시~9시, DJ DJIAX, 정모비 1만원 |
+| 3872 강북살사 정모&바차타특강 | 출빠정보/정모/오픈강습 | 7-8 강습, 8:00-9:40 / 9:40-10:30 쇼셜 |
+
+**The other four are courses, and the naming test alone separates three of
+them.** 니르바나&썬 바차타 무료 오픈강습 and MAX NIGHT Free Salsa On1 Class
+are the class by itself — the second free, in a practice studio, not in the
+club — and LATIN NIGHTS is a body holding one 8-9PM workshop. None of the
+three names a social, a party or a 정모 anywhere. The fourth, 10월 스케줄♥️,
+is a month of Thursdays at one venue with no day and no clock of its own.
+
+**The category is a reason to look, never a verdict.** Asked on its own it is
+wrong twice in today's corpus: 비 수도권 주요 일정 is a roundup of other
+clubs' schedules and NEW.SOL BAR 추석 영업안내 is opening hours — both filed
+출빠정보, both correctly OTHER, and both left exactly as they are. So
+`night_event_bundle()` asks three things, and the second and third are the
+test `notice_evidence_bundle()` already applies to a night named with a
+non-scene word — **an announcement carries logistics, a mention does not**:
+the source filed it as a night, the post names one (소셜 / 파티 / social /
+party / 정모), and it carries a specific day *and* a clock. It is placed last
+in the CLASS branch, after every judgment above it has been made exactly as
+before, so it can only be reached by a post that was about to be called CLASS:
+it can add a night and can never take one away.
+
+**What was measured and rejected.** The first rule tried was text-only — "the
+post names a social and a DJ and a clock". It reads four of the seven and
+also takes nine weekly-schedule roundups from three other sources: a Busan
+tango community's `[부산_탱고동호회]가또땅고 7월 넷째주`, a Seoul salsa
+community's `[8월 넷째주 공지]`, a club's `이번 주 주말 일정`. Each lists
+three or four different nights at different venues on different days, and
+none has one date it could be given. Requiring the source's own filing keeps
+every one of them out, because no other collector carries a category at all.
+It also takes five listings the site files under 강습 whose bodies name the
+venue's DJ — including one whose DJ field reads `DJ 없음`.
+
+Also deliberately *not* required: that the post carry no course evidence.
+danceinfo.net labels its price field 수강료 whatever the price is, so
+`수강료 현매 1만원` on 루에다 홈커밍 데이 is the door price of a party;
+refusing on that word costs two of the seven and reads a form label as a fact
+about the event. The site's own filing already keeps real courses out, because
+it files those under 강습.
+
+**Swept over all 2,468 stored Production items, this changes exactly seven
+classifications**, every one CLASS → SOCIAL_WITH_CLASS — the seven above.
+Zero events of any kind are lost, zero posts filed as a course move, zero
+OTHERs become events, and the 680 items carrying a collector's
+`known_event_type` are untouched. What the engine reads out of a stored body
+changed, so the version does, and v0.96.3's incremental pass re-reads every
+row against 0.99 with no migration.
+
+**What this release does not fix, measured after it.** Of the eight listings
+missing from today's Salsa/Bachata results, only three were classifier misses
+— the three above — and all three are corrected here. **The other five already
+classify as nights and already hold an events row**; they are absent from
+*today* because their date resolves to one day of a multi-day `전체일정` run
+(`2026-09-24,2026-09-25,2026-09-26,2026-09-27` → a single 9/27). The three
+this release restores land the same way. So the classifier is no longer the
+binding constraint on today's recall and the multi-day date is: that is the
+next release's single goal, and it is named here rather than quietly folded
+into this one.
+
 ## v0.96.13 A Post Judged On Its Own Preview
 
 Product Runtime 0.96.13; Information Engine **0.98** (one escape narrowed -

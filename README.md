@@ -9,14 +9,20 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.13 (danceinfo.net 상세 페이지의 본문을 og:description
+- Product Runtime: v0.96.14 (source가 "밤"으로 분류해 둔 글을 그 방향으로도
+  읽는다. v0.96.10 이후 `sold_as_a_course()`는 danceinfo.net이 강습으로
+  분류한 글에서만 그 category를 읽었고, 출빠정보·파티·정모로 분류한 글에서는
+  아무도 읽지 않았다. 그래서 본문에 워크샵·무료강습이 있다는 이유만으로
+  실제 밤 행사가 CLASS로 떨어졌다. site가 밤으로 분류한 52건 중 11건이
+  candidate를 못 만들었고 그중 7건이 실제 밤이다 — migration 043 유지,
+  engine 0.99: category는 보게 만드는 근거일 뿐 판정이 아니어서, 특정 날짜와
+  시계라는 logistics를 함께 요구한다. 전체 2,468건 중 정확히 7건만 바뀌고
+  모두 CLASS → SOCIAL_WITH_CLASS다)
+- v0.96.13 (danceinfo.net 상세 페이지의 본문을 og:description
   (약 140자에서 `…`로 잘리는 미리보기)이 아니라, 그 페이지가 이미 싣고 있는
   Next.js payload에서 읽는다. 저장된 181건 중 162건이 잘린 미리보기였고,
-  DanceInfo가 Event로 분류한 글 중 candidate를 못 만든 22건의 19건이 그것이었다.
-  분류기는 손대지 않았다 — 본문이 온전해지자 기존 규칙이 스스로 밤을 찾는다
-  — migration 043 유지, engine 0.98: 본문을 온전히 읽자 도달하게 된 규칙 하나를 좁혔다.
-  site가 강습으로 분류한 글을 `notice_evidence_bundle`이 뒤집지 못하게 한다 —
-  전체 2,467건 중 정확히 1건만 바뀐다)
+  DanceInfo가 Event로 분류한 글 중 candidate를 못 만든 22건의 19건이 그것이었다
+  — migration 043 유지, engine 0.98)
 - v0.96.12 (danceinfo.net의 `genreName`은 `바차타/살사`처럼
   여러 장르를 한 문자열에 담는 복합 label인데, 이것을 `==`로 읽어서 "이 밤이
   *오직* 살사인가?"를 묻고 있었다. 살사 source는 봐야 할 120건 중 23건만
@@ -32,7 +38,10 @@ DanceMate는
     강습 언급 때문에 CLASS로 떨어지던 문제, v0.96.4는 "9월 19,20일" 형태의
     제목 날짜와 구역 표시 너머의 시계 문제, v0.96.3은 engine 버전이 올라간 뒤
     기존 본문을 작은 batch로 재추출하는 incremental 경로였다 (migration 042).
-- Information Engine: v0.98 (`engine/`) — 제목이 밀롱가/쁘롱가/쁘락띠까를
+- Information Engine: v0.99 (`engine/`) — source가 자기 글을 밤으로 분류해
+  두었고, 그 글이 특정 날짜와 시계를 함께 싣고 있으며, 소셜·파티·정모를
+  이름으로 부르면, 본문의 강습 언급이 그 밤을 덮어쓰지 못한다. 0.98까지의,
+  제목이 밀롱가/쁘롱가/쁘락띠까를
   선언하고 그 제목이 스스로 강습을 파는 글이 아니며, 본문에 수강료·커리큘럼·
   개강 같은 과정 증거가 없고, 행사 logistics(시계 + 날짜/장소/입장료/DJ)가 있으면
   본문의 강습 언급이 그 행사를 덮어쓰지 못한다. 0.92까지의 제목 날짜 읽기,
@@ -100,7 +109,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.13"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.14"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
