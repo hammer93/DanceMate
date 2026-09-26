@@ -9,7 +9,25 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.16 (danceinfo.net은 한 공지가 여러 날 열리면
+- Product Runtime: v0.96.17 (날짜별 프로그램이 자기를 `LATIN NIGHT`라고만
+  부르면 그 날짜가 Event가 되지 않았다. 홍턴 추석 run은 네 날을 나열하고 각
+  날을 설명하는데 — 바차타 파티 / 키좀바 파티 / 살사데이 / `추석 이벤트 LATIN
+  NIGHT ... 오픈 오후 9시` — 마지막 하나만 dated-program vocabulary가 모르는
+  단어였다. 그래서 v0.96.15 guard 3이 제 역할대로 "지금 읽히는 날(26일)이
+  살아남지 못한다"고 판단해 run 전체를 한 건으로 남겼고, 그 한 건은 시각도
+  값도 23일 것(19:00, 20,000원)이었다. 이제 `DATED_PROGRAM_WORDS`가
+  `night|나이트`를 읽는다 — `extract_schedule()`과
+  `extract_day_list()` **두 곳에서만**. `EVENT_WORDS`는 건드리지 않는다:
+  그것은 시각 range·단일 시각·요금·대표 segment 네 가지를 결정하고, LATIN
+  NIGHT와 소셜이 함께 있는 글은 그것을 넓히면 소셜의 21:00 대신 NIGHT의
+  19:00을 읽는다. classifier vocabulary도 넓히지 않는다 — 넓히면 무료 강습
+  (3778 MAX NIGHT Free Salsa On1 Class)과 워크샵 본문(3803 LATIN NIGHTS)이
+  Event가 되어 false positive 2건이 생긴다. 후기(342)·여행기(2417)·roundup을
+  막는 것은 이 패턴이 아니라 classifier와 "날짜가 없다"는 사실이고, 테스트는
+  그 실제 메커니즘을 검증한다 — migration 043 유지, engine 1.02: 전체 2,489건
+  중 **1건**만 바뀌어 1→4 candidate, 날짜 3개 추가·0개 손실, 분류 변화 0.
+  대상 네 날짜가 모두 과거이므로 TODAY recall은 움직이지 않는다)
+- v0.96.16 (danceinfo.net은 한 공지가 여러 날 열리면
   **(글, 날짜)마다 별도 row**를 발행한다 — 부에나 추석 파티는 9/23~27의
   `idx` 27718~27722 다섯 줄이고, 그 다섯 날짜 페이지에 모두 실린다. 우리가
   `전체일정`으로 저장하는 필드가 바로 그 날짜 집합인데, `extract_schedule()`은
@@ -146,7 +164,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.16"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.17"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

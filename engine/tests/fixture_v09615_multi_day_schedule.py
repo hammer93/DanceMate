@@ -201,27 +201,14 @@ NOT_A_RUN_OF_NIGHTS = [
         None,
         None,
     ),
-    (
-        # The day the post is already read as must survive. 홍턴's own 9/26
-        # line names a LATIN NIGHT and neither 소셜 nor 파티, so an expansion
-        # would have traded that real night for 9/23-25. The post is left
-        # exactly as it is instead.
-        3767,
-        "홍턴 추석 연휴 수~토요일 스페셜 이벤트!",
-        "2026-09-23 전체일정 2026-09-23,2026-09-24,2026-09-25,2026-09-26 "
-        "일정정보 7:00 PM, 8:00 PM 장소 홍턴 DJ DJ 쿵 강의 소개 "
-        "💗 9월 23일(수) | 홍턴 바차타 파티 오후 7시 제니 y 뚜부 "
-        "소셜 오픈 오후 9시 / DJ 쿵 워크샵 2개+소셜 20,000원(예매) "
-        "🌙 9월 24일(목) | 추석 올 키좀바 파티 클럽 오픈 오후 8시 "
-        "DJ BLD & DJ 나리 워크샵+소셜 20,000원 / 소셜 12,000원 "
-        "🔥 9월 25일(금) | 추석 살사데이 클럽 오픈 오후 9시 / DJ 헤이즐 "
-        "워크샵+소셜 20,000원 / 소셜 12,000원 "
-        "🎉 9월 26일(토) | 추석 이벤트 LATIN NIGHT 살사 ON1·ON2, 바차타, "
-        "메렝게, 레게톤, 클럽뮤직, 라인댄스, 차차까지! DJ RICKY와 함께하는 "
-        "신나는 토요일 밤 🎧 오픈 오후 9시",
-        None,
-        None,
-    ),
+    # 홍턴 3767 used to sit here, and v0.96.17 moved it out rather than this
+    # file being wrong: guard 3 kept that post because its own 9/26 line named
+    # a LATIN NIGHT and neither 소셜 nor 파티, so the day it was already read as
+    # would not have survived the expansion. v0.96.17 gave the dated-programme
+    # vocabulary that exact word, so the 26th now survives and the run is read
+    # as the four nights it is - see tests/test_v09617_night_named_program.py.
+    # The guard itself is still exercised below, by the half of it that is
+    # about losing a *time* rather than a day.
     (
         # And the time must survive with it. 수원쿠바's own 9/26 line carries
         # no clock; the 8:00 PM it states once at the top belongs to the run.

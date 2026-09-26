@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.16"
+PRODUCT_VERSION = "0.96.17"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -195,7 +195,22 @@ PRODUCT_VERSION = "0.96.16"
 # six posts, adds 10 dates and removes 2 - both already past - and loses no
 # start time, no classification and nothing upcoming. v0.96.3's incremental
 # pass re-reads every stored row against it.
-DEFAULT_ENGINE_VERSION = "1.01"
+# v0.96.17 bumps to 1.02 for one word. A schedule post that details each of
+# its days names the night on each day's own line, and one venue's regular
+# Saturday is written `LATIN NIGHT` and nothing else - 홍턴's 추석 run listed
+# four days and only the fourth failed to name itself in a word the
+# dated-programme vocabulary knew, so the whole run collapsed to one candidate
+# on the wrong hour and another day's price. `extraction_rules`
+# .DATED_PROGRAM_WORDS is a third mapping read by extract_schedule() and
+# extract_day_list() alone; EVENT_WORDS still answers its four other questions
+# untouched (which clock range is the event's time, which lone clock its start,
+# which price its fee, which segment of an ambiguous post is reviewed) - a post
+# with two programmes, one LATIN NIGHT and one 소셜, would otherwise read the
+# NIGHT's 19:00 instead of the social's 21:00. Measured over all 2,489 stored
+# items with a harness that replays Production's own poster OCR: one item
+# changes, 1 -> 4 candidates, 3 dates added, none removed, no classification
+# moved. The broad alternative changes two items and both are false positives.
+DEFAULT_ENGINE_VERSION = "1.02"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

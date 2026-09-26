@@ -939,7 +939,7 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
     own_dates = own_explicit_dates(text) if published_date is None else set()
     if not by_title and len(own_dates) < 2:
         return None
-    words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
+    words = extraction_rules.DATED_PROGRAM_WORDS.get((event_type or "").upper())
     if not words:
         return None
     # A schedule lists each program *after* its date ("10/3 토 소셜 20:00 @
@@ -1250,7 +1250,7 @@ def extract_day_list(title: str, body: str, source_role="SECONDARY",
     """
     if (source_category or "").upper() != "EVENT":
         return None
-    words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
+    words = extraction_rules.DATED_PROGRAM_WORDS.get((event_type or "").upper())
     if not words:
         return None
     text = f"{title} {body}"

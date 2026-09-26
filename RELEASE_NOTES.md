@@ -1,5 +1,180 @@
 # DanceMate Release Notes
 
+## v0.96.17 Recognize NIGHT / 나이트 In Dated-Program Vocabulary
+
+Product Runtime 0.96.17; Information Engine **1.02**; migration **043,
+unchanged**. One word, in one mapping. No change to classification, the
+collectors, acquisition, Event identity, Region, Source authority, the
+duplicate and canonical rules, the normalization queue, venue extraction, the
+time rules, or OCR.
+
+**Measured, not guessed.** Read-only against Production 3bce460… b1c4a6e /
+0.96.16 / engine 1.01, fully converged, over all 2,489 stored items, with the
+harness that calls `process_discovered_post()` itself and replays Production's
+own stored `source_item_image` rows. Live danceinfo payloads re-checked on
+2026-09-27.
+
+### The defect: three nights lost to one missing word
+
+A schedule post that details each of its days names the night on each day's own
+line. 홍턴's 추석 run listed four:
+
+```
+💗 9월 23일(수) | 홍턴 바차타 파티 … 소셜 오픈 오후 9시
+🌙 9월 24일(목) | 추석 올 키좀바 파티 … 클럽 오픈 오후 8시
+🔥 9월 25일(금) | 추석 살사데이 … 클럽 오픈 오후 9시
+🎉 9월 26일(토) | 추석 이벤트 LATIN NIGHT … 오픈 오후 9시
+```
+
+Three of those name themselves 파티 or 살사데이. The fourth says **LATIN
+NIGHT** and neither 소셜 nor 파티, and the dated-programme vocabulary did not
+know that word. v0.96.15's guard 3 then did exactly what it was built to do:
+the day the post is already read as — the 26th — would not have survived the
+expansion, so the whole run was left as one candidate rather than trading a
+real night for three others.
+
+That single candidate was also wrong twice over. It carried **19:00**, which is
+the 23rd's first workshop, and **20,000원**, which is the 23rd's ticket. The
+26th's own line says 오픈 오후 9시 and names no price at all.
+
+### The scope is one mapping, and that is the whole design
+
+`extraction_rules.DATED_PROGRAM_WORDS` is a third mapping beside `EVENT_WORDS`
+and `EVENT_CONTEXT_WORDS`, read by `extract_schedule()` and
+`extract_day_list()` and by nothing else. `EVENT_WORDS` answers four other
+questions and keeps answering them exactly as before:
+
+* which clock **range** is the event's time (`_pick_reading`),
+* which lone clock is its **start** (`parse_start_time`),
+* which price is its **fee** (the EVENT_CONTEXT tier of `extract_fee`),
+* which **segment** of an ambiguous multi-programme post is the reviewed
+  candidate (`extractor._select_context`).
+
+Widening `EVENT_WORDS` globally happens to change the same single item today —
+so the cheap change was measurably available and was still rejected, because
+those four behaviours would be permanently looser for no evidence. The cost is
+demonstrable rather than hypothetical, and a test pins it: a post with two
+programmes, one `LATIN NIGHT 오후 7시~9시` and one `토요 소셜 오후 9시~11시`,
+reads the social's **21:00** today and would read the NIGHT's **19:00** with a
+widened `EVENT_WORDS`. Nothing in this release has any evidence about that
+post's hour.
+
+`CLASS` is deliberately absent from the new mapping: a class is not a night,
+and a course held in the evening must not read its own sessions as one.
+
+### `\bnight\b` and bare 나이트, for reasons the corpus gave
+
+Nineteen of the 2,489 stored items carry a word-boundary NIGHT or a 나이트. The
+boundary on the Latin half matches all 15 real occurrences — `LATIN NIGHT
+살사`, `All~Night SALSA Party`, `SOCIAL NIGHT` — and skips every one of the
+five that are not a programme naming itself:
+
+```
+midnight                            #everysaturdaynightmilonga  (×2)
+#MidsummerNightLatinTangoParty       LATIN NIGHTS
+```
+
+The last two deserve a note. `LATIN NIGHTS` is excluded because its only
+instance in the corpus is a body reading `BACHATA WORKSHOP - 8:00 PM 9:00 PM`,
+and no dated programme anywhere writes the plural; the plural was not added on
+a guess. And `#MidsummerNightLatinTangoParty` **does** match — on the bare
+`party` that `EVENT_WORDS` has always carried, not on anything added here. A
+test pins that so the blame lands in the right place later.
+
+The Korean half carries no boundary, because Korean compounds have none:
+`바차타나이트` and `살사나이트` are how a night is written. The same
+permissiveness matches `나이트 호텔`, a hotel in Bangkok — which brings us to
+the honest part.
+
+### What actually protects the negatives is not the pattern
+
+```
+342   DJ MAX 살사나이트 … 후기          a recap      → classifier says OTHER
+2417  방콕 … 나이트 호텔과헤밍웨이       travel blog  → the post names no date at all
+3778  MAX NIGHT Free Salsa On1 Class   free class   → classifier says CLASS
+3803  LATIN NIGHTS                     workshop     → classifier says CLASS
+```
+
+Not one of those is kept out by the vocabulary. The pattern matches the Bangkok
+hotel's name; what keeps that post out is that its body is the blog's own title
+and nothing else, so there is no day to attach a programme to. The tests assert
+the real mechanism in each case rather than the comfortable one.
+
+**Which is precisely why the broad alternative was rejected.** Adding the same
+two words to the classifier's own night vocabulary changes two items instead of
+one, and both are false positives:
+
+```
+3778  MAX NIGHT Free Salsa On1 Class   CLASS → SOCIAL_WITH_CLASS + an event
+3803  LATIN NIGHTS                     CLASS → SOCIAL_WITH_CLASS + an event
+```
+
+홍턴's miss was never a classification miss, so the broad change buys nothing
+and costs two.
+
+### What changed, over the whole corpus
+
+One item.
+
+| | before | after |
+| --- | --- | --- |
+| 4324 홍턴 | 09-26 19:00, fee 20,000 | 09-23 19:00 · 09-24 · 09-25 · **09-26 21:00, no fee** |
+
+```
+changed items 1   candidates 1 → 4   dates added 3   removed 0
+classifications changed 0   upcoming lost 0
+```
+
+Both field changes on the 26th are corrections: the hour becomes the one its
+own line states, and the price it never had is dropped.
+
+Every risk family came back zero: holiday or cancelled day promoted **0**,
+course recurrence **0**, festival **0**, roundup **0**, business-hours **0**,
+recap or travel post **0**, class promoted **0**.
+
+### A superseded expectation, moved rather than deleted
+
+v0.96.15's fixture listed 홍턴 3767 under "not a run of nights", and that was
+correct at the time: guard 3 kept the post *because* its 9/26 line named no
+night. This release supplies exactly that word, so the 26th now survives and
+the run reads as the four nights it is. The entry was moved out of that group
+with the reason left in its place, and guard 3 itself is still exercised there
+by 수원쿠바 3810 — the half of it about losing a *time* rather than a day.
+
+### What this does for somebody looking for a night: nothing today
+
+All four of 홍턴's dates are 2026-09-23 through 09-26, and today is 09-27. **The
+three restored events are in the past, and so is the corrected hour.** TODAY
+Salsa/Bachata recall does not move, and this release should not be credited
+with moving it.
+
+Its value is that the vocabulary is now right for the next one. 홍턴 runs a
+LATIN NIGHT as its regular Saturday, and the live listing still files it under
+파티(페스티발)/출빠정보 with all four days in `eventDays`.
+
+### One consequence worth naming
+
+The restored 9/25 is a second event on a date that already has one: event
+1598757, `홍턴 추석 이벤트`, collected from 오살사 (`SRC-D-011`). They will not
+fold. `duplicates.classify()` pairs two same-date events only when they share a
+real venue or a real clock, and both of these have neither — the danceinfo 9/25
+line names no place and states two different lone clocks, so the time rule
+correctly refuses to guess. That is the established contract, not a regression
+introduced here, and both dates are past; duplicate and fold behaviour is
+untouched by this release.
+
+### Residuals, unchanged and still out of scope
+
+* **BABARU's hours come from its poster**, because `parse_start_time()` is
+  disabled outright when the text holds any clock *range* — here the workshop's
+  `PM 8:00~9:00 (워크샵)`, correctly rejected — so `PM 9:00 START (소셜)` beside
+  it is never reached. A time-reading gap affecting every source.
+* **BAYA's 9/24 is a real party** whose own line names only a workshop, with
+  the proof (`목 파티 1만원`) elsewhere in the body. v0.96.16's condition 4
+  cannot know that, and was not loosened.
+* **홍턴's own 9/23 reads 19:00**, the first workshop, where the social opens at
+  21:00 — the same `_pick_reading` proximity behaviour, untouched.
+
 ## v0.96.16 Read A Post's Own Day-List Field As The Days It Runs
 
 Product Runtime 0.96.16; Information Engine **1.01**; migration **043,

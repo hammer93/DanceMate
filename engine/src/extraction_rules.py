@@ -836,6 +836,41 @@ EVENT_CONTEXT_WORDS = {
     "SOCIAL": r"소셜|social|파티|party|정모",
     "SOCIAL_WITH_CLASS": r"소셜|social|파티|party|정모",
 }
+# v0.96.17: what a *dated program* may call itself. A schedule post that
+# details each of its days names the night on each day's own line, and one
+# venue's regular Saturday is written `LATIN NIGHT` and nothing else - 홍턴's
+# 추석 run lists four days as 바차타 파티 / 키좀바 파티 / 살사데이 / "추석
+# 이벤트 LATIN NIGHT ... DJ RICKY와 함께하는 신나는 토요일 밤 ... 오픈 오후
+# 9시", and only the fourth failed to name itself in a word EVENT_WORDS knows.
+#
+# Deliberately a third mapping rather than a wider EVENT_WORDS, because that
+# constant answers four other questions and widening it would answer all of
+# them differently for one question's benefit: which clock range is the
+# event's time (`_pick_reading`), which lone clock is its start
+# (`parse_start_time`), which price is its fee (`extract_fee`'s
+# EVENT_CONTEXT tier), and which segment of an ambiguous post is the reviewed
+# candidate (`extractor._select_context`). Measured over the whole stored
+# corpus, widening EVENT_WORDS globally happens to change the same single
+# item today - but the four behaviours it also governs would be permanently
+# looser for no measured gain, so the reading stays where the evidence is.
+#
+# `\bnight\b` and not a substring: the corpus writes `midnight`,
+# `#everysaturdaynightmilonga`, `#MidsummerNightLatinTangoParty` and one
+# `LATIN NIGHTS`, and none of those is a dated program naming itself. The
+# boundary matches all 15 real occurrences (`LATIN NIGHT 살사`, `All~Night
+# SALSA Party`) and skips all five of those. The Korean half carries no
+# boundary because Korean compounds have none - `바차타나이트`, `살사나이트`
+# are how a night is written - and no NIGHT anywhere in the corpus, body or
+# poster, is glued straight onto a hangul syllable.
+#
+# CLASS is deliberately absent: a class is not a night, and a course that
+# happens to be held in the evening must not read its own sessions as one.
+_NIGHT_NAMED = r"\bnight\b|나이트"
+DATED_PROGRAM_WORDS = {
+    key: (value if key == "CLASS" else f"{value}|{_NIGHT_NAMED}")
+    for key, value in _EVENT_WORDS.items()
+}
+
 # Priced separately from the event and easy to mistake for it.
 _OTHER_PROGRAMME = re.compile(r"특강|수업|레슨|클래스|워크샵|워크숍|세미나|class|lesson|workshop", re.I)
 
