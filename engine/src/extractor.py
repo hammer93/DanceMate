@@ -1007,6 +1007,337 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
     return out
 
 
+# --- the post's own day-list field (v0.96.16) ------------------------------
+#
+# danceinfo.net publishes one row per (content, date) for every day a listing
+# runs: 부에나's 추석 party is idx 27718..27722, one per day of
+# 2026-09-23..27, and that site's date page for each of those days carries it.
+# The field `acquisition.danceinfo_payload_body()` writes as `전체일정` is that
+# day set, and `일정정보` is one schedule string belonging to the whole post -
+# the payload carries no per-date schedule at all.
+#
+# `extract_schedule()` above reads a schedule post as a run of *date
+# headings*, each introducing its own program. Applied to this field that is
+# the wrong shape, and it fails in a specific, measured way: every day but the
+# last gets the segment `"2026-09-25,"`, which names no event and is dropped,
+# while the last day's segment swallows the whole `일정정보` + description
+# block. So `matching` never reaches two, the post falls through to
+# `extract_single()`, and it is filed on the **last** day of its own run -
+# 부에나's five-night party stored once, on 9/27.
+#
+# This is deliberately not the "one shared schedule, therefore every date"
+# inference. Measured over the live corpus, that bare shape - two or more
+# dates, no per-date prose, one shared schedule - is right **one time in
+# seven**: a Barcelona congress, a Geneva festival, a 6주과정 집중반 and a
+# 월간 스케줄 roundup all have it too. What makes reading the field safe is not
+# the shape but the five conditions below, each of which exists for a post
+# that breaks without it.
+#
+# The route is additive: it runs only where `extract_schedule()` produced
+# nothing, so every post that already expands - including the ones carrying no
+# source category at all, which condition 1 would refuse - is untouched.
+
+_DAY_TOKEN = r"(?:\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2})"
+# What may sit between two days of the list, and nothing else: the weekday the
+# rendered page prints in brackets, a comma, whitespace. Bounded this tightly
+# so the capture stops at the next field label instead of running into it -
+# `일` of `일정정보` is a weekday character and a looser class eats it.
+_DAY_GAP = r"(?:\s*(?:\([월화수목금토일]\))?\s*,?\s*)"
+_DAY_LIST_FIELD = re.compile(
+    rf"전체일정\s*({_DAY_TOKEN}{_DAY_GAP}(?:{_DAY_TOKEN}{_DAY_GAP})*)"
+)
+DAY_LIST_ITEM = "DAY_LIST_ITEM"
+DAY_LIST_TIME_AMBIGUOUS = "DAY_LIST_TIME_AMBIGUOUS"
+
+# A day written as part of a span ("9월 25일(금) ~ 27일(일) 정상 영업") has that
+# span's words as its own evidence. Used *only* to decide which segment a day
+# belongs to - never to invent a day - so it can only ever refuse one.
+_PROSE_RANGE = re.compile(
+    r"(?P<m1>\d{1,2})\s*월\s*(?P<d1>\d{1,2})\s*일\s*(?:\([^)\n]{1,6}\))?"
+    r"\s*[~\-–—]\s*"
+    r"(?:(?P<m2>\d{1,2})\s*월\s*)?(?P<d2>\d{1,2})\s*일"
+)
+
+
+def own_day_list(text: str):
+    """The days the post's own `전체일정` field lists, and where that field ends.
+
+    ``(frozenset_of_iso_days, end_offset)``, or ``(frozenset(), None)`` when
+    the post has no such field. A field written yearless - the rendered-page
+    form, `09/23 (수) , 09/25 (금)` - resolves against the single year the post
+    states elsewhere, and is refused outright when the post states none or
+    states more than one, because then the list names no year at all.
+    """
+    from datetime import date as _date
+
+    match = _DAY_LIST_FIELD.search(text or "")
+    if match is None:
+        return frozenset(), None
+    tokens = re.findall(_DAY_TOKEN, match.group(1))
+    days = {token for token in tokens if len(token) == 10}
+    yearless = [token for token in tokens if len(token) != 10]
+    if yearless:
+        years = {day[:4] for day in days} or {
+            day[:4] for day in own_explicit_dates(text)
+        }
+        if len(years) != 1:
+            return frozenset(), None
+        year = int(next(iter(years)))
+        for token in yearless:
+            month, day = token.split("/")
+            try:
+                days.add(_date(year, int(month), int(day)).isoformat())
+            except ValueError:
+                return frozenset(), None
+    return frozenset(days), match.end(1)
+
+
+def _span_day(match, month_group, day_group, days, fallback_month=None):
+    """One end of a prose span, as a day of the post's own list."""
+    month = match.group(month_group) or fallback_month
+    if not month:
+        return None
+    wanted = (int(month), int(match.group(day_group)))
+    for day in days:
+        parts = day.split("-")
+        if (int(parts[1]), int(parts[2])) == wanted:
+            return day
+    return None
+
+
+# Between two days of a restated list there is a weekday letter and
+# punctuation and nothing else. BABARU writes its run twice - once as the
+# field, once as "9/23수 · 9/25금 · 9/26토 BABARU에서 살사 · 바차타와 함께
+# 알차게 준비했습니다" - and the sentence that follows the last of them is
+# about all three days, not about the 26th.
+_LIST_RUN_GAP = re.compile(r"^[\s,./·\-–—()\[\]월화수목금토일]*$")
+
+
+def _restated_days(text: str, days, matches) -> set:
+    """Days the post only writes again as a list, never describes on their own.
+
+    A run of two or more consecutive day mentions with nothing but separators
+    between them is the day list restated in prose. None of its members -
+    including the last, whose sentence belongs to the whole run - carries
+    evidence about one day, so each falls to the shared block instead.
+    """
+    resolved = [(m, _resolve_date_match(m, None, days)[0]) for m in matches]
+    restated: set = set()
+    run: list = []
+    for index, (match, day) in enumerate(resolved):
+        if day is None:
+            run = []
+            continue
+        if run:
+            previous_end = resolved[index - 1][0].end()
+            if not _LIST_RUN_GAP.match(text[previous_end:match.start()]):
+                run = []
+        run.append(day)
+        if len(run) >= 2:
+            restated.update(run)
+    return restated
+
+
+def _prose_segments(text: str, prose_from: int, days, matches):
+    """Each listed day mapped to the post's own words about that day.
+
+    A day the post never writes about is absent from the result - it has no
+    evidence of its own, and condition 4 has nothing to judge. A day written
+    twice keeps the mention carrying a clock, the same tie-break
+    `extract_schedule()` already makes and for the same reason.
+    """
+    segments: dict = {}
+
+    def offer(day, span, has_clock):
+        if day not in days:
+            return
+        kept = segments.get(day)
+        if kept is None or (has_clock and not kept[1]):
+            segments[day] = (span, has_clock)
+
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        day, _ = _resolve_date_match(match, None, days)
+        if day:
+            span = text[start:end]
+            offer(day, span, bool(_CLOCK_CUE_RE.search(span)))
+    for match in _PROSE_RANGE.finditer(text[prose_from:]):
+        start = prose_from + match.start()
+        end = min([m.start() for m in matches if m.start() > start] or [len(text)])
+        span = text[start:end]
+        has_clock = bool(_CLOCK_CUE_RE.search(span))
+        first = _span_day(match, "m1", "d1", days)
+        last = _span_day(match, "m2", "d2", days, fallback_month=match.group("m1"))
+        if first and last and first <= last:
+            for day in days:
+                if first <= day <= last:
+                    offer(day, span, has_clock)
+    return segments
+
+
+def _drop_guessed_morning(ev, source_role):
+    """A morning start nothing marked as one is not a night's start time.
+
+    One day's own line can be narrow enough that the only clock beside the
+    event's own word has no meridiem - LATIN EVERLATN's 9/27 reads
+    "7:00-8:00 p.m.: Bachata 워크샵 ... 9:00-10:00 p.m.: Kizomba 파티" and a
+    scope that small resolves the bare 7:00 to 07:00. A 7am party is worse
+    than a party whose hours nobody claims to know, so the observation is
+    kept as evidence and the time is not published - the same trade
+    `extract_with_image_fallback()` already makes for an OCR'd clock
+    (IMAGE_TIME_AMBIGUOUS), for the same reason.
+    """
+    if ev.start_time is None or ev.start_time >= "12:00":
+        return
+    evidence = next((e for e in ev.evidences if e.field == "time"), None)
+    details = evidence.value if evidence else None
+    if isinstance(details, dict) and details.get("meridiem_evidence") ==             extraction_rules.EVIDENCE_EXPLICIT:
+        return
+    ev.evidences.append(Evidence(
+        "context", DAY_LIST_TIME_AMBIGUOUS,
+        evidence.raw_text if evidence else str(ev.start_time),
+        source_role=source_role,
+    ))
+    ev.start_time = None
+    ev.end_time = None
+    ev.evidences = [e for e in ev.evidences if e.field != "time"]
+
+
+def _scope_states(scope: str, day: str, days) -> bool:
+    """Does this scope already say which day it is about?"""
+    return any(_resolve_date_match(m, None, days)[0] == day
+               for m in _all_date_matches(scope))
+
+
+def extract_day_list(title: str, body: str, source_role="SECONDARY",
+                     event_type=None, source_category=None, published=None,
+                     current=None, image_texts=None):
+    """One candidate per day of the post's own `전체일정` field, or None.
+
+    Called only where `extract_schedule()` returned nothing. ``current`` is the
+    single event the post reads as today, images included; condition 5 refuses
+    the whole expansion rather than trade any of it away.
+
+    The five conditions, each measured against a post that needs it:
+
+    1. **The source files this as an event.** Without it the same rule adds 65
+       candidates over the stored corpus, of which 45 are course sessions -
+       nine posts collected before the category was carried, every one a
+       weekly 과정 (오스틴 & 카이닝 nine Wednesdays, 스타일링 작품반 eight
+       Fridays). danceinfo files those as 강습; the category is the only signal
+       that separates them from a night, and - as `classify()` already
+       insists - it must never promote on its own either.
+    2. **The days come from the post's own field**, not from prose that happens
+       to list dates. The label is written by the acquisition layer, so it
+       cannot appear by accident.
+    3. **No course evidence anywhere** - `_COURSE_EVIDENCE_RE`, the
+       classifier's own words. 바차타 기본다지기소셜집중반 is filed
+       출빠정보/정모/강습, classifies as a night, lists six Tuesdays and says
+       `6주과정`. That word is the only thing between it and six nights.
+    4. **A day's own words beat the shared block, and a day whose own words do
+       not name the night is not a night.** This is the whole safety argument.
+       하바나 lists 2026-09-24 in its field and writes "9월 24일(목) 하루
+       쉬어갑니다"; LATIN EVERLATN lists four days and gives two of them
+       nothing but "Salsa 워크샵"; 수원쿠바 lists a day whose line is
+       "오픈강습". The site's day list is publisher-entered and says nothing
+       about what happens on a day - the post's own sentence does.
+    5. **Nothing the post already shows is traded away.** The day it reads as
+       today must survive, and with its start time. 수원쿠바's own 9/26 line
+       carries no clock while the `토요일 8:00 PM` that times it sits in the
+       shared block, so expanding that post would swap one night somebody can
+       turn up to for three they only know the date of. It is left alone.
+    """
+    if (source_category or "").upper() != "EVENT":
+        return None
+    words = extraction_rules.EVENT_WORDS.get((event_type or "").upper())
+    if not words:
+        return None
+    text = f"{title} {body}"
+    days, field_end = own_day_list(text)
+    if field_end is None or len(days) < 2:
+        return None
+    if classifier._COURSE_EVIDENCE_RE.search(text):
+        return None
+    published_date = _as_date(published)
+    prose_from = max(field_end, len(title or "") + 1)
+    matches = [m for m in _all_date_matches(text) if m.start() >= prose_from]
+    segments = _prose_segments(text, prose_from, days, matches)
+    for day in _restated_days(text, days, matches):
+        segments.pop(day, None)
+    # The shared block is what the post says before it starts talking about
+    # individual days: its `일정정보`, `장소`, `DJ` and the opening of its
+    # description. A day the post never singles out is described by this and
+    # by nothing else.
+    shared = text[prose_from:min([m.start() for m in matches] or [len(text)])]
+    # A day the post never singles out is read from the shared block, so that
+    # block has to be a night with hours - the same day-and-a-clock pair
+    # `classifier.night_event_bundle()` has required of this source since
+    # v0.96.14, and the same event-word test `extract_schedule()` applies to
+    # every segment it keeps. Without it a multi-day listing with no per-day
+    # prose and no schedule at all expands on its day list alone: DANCE
+    # BACHATA CONGRESS (four days in Barcelona, no 일정정보) and
+    # BACHATAGENEVA FESTIVAL (five days, none either) are single continuous
+    # events that the classifier reads as OTHER today, and neither may become
+    # four or five nightly parties if it ever stops doing so.
+    shared_is_a_night = bool(re.search(words, shared, re.I)) and         bool(_CLOCK_CUE_RE.search(shared))
+    out = []
+    for day in sorted(days):
+        own = segments.get(day)
+        if own is not None and not re.search(words, own[0], re.I):
+            continue
+        if own is None and not shared_is_a_night:
+            continue
+        scope = own[0] if own is not None else shared
+        # A poster is evidence about the post, so it may fill a day the post
+        # describes only through that shared block. A day the post singled out
+        # has evidence of its own, and a clock that line left out is the
+        # post's own silence about that day - not licence to borrow another
+        # day's hours. 수원쿠바's poster is titled 9월 19일 and reads
+        # "소셜 PM 8:00 ~ 11:00"; letting it time that post's Tuesday 9/22 is
+        # exactly the cross-date mixing v0.81.2 forbids inside one body.
+        day_images = None if own is not None else image_texts
+        # A schedule segment always opens with the date it is about, and
+        # `extract_single()` reads the day off its own scope. The shared block
+        # does not - the field it follows is where the days are written, and a
+        # day covered by a span ("9월 25일 ~ 27일") is not at the front of it
+        # either. Name the day at the head of the scope in exactly those
+        # cases, and never where the scope already resolves to it, because a
+        # second date in a segment that has one is a second program.
+        if not _scope_states(scope, day, days):
+            scope = f"{day} {scope}"
+        context_id = f"day{len(out) + 1}"
+        ev = extract_with_image_fallback(
+            title, scope, source_role=source_role,
+            name_hint=f"{re.sub(r'\s+', ' ', title or '').strip()} "
+                      f"{day[5:].replace('-', '/')}",
+            event_type=event_type, published=published_date,
+            image_texts=day_images,
+            own_dates=set(days) | {day},
+        )
+        if ev.date != day:
+            # The scope resolved to a different day than the one it is there
+            # to describe. Nothing here is confident enough to overrule that.
+            return None
+        _drop_guessed_morning(ev, source_role)
+        for evidence in ev.evidences:
+            evidence.context_id = context_id
+        ev.evidences.append(Evidence(
+            "context", DAY_LIST_ITEM, scope[:160],
+            source_role=source_role, context_id=context_id,
+        ))
+        out.append(ev)
+    if len(out) < 2:
+        return None
+    if current is not None:
+        kept = next((e for e in out if e.date == current.date), None)
+        if kept is None:
+            return None
+        if current.start_time is not None and kept.start_time is None:
+            return None
+    return out
+
+
 # --- image text fallback (v0.81.3) -------------------------------------
 #
 # A poster image attached to a post often carries the date/time/fee the body
@@ -1076,7 +1407,7 @@ def _missing_fallback_fields(ev) -> set[str]:
 
 def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
                                 name_hint=None, event_type=None, published=None,
-                                image_texts=None, event_terms=None):
+                                image_texts=None, event_terms=None, own_dates=None):
     """extract_single(), then fill date/time/fee gaps from image OCR text.
 
     ``image_texts`` is a list of ``(image_ref, ocr_text)`` pairs, already
@@ -1094,7 +1425,8 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
     stands.
     """
     ev = extract_single(title, body, source_role=source_role, name_hint=name_hint,
-                        event_type=event_type, published=published, event_terms=event_terms)
+                        event_type=event_type, published=published, event_terms=event_terms,
+                        own_dates=own_dates)
     if not image_texts or not needs_image_fallback(ev):
         return ev
 

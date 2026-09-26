@@ -1,5 +1,235 @@
 # DanceMate Release Notes
 
+## v0.96.16 Read A Post's Own Day-List Field As The Days It Runs
+
+Product Runtime 0.96.16; Information Engine **1.01**; migration **043,
+unchanged**. This release changes how one stored body's dates are read, and
+re-acquires 19 stored bodies through the existing acquisition path. No change
+to classification, the collectors, Event identity, Region, Source authority,
+the duplicate and canonical rules, the normalization queue, venue extraction,
+the time rules, or OCR.
+
+**Measured, not guessed — and measured the way Production reads.** Read-only
+against Production 3bce460 / 0.96.15 / engine 1.00, fully converged, over all
+2,483 stored items, plus the live danceinfo.net `__NEXT_DATA__` payloads on
+2026-09-26.
+
+### The audit that produced this release also produced its own correction
+
+The audit's first harness modelled the stored body and nothing else. It was
+wrong about BABARU, and the way it was wrong is why this section exists:
+Production classifies and extracts from **body + structured metadata + poster
+OCR**, and a body-only simulation is not Production. The harness now calls
+`process_discovered_post()` itself and rebuilds the same `image_texts` and
+`trusted_classification_texts` Production builds, replaying its own stored
+`source_item_image` rows through the same four gates the runtime applies —
+`select_candidate_urls()`, `_process_one()`'s cache reuse, the
+`needs_image_fallback()` cost gate, and
+`gather_trusted_classification_texts()`'s three extra checks. No OCR string is
+invented anywhere; every one comes from a Production row.
+
+It reproduces Production's dates on **1,366 of 1,368** extracted items. The two
+it does not are `SRC-D-026` class-board posts whose event depends on a
+`class_event_opt_in` flag the harness cannot see; neither is a danceinfo item
+and neither is touched by this release.
+
+The difference the poster makes is not small. **22 items read differently
+between the two harnesses**, 21 of them a `start_time` a poster supplies — and
+on BABARU it changes the route outright. Body-only said BABARU expanded to
+three untimed nights; with its real poster, condition 5 sees the 20:00
+Production already shows and refuses to trade it away. That refusal is correct,
+and getting to it required fixing the harness, not the rule.
+
+### The defect: a five-night party stored once, on the last night
+
+danceinfo.net publishes **one row per (content, date)** for every day a listing
+runs. 부에나's 추석 party is five rows — `idx` 27718 through 27722, one per day
+of 2026-09-23..27 — and the site's date page for each of those days carries it,
+so somebody browsing on the 26th sees it. The field
+`acquisition.danceinfo_payload_body()` writes as `전체일정` is that day set, and
+`일정정보` is one schedule string belonging to the whole post. Verified against
+the live payload: there is no per-date schedule in it at all.
+
+`extract_schedule()` reads a schedule post as a run of date *headings*, each
+introducing its own program. Applied to a field that is the wrong shape, and it
+fails the same way every time:
+
+```
+2026-09-23 전체일정 2026-09-23,2026-09-24,2026-09-25,2026-09-26,2026-09-27
+일정정보 PM 9:00 ~ 밤샘 장소 부에나 DJ 띰띰이, 띰띰이, 카르디
+강의 소개 ... 부에나에서 추석 연휴를 맞아 파티가 열립니다. ...
+```
+
+Every day but the last gets the segment `"2026-09-25,"`, which names no event
+and is dropped. The last day's segment swallows the whole `일정정보` +
+description block. `matching` never reaches two, the post falls through to the
+single-candidate path, and it is filed on the **last** day of its own run.
+Production held that party as one event on **2026-09-27**.
+
+**This is a structured-field parsing defect, not a missing inference.**
+`extract_day_list()` now reads the field as the day list it is.
+
+### The shape alone proves nothing
+
+Measured over the live corpus, the bare pattern — two or more dates, no
+per-date prose, one shared schedule — is right **one time in seven**. The other
+six are a Barcelona congress, a Geneva festival, a `6주과정 집중반`, a
+`10월 스케줄` roundup, a workshop weekend and a recurring Tuesday class day. So
+the route is gated on five conditions, each of which has a real post that
+breaks without it:
+
+1. **The source files it as an event.** Ungated, the same rule adds 65
+   candidates over the stored corpus of which **45 are course sessions** — nine
+   posts collected before the category was carried, every one a weekly 과정
+   (오스틴 & 카이닝 nine Wednesdays, 스타일링 작품반 eight Fridays).
+2. **The days come from the post's own `전체일정` field**, never from prose that
+   happens to list dates. The label is written by the acquisition layer, so it
+   cannot appear by accident.
+3. **No course evidence anywhere** — `_COURSE_EVIDENCE_RE`, the classifier's
+   own words. 바차타 기본다지기소셜집중반 is filed 출빠정보/정모/강습,
+   classifies as a night, lists six Tuesdays, and says `6주과정`. That word is
+   the only thing between it and six nights.
+4. **A day's own words beat the shared block, and a day whose own words do not
+   name the night is not a night.** 하바나 lists 2026-09-24 and writes
+   "9월 24일(목) 하루 쉬어갑니다"; LATIN EVERLATN lists four days and gives two
+   of them nothing but "Salsa 워크샵"; 수원쿠바 lists a day whose line is
+   오픈강습. The site's day list is publisher-entered and says nothing about
+   what happens on a day — the post's own sentence does. A day written inside a
+   span ("9월 25일(금) ~ 27일(일) 정상 영업") has that span's words as its own
+   evidence, which is how `정상 영업` stays out without any new vocabulary.
+5. **Nothing the post already shows is traded away** — the day it reads as
+   today survives, and with its start time. 수원쿠바's own 9/26 line carries no
+   clock while the `토요일 8:00 PM` that times it sits in the shared block, so
+   expanding it would swap one night somebody can turn up to for three they
+   only know the date of. That post is left exactly as it is: v0.96.15's
+   guard 3, applied per day.
+
+Two more, both measured:
+
+* **A day the post never singles out is read from the shared block, so that
+  block must be a night with hours** — the same day-and-a-clock pair
+  `night_event_bundle()` has required of this source since v0.96.14. Without
+  it, DANCE BACHATA CONGRESS (four days, no `일정정보`) and BACHATAGENEVA
+  FESTIVAL (five days, none either) expand on their day list alone. Both read
+  as OTHER today; neither may become four or five nightly parties if that ever
+  changes, and the test forces a night classification to prove it.
+* **A restated day list is the list again, not a description.** BABARU writes
+  its run twice — as the field, and as `9/23수 · 9/25금 · 9/26토 BABARU에서
+  살사 · 바차타와 함께`. Between those tokens there is a weekday letter and a
+  separator and nothing else, and the sentence after the last of them is about
+  all three days.
+
+**`isFixedSchedule` is deliberately not used.** The site publishes it, and it
+is wrong in both directions: true on 홍턴 4324, whose four days each run a
+different programme, and false on BABARU 4063, whose three days run the same
+one. 744 false against 55 true over 799 live rows. `isFirstDay` is no better —
+true on all five of 부에나's rows.
+
+### The second half: 19 stored bodies from a superseded acquisition path
+
+19 items still held a body produced by `danceinfo_region`, the rendered-HTML
+path the payload path replaced on 2026-09-24. Two things follow from that, and
+re-extraction fixes neither, because the stored body itself is stale:
+
+* its `전체일정` is **yearless** (`09/23 (수) , 09/25 (금)`), and
+* it carries a `수강료` label the payload has no field for — which is course
+  evidence, so **condition 3 refused BABARU until it was re-acquired**.
+
+The two halves of this release need each other. They were re-acquired through
+`acquisition_job.reacquire()`, the existing admin path. No body was written by
+hand and no SQL touched `source_item_content`.
+
+### What changed, over the whole corpus
+
+Six posts, Production-equivalent harness:
+
+| lesson | before | after |
+| --- | --- | --- |
+| 4771 부에나 | 09-27 21:00 | 09-23…09-27, each 21:00 |
+| 4063 BABARU | 09-23 20:00 | 09-23, 09-25, 09-26, each 20:00 |
+| 4571 CASS | 09-24 21:00 | 09-24 + 09-27 (via the existing schedule route) |
+| 4650 맘보 | 09-26 21:00 | 09-26 + 09-27 (same) |
+| 4743 BAYA | 09-24 | 09-26 |
+| 2942 LATIN EVERLATN | 09-24 19:00 | 09-27 19:00 |
+
+**10 dates added, 2 removed — both already past — no start time lost, no
+classification changed, nothing upcoming lost, 0 new duplicates.** Candidate
+cardinality: two 1→1, two 1→2, one 1→3, one 1→5.
+
+Every risk family was asserted over the corpus and came back zero: holiday or
+cancelled day promoted **0**, course recurrence **0**, festival or congress
+**0**, roundup **0**, business-hours **0**, wrong-date **0**.
+
+**One day's poster never times another day.** A poster may fill a day the post
+describes only through its shared block. 수원쿠바's poster is titled 9월 19일
+and reads `소셜 PM 8:00 ~ 11:00` — one day's hours — and every day that post
+lists has a line of its own, so it may fill none of them. BABARU's states
+`WORKSHOP PM 8:00 ~ 9:00` and `SOCIAL PM 9:00 START` under each of its three
+dates, and every one of its days is described through the shared block, so
+every day may read it. That is what lets condition 5 be satisfied instead of
+refusing the expansion in order to keep one hour.
+
+**A guessed morning start is not published.** One day's line can be narrow
+enough that the only clock beside the event's word carries no meridiem — LATIN
+EVERLATN's 9/27 reads `7:00-8:00 p.m.: Bachata 워크샵 ... 9:00-10:00 p.m.:
+Kizomba 파티`, and a scope that small resolves the bare 7:00 to 07:00. A 7am
+party is worse than a party whose hours nobody claims to know, so the
+observation is kept as evidence and the time is not published — the same trade
+`extract_with_image_fallback()` already makes for an OCR'd clock.
+
+### What this does for somebody looking for a night
+
+Ground truth rebuilt from the live source for 2026-09-26 — the salsa/bachata
+listings danceinfo itself files as an event:
+
+| | GT | found | recall |
+| --- | --- | --- | --- |
+| baseline | 25 | 16 | 64% |
+| re-acquisition only | 25 | 18 | 72% |
+| day-list field only | 25 | 17 | 68% |
+| both | 25 | **19** | **76%** |
+
+Both harnesses agree on every figure in that table.
+
+The six that remain are not date-extraction defects any more:
+
+* **1576 비 수도권 주요 일정** and **4824 NEW.SOL BAR 추석 영업안내** — a
+  multi-region roundup and a bar's opening-hours notice. Both read as OTHER by
+  design; v0.96.14 pins the second one.
+* **2942 LATIN EVERLATN** — its 9/26 is a Salsa workshop and nothing else.
+  Correct.
+* **4236 추석맞이 소셜파리** — its 9/26 line is "9월 26일 화끈하게 씁니다",
+  which names no night. Left out on purpose.
+* **4755 클럽 하바나** — "9월 25일(금) ~ 27일(일) 정상 영업". The audit
+  measured day ranges across the corpus: of the 22 posts that write one, and
+  the 9 of those that classify as a night, **8 are not an event per day** —
+  weekly roundups, a festival, a cup, a course's enrolment window, an overnight
+  trip, a three-week ticket window, a 13-day application window. Expanding
+  ranges is unsafe and this release does not.
+* **4676 LATIN NIGHTS** — a classifier vocabulary gap, not a date one, and a
+  single-day post. Out of scope here.
+
+**The multi-day date-extraction bottleneck is closed.** What is left is one
+classifier word and two deliberate exclusions.
+
+### Known residual, separately fixable
+
+BABARU's hours come from its poster rather than its body because
+`parse_start_time()` is disabled outright when the text contains any clock
+*range* — and this body's only range belongs to the workshop
+(`PM 8:00~9:00 (워크샵)`), correctly rejected, while `PM 9:00 START (소셜)`
+beside it is never reached. That is a time-reading gap in `extraction_rules`,
+it affects every source, and it is not touched here.
+
+### A third id space, for whoever reads the next audit brief
+
+The five posts this release is about were handed over as "2942 / 4063 / 4771 /
+4755 / 4324". None of those resolve in `source_items`, and 2942 hits an
+unrelated Naver post. They are **danceinfo lesson ids** — the `/lessons/<N>`
+URL path, `initialLesson.contentIdx` — a third id space alongside
+`source_item_id` and the engine's `candidate_id`. Resolve one with
+`source_items.url = 'https://danceinfo.net/lessons/<N>'`.
+
 ## v0.96.15 A Run Of Nights Stored As One Day
 
 Product Runtime 0.96.15; Information Engine **1.00**; migration **043,

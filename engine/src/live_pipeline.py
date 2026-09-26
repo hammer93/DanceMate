@@ -1,5 +1,6 @@
 from .classifier import classify_with_image_evidence
-from .extractor import DATE_PATTERNS, extract_schedule, extract_single, extract_with_image_fallback
+from .extractor import (DATE_PATTERNS, extract_day_list, extract_schedule,
+                        extract_single, extract_with_image_fallback)
 from .verifier import verify
 from .database import persist_events
 
@@ -104,6 +105,42 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         image_texts=image_texts,
         event_terms=getattr(post, "event_terms", None),
     )
+    # v0.96.0's schedule route reads a post that *heads each program with its
+    # own date*. A source that publishes its run as a structured field instead
+    # ("전체일정 2026-09-23,...,2026-09-27") is a different shape, and reading
+    # that field as a run of date headings is what filed 부에나's five-night
+    # party on 9/27 alone - see extract_day_list()'s own docstring. Tried only
+    # here, after the single reading exists, for two reasons: every post that
+    # already expands stays byte-for-byte as it was, and the single reading is
+    # what the expansion has to beat - `current=ev` carries the date and start
+    # time (a poster's included) that condition 5 refuses to trade away.
+    day_list = extract_day_list(
+        post.title, post.body, source_role=source_role,
+        event_type=classification,
+        source_category=getattr(post, "source_category", None),
+        published=getattr(post, "published_at", None),
+        current=ev,
+        image_texts=image_texts,
+    )
+    if day_list:
+        for day_event in day_list:
+            if image_evidence_ref:
+                # Every day of the run asserts the classification, so every day
+                # records where that classification came from. Provenance only -
+                # nothing downstream reads this row.
+                from .models import Evidence as _Evidence
+                from .extractor import IMAGE_OCR as _IMAGE_OCR
+
+                day_event.evidences.append(_Evidence(
+                    "context", "IMAGE_CLASSIFICATION_USED", image_evidence_ref,
+                    evidence_type=_IMAGE_OCR, source_role=source_role,
+                    inference=image_evidence_ref,
+                ))
+            verify(day_event, source_role=source_role)
+            if (post.acquisition_quality == "METADATA_ONLY"
+                    and day_event.status == "VERIFIED"):
+                day_event.status = "POSSIBLE"
+        return {"classification": classification, "events": day_list}
     if image_evidence_ref:
         from .models import Evidence
         from .extractor import IMAGE_OCR

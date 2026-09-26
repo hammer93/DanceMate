@@ -9,7 +9,29 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.15 (연휴 동안 문을 여는 클럽은 자기 날짜 목록을
+- Product Runtime: v0.96.16 (danceinfo.net은 한 공지가 여러 날 열리면
+  **(글, 날짜)마다 별도 row**를 발행한다 — 부에나 추석 파티는 9/23~27의
+  `idx` 27718~27722 다섯 줄이고, 그 다섯 날짜 페이지에 모두 실린다. 우리가
+  `전체일정`으로 저장하는 필드가 바로 그 날짜 집합인데, `extract_schedule()`은
+  그것을 **날짜 heading 여러 개**로 읽었다. 그러면 마지막을 뺀 모든 날짜가
+  빈 segment가 되어 버려지고 마지막 날짜가 `일정정보`와 본문 전체를 삼키므로,
+  다섯 밤짜리 파티가 **마지막 하루짜리 Event 하나**로 저장됐다. 이제
+  `extract_day_list()`가 그 필드를 글이 적어 둔 날짜 목록으로 읽는다.
+  "날짜가 여러 개 + 공통 일정 한 줄"이라는 **형식만으로는 근거가 되지 않는다**
+  — live corpus에서 그 형식은 7번 중 1번만 맞고, 나머지는 바르셀로나 congress,
+  제네바 festival, `6주과정 집중반`, `10월 스케줄` roundup이다. 그래서 다섯 개
+  조건(source가 EVENT로 분류 / 자기 `전체일정` 필드 / course evidence 없음 /
+  그 날 자기 문장이 공통 블록을 이긴다 / 지금 보이는 날짜와 시각을 잃지 않는다)을
+  모두 hard gate로 둔다. 함께, 폐기된 `danceinfo_region` 경로로 저장된 19건을
+  기존 acquisition 경로로 재취득했다 — 그 body의 `전체일정`은 연도가 없고
+  payload에 없는 `수강료` 라벨이 붙어 있어서, 두 반쪽은 서로가 필요하다
+  — migration 043 유지, engine 1.01: 전체 2,483건 중 6건이 바뀌고 날짜 10개가
+  늘고 2개가 줄며(둘 다 이미 지난 날), 시각·분류·예정 Event를 잃는 곳은 없다.
+  휴무일·워크샵만 있는 날·festival·roundup·영업안내는 그대로다.
+  **Production이 보는 evidence를 harness도 봐야 한다**: body만 보던 harness는
+  BABARU를 틀리게 읽었고, poster OCR까지 재현한 harness가 Production을
+  1,368건 중 1,366건 재현한다)
+- v0.96.15 (연휴 동안 문을 여는 클럽은 자기 날짜 목록을
   스스로 적어 두고(`전체일정 2026-09-24,2026-09-25,2026-09-26,2026-09-27`)
   그 날들을 하나씩 설명하는데, Production은 그 전체를 **하루짜리 Event 하나**로
   저장하고 있었다. 어느 하루의 Salsa/Bachata 누락 9건 중 8건이 이 모양이었고,
@@ -124,7 +146,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.15"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.16"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

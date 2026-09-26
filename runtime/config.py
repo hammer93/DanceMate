@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.15"
+PRODUCT_VERSION = "0.96.16"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -183,7 +183,19 @@ PRODUCT_VERSION = "0.96.15"
 # loses no date anywhere: no event removed, no event type changed, no other
 # post read differently. v0.96.3's incremental pass re-reads every stored row
 # against it.
-DEFAULT_ENGINE_VERSION = "1.00"
+# v0.96.16 bumps to 1.01, and it is again a change in how a stored body is
+# read: extractor.extract_day_list() reads danceinfo.net's own `전체일정`
+# field as the days the post runs, where extract_schedule() had been reading
+# its comma-packed days as a run of date headings. Every day but the last then
+# got an empty segment and was dropped, while the last swallowed the whole
+# `일정정보` + description block, so a five-night holiday party was stored once,
+# on the last day of its own run. Measured with a harness that calls
+# process_discovered_post() itself and rebuilds Production's own image_texts
+# from its stored source_item_image rows: over all 2,483 items the change moves
+# six posts, adds 10 dates and removes 2 - both already past - and loses no
+# start time, no classification and nothing upcoming. v0.96.3's incremental
+# pass re-reads every stored row against it.
+DEFAULT_ENGINE_VERSION = "1.01"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
