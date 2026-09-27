@@ -9,7 +9,37 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.18 (본문에 다른 프로그램의 시간 범위가 있으면 행사
+- Product Runtime: v0.96.19 (행사가 자기 시간 범위를 적어 놓아도, 근처에 수업
+  단어가 있으면 그 범위를 버렸다. 가또땅고 3199의 `오픈특강 with 샤론y태희
+  9:00pm-12:30am 밀롱가`는 밀롱가가 자기 시간을 말하는데 10분 먼저 끝나는
+  오픈특강이 16글자 안 **앞쪽**에 있어서 범위가 통째로 탈락했고, 남은 시계가
+  공연뿐이라 22:30이 저장됐다. 또도땅고의 낮 밀롱가는 `2:00pm ~ 4:00pm 밀롱가
+  씨엠쁘레`인데 01:00으로 읽혔다. 이제 range에도 v0.96.18과 같은 질문을 한다 —
+  수업 단어가 행사 자신의 단어보다 정말 더 가까운가. 다만 range의 영향 범위는
+  lone clock과 비교할 수 없이 넓어서(본문 1,508건 + 저장된 poster OCR 891건 중
+  205건이 현재 거부됨) 규칙 두 개가 함께 간다. (1) 행사 단어가 **다른 시계로
+  바로 이어지면** 그 단어는 그 시계를 부르는 것이지 이 range를 부르는 것이
+  아니다(4449의 `소셜 시작 : PM 8:00` — 이어지는 시계가 판정 대상 range 자신이면
+  그 range의 라벨이므로 그대로 인정, 4415의 `파티 시간: P.M 9:00 - A.M 1:00`).
+  (2) 수업 단어가 range **뒤**에 오면 그 range의 라벨이므로 행사 단어가 더
+  가깝더라도 여전히 그 수업의 것이다(피스타 poster의
+  `심야밀롱가(11:30 p.m-4:30 a.m) 패키지`는 심야 패키지 시간이지 밀롱가 시간이
+  아니다). 단순 거리 비교는 205건 중 8건을 통과시키고 그중 2건이 오류인데, 두
+  규칙이 각각 하나씩 막아 6건만 남는다. 행사 단어가 여러 range를 부를 때는
+  위치가 아니라 **가장 가까운** range가 이긴다(`공연 오후 8시~8시30분 LATIN
+  PARTY 오후 9시~12시`에서 파티가 공연의 30분을 가져갔다). 통과된 6건 중 3건은
+  meridiem이 아예 없어(`9:00-1:00 소셜`, `9시~12시`) 오전으로 읽히므로
+  `_readings()`가 다시 거부한다 — 밤 행사에 오전 9시를 광고하는 것은 아무것도
+  광고하지 않는 것보다 나쁘다. classification·collector·acquisition·Event
+  identity·Region·Source authority·중복/canonical·정규화 큐·venue·date 추출·
+  `EVENT_WORDS`·`DATED_PROGRAM_WORDS`·OCR은 그대로다. migration 043 유지,
+  engine 1.04: 전체 2,516건 중 **3건**만 바뀌어 전부 시각→시각, None→시각 0,
+  시각→None 0, 날짜·cardinality·분류·venue·요금 변화 0, KET 회귀 0. 3건 모두
+  이미 저장돼 있던 틀린 시각이 글이 말하는 시각으로 옮겨간 것이고, 셋 다 과거
+  날짜라 TODAY recall은 움직이지 않는다. 가또땅고 3201은 2/22이 수업만 있는 날인데
+  글이 `MILONGA_WITH_CLASS`로 분류돼서 전에도 후에도 수업 시간표를 읽는다 —
+  분류 쪽 문제라 이번 범위 밖이고 테스트로 고정해 두었다)
+- v0.96.18 (본문에 다른 프로그램의 시간 범위가 있으면 행사
   자신의 시작 시각을 읽지 못했다. BABARU의 `PM 8:00~9:00 (워크샵), PM 9:00
   START (소셜)`에서 워크샵이라는 단어는 9:00보다 **4글자 앞**, 소셜은 **1글자
   뒤**에 있는데 `_is_other_programme()`이 거리를 비교하지 않는 절대 veto라서
@@ -182,7 +212,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.18"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.19"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

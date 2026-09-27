@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.18"
+PRODUCT_VERSION = "0.96.19"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -225,7 +225,29 @@ PRODUCT_VERSION = "0.96.18"
 # stored items against a git-stash baseline: four posts change - 2 None->time,
 # 5 time->time, 0 time->None - with no date, cardinality or classification
 # change anywhere. v0.96.3's incremental pass re-reads every stored row.
-DEFAULT_ENGINE_VERSION = "1.03"
+# v0.96.19 bumps to 1.04: `extraction_rules.parse_time_range()` asks the same
+# question of a clock *range* that v0.96.18 asked of a lone clock - is the class
+# word really nearer than the event's own word - instead of letting any class
+# word within sixteen characters veto the range outright. 가또땅고's "오픈특강
+# with 샤론y태희 9:00pm-12:30am 밀롱가" had the milonga's own hours thrown away
+# by the class that ends ten minutes before them, so the post advertised the
+# performance's 22:30; 또도땅고's daytime milonga read 01:00 instead of the
+# "2:00pm ~ 4:00pm 밀롱가 씨엠쁘레" it states. A range's blast radius is far
+# larger than a lone clock's - 1,508 candidates in the stored bodies and 891
+# more in the stored poster OCR, 205 of them rejected today - so two rules come
+# with it: an event word that runs straight into another clock is naming that
+# clock and not this range ("소셜 시작 : PM 8:00"), and a class word written
+# *after* a range is that range's own label and still owns it however near the
+# event's word is (the PISTA poster's "심야밀롱가(11:30 p.m-4:30 a.m) 패키지" is
+# the package's hours, not the milonga's). Each closes exactly one false
+# positive: without them a naive nearest-word comparison admits 8 of the 205
+# rather than 6. Where several ranges are named, the nearest-named one now wins
+# rather than the first by position. Measured over all 2,516 stored items
+# against a git-stash baseline: three posts change, all time->time, with no
+# None->time, time->None, date, cardinality, classification, venue or fee change
+# anywhere and KET regression 0. v0.96.3's incremental pass re-reads every
+# stored row.
+DEFAULT_ENGINE_VERSION = "1.04"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

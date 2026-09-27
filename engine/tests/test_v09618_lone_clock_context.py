@@ -182,22 +182,28 @@ def test_a_post_naming_another_clubs_night_does_not_adopt_it():
     assert classification in ("CLASS", "OTHER", "SOCIAL", "SOCIAL_WITH_CLASS")
 
 
-# --- the case this release does not fix --------------------------------
+# --- the case this release did not fix, closed by the next one ----------
 
-def test_the_range_side_of_the_defect_is_still_open():
-    """가또땅고 3199, pinned honestly.
+def test_the_range_side_of_the_defect_was_closed_by_v09619():
+    """가또땅고 3199, kept as the hand-off it was written to be.
 
-    Its milonga's own range is `9:00pm-12:30am 밀롱가`, and
-    `_is_other_programme()` rejects it because 오픈특강 sits within sixteen
-    characters before it - the range side of the same defect, left alone here
-    because weakening range rejection is out of scope. The reading was 00:30
-    (the milonga's end) and is now 22:30 (the performance's hour). Both are
-    wrong; the truth is 21:00. This test asserts the state of the world, not an
-    approval of it - when the range side is fixed, it should start failing.
+    v0.96.18 pinned this as the *range* side of the same defect: the milonga's
+    own `9:00pm-12:30am 밀롱가` was rejected because 오픈특강 sits within sixteen
+    characters before it, so only lone clocks were left and the post read 22:30 -
+    the performance's hour. The test asserted that state and said it should start
+    failing when the range side was fixed. v0.96.19 fixed it, by weighing the
+    nearest class word against the nearest event word for a range too, so the
+    assertion is inverted here rather than deleted: the range is now read, and
+    the 22:30 it used to settle for is gone.
     """
     ref, title, body = UNFIXED_RANGE_SIDE
-    assert extraction_rules.parse_time_range(body, event_type=MILONGA) is None, \
-        "the milonga's own range is still rejected by the class word before it"
+    reading = extraction_rules.parse_time_range(body, event_type=MILONGA)
+    assert reading is not None, "v0.96.19 reads the milonga's own range"
+    assert reading.start == UNFIXED_TRUTH
+    # The lone-clock rule still finds the performance's 22:30 if asked in
+    # isolation - it is the only clock in the body that is not inside a range.
+    # What changed is that it is no longer asked: a range the event names is
+    # better evidence, and `extract_single()` takes it.
     assert _start(body, MILONGA) == "22:30"
-    assert _start(body, MILONGA) != UNFIXED_TRUTH, \
-        "if this ever equals 21:00 the range side has been fixed - update the note"
+    event = extract_single(title, body, event_type=MILONGA)
+    assert (event.start_time, event.end_time) == ("21:00", "00:30")

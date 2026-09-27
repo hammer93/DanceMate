@@ -1,5 +1,154 @@
 # DanceMate Release Notes
 
+## v0.96.19 Read The Hours An Event States, Not The Class Word Beside Them
+
+Product Runtime 0.96.19; Information Engine **1.04**; migration **043,
+unchanged**. Two functions in one file. No change to classification, the
+collectors, acquisition, Event identity, Region, Source authority, the duplicate
+and canonical rules, the normalization queue, venue extraction, date extraction,
+`DATED_PROGRAM_WORDS`, `EVENT_WORDS`, or OCR.
+
+**Measured, not guessed.** Read-only against Production `4cc5b10` / 0.96.18 /
+engine 1.03, fully converged, over all 2,516 stored items, with a `git stash`
+baseline and the harness that calls `process_discovered_post()` itself and
+replays Production's own stored `source_item_image` rows.
+
+### The residual v0.96.18 handed over, closed
+
+v0.96.18 taught `parse_start_time()` to weigh how near a class word is against
+how near the event's own word is, rather than letting any class word within
+sixteen characters veto a lone clock. It left the range side alone on purpose,
+and shipped 가또땅고 3199 as a test that pinned the state of the world and said
+it should start failing when somebody fixed it:
+
+```
+3/6(금) 월간가또 7:50-8:50pm 오픈특강 with 샤론y태희 9:00pm-12:30am 밀롱가
+(밤 10시30분 샤론y태희 공연)
+```
+
+The milonga states its own hours. `_is_other_programme()` threw them away
+because 오픈특강 — the class that ends ten minutes before it — sits within
+sixteen characters *before* the range, so the only clock left in the body was
+the performance's and the post advertised **22:30**.
+
+### A range is not a lone clock with different numbers
+
+There are **1,508** range candidates in the stored bodies and **891** more in
+the 1,550 stored poster OCR texts. **205** of them are rejected today. A naive
+nearest-word comparison — v0.96.18's rule, copied across — admits **8**: six
+rightly, and two that are exactly the reading `_OTHER_PROGRAMME_TIME` exists to
+stop. So two rules come with it, and each closes exactly one of the two.
+
+**An event word that runs straight into another clock is naming that clock.**
+Item 4449 writes `워크샵 : 양 & 베키 · PM 7:00~8:00 소셜 시작 : PM 8:00`. The
+소셜 is nearest the workshop's range and would hand it the workshop's hours —
+but it is labelling the `PM 8:00` that follows it, and the post's stored 20:00 is
+right. When the clock a word runs into *is* the range being judged, the word is
+that range's own label and still names it: item 4415's
+`파티 시간: P.M 9:00 - A.M 1:00`.
+
+**A class word written after a range is that range's own label.** The PISTA
+poster writes `심야밀롱가(11:30 p.m-4:30 a.m) 패키지` — 밀롱가 one character
+before the range, 패키지 two after it. Distance alone hands the late-night
+package's hours to the milonga, and unlike the morning cases below it carries
+`p.m`/`a.m` markers, so nothing further down would have refused it. Direction
+decides instead: a class word *before* a range trails the previous item and may
+be outranked by a nearer event word; one *after* it owns the range however near
+the event's word is. The event's own word may sit on either side, because Korean
+posts label a range as often before (`소셜 오후 9시~11시`) as after
+(`9:00pm-12:30am 밀롱가`).
+
+```
+                              rejected   admitted
+absolute veto (0.96.18)          205         0
+naive nearest word               205         8    <- 4449 and the PISTA poster
+this release                     205         6
+```
+
+And where several ranges are named, the **nearest-named** one now wins rather
+than the first by position: `공연 오후 8시~8시30분 LATIN PARTY 오후 9시~12시`
+puts the PARTY inside the 공연 range's window too, so the party was taking the
+performance's half hour.
+
+### Three of the six were admitted and then refused again
+
+`3643`, `3768` and `3820`'s ranges carry no meridiem anywhere — `밀롱가 8시~10시30`,
+`9:00-1:00 소셜`, `워크샵 2만원 (파티포함) 9시~12시` — so they resolve literally
+to a morning. Advertising 9am for a night is worse than advertising nothing,
+which is what those posts store today, so `_readings()` refuses a range that
+only context admitted when it is an unmarked morning. This is the same trade
+v0.96.18 made for a guessed morning start. A range no class word ever objected
+to keeps its literal morning reading, untouched.
+
+### What changed, over the whole corpus
+
+Three posts, every one of them an hour that was already stored and wrong.
+
+| item | before | after | |
+| --- | --- | --- | --- |
+| 3199 가또땅고 3/6 | 22:30 | **21:00–00:30** | the milonga's own `9:00pm-12:30am`. The 22:30 was the performance. |
+| 3735 또도땅고 9/23 | 01:00–04:00 | **14:00–16:00** | a *daytime* milonga. `2:00pm ~ 4:00pm 밀롱가 씨엠쁘레`, read as 1am before. |
+| 3201 가또땅고 2/22 | 15:05–16:15 | 16:20–17:20 | a class timetable either way — see below |
+
+```
+changed items 3   None -> time 0   time -> time 3   time -> None 0
+date-set changes 0   cardinality 0   classification 0   venue 0   fee 0
+KET regression 0
+```
+
+**No post loses an hour and no post gains one it did not have.** Every change is
+a stored hour moving to the one the post states.
+
+### One of the three is not a win, and is not a loss either
+
+가또땅고 3201's 2/22 is 일빠 — four classes and no milonga at all — and the post
+is classified `MILONGA_WITH_CLASS`, so a range is read off a class timetable
+before this release and after it. It read 탱고 집중 준중급's `3:05-4:15pm` and
+now reads `밀롱가 올레벨 종강 (4:20-5:20pm)`, the line that actually contains the
+word 밀롱가, which is why it moves. Still a class. The defect is on the
+classification side — the post should not be a milonga — and that is out of
+scope here. A test pins it so nobody reads the move as a fix.
+
+### Two limitations found while measuring, both pre-existing
+
+Neither is an attribution question, both read the same before and after, and
+both are pinned:
+
+* `_RANGE_RE` takes a following range's meridiem into its own match, so the
+  second range of `특강 오후 7시~8시 오후 9시~11시 소셜` arrives as a bare
+  `9시~11시` and is refused as an unmarked morning — even though the 소셜 names
+  it and this release attributes it correctly. Written with its own marker the
+  same sentence reads 21:00.
+* v0.96.18's own `_belongs_to_other_programme()` measured a word's distance from
+  `min(16, match.start())` plus the match's length, but `_near_window()` removes
+  the clock and truncates at structural breaks, so words after the clock scored
+  nearer than they are. It did not change v0.96.18's answers — BABARU's 소셜 is
+  nearest either way, verified — and both sides now measure from
+  `_window_span()`, against the text itself rather than the concatenated window.
+
+### Protections re-verified
+
+```
+v0.96.17 홍턴 run of nights      4 nights, 9/23 21:00, 9/24-25 untimed
+v0.96.18 BABARU x3               21:00, TEXT provenance
+v0.96.18 홍턴 9/23               21:00      강턴 9/25..27  21:00
+v0.96.18 range-tail refusals     BAYA no 01:00, LATIN EVERLATN no 22:00
+v0.96.17 N3 (3822)               keeps only its own 9/27
+EVENT_WORDS / DATED_PROGRAM_WORDS / classifier vocabulary   untouched
+342 recap  2417 Bangkok  3771 roundup            OTHER/no event
+3778 MAX NIGHT  3803 LATIN NIGHTS  3840 Largo    CLASS, 0 events
+186 187 196 2385 3635 3746                       no event
+KET rows  0 changed
+```
+
+### What this does for somebody looking for a night
+
+All three changed posts are dated 2026-02-22, 2026-03-06 and 2026-09-23. Today
+is 2026-09-28, so **all three are in the past and TODAY recall does not move.**
+What this release improves is the correctness of hours already stored — a
+daytime milonga that said 1am, a milonga that said its own performance's hour —
+and the reading of every post collected from here on.
+
 ## v0.96.18 Recover An Event's Start Time After Somebody Else's Range
 
 Product Runtime 0.96.18; Information Engine **1.03**; migration **043,

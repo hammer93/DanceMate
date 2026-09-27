@@ -223,10 +223,139 @@ def _near_window(text: str, start: int, end: int) -> str:
     return before + after
 
 
+def _window_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """The span of `text` that `_near_window()` reads, as absolute offsets.
+
+    v0.96.19. `_near_window()` returns the before-part and the after-part
+    concatenated with the clock removed, so a position in its output cannot be
+    mapped back to the text - and the rules below need to look at what follows a
+    word, which may be past the window's own end. This reaches exactly as far as
+    `_near_window()` does, both structural breaks included, and hands back
+    offsets into the text itself.
+    """
+    lo = max(0, start - _TIME_NEAR_BEFORE)
+    before = text[lo:start]
+    breaks = list(_PROGRAMME_BREAK.finditer(before))
+    if breaks:
+        lo += breaks[-1].end()
+    after = text[end:end + _TIME_NEAR_AFTER]
+    cut = _PROGRAMME_BREAK.search(after)
+    return lo, end + (cut.start() if cut else len(after))
+
+
+def _nearest_near_clock(text: str, pattern, start: int, end: int, skip=None):
+    """``(distance, match)`` for the pattern match nearest this clock, or None.
+
+    v0.96.19. Distance is to the nearer edge of the clock, so a word touching it
+    scores 0 from either side.
+    """
+    lo, hi = _window_span(text, start, end)
+    best = None
+    for match in pattern.finditer(text, lo, hi):
+        if match.start() >= start and match.end() <= end:
+            continue                      # part of the clock, not a word by it
+        if skip is not None and skip(match):
+            continue
+        gap = ((start - match.end()) if match.end() <= start
+               else (match.start() - end))
+        gap = max(0, gap)
+        if best is None or gap < best[0]:
+            best = (gap, match)
+    return best
+
+
+# v0.96.19: a clock, with whatever introduces it, immediately after a word.
+# An event word that runs straight into a clock is naming *that* clock, so it
+# says nothing about a different range sitting beside it - which is how
+# Production writes both "소셜 시작 : PM 8:00" (item 4449, where the 소셜 sits
+# nearest the workshop's range and owns the 8 PM after it) and
+# "특강 7시~8시 소셜 9시~11시". When the clock it runs into *is* the range being
+# judged, the word is that range's own label and must keep naming it - item
+# 4415's "파티 시간: P.M 9:00 - A.M 1:00".
+_FOLLOWED_BY_CLOCK = re.compile(
+    r"(?:[^\S\n]|[·|,()\[\]–—-]){0,3}"
+    r"(?:[^\s:：]{0,6}[^\S\n]{0,2}[:：])?[^\S\n]{0,3}"
+    r"(?:오전|오후|AM|PM|a\.m|p\.m)?[^\S\n]{0,2}"
+    r"(?P<clock>\d{1,2})[:시：]",
+    re.I,
+)
+
+
+def _names_another_clock(text: str, word: "re.Match",
+                         start: int, end: int) -> bool:
+    """Whether this word is naming a clock other than the range at start..end."""
+    run = _FOLLOWED_BY_CLOCK.match(text, word.end())
+    if run is None:
+        return False
+    return not (start <= run.start("clock") < end)
+
+
 def _is_other_programme(text: str, match: re.Match) -> bool:
     """True when this range belongs to something priced apart from the event."""
     return bool(_OTHER_PROGRAMME_TIME.search(
         _near_window(text, match.start(), match.end())))
+
+
+def _range_belongs_to_other_programme(text: str, match: "re.Match",
+                                      words: str | None) -> bool:
+    """Whether a clock *range* is another programme's, judged by what is nearest.
+
+    v0.96.19, and the same question v0.96.18 asked of a lone clock - but asked
+    of a range, where the blast radius is 1,508 candidates rather than a handful,
+    so it carries two rules the lone-clock side does not need.
+
+    Measured over the whole stored corpus - 1,508 range candidates in 891 post
+    bodies plus 891 more in 1,550 stored poster OCR texts. 205 of them are
+    rejected today (175 in bodies, 30 in OCR). Comparing distances alone would
+    admit 8: six are the event's own hours, sitting after somebody else's range
+    with the event's word beside them - 가또땅고's "오픈특강 with 샤론y태희
+    9:00pm-12:30am 밀롱가", 또도땅고's "미선 특강 - 2:00pm ~ 4:00pm 밀롱가
+    씨엠쁘레", 대전까미니또's "●수업 7시~7시50 💢밀롱가 8시~10시30" - and two
+    are not. Each needed its own reason, and with both, exactly the six are
+    admitted:
+
+    * item 4449's range is the workshop's, labelled as such, and the 소셜 that
+      sits nearest it owns the *next* clock - see `_FOLLOWED_BY_CLOCK`.
+    * the PISTA poster's "심야밀롱가(11:30 p.m-4:30 a.m) 패키지" is the
+      late-night package's hours, not the milonga's - the direction rule below.
+
+    Of the six, three change what a post stores: 3199 and 3735 gain the hours
+    their bodies state, and 4415 already read 21:00 from another sentence. The
+    other three carry no meridiem, so `_readings()` refuses them a few lines
+    further down rather than advertise a morning.
+
+    ``words`` is the event type's own vocabulary. Without it - which is how
+    `parse_start_time()`'s guard calls `_readings()` - this is exactly the
+    absolute veto it has always been, so that guard's meaning does not move.
+    """
+    start, end = match.span()
+    other = _nearest_near_clock(text, _OTHER_PROGRAMME_TIME, start, end)
+    if other is None:
+        return False
+    if not words:
+        return True
+    event = _nearest_near_clock(
+        text, re.compile(words, re.I), start, end,
+        skip=lambda found: _names_another_clock(text, found, start, end))
+    if event is None:
+        return True
+    # Which side the class word sits on decides whether distance may speak at
+    # all. Every range in the corpus that a class word wrongly vetoed has the
+    # class word *before* it, trailing the previous item -
+    # "오픈특강 with 샤론y태희 9:00pm-12:30am 밀롱가",
+    # "미선 특강 - 2:00pm ~ 4:00pm 밀롱가 씨엠쁘레" - and there a nearer event
+    # word may take the range back. A class word written *after* a range is that
+    # range's own trailing label and still owns it however near the event word
+    # is: the PISTA poster writes "심야밀롱가(11:30 p.m-4:30 a.m) 패키지", where
+    # 밀롱가 is one character before the range and 패키지 two after it, so
+    # distance alone would hand the late-night package's hours to the milonga -
+    # exactly the reading `_OTHER_PROGRAMME_TIME` exists to stop. The event's own
+    # word may sit on either side, because Korean posts label a range as often
+    # before ("소셜 오후 9시~11시") as after ("9:00pm-12:30am 밀롱가").
+    if other[1].end() > start:
+        return True
+    # A tie cannot say which programme owns the clock, so it stays rejected.
+    return other[0] <= event[0]
 
 
 def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | None:
@@ -254,14 +383,29 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
     send someone to a class they did not sign up for, which is the same class
     of error as reading PM as AM.
     """
-    readings = [r for r in _readings(text or "")]
+    words = _EVENT_WORDS.get((event_type or "").upper())
+    readings = [r for r in _readings(text or "", words)]
     if not readings:
         return None
-    words = _EVENT_WORDS.get((event_type or "").upper())
     if words:
+        # v0.96.19: among the ranges the event's own word names, the one it
+        # names *most closely*. Taking the first by position handed a
+        # performance its hours - "바차타 클래스 오후 6시~7시 공연 오후
+        # 8시~8시30분 LATIN PARTY 오후 9시~12시" put the PARTY inside the
+        # 공연 range's window, and the 공연 range came first. A word that
+        # heads another range is skipped here for the same reason it is
+        # skipped when deciding whether a range was somebody else's at all.
+        pattern = re.compile(words, re.I)
+        named = []
         for reading, start, end in readings:
-            if re.search(words, _near_window(text or "", start, end), re.I):
-                return reading
+            hit = _nearest_near_clock(
+                text or "", pattern, start, end,
+                skip=lambda found, s=start, e=end: _names_another_clock(
+                    text or "", found, s, e))
+            if hit is not None:
+                named.append((hit[0], reading))
+        if named:
+            return min(named, key=lambda pair: pair[0])[1]
     # No reading named the event type nearby (or none was given): the same
     # post can still repeat its own time, once plainly and once with an
     # explicit AM/PM marker (a structured summary line and a free-text body
@@ -435,14 +579,22 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
     return (explicit or found[0])[0]
 
 
-def _readings(text: str):
-    """Every clock range in the text that is not another programme's."""
+def _readings(text: str, words: str | None = None):
+    """Every clock range in the text that is not another programme's.
+
+    v0.96.19: ``words`` is the event type's own vocabulary. Given it, a range
+    beside a class word is weighed against the event's word rather than vetoed
+    outright - see `_range_belongs_to_other_programme()`. Left out, which is how
+    `parse_start_time()`'s guard calls this, every range is judged exactly as
+    before, so that guard's meaning does not move.
+    """
     for match in _RANGE_RE.finditer(text or ""):
         first = _clock_parts(match.group("t1"))
         second = _clock_parts(match.group("t2"))
         if first is None or second is None:
             continue
-        if _is_other_programme(text, match):
+        vetoed = _is_other_programme(text, match)
+        if vetoed and _range_belongs_to_other_programme(text, match, words):
             continue
         mark1 = (_meridiem(match.group("lead1"), first[0])
                  or _meridiem(match.group("trail1"), first[0]))
@@ -472,6 +624,15 @@ def _readings(text: str):
         if end_abs <= start_abs:
             end_abs += 1440
         if end_abs - start_abs > 1440:
+            continue
+        # v0.96.19: a range admitted only by weighing context must not be an
+        # unmarked morning. 루에다's 일정정보 reads "워크샵 2만원 (파티포함)
+        # 9시~12시" with no meridiem anywhere, so those hours resolve literally
+        # to 09:00-12:00 - and telling somebody to turn up at 9am for a night is
+        # worse than telling them nothing, which is what that post says today.
+        # The same trade v0.96.18 made for a guessed morning start. A range the
+        # absolute veto never objected to is untouched by this.
+        if vetoed and ambiguous and start_abs < 12 * 60:
             continue
         yield (
             TimeReading(
