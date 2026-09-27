@@ -1,5 +1,176 @@
 # DanceMate Release Notes
 
+## v0.96.18 Recover An Event's Start Time After Somebody Else's Range
+
+Product Runtime 0.96.18; Information Engine **1.03**; migration **043,
+unchanged**. One function. No change to classification, the collectors,
+acquisition, Event identity, Region, Source authority, the duplicate and
+canonical rules, the normalization queue, venue extraction, date extraction,
+`DATED_PROGRAM_WORDS`, `EVENT_WORDS`, or OCR.
+
+**Measured, not guessed.** Read-only against Production `aaaec9e` / 0.96.17 /
+engine 1.02, fully converged, over all 2,504 stored items, with a `git stash`
+baseline and the harness that calls `process_discovered_post()` itself and
+replays Production's own stored `source_item_image` rows.
+
+### The brief's premise was wrong, and the evidence says where
+
+The residual carried out of v0.96.17 was recorded as *"`parse_start_time()` is
+disabled outright when the text holds any clock range"*. That guard exists, but
+it is **not** what was losing BABARU's hour. Traced on the real body:
+
+```
+일정정보 PM 8:00~9:00 (워크샵), PM 9:00 START (소셜)
+
+_readings(body)            -> []            the range IS correctly rejected
+                                            (워크샵 is beside it), so the
+                                            range guard never fires
+lone-clock candidates      PM 8:00        -> vetoed
+                           9:00           -> vetoed
+                           PM 9:00 START  -> vetoed   <-- the one that matters
+```
+
+Deleting the range guard changes **nothing** for this body — the candidate list
+stays empty — and deleting it changes nothing over the whole stored corpus
+either, measured. So it stays: a post that states a range of its own is
+`parse_time_range()`'s to read, and that is strictly better evidence than a lone
+clock.
+
+### The two things that actually were wrong
+
+**The veto was absolute.** `_is_other_programme()` asks "is there a class word
+within sixteen characters", over a window symmetric around the clock. For a
+*range* that is the right question — a range beside 워크샵 is the workshop's
+hours. For a lone clock in a body that lists both, it is the wrong one:
+
+```
+clock 'PM 9:00 START'   window 'M 8:00~9:00 워크샵  소셜'
+    nearest class word  워크샵   4 characters BEFORE the clock
+    nearest event word  소셜     1 character  AFTER  the clock
+```
+
+The 워크샵 belongs to the range before the 9:00. The word that qualifies this
+clock is 소셜, and it is nearer. The absolute veto could not tell.
+
+**And position outranked evidence.** Where several lone clocks sat near the
+event's own word, the first by position won. 홍턴's 9/23 line:
+
+```
+9월 23일(수) | 홍턴 바차타 파티  오후 7시 제니 y 뚜부  오후 8시 뽀대용수 y 밀라
+소셜 오픈 오후 9시 / DJ 쿵
+```
+
+The day's 파티 heading is near all three clocks, so the night was advertised at
+오후 7시 — the first workshop — when the post says 소셜 오픈 오후 9시.
+
+### What changed in the code
+
+`parse_start_time()` now, for lone clocks only:
+
+* weighs the **nearest** class word against the **nearest** event word and takes
+  the clock only when the event's word is strictly nearer. A tie still goes to
+  the other programme, and a clock with no event word in its window at all is
+  still vetoed outright by any class word — which is what keeps
+  `살사 워크샵 오후 7시~9시` from acquiring a social's start;
+* prefers, among the clocks the event's word qualifies, one the post says the
+  event **opens** at — the existing `부터/시작/start/from/오픈/open` suffix, plus
+  the prefix form Production writes at least as often (`소셜 오픈 오후 9시`,
+  `클럽 오픈 오후 8시`). Position still breaks a tie between two openings;
+* refuses a clock written as one **end of a range**, which weighing distance
+  had newly let through.
+
+That last one is a false positive this release introduced and then closed.
+BAYA writes `8:00-9:00 워크샵, 9:00-1:00 소셜`: the 소셜 is nearest the `1:00`,
+so the social read as starting at **01:00**. LATIN EVERLATN's
+`9:00-10:00 p.m.: Kizomba 파티` read **22:00** the same way. A clock written as
+one end of a range is never an independent start — the tail is when the night
+stops, and the head is already `parse_time_range()`'s to read.
+
+`_is_other_programme()` itself, every rule that decides what a *range* is for,
+and the range guard are untouched.
+
+### What changed, over the whole corpus
+
+Four posts.
+
+| item | before | after | |
+| --- | --- | --- | --- |
+| 3786 BABARU ×3 nights | 20:00 | **21:00** | `PM 9:00 START (소셜)`. The 20:00 was the *workshop* column of its poster. |
+| 3767 홍턴 9/23 | 19:00 | **21:00** | `소셜 오픈 오후 9시`. The 19:00 was the first workshop. |
+| 3792 강턴 9/25, 9/26 | none | **21:00** | `PM9:00~ 추석맞이금요/토요소셜파티` |
+| 3199 가또땅고 3/6 | 00:30 | 22:30 | **both wrong** — see below |
+
+```
+changed items 4   None -> time 2   time -> time 5   time -> None 0
+date-set changes 0   cardinality changes 0   classification changes 0
+KET regression 0 of 682
+```
+
+**BABARU's hour now comes from the text.** That was the point: the evidence row
+reads `TEXT` with raw text `PM 9:00 START`, where Production had been carrying a
+poster-derived 20:00 on all three nights.
+
+### One item is still wrong, differently
+
+가또땅고 3199's 3/6 programme is `월간가또 7:50-8:50pm 오픈특강 with 샤론y태희
+9:00pm-12:30am 밀롱가 (밤 10시30분 샤론y태희 공연)`. The milonga starts at
+**21:00**. It read 00:30 before — the milonga's own *end* — and reads 22:30 now,
+the performance's hour. Both are wrong.
+
+The reason is the range side of exactly the same defect, and it is deliberately
+out of scope here: the milonga's own range `9:00pm-12:30am 밀롱가` is rejected by
+`_is_other_programme()` because 오픈특강 sits within sixteen characters *before*
+it. Weakening range rejection was ruled out for this release, so the range stays
+rejected and only lone clocks remain to read. A test pins the current state and
+is written to start failing when the range side is fixed.
+
+### Protections re-verified
+
+```
+v0.96.17 NIGHT/나이트 dated-program behaviour   4 nights, 9/23 now 21:00
+EVENT_WORDS / DATED_PROGRAM_WORDS              untouched
+342 recap                    OTHER, 0 events
+2417 Bangkok travel          no event
+1576 roundup (item 3771)     OTHER, 0 events
+3778 MAX NIGHT free class    CLASS, 0 events
+3803 LATIN NIGHTS            CLASS, 0 events
+3840 Largo                   CLASS, 0 events
+186 187 196 2385 3635 3746 3840   no event
+647 2079                          event
+88436 -> 221245,  221245 -> NULL
+1217208 KR-JINJU,  1217535 KR-JEONBUK
+```
+
+### A superseded expectation, moved rather than deleted
+
+v0.96.16's test asserted that BABARU's three nights take **20:00 from its
+poster**, which was true when the body yielded nothing. The body now answers for
+itself with the correct 21:00, so the poster is offered and has nothing to fill.
+The test was renamed and rewritten to assert that, including `TEXT` provenance.
+
+Its companion — the *positive* case for "a shared-block day may read the
+poster" — was removed rather than rewritten, because it cannot exist: v0.96.16
+requires the shared block to carry a clock before a day may lean on it, so a
+poster can never be the only source of an hour there. The poster permission is
+still exercised by the 수원쿠바 negative (one day's poster must not time
+another's) and by this test offering a poster that is correctly not needed.
+
+### v0.96.17's N3, fixtured at last
+
+v0.96.17 verified by hand and shipped without a fixture: a post naming another
+event's night in passing must not adopt it. Both halves are now in the
+regression suite — real item 3822 keeps only its own 9/27 despite naming
+`10월 24일 SNS 4주년 파티`, and a constructed two-day run pointing at another
+club's `11월 20일 홍턴 LATIN NIGHT` does not take that day.
+
+### What this does for somebody looking for a night
+
+All four changed posts are dated 2026-03-06 and 2026-09-23..27. Today is
+2026-09-27, so **only 3792's 9/27 is not in the past, and its hour was already
+21:00 before this release.** TODAY recall does not move. What this release
+improves is the correctness of hours already stored, and the reading of every
+post collected from here on.
+
 ## v0.96.17 Recognize NIGHT / 나이트 In Dated-Program Vocabulary
 
 Product Runtime 0.96.17; Information Engine **1.02**; migration **043,

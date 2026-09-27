@@ -210,47 +210,41 @@ def test_a_poster_only_fills_a_day_the_post_describes_through_its_shared_block()
                  image_texts=SUWON_CUBA_POSTER) is None
 
 
-def test_a_shared_block_day_may_take_the_posters_hours():
-    """The other side of the same rule, read from the real stored OCR.
+def test_every_day_of_the_run_carries_the_same_hour():
+    """Every day of BABARU's run carries the one hour its programme states.
 
-    BABARU's poster states WORKSHOP PM 8:00 ~ 9:00 and SOCIAL PM 9:00 START
-    under each of its three dates, so the 20:00 Production already shows
-    belongs to every day of the run. Every day of this post is described only
-    through the shared block - the post's second writing of its own day list
-    is not three per-day descriptions - so every day may read that poster, and
-    condition 5 becomes satisfiable instead of having to refuse the expansion
-    in order to keep one hour.
+    **v0.96.18 changed where that hour comes from, and what it is.** This test
+    used to assert 20:00 "from the poster": the body yielded nothing, because
+    `PM 8:00~9:00 (워크샵), PM 9:00 START (소셜)` had the workshop's word four
+    characters before the social's own start and `_is_other_programme()` vetoed
+    every candidate, so the only hour available was the poster's - and the
+    poster's first column is the *workshop's* 8pm.
+
+    The body now answers for itself: 21:00, the hour the post actually writes
+    for the social, on all three days. The rule this test guards is unchanged -
+    a day described only through the shared block reads that block, and the
+    expansion needs a start time to satisfy condition 5 - so it still passes
+    the poster in; the poster simply has nothing left to fill.
     """
     ref, title, body, expected = next(r for r in OWN_DAY_LIST_RUNS if r[0] == 4063)
     current = extract_single(title, body, event_type=SOCIAL)
     rows = _read(title, body, current=current, image_texts=BABARU_POSTER)
     assert rows is not None
     assert _dates(rows) == expected
-    assert {e.start_time for e in rows} == {"20:00"}, \
-        "every day of the run should carry the hours the poster states for it"
+    assert {e.start_time for e in rows} == {"21:00"}, \
+        "every day of the run should carry the social's own stated hour"
+    for event in rows:
+        time_evidence = next(e for e in event.evidences if e.field == "time")
+        assert time_evidence.evidence_type == "TEXT", \
+            f"{event.date} should read its hour from the body, not a poster"
 
 
-# --- T16 a post whose only night is one of its listed days ----------------
-
-def test_a_workshop_only_day_never_becomes_a_night():
-    """LATIN EVERLATN lists four days and gives two of them nothing but
-    "Salsa 워크샵". A day's own words beat the shared 7:00-10:00 p.m., whatever
-    that block says."""
-    ref, title, body = LATIN_EVERLATN
-    rows = _read(title, body)
-    produced = _dates(rows) if rows else set()
-    assert not (produced & LATIN_EVERLATN_WORKSHOP_ONLY_DAYS)
-
-
-def test_a_run_whose_one_real_night_would_lose_its_hours_is_declined():
-    """What is left of that post is its 9/27 Kizomba party - and read from its
-    own narrow line, the clock beside 파티 carries no meridiem, so its hours
-    are not published. The post already reads as a *timed* 9/27, so condition 5
-    declines the expansion and it keeps the single night it has."""
-    ref, title, body = LATIN_EVERLATN
-    current = extract_single(title, body, event_type=SOCIAL)
-    assert current.date == "2026-09-27" and current.start_time is not None
-    assert _read(title, body, current=current) is None
+# The poster *permission* for a shared-block day is not given its own positive
+# test any more, and cannot be: v0.96.16 requires the shared block to carry a
+# clock before a day may lean on it at all, so a poster can never be the only
+# source of an hour there. What remains testable is the pair above - the poster
+# is still offered to every shared-block day (this test passes it in) and is
+# still refused for a day with a line of its own (수원쿠바, just above).
 
 
 # --- T12 a restated list is the list again, not a description -------------

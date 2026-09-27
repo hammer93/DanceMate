@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.17"
+PRODUCT_VERSION = "0.96.18"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -210,7 +210,22 @@ PRODUCT_VERSION = "0.96.17"
 # items with a harness that replays Production's own poster OCR: one item
 # changes, 1 -> 4 candidates, 3 dates added, none removed, no classification
 # moved. The broad alternative changes two items and both are false positives.
-DEFAULT_ENGINE_VERSION = "1.02"
+# v0.96.18 bumps to 1.03: `extraction_rules.parse_start_time()` now weighs how
+# near a class word is against how near the event's own word is, instead of
+# letting any class word within sixteen characters veto a lone clock outright,
+# and ranks a clock the post says the event *opens* at above one that merely
+# sits beside the event's name. BABARU's "PM 8:00~9:00 (워크샵), PM 9:00 START
+# (소셜)" had the workshop's word four characters before the social's own start
+# and the social's one character after, so every candidate was vetoed and the
+# 21:00 could only come from a poster; 홍턴's 9/23 put its 파티 heading beside
+# three clocks and advertised the first workshop's 19:00 instead of the 21:00 it
+# opens at. Weighing distance also let through the tail of a range, so a clock
+# written as one end of a range is now explicitly never an independent start
+# ("9:00-1:00 소셜" is not a social starting at 01:00). Measured over all 2,504
+# stored items against a git-stash baseline: four posts change - 2 None->time,
+# 5 time->time, 0 time->None - with no date, cardinality or classification
+# change anywhere. v0.96.3's incremental pass re-reads every stored row.
+DEFAULT_ENGINE_VERSION = "1.03"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

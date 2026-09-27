@@ -291,18 +291,104 @@ _SINGLE_CLOCK_RE = re.compile(
 )
 _NOT_A_START_AFTER = re.compile(r"^\s*(?:마감|까지|전|이전|until|by)", re.I)
 
+# v0.96.18: a word right before the clock saying the event opens then. The
+# suffix form ("9시부터", "9:00 START") is already the `start` group of
+# _SINGLE_CLOCK_RE; Production writes the prefix form at least as often -
+# "소셜 오픈 오후 9시", "클럽 오픈 오후 8시". Used only to rank one qualified
+# candidate above another, never to admit a clock that nothing qualified.
+_OPENS_BEFORE = re.compile(r"(?:오픈|시작|open|start|부터)[\s:.\-]*$", re.I)
+
+
+def _naming_distance(window: str, pattern, clock_start: int, clock_end: int):
+    """How far the nearest match of ``pattern`` sits from the clock itself.
+
+    Distance from the clock, not from the window's edge: a word four
+    characters before a clock says more about it than one twelve characters
+    after, and `_near_window()` alone cannot tell them apart.
+    """
+    best = None
+    for match in pattern.finditer(window):
+        start, end = match.span()
+        if end <= clock_start:
+            gap = clock_start - end
+        elif start >= clock_end:
+            gap = start - clock_end
+        else:
+            gap = 0
+        if best is None or gap < best:
+            best = gap
+    return best
+
+
+def _belongs_to_other_programme(body: str, match: "re.Match", words: str | None) -> bool:
+    """Whether a *lone* clock is another programme's, judged by what is nearest.
+
+    `_is_other_programme()` is an absolute veto over a symmetric window, which
+    is right for a range - a range beside a class word is that class's hours -
+    but wrong for a lone clock in a body that lists both. Production writes
+    "PM 8:00~9:00 (워크샵), PM 9:00 START (소셜)": the 워크샵 belongs to the
+    range *before* the 9:00, and 소셜 - the word that does qualify it - sits
+    immediately after. The absolute veto read the workshop's word and dropped
+    the social's own start, so the 21:00 the post states in plain text was
+    never recovered and only a poster could supply an hour.
+
+    So for a lone clock the nearer word decides, and a tie still goes to the
+    other programme. A clock nothing qualifies is unchanged: with no event
+    word in the window at all, any class word beside it still vetoes it, which
+    is what keeps "살사 워크샵 오후 7시~9시" from acquiring a social's start.
+    """
+    window = _near_window(body, match.start(), match.end())
+    clock_start = min(_TIME_NEAR_BEFORE, match.start())
+    clock_end = clock_start + (match.end() - match.start())
+    other = _naming_distance(window, _OTHER_PROGRAMME_TIME, clock_start, clock_end)
+    if other is None:
+        return False
+    if not words:
+        return True
+    event = _naming_distance(window, re.compile(words, re.I), clock_start, clock_end)
+    return event is None or other <= event
+
 
 def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | None:
-    """The night's start when the text names one clock and no range."""
+    """The night's start when the text names one clock and no range of its own.
+
+    v0.96.18: a class word near a lone clock is weighed against the event's own
+    word rather than vetoing it outright, and a clock the post says the event
+    *opens* at outranks one that merely sits near the event's name. Two
+    Production shapes needed it, and both were losing the hour the post states
+    in plain text:
+
+    * "PM 8:00~9:00 (워크샵), PM 9:00 START (소셜)" - BABARU. The workshop's
+      word belongs to the range before the 9:00; 소셜 is immediately after it.
+      The absolute veto dropped every candidate and the 21:00 came only from a
+      poster, or not at all.
+    * "오후 7시 제니 y 뚜부 … 오후 8시 뽀대용수 y 밀라 소셜 오픈 오후 9시" -
+      홍턴 9/23. Three lone clocks, all near the day's own 파티 heading, so the
+      first by position won and the night was advertised at the first
+      workshop's hour instead of the 21:00 it opens at.
+
+    Unchanged: the range guard above (a post that states a range of its own is
+    read by `parse_time_range()`, which is strictly better evidence than a lone
+    clock - deleting the guard was measured over the whole stored corpus and
+    changes nothing, so it stays), `_is_other_programme()` itself, and every
+    rule that decides what a *range* is for.
+    """
     body = text or ""
     if any(True for _ in _readings(body)):
         return None
+    words = _EVENT_WORDS.get((event_type or "").upper())
+    # A clock written as one end of a range is never an independent start:
+    # the tail of "9:00-1:00 소셜" is when the social stops, and the head of
+    # "9:00pm-12:30am 밀롱가" is already `parse_time_range()`'s to read.
+    ranges = [m.span() for m in _RANGE_RE.finditer(body)]
     found = []
     for match in _SINGLE_CLOCK_RE.finditer(body):
         parts = _clock_parts(match.group("t"))
         if parts is None:
             continue
-        if _is_other_programme(body, match):
+        if any(lo <= match.start("t") and match.end("t") <= hi for lo, hi in ranges):
+            continue
+        if _belongs_to_other_programme(body, match, words):
             continue
         after = body[match.end():match.end() + 6]
         if _NOT_A_START_AFTER.match(after):
@@ -320,18 +406,26 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
             start_abs = _literal(*parts)
             evidence = EVIDENCE_ABSENT
             ambiguous = 1 <= parts[0] <= 12
+        before = body[max(0, match.start() - _TIME_NEAR_BEFORE):match.start()]
+        opens = bool(match.group("start")) or bool(_OPENS_BEFORE.search(before))
         found.append((TimeReading(
             start=_fmt(start_abs), end=None, end_day_offset=0,
             raw=re.sub(r"\s+", " ", match.group(0)).strip(),
             meridiem_evidence=evidence, ambiguous=ambiguous,
-        ), match.start(), match.end()))
+        ), match.start(), match.end(), opens))
     if not found:
         return None
-    words = _EVENT_WORDS.get((event_type or "").upper())
     if words:
-        for reading, start, end in found:
-            if re.search(words, _near_window(body, start, end), re.I):
-                return reading
+        named = [f for f in found
+                 if re.search(words, _near_window(body, f[1], f[2]), re.I)]
+        if named:
+            # v0.96.18: among the clocks the event's own word qualifies, the one
+            # the post says it *opens* at is the start. Several can qualify at
+            # once - a day's "파티" heading sits beside its workshop hours as
+            # well as its own - and taking the first by position advertised the
+            # workshop. Position still breaks a tie between two openings.
+            opening = [f for f in named if f[3]]
+            return (opening or named)[0][0]
     # Two different lone clocks for two different things ("클럽 오픈 오후
     # 8시 ... 오후 7시 핸슨") and neither beside the event's word: which one
     # is the start is anyone's guess, and this rule does not guess.

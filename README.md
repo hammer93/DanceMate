@@ -9,7 +9,25 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.17 (날짜별 프로그램이 자기를 `LATIN NIGHT`라고만
+- Product Runtime: v0.96.18 (본문에 다른 프로그램의 시간 범위가 있으면 행사
+  자신의 시작 시각을 읽지 못했다. BABARU의 `PM 8:00~9:00 (워크샵), PM 9:00
+  START (소셜)`에서 워크샵이라는 단어는 9:00보다 **4글자 앞**, 소셜은 **1글자
+  뒤**에 있는데 `_is_other_programme()`이 거리를 비교하지 않는 절대 veto라서
+  후보가 전부 탈락했고, 21:00은 poster에서만 올 수 있었다. 홍턴 9/23은 그 날
+  `파티` 제목이 시계 세 개 모두에 가까워 위치상 첫 번째인 워크샵 19:00이
+  선택됐다(실제는 `소셜 오픈 오후 9시`). 이제 lone clock에 대해서만 **가까운
+  단어가 이긴다**(동점은 다른 프로그램 승, 행사 단어가 아예 없으면 종전처럼
+  절대 veto — `살사 워크샵 오후 7시~9시`는 그대로 None), 그리고 행사 단어가
+  붙은 후보 중 **글이 "오픈/시작"이라고 말한 시계**가 위치보다 우선한다.
+  거리 비교가 새로 통과시킨 오류 하나는 명시적으로 막았다: range의 끝은 시작이
+  아니다(`9:00-1:00 소셜`은 01:00 시작이 아니다). range guard·`_is_other_
+  programme()`·range 판정 규칙은 그대로다 — corpus 전체에서 range guard를
+  지워도 바뀌는 것이 **없음**을 측정했다. migration 043 유지, engine 1.03:
+  전체 2,504건 중 **4건**만 바뀌어 None→시각 2, 시각→시각 5, 시각→None 0,
+  날짜·cardinality·분류 변화 0. 대상이 대부분 과거 날짜라 TODAY recall은
+  움직이지 않는다. 가또땅고 3199은 여전히 틀렸다 — 같은 결함의 range 쪽이고
+  이번 범위 밖이라 테스트로 고정해 두었다)
+- v0.96.17 (날짜별 프로그램이 자기를 `LATIN NIGHT`라고만
   부르면 그 날짜가 Event가 되지 않았다. 홍턴 추석 run은 네 날을 나열하고 각
   날을 설명하는데 — 바차타 파티 / 키좀바 파티 / 살사데이 / `추석 이벤트 LATIN
   NIGHT ... 오픈 오후 9시` — 마지막 하나만 dated-program vocabulary가 모르는
@@ -164,7 +182,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.17"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.18"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
