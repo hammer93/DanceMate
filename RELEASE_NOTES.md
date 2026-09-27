@@ -1,5 +1,132 @@
 # DanceMate Release Notes
 
+## v0.96.20 Register The Salsa And Swing Boards That Are Actually Public
+
+Product Runtime 0.96.20; Information Engine **1.04, unchanged**; migration
+**043, unchanged**. No extraction, classification, date, time, venue, fee,
+identity, duplicate or canonical rule changed — this is a Source Registry
+round, and `DEFAULT_ENGINE_VERSION` deliberately stays where it is (see below).
+
+**Measured, not guessed.** Read-only against Production `685bc63` / 0.96.19 /
+engine 1.04, fully converged, plus live probes of every candidate through the
+runtime's **own** `acquisition.fetch()` and `daum_board_discovery.discover()`,
+so each verdict is the one Production would reach — robots policy, User-Agent
+and body extraction included. Nothing was written anywhere until the release was
+committed.
+
+### The gap was not the number of sources
+
+Swing had **12 registered sources, 5 enabled, 406 collected items — and 0
+upcoming events.** Registering three more before understanding that would have
+produced three more zeros. Splitting the 406 by stage says why:
+
+```
+platform      items   usable bodies
+WEB             821      815  (99%)
+DAUM_CAFE       426      276  (64%)
+NAVER_BLOG      450      304  (67%)
+NAVER_CAFE      814        0  ( 0%)   <- every single one ROBOTS_DISALLOWED
+```
+
+**346 of Swing's 406 items are Naver Cafe posts whose bodies this project may
+not read.** 비바스윙 (123) and 올어바웃스윙 (223) are both there. The same wall
+takes 438 Salsa items across five more Naver Cafe sources. Several Daum boards
+answer HTTP 200 with `BODY_UNAVAILABLE` because they are members-only —
+스윙팩토리's is 24 of 24.
+
+So the Korean swing and salsa scenes largely publish their schedules where
+robots.txt or a membership check says no. That is recorded as `BLOCKED`, not
+worked around.
+
+### What was accepted, and what it actually yields
+
+Three public Daum Cafe event boards, each probed live over 90 days:
+
+| source | genre | region | posts | bodies read | events | note |
+| --- | --- | --- | --- | --- | --- | --- |
+| SRC-D-021 SDA 홍대 정모·파티 | Salsa | 서울 | 15 | **15/15** | 7 | one 공지 per week, with start times and fees |
+| SRC-D-023 네오스윙 | Swing | 서울 | 18 | **18/18** | 6 | 기수 졸업파티, recurring ~2-monthly |
+| SRC-D-024 수원 린디성 소셜 | Swing | **경기** | 1 | 1/1 | 1 | thin, but a real dated social run with hours |
+
+SRC-D-021 is an **upgrade, not a new row**: it has collected since v0.85 through
+the cafe-name search route, which had produced 10 items and 5 events in total.
+Its own public 정모 board is richer than that by itself. SRC-D-023 and SRC-D-024
+were registered *disabled* in the 2026-09-09 round with "probe before enabling"
+in their notes — this release is that probe.
+
+### One board was registered and deliberately left off
+
+라틴파라다이스 (강남) has a public board, 10 posts, all 10 bodies readable — and
+every post is class recruitment. Read as `EVENT_PRIMARY` it produces **two false
+events**: both `10월 31일 할로윈 파티 메인 공연` posts take the date from the
+party named in their title and the hours from the weekly class in their body,
+advertising 2026-10-31 18:00 and 19:30 for a class that rehearses every
+Saturday. Registered `CLASS_PRIMARY` it yields zero, verified both ways live. It
+is stored with that config, disabled, with `source_ops`' own **MONITOR**
+decision, so the next audit argues from this evidence rather than from a URL.
+
+### Rejected, with the reason each time
+
+```
+allaboutswing.co.kr        ROBOTS_DISALLOWED (the largest Korean swing club)
+swingfriends.com           ROBOTS_DISALLOWED
+sidf.kr                    ROBOTS_DISALLOWED
+onoffmix.com               ROBOTS_DISALLOWED
+8 x NAVER_CAFE (existing)  ROBOTS_DISALLOWED, platform-wide
+latindancekorea.com        event calendar only from /api/, which its own
+                           robots.txt marks Disallow; the HTML routes render
+                           client-side and carry no event content
+박쥐스윙, 스윙팩토리        public board, every body BODY_UNAVAILABLE
+에버라틴 (kwbsht)          0 rows; the cafe says it is moving to Naver
+대구스윙, 스윙키즈, 오살사, 살사바   no server-rendered board list
+살사로                     public boards carry 야유회 posts only, 0 events
+urbanswing.kr (부산)       homepage has no dates; its calendar is a Naver Cafe
+SEOUL lindyfest            WATCH - real upcoming festival, but see below
+Camp Swing It / KLHC       WATCH - annual, 2026's April dates are past
+Daily Swing                WATCH - 2 entries, no venue/time, needs a parser
+스위티스윙                 DUPLICATE of SRC-D-010
+```
+
+**`latindancekorea.com` deserves naming.** Its `/api/events` returns exactly the
+JSON this project wants, and our own `robots_allows()` returns *True* for it —
+because the file puts its `Disallow:` lines after a `Sitemap:` line, which
+`urllib.robotparser` reads as ending the group. The file's own comment is
+`# Disallow admin and API routes from indexing`. Leaning on a parser quirk to
+read a route the operator asked crawlers to leave alone is not something this
+release will do, so it is BLOCKED. The robots parser's leniency is recorded as a
+separate finding, not fixed here.
+
+### Why the engine version does not move
+
+Nothing in the engine changed, so every stored row's extraction is still the
+1.04 reading. Bumping to 1.05 would re-stamp all 2,516 rows and claim a re-read
+that never happened. `runtime/config.py` records that next to the constant.
+
+### The one thing this release wanted and could not have
+
+**SEOUL lindyfest 2026 runs 8–11 October at BIG APPLE, Seoul** — a genuine
+upcoming Korean swing festival on a robots-permitted page whose body fetches in
+full. The engine extracts no date from it, because the page writes
+`DATE Oct 8-11, 2026` and nothing in `extractor.DATE_PATTERNS` reads an English
+month abbreviation with a day range. That is a real generic gap, not a
+source-specific one, and §11 of this round's own brief says not to mix an engine
+fix into a coverage release. It is written up as the next release candidate.
+
+### What changed for somebody looking for a night
+
+```
+                     before  after
+Salsa upcoming          45     see final report
+Swing upcoming           0
+Salsa upcoming (direct)  8
+Swing upcoming (direct)  0
+regions represented     12
+```
+
+Swing's coverage is still thin, and this release says so rather than padding the
+source count: the brief asked for three new direct sources per genre, and three
+of the four things that would have met that number are behind robots.txt.
+
 ## v0.96.19 Read The Hours An Event States, Not The Class Word Beside Them
 
 Product Runtime 0.96.19; Information Engine **1.04**; migration **043,

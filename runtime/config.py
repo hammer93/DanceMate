@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.19"
+PRODUCT_VERSION = "0.96.20"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -247,6 +247,19 @@ PRODUCT_VERSION = "0.96.19"
 # None->time, time->None, date, cardinality, classification, venue or fee change
 # anywhere and KET regression 0. v0.96.3's incremental pass re-reads every
 # stored row.
+# v0.96.20 does NOT bump the engine: it is a Source Registry round. Three public
+# Daum Cafe event boards were verified live and registered through
+# `scripts/apply-board-sources.py`'s existing admission gate, and one class
+# board was registered disabled. No extraction, classification, date, time,
+# venue, fee, identity or duplicate rule changed - so every stored row's
+# extraction is still the 1.04 reading, and re-stamping 2,516 rows to a new
+# number would claim a re-read that never happened. What the round found instead
+# is an access wall: all 8 registered NAVER_CAFE sources are ROBOTS_DISALLOWED
+# (814 stored items, 0 usable bodies, which is where 346 of Swing's 406
+# collected items go), several Daum boards answer 200 with BODY_UNAVAILABLE
+# because they are members-only, and latindancekorea.com serves its whole event
+# calendar only from a route its own robots.txt marks Disallow. Those are
+# recorded as BLOCKED, not worked around.
 DEFAULT_ENGINE_VERSION = "1.04"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

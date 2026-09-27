@@ -1,0 +1,48 @@
+[
+  {
+    "mode": "UPGRADE", "expected_source_id": 339,
+    "source_key": "SRC-D-021", "name": "SDA 살사댄스아카데미 홍대 정모·파티 공식 게시판",
+    "genre_code": "SALSA", "region_code": "KR-SEOUL",
+    "url": "https://cafe.daum.net/sdamu",
+    "board_urls": ["https://cafe.daum.net/_c21_/bbs_list?grpid=WCz&fldid=1nCx"],
+    "board_name": "정모·파티 공지", "board_type": "EVENT_PRIMARY",
+    "lookback_days": 90, "enable": true,
+    "notes": "v0.96.20: this cafe's own public 정모 board, reached with parser=daum_cafe_board instead of the cafe-name search route it used since v0.85. Measured live 2026-09-28 over 90 days: 15 posts, 15 of 15 bodies readable (article_region), 7 events with start times and fees, one weekly 공지 per week. The search route had produced 10 items and 5 events in total.",
+    "decision_reason": "v0.96.20: public 정모 board verified live 2026-09-28 - 15/15 bodies, 7 dated events, weekly cadence"
+  },
+  {
+    "mode": "REUSE", "expected_source_id": 5397,
+    "source_key": "SRC-D-023", "name": "네오스윙 공식 게시판",
+    "genre_code": "SWING", "region_code": "KR-SEOUL",
+    "community_id": 11,
+    "url": "https://cafe.daum.net/neoswing",
+    "board_urls": ["https://cafe.daum.net/_c21_/bbs_list?grpid=6Rdm&fldid=EBv"],
+    "board_name": "공지사항", "board_type": "EVENT_PRIMARY",
+    "lookback_days": 90, "enable": true,
+    "notes": "v0.96.20: registered disabled on 2026-09-09 pending a live probe; probed 2026-09-28. Public board, 18 posts over 90 days, 18 of 18 bodies readable, 6 events - all from its 기수 졸업파티 posts, which recur roughly every two months. Its 강습/운영 posts classify CLASS or OTHER and produce no event, checked post by post.",
+    "decision_reason": "v0.96.20: public board verified live 2026-09-28 - 18/18 bodies, 6 dated 졸업파티 events, no false event among its class posts"
+  },
+  {
+    "mode": "REUSE", "expected_source_id": 5398,
+    "source_key": "SRC-D-024", "name": "수원 린디성 소셜 안내 공식 게시판",
+    "genre_code": "SWING", "region_code": "KR-GYEONGGI",
+    "community_id": 15,
+    "url": "https://cafe.daum.net/lindycastle",
+    "board_urls": ["https://cafe.daum.net/_c21_/bbs_list?grpid=gWPe&fldid=LHRY"],
+    "board_name": "소셜 안내", "board_type": "EVENT_PRIMARY",
+    "lookback_days": 90, "enable": true,
+    "notes": "v0.96.20: registered disabled on 2026-09-09 pending a live probe; probed 2026-09-28. The only non-Seoul Swing board this round could read. Low volume - 1 post over 90 days - but that post is a real dated social run (blues social days) and yields an upcoming event with 19:00-21:00. Its sibling 월별 일정 board (fldid=HT1K) carries exactly the monthly schedules this release wanted and every one of its bodies is BODY_UNAVAILABLE, so it is deliberately not listed here.",
+    "decision_reason": "v0.96.20: public 소셜 board verified live 2026-09-28 - 1 dated upcoming social with hours; non-Seoul coverage"
+  },
+  {
+    "mode": "ADD",
+    "source_key": "SRC-D-031", "name": "라틴파라다이스 강습 공식 게시판",
+    "genre_code": "SALSA", "region_code": "KR-SEOUL",
+    "url": "https://cafe.daum.net/LP",
+    "board_urls": ["https://cafe.daum.net/_c21_/bbs_list?grpid=HFA&fldid=9Zax"],
+    "board_name": "공지사항", "board_type": "CLASS_PRIMARY",
+    "lookback_days": 90, "enable": false,
+    "notes": "v0.96.20: registered and left disabled on purpose. 강남 살사 동호회, public board, measured live 2026-09-28: 10 posts over 90 days, 10 of 10 bodies readable - but every post is class recruitment (공연반/방송댄스반, 매주 토요일, 6회, 11-14만원). Read as EVENT_PRIMARY it produces two false events: both '10월 31일 할로윈 파티 메인 공연' posts take the date from the party named in their title and the hours from the weekly class in their body, giving 2026-10-31 18:00 and 19:30 for a class that rehearses every Saturday. CLASS_PRIMARY marks the board's own known_event_type CLASS, which correctly yields zero events - verified both ways live. Kept as WATCH so the next audit starts from this evidence.",
+    "decision_reason": "v0.96.20: public board is real but is a class board, not an event feed; EVENT_PRIMARY measured 2 false events, CLASS_PRIMARY 0"
+  }
+]

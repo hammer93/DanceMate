@@ -9,6 +9,34 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.20 (Salsa/Swing **direct source coverage expansion**.
+  Source 개수를 늘리는 릴리스가 아니라, 실제로 읽을 수 있는 공개 게시판을
+  등록하는 릴리스다. 먼저 이유를 찾았다: Swing은 등록 source 12개·활성 5개로
+  이미 **406건**을 수집했는데 upcoming event가 **0건**이었고, 그 406건 중
+  **346건이 Naver Cafe** 글로 전부 `ROBOTS_DISALLOWED`다(NAVER_CAFE 전체 814건 중
+  본문 사용 가능 **0건**, 비바스윙 123 + 올어바웃스윙 223 포함). Salsa도 같은 벽에
+  438건이 묶여 있다. 일부 Daum 게시판은 HTTP 200을 주면서 회원 전용이라
+  `BODY_UNAVAILABLE`이다(스윙팩토리 24/24). 즉 한국 살사·스윙 씬은 일정을
+  **우리가 읽어도 되지 않는 곳**에 주로 올린다 — 이건 우회하지 않고 BLOCKED로
+  기록했다. 그래서 본문이 실제로 공개된 Daum 공개 게시판 3개만 활성화했다:
+  SDA 홍대 정모·파티(SALSA, 서울, 90일 15건·본문 15/15·event 7건, 주 1회 공지 —
+  기존 카페명 검색 경로는 총 10건/5 event였으므로 신규 등록이 아닌 **경로 교체**),
+  네오스윙(SWING, 서울, 18건·본문 18/18·event 6건, 기수 졸업파티), 수원 린디성
+  소셜(SWING, **경기**, 1건이지만 시간까지 있는 실제 소셜). 라틴파라다이스(강남)는
+  공개 게시판이 전부 강습 모집글이어서 `EVENT_PRIMARY`로 읽으면 false event가
+  2건 생긴다(제목의 `10월 31일 할로윈 파티`에서 날짜를, 본문의 매주 토요일 강습에서
+  시간을 가져옴) — `CLASS_PRIMARY`로 등록하면 0건이 되는 것을 양방향 확인하고
+  **disabled + MONITOR**로 남겼다. 등록은 모두 기존 `scripts/apply-board-sources.py`의
+  admission gate(preview → `/test` PASS + items → enable → decision → readback)를
+  그대로 통과했고, 이번에 script는 genre/platform/role/board 목록을 spec에서 읽도록
+  최소 일반화했다(기존 SALSA spec은 바이트 단위로 동일한 config를 생성). parser·
+  extraction·classification·identity·duplicate 규칙은 **하나도 바꾸지 않았다**.
+  ENGINE_VERSION은 **1.04 유지** — engine 동작이 변하지 않았으므로 2,516건을
+  재추출한 척하지 않는다. migration 043 유지. 못 가져온 것도 적어 둔다:
+  SEOUL lindyfest 2026(10/8~11, BIG APPLE 서울)은 robots 허용·본문 전체 수신인데
+  페이지가 `DATE Oct 8-11, 2026`이라고 써서 `extractor.DATE_PATTERNS`가 영문 월
+  약어 + 일 범위를 읽지 못해 날짜가 안 잡힌다. 이건 source 문제가 아니라 generic
+  engine gap이므로 이번 릴리스에 섞지 않고 다음 후보로 기록했다)
 - Product Runtime: v0.96.19 (행사가 자기 시간 범위를 적어 놓아도, 근처에 수업
   단어가 있으면 그 범위를 버렸다. 가또땅고 3199의 `오픈특강 with 샤론y태희
   9:00pm-12:30am 밀롱가`는 밀롱가가 자기 시간을 말하는데 10분 먼저 끝나는
@@ -212,7 +240,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.19"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.20"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
