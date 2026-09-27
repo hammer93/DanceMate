@@ -9,6 +9,39 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.21 (영문 월 + 같은 달 날짜 범위를 읽는다. `DATE_PATTERNS`의
+  기존 8개 패턴은 전부 숫자형(`2026.10.08`, `9.18-20`, `10/8`) 또는 한글형
+  (`10월 8일`, `9월 19,20일`)이라 **영어를 한 글자도 몰랐다**. 그래서 영문으로 날짜를
+  쓰는 페이지는 틀린 날짜도 아니고 "배치 못 한 날짜"도 아니라 **아무것도** 만들지
+  않았다: `_norm_date("DATE Oct 8-11, 2026")` → `(None, None, None)`.
+  v0.96.20이 robots 허용 + 본문 1,070자 전체 수신까지 확인하고도 WATCH로 남겨 둔
+  **SEOUL lindyfest 2026**(2026-10-08~11, BIG APPLE 서울)이 정확히 이 경우다.
+  이번 릴리스는 문법 하나만 추가하고 **기존 multi-day 계약을 그대로 따른다**:
+  v0.91.0 PHASE 5가 숫자형 `9.18-20`(BAL&HOP)에 대해 정한 대로 `event_date`는
+  범위의 **첫째 날**이고, 전체 구간은 `MULTI_DAY_EVENT` context evidence
+  (inference `DATE_RANGE_START_ONLY`)로 남긴다 — `events`에 end-date 컬럼이 없기
+  때문이다. 날짜별 event로 쪼개지 않고, 끝 날짜를 만들어내지도 않는다. 지원 문법은
+  `Oct 8-11, 2026` / `Oct 8–11, 2026` / `October 8-11, 2026` / `Oct. 8-11, 2026`와
+  대소문자·공백 변형이며, 12개월 전체의 긴 이름·약어·마침표 형태를 모두 안다
+  (`september`가 `sep`으로 잘리지 않도록 긴 것부터 매칭). 검증은 두 종류로 나뉜다:
+  거꾸로인 범위(`Oct 11-8, 2026`)와 없는 날(`Feb 29-30, 2026`)은 "날짜를 썼지만
+  배치 불가"로 raw만 남기고, 1~31 밖의 날(`Oct 0-4`, `Oct 8-99`)은 **매치 자체를
+  하지 않아** 같은 글의 다른 실제 날짜를 뒤 패턴이 읽을 수 있게 둔다. 일반 단어 속
+  월 이름(`May Dance Better`, `March Into Swing`, `Octoberfest 8-11`)은 월 이름이
+  자기 날짜로 바로 이어져야 한다는 조건과 왼쪽 경계로 걸러진다. 새 패턴은
+  **끝에서 두 번째**에 둔다 — `_norm_date()`는 패턴마다 글 전체를 검색해 첫 매치에서
+  멈추므로, 앞에 두면 본문 뒤쪽의 영문 범위가 제목의 한글 날짜를 이긴다. 구현 전에
+  Production corpus를 먼저 측정했다: 저장 본문·제목 2,535건과 저장 OCR 1,589건에서
+  영문 월 토큰은 각각 20회/27회지만 **same-month 범위는 0건**이고, git-stash
+  baseline diff 결과 **변경된 source_item은 0건**(날짜·시각·type·cardinality·분류·
+  venue·요금·identity·fold·TODAY·upcoming 전부 0). 즉 기존 저장 row를 하나도
+  건드리지 않는다. target을 실제 사용자에게 보이게 하려면 parser만으로는 부족해서
+  (해당 source가 애초에 등록돼 있지 않아 저장 item이 0건이었다) SEOUL lindyfest
+  공식 사이트를 기존 Admin gate로 WEB organizer source 1개만 등록했다. migration 043
+  유지, ENGINE_VERSION은 **1.05**로 올렸다 — generic extraction 동작이 실제로
+  변했으므로 저장 row 전체를 다시 읽는다. 범위 밖으로 남긴 것: cross-month
+  범위(`Oct 30-Nov 2, 2026`)와 단일 날짜(`October 15, 2026`)는 반쯤 읽지 않고
+  그대로 두고 다음 후보로 기록했다)
 - Product Runtime: v0.96.20 (Salsa/Swing **direct source coverage expansion**.
   Source 개수를 늘리는 릴리스가 아니라, 실제로 읽을 수 있는 공개 게시판을
   등록하는 릴리스다. 먼저 이유를 찾았다: Swing은 등록 source 12개·활성 5개로
@@ -240,7 +273,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.20"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.21"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

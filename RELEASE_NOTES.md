@@ -1,5 +1,127 @@
 # DanceMate Release Notes
 
+## v0.96.21 Read An English Month's Own Day Range
+
+Product Runtime 0.96.21; Information Engine **1.05**; migration **043,
+unchanged**. One pattern, one resolver branch, one evidence flag. No change to
+time parsing, classification, venue, fee, identity, the duplicate and canonical
+rules, the normalization queue, acquisition, the collectors, `EVENT_WORDS`,
+`DATED_PROGRAM_WORDS`, OCR, or the robots policy.
+
+**Measured, not guessed.** Read-only against Production `be5f9d3` / 0.96.20 /
+engine 1.04, fully converged, over all 2,535 stored items and all 1,589 stored
+poster OCR texts, with a `git stash` baseline diff through the harness that
+calls `process_discovered_post()` itself.
+
+### `DATE_PATTERNS` spoke no English
+
+Eight patterns, every one of them numeric or Korean:
+
+```
+2026.10.08 / 26.9.16 / 2026년 10월 8일 / 10월 8일 / 9월 19,20일 / 10.8 / 2026 - 9.18-20
+```
+
+So a page that writes its dates for an English-reading audience produced not a
+wrong date, not an unplaceable one, but nothing at all:
+
+```
+_norm_date("DATE Oct 8-11, 2026")   ->  (None, None, None)
+```
+
+SEOUL lindyfest 2026 is that page — **8–11 October 2026, BIG APPLE, Seoul**, a
+real upcoming Korean swing festival. v0.96.20 probed it live, found it
+robots-permitted with its whole 1,070-character body fetching in full, and had
+to leave it on WATCH for exactly this reason.
+
+### The contract was already written; this only adds the grammar
+
+v0.91.0 PHASE 5 settled what a same-month day range means here, for the numeric
+`9.18-20` on BAL&HOP's own page title: **`event_date` is the range's first day**,
+and the whole span is recorded as a `MULTI_DAY_EVENT` context evidence with
+inference `DATE_RANGE_START_ONLY`, because `events` has no end-date column.
+v0.92.0 did the identical thing for the Korean `9월 19,20일`. The English form now
+joins them, and downstream cannot tell the three apart:
+
+```
+Oct 8-11, 2026   ->  date 2026-10-08   EXPLICIT_YEAR   raw "Oct 8-11, 2026"
+                 ->  context MULTI_DAY_EVENT  DATE_RANGE_START_ONLY  raw "Oct 8-11"
+```
+
+No event per day. No invented end date. No new provenance value.
+
+### Where it sits, and why that matters
+
+Second-to-last in `DATE_PATTERNS`. `_norm_date()` searches the whole text with
+each pattern in turn and stops at the first that matches *anywhere*, so a
+pattern placed earlier wins wherever it happens to sit in the body — the trap
+v0.92.0's own comment describes. Every existing, more specific pattern therefore
+still outranks this one, and only the loosest bare `m/d` fallback does not. A
+Korean date in a title still beats an English range further down the body, and a
+test pins that.
+
+### Validation, and the difference between two kinds of no
+
+| written | result | why |
+| --- | --- | --- |
+| `Oct 8-11, 2026` | 2026-10-08 | |
+| `Oct 11-8, 2026` | **no date, text recorded** | a range must run forwards |
+| `Feb 29-30, 2026` | **no date, text recorded** | 2026 is not a leap year |
+| `Oct 0-4, 2026` | **no match at all** | day outside 1..31 |
+| `Oct 8-99, 2026` | **no match at all** | day outside 1..31 |
+| `May Dance Better` | no match | the month must run into its own day |
+| `Octoberfest 8-11` | no match | left boundary is a non-letter, and `October` is followed by `fest` |
+
+The two kinds of no are deliberate. A range that is *written* as a date but
+cannot exist reads as a refusal — raw text recorded, no date — which is exactly
+what an impossible numeric date already does. A day outside 1..31 fails to match
+the pattern at all, so a later pattern stays free to read a real date from the
+same text: `Oct 8-99 tickets, 2026년 10월 3일 파티` resolves to 2026-10-03.
+
+### What changed over the whole corpus: nothing
+
+The corpus was measured **before** the pattern was written.
+
+```
+stored bodies + titles   2,535 items   English month tokens 20 in 16 items
+stored poster OCR        1,589 texts   English month tokens 27 in 21 items
+same-month English day ranges, anywhere               0
+cross-month English ranges (out of scope)             0
+single English month+day (out of scope)              18
+```
+
+And the `git stash` baseline diff, over all 1,419 items that have a body:
+
+```
+changed source_items 0
+dates 0   times 0   types 0   cardinality 0   classification 0   venue 0   fee 0
+identity 0   duplicate/fold 0   TODAY 0   upcoming 0
+symmetric difference across all 678 dated rows: 0
+```
+
+That is the honest shape of this release: it moves **no stored row**, because
+nothing in the corpus was written this way. The value is the target, and every
+page collected from here on that dates itself in English.
+
+### The target needed one more thing than a parser
+
+SEOUL lindyfest was never a *registered* source — v0.96.20 classified it WATCH
+because of this gap, so Production held zero items from that host and there was
+nothing to re-extract. Fixing the parser alone would have changed nothing a user
+can see. The page is therefore registered here as one WEB organizer source
+through the same Admin gate every source goes through (`/test` must pass with
+items before it is enabled), and that is the only registry change: no expansion
+round, no second source.
+
+### Out of scope, and why
+
+`Oct 30-Nov 2, 2026` — a range crossing a month boundary — is a separate gap and
+is left unread rather than half-read as October the 30th; a test pins that.
+`October 15, 2026` on its own is a single day, not a range, and also stays
+unread. Both are recorded as next-release candidates, along with the two issues
+v0.96.20 found and deliberately did not touch: `robots_allows()` ignoring
+`Disallow:` lines that follow a `Sitemap:` line, and two genuinely different
+parties at the same hour being folded into one canonical event.
+
 ## v0.96.20 Register The Salsa And Swing Boards That Are Actually Public
 
 Product Runtime 0.96.20; Information Engine **1.04, unchanged**; migration

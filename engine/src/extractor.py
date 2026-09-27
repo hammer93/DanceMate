@@ -3,6 +3,38 @@ from . import extraction_rules
 from . import classifier
 from .models import EventCandidate, Evidence
 
+# v0.96.21: English month names, and the number each one means. A festival
+# page writes its dates the way an English-reading audience does - SEOUL
+# lindyfest 2026's own page says "DATE Oct 8-11, 2026" - and not one pattern
+# below spoke a word of English, so that page produced no date at all and no
+# event. Measured over every stored body, title and poster OCR *before* the
+# change: 20 English month tokens across 16 items and 27 across 21 OCR texts,
+# and **zero** same-month day ranges among them - so this reads a shape nothing
+# in the corpus was relying on.
+#
+# Longest alternative first, or "september" is consumed as "sep" and the
+# "tember" left over stops the match.
+_EN_MONTHS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sept": 9, "sep": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+_EN_MONTH_ALT = "|".join(sorted(_EN_MONTHS, key=len, reverse=True))
+# A day this calendar could hold: 1..31. Deliberately not \d{1,2} - "Oct 0-4"
+# and "Oct 8-99" then fail to match at all, which leaves a later pattern free
+# to read a real date elsewhere in the same text rather than this one blocking
+# it with a match it cannot place.
+_EN_DAY = "0?[1-9]|[12][0-9]|3[01]"
+
 DATE_PATTERNS = [
     # v0.91.0 PHASE 7: an explicit year sitting beside a "m.d-d"/"m/d-d" day
     # range - "BAL&HOP 2026 - 9.18-20", found live. Checked before the plain
@@ -52,6 +84,35 @@ DATE_PATTERNS = [
     re.compile(
         r"(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일?\s*[,，·&~\-]\s*\d{1,2}\s*일"
     ),
+    # v0.96.21: an English month naming a range of its own days, with the year
+    # it states - "Oct 8-11, 2026", "October 8-11, 2026", "Oct. 8 - 11, 2026".
+    # Resolved exactly as the numeric "9.18-20" range above already is:
+    # `event_date` is the range's FIRST day, and the whole span is flagged
+    # MULTI_DAY_EVENT (see `_EN_DAY_RANGE_RE` and the DATE_RANGE_START_ONLY
+    # evidence below), because `events` still has no end-date column. No new
+    # contract, and never expanded into one event per day.
+    #
+    # Placed second-to-last on purpose. `_norm_date()` searches the whole text
+    # with each pattern in turn and stops at the first that matches anywhere,
+    # so a pattern placed earlier wins *wherever it sits in the body* - the
+    # same trap v0.92.0's comment above describes. Every existing, more
+    # specific pattern (a Korean date in a title, an explicit y.m.d) therefore
+    # still outranks this one, and only the loosest bare "m/d" fallback below
+    # it does not.
+    #
+    # The left boundary is a non-letter and the month must run straight into
+    # its first day, so "Octoberfest 8-11" and "May Dance Better" match
+    # nothing: after "October" comes "fest", and after "May" a space then a
+    # letter. `_resolve_date_match()` validates the calendar for both ends and
+    # refuses a range that runs backwards.
+    re.compile(
+        rf"(?<![A-Za-z])(?P<mon>{_EN_MONTH_ALT})"
+        rf"\.?[^\S\n]{{0,2}}(?P<d>{_EN_DAY})"
+        rf"[^\S\n]{{0,3}}[‐-―~-][^\S\n]{{0,3}}"
+        rf"(?P<d2>{_EN_DAY})(?!\d)"
+        rf"(?:[^\S\n]{{0,2}},?[^\S\n]{{0,2}}(?P<y>20\d{{2}}))?",
+        re.I,
+    ),
     # Bounded on both sides, or it reads a date out of the middle of a longer
     # number. "2010.12" -- a recording date in a post about a tango camp --
     # matched as 10.12 and became an event this October.
@@ -68,6 +129,15 @@ _DAY_RANGE_RE = re.compile(r"(?<!\d)\d{1,2}[./]\d{1,2}\s*-\s*\d{1,2}(?!\d)")
 # for the same reason: the post names days this schema holds one of.
 _KOREAN_DAY_LIST_RE = re.compile(
     r"\d{1,2}\s*월\s*\d{1,2}\s*일?\s*[,，·&~\-]\s*\d{1,2}\s*일"
+)
+# v0.96.21: the same span written in English - "Oct 8-11, 2026". Flagged
+# identically, for the identical reason: the post names four days and this
+# schema holds the first. A separate pattern from the one in DATE_PATTERNS,
+# which carries capture groups this has no use for.
+_EN_DAY_RANGE_RE = re.compile(
+    rf"(?<![A-Za-z])(?:{_EN_MONTH_ALT})\.?[^\S\n]{{0,2}}(?:{_EN_DAY})"
+    rf"[^\S\n]{{0,3}}[‐-―~-][^\S\n]{{0,3}}(?:{_EN_DAY})(?!\d)",
+    re.I,
 )
 
 # Kept for callers that still reference it. Time reading itself moved to
@@ -304,7 +374,30 @@ def _resolve_date_match(m: "re.Match", published, own_dates=None):
 
     gd = m.groupdict()
     raw_y = gd.get("y")
-    mo, d = int(gd["m"]), int(gd["d"])
+    # v0.96.21: an English pattern names its month in words, not digits, and
+    # names both ends of a same-month range. Everything after this is the
+    # resolution every other pattern already goes through.
+    month_word = gd.get("mon")
+    if month_word:
+        mo = _EN_MONTHS[month_word.lower().rstrip(".")]
+    else:
+        mo = int(gd["m"])
+    d = int(gd["d"])
+    end_day = gd.get("d2")
+    if end_day is not None:
+        # A range must run forwards and both ends must exist in that month.
+        # "Oct 11-8, 2026" is not October the 11th, and "Feb 29-30, 2026" is
+        # not a date at all - each reads as a date that could not be placed,
+        # the same refusal an impossible numeric date already produces.
+        end = int(end_day)
+        if end < d:
+            return None, UNKNOWN_YEAR
+        probe_year = int(raw_y) if raw_y and len(raw_y) == 4 else 2000
+        for day in (d, end):
+            try:
+                _date(probe_year, mo, day)
+            except ValueError:
+                return None, UNKNOWN_YEAR
     if raw_y:
         y = int(raw_y)
         if len(raw_y) == 2:
@@ -715,7 +808,9 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         # date - flagged the same way an ambiguous multi-program post already
         # is (MULTI_EVENT_CONTEXT), so a human sees the real span rather than
         # a silently-truncated single day.
-        range_match = _DAY_RANGE_RE.search(text) or _KOREAN_DAY_LIST_RE.search(text)
+        range_match = (_DAY_RANGE_RE.search(text)
+                       or _KOREAN_DAY_LIST_RE.search(text)
+                       or _EN_DAY_RANGE_RE.search(text))
         if range_match:
             ev.evidences.append(Evidence(
                 "context", "MULTI_DAY_EVENT", range_match.group(0),

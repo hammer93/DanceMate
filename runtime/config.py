@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.20"
+PRODUCT_VERSION = "0.96.21"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -260,7 +260,26 @@ PRODUCT_VERSION = "0.96.20"
 # because they are members-only, and latindancekorea.com serves its whole event
 # calendar only from a route its own robots.txt marks Disallow. Those are
 # recorded as BLOCKED, not worked around.
-DEFAULT_ENGINE_VERSION = "1.04"
+# v0.96.21 bumps to 1.05: `extractor.DATE_PATTERNS` now reads an English month
+# naming a range of its own days - "Oct 8-11, 2026", "October 8-11, 2026",
+# "Oct. 8 - 11, 2026". Every one of the eight patterns before it was numeric
+# ("2026.10.08", "9.18-20", "10/8") or Korean ("10월 8일", "9월 19,20일"), so a
+# page writing its dates for an English-reading audience produced no date at
+# all: SEOUL lindyfest 2026's own page says "DATE Oct 8-11, 2026" and stored
+# nothing, despite being robots-permitted with its whole body fetching. The
+# reading follows v0.91.0 PHASE 5's existing multi-day contract exactly -
+# `event_date` is the range's FIRST day and the span is flagged MULTI_DAY_EVENT
+# with inference DATE_RANGE_START_ONLY, because `events` has no end-date column
+# - so no new contract, no event per day, no invented end date. Both ends are
+# calendar-validated and a backwards range is refused ("Oct 11-8, 2026",
+# "Feb 29-30, 2026" read as a date that could not be placed); a day outside
+# 1..31 does not match at all, leaving a later pattern free to read a real date
+# from the same text. Measured over all 2,535 stored items and 1,589 stored OCR
+# texts first: 20 English month tokens in 16 items, 27 in 21 OCR texts, and zero
+# same-month day ranges - and a git-stash baseline diff over the whole corpus
+# changed 0 source_items, so this bump re-reads every stored row and is expected
+# to move none of them. v0.96.3's incremental pass does that re-read.
+DEFAULT_ENGINE_VERSION = "1.05"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
