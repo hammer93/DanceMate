@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.21"
+PRODUCT_VERSION = "0.96.22"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -279,6 +279,17 @@ PRODUCT_VERSION = "0.96.21"
 # same-month day ranges - and a git-stash baseline diff over the whole corpus
 # changed 0 source_items, so this bump re-reads every stored row and is expected
 # to move none of them. v0.96.3's incremental pass does that re-read.
+# v0.96.22 does NOT bump the engine, and the reason was checked rather than
+# assumed: robots.txt evaluation lives entirely in `runtime.acquisition` /
+# `runtime.robots`, the Information Engine imports neither, and no extraction,
+# classification, date, time, venue, fee, identity or duplicate rule changed. A
+# stored row's extraction is still the 1.05 reading, so re-stamping 2,543 rows
+# would claim a re-read that never happened. What changed is which URLs this
+# project is willing to request: `urllib.robotparser` answers by file order and
+# cannot express a wildcard, which let one registered source's filtered query
+# page be fetched although its robots.txt disallows it twice. Measured over all
+# 1,148 URLs acquisition requests, the corrected reading changes exactly one
+# decision, and changes it to BLOCK - nothing becomes newly permitted.
 DEFAULT_ENGINE_VERSION = "1.05"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

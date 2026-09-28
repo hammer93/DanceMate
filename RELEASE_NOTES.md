@@ -1,5 +1,147 @@
 # DanceMate Release Notes
 
+## v0.96.22 Read robots.txt The Way robots.txt Is Defined
+
+Product Runtime 0.96.22; Information Engine **1.05, unchanged**; migration
+**043, unchanged**. One new module and one rewired function, both in the
+runtime. No change to extraction, classification, dates, times, venues, fees,
+identity, the duplicate and canonical rules, the collectors, or what this
+project is willing to crawl.
+
+**This is a compliance fix, not a coverage one.** Measured over all 1,148 URLs
+acquisition actually requests, the corrected reading changes exactly **one**
+decision — and it changes it from allow to **block**. Nothing becomes newly
+permitted.
+
+### The brief's hypothesis was wrong, and the evidence says why
+
+The release was sent to fix a suspected bug where a `Sitemap:` line ends a
+`User-agent` group, so that later `Disallow:` rules are ignored and a reachable
+source is wrongly refused. Four fixtures settle it:
+
+```
+Allow: /                       Allow: /
+Sitemap: …/sitemap.xml   vs    Disallow: /private/
+Disallow: /private/
+```
+
+`urllib.robotparser` allows `/private/` for **both** — with a `Sitemap` line and
+with none at all. Reverse the two rules and it refuses. `Sitemap` was never
+involved. The real defects are two, each reproduced on the deployed Python 3.12
+and on 3.14:
+
+1. **Precedence is file order, not specificity.** `Entry.allowance()` returns
+   the first rule that matches and stops. RFC 9309 §2.2.2 says the **longest**
+   match wins, with a tie going to the least restrictive rule. So `Allow: /`
+   written above `Disallow: /api/` allows the API.
+2. **No wildcards.** `RuleLine.applies_to()` is `startswith`, and the
+   constructor percent-encodes the pattern, so `Disallow: /?*&type=` is stored
+   as `/?%2A&type=` — a literal asterisk that can never match. Two of the
+   thirteen robots files this project fetches use `*` inside a pattern
+   (socialdancelive.com 6 rules, sidf.kr 80).
+
+A third was suspected — that a query-string rule can never match because the
+request is percent-encoded — and **disproved**: `Disallow: /?genre=` on its own
+blocks `/?genre=salsa` correctly today. It only fails when an `Allow:` sits
+above it, which is defect 1.
+
+### The bug's direction is the opposite of the one expected
+
+First-match precedence can mis-read in either direction, but on the real corpus
+it only ever **over-permits**. The audit, over every registered source:
+
+```
+registered sources                 49        origins            18
+robots.txt fetched: HTTP 200       13        404  4      403  1
+URLs acquisition requests       1,148
+
+ALLOW -> ALLOW   745
+BLOCK -> BLOCK   402
+ALLOW -> BLOCK     1      <- the only change
+BLOCK -> ALLOW     0
+```
+
+So no source was wrongly blocked, and none opens up. What the current parser was
+doing instead is fetching a page a site asks crawlers to leave alone.
+
+### The one thing that changes
+
+`SRC-W-008` (Social Dance Live, enabled) carries
+`https://www.socialdancelive.com/?genre=salsa&type=posters` as its registry URL.
+That site's `User-agent: *` group is `Allow: /` followed by nineteen `Disallow:`
+rules, and this path is refused by two of them — `Disallow: /?genre=`, hidden
+behind the `Allow: /` above it, and `Disallow: /?*&type=`, which the stdlib
+cannot express. It is not one path either: **thirteen** paths that file
+disallows — `/admin`, `/auth`, `/create`, `/my`, and every filtered query — were
+all being answered "allowed".
+
+The practical effect today is nil, and the release says so rather than claiming
+a win: `SRC-W-008` is a `NAVER_WEB` source that discovers through the Naver
+search API (`21 search hits` in its last run) and then fetches the individual
+`/posters/…` pages, which robots permits. Its five stored items, three events
+and every body are untouched. What changes is that the blocked path can no
+longer be requested by anything.
+
+### latindancekorea, which the brief named
+
+Not a registered source — it has never been, so nothing about it was blocked or
+unblocked by anything here. Its robots.txt is the same shape as
+socialdancelive's, and the corrected reading makes it **more** restricted:
+
+```
+/            /events      /events/<id>      /classes     ALLOW   (before and after)
+/api/events  /admin/      /organizer/       ALLOW -> BLOCK
+```
+
+`/api/events` is the JSON endpoint v0.96.20 declined to use on judgement,
+because the file says `# Disallow admin and API routes from indexing` while our
+parser answered "allowed". That judgement is now enforced by code.
+
+### What the corrected reader does
+
+`runtime/robots.py`, ~150 lines, no new dependency (none of `protego`, `reppy`
+or a Google port is installed, and adding one to an ARM64 board image costs more
+than the fix):
+
+* longest matching rule wins; an exact tie goes to the least restrictive;
+* `*` matches any run of characters and a trailing `$` anchors the end — `$`
+  appears in no file this project fetches, but it is one line of the same
+  matcher and leaving it out would silently mis-read one that appears;
+* a group naming this crawler beats `*`; consecutive `User-agent` lines share
+  one group; two groups naming the same agent are merged; a `User-agent:
+  Mozilla` group is **not** ours, even though our HTTP header is
+  Mozilla-compatible;
+* `Sitemap`, `Crawl-delay` and every other field are ignored without ending the
+  group they sit in — which is the behaviour the brief asked for, even though it
+  turned out not to be the bug;
+* comments, blank lines, surrounding whitespace and mixed-case field names are
+  handled because the corpus contains all of them (445 mixed-case lines);
+* an empty `Disallow:` restricts nothing.
+
+### What deliberately did not change
+
+The policy for a robots.txt that cannot be read is **exactly** as it was —
+401/403 deny, any other 4xx allow, 5xx and network failure allow — and a test
+pins each status. Parsing correctness is not crawling policy. The one behaviour
+change beyond parsing is the request header: `RobotFileParser.read()` calls
+`urlopen` bare, so robots.txt was fetched as `Python-urllib` while every page
+was fetched as `DanceMate`. Asking under the same name is what makes a per-agent
+group mean anything; verified against all eighteen origins, the status is
+identical either way.
+
+### Protections
+
+```
+robots decisions changed          1 of 1,148, reviewed by hand
+false ALLOW remaining             0   (13 paths on one host closed)
+false BLOCK introduced            0
+source-specific bypass            0
+crawling policy relaxed           0
+cafe.daum.net board route         open   (Allow: /_c21_/bbs_list beats Disallow: /_c21_/)
+cafe.naver.com                    closed (401 stored items, unchanged)
+SEOUL lindyfest (v0.96.21)        open, its upcoming event intact
+```
+
 ## v0.96.21 Read An English Month's Own Day Range
 
 Product Runtime 0.96.21; Information Engine **1.05**; migration **043,

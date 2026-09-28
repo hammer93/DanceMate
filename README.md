@@ -9,6 +9,51 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.22 (robots.txt를 **정의된 대로** 읽는다. 이번 릴리스는
+  robots 우회가 아니라 **판정 정확성** 수정이고, 방향이 예상과 반대였다. 프롬프트
+  가설은 "`Sitemap:` 뒤의 `Disallow:`가 무시되어 접근 가능한 source가 잘못
+  `FETCH_BLOCKED`된다"였는데, fixture 4개로 반증됐다: `Allow: /` + `Disallow:
+  /private/` 조합은 **Sitemap 줄이 있든 없든** 똑같이 `/private/`를 허용하고, 두 줄의
+  순서를 바꾸면 거부한다. 즉 Sitemap은 무관하다. 실제 결함은 두 개이고 배포 대상
+  Python 3.12과 3.14 양쪽에서 재현했다. (1) **우선순위가 파일 순서다** —
+  `Entry.allowance()`가 첫 매치에서 멈춘다. RFC 9309 §2.2.2는 **가장 긴 매치**가
+  이기고 동점이면 덜 제한적인 쪽이 이겨야 한다. 그래서 `Allow: /`를 위에 쓰면 그
+  아래 `Disallow: /api/`가 무력화된다. (2) **와일드카드 미지원** —
+  `RuleLine.applies_to()`가 `startswith`뿐이고 생성자가 패턴을 percent-encode해서
+  `Disallow: /?*&type=`이 `/?%2A&type=`이라는 리터럴이 된다(이 프로젝트가 실제로
+  읽는 13개 robots 파일 중 2개가 패턴 안에 `*`를 쓴다 — socialdancelive 6건,
+  sidf.kr 80건). 세 번째로 의심했던 "query-string 규칙은 매치 불가"는 **사실이
+  아니었다**(`Disallow: /?genre=` 단독은 정상 차단). 그래서 이 버그는 잘못 막는
+  방향이 아니라 **잘못 허용하는 방향**으로만 작동했다. 등록 source 49개·origin
+  18개·acquisition이 실제 요청하는 URL 1,148개 전수 비교 결과: ALLOW→ALLOW 745,
+  BLOCK→BLOCK 402, **ALLOW→BLOCK 1**, **BLOCK→ALLOW 0**. 즉 잘못 막힌 source는
+  하나도 없고, 새로 열리는 것도 없다. 유일한 변경은 활성 source `SRC-W-008`
+  (Social Dance Live)의 `?genre=salsa&type=posters` 경로인데, 그 사이트가 `Disallow:
+  /?genre=`와 `Disallow: /?*&type=` 두 번에 걸쳐 거부하는 경로다. 한 경로만이
+  아니라 그 파일이 막는 **13개 경로**(`/admin`, `/auth`, `/create`, `/my`, 모든 필터
+  query)가 전부 "허용"으로 답해지고 있었다. 실무적 영향은 없다고 정직하게 적는다:
+  SRC-W-008은 NAVER_WEB source로 Naver 검색 API로 발견하고 robots가 허용하는
+  개별 `/posters/...` 페이지를 가져오므로, 저장된 5건·event 3건·body는 그대로다.
+  브리프가 지목한 `latindancekorea`는 **애초에 등록된 source가 아니어서** 막힌 적도
+  열린 적도 없고, 교정 후에는 오히려 더 제한적이다 — HTML(`/`, `/events`,
+  `/events/<id>`, `/classes`)은 전후 모두 허용이고 `/api/`·`/admin/`·`/organizer/`가
+  ALLOW→BLOCK이 된다(v0.96.20에서 내가 판단으로 피했던 `/api/events`를 이제 코드가
+  스스로 막는다). 구현은 새 의존성 없이 `runtime/robots.py` 약 150줄이다(protego·
+  reppy 등은 미설치이고 ARM64 보드 이미지에 의존성을 더하는 비용이 수정보다 크다):
+  최장 매치 우선·동점은 덜 제한적 우선, `*`와 말미 `$` 와일드카드, 우리를 지목한
+  group이 `*`보다 우선(단 `User-agent: Mozilla` group은 우리 것이 아니다 — HTTP
+  헤더가 Mozilla 호환 문자열이므로 substring 매칭은 쓰지 않는다), 연속 `User-agent`
+  줄은 한 group, 같은 agent의 group은 병합, `Sitemap`/`Crawl-delay`/미지의 field는
+  group을 끊지 않고 무시, 빈 `Disallow:`는 아무것도 막지 않음, 주석·빈 줄·공백·
+  대소문자 혼용 field(corpus에 445줄) 처리. **정책은 바꾸지 않았다**: robots.txt를
+  읽지 못할 때의 401/403 거부, 그 외 4xx 허용, 5xx·네트워크 실패 허용을 그대로
+  유지하고 status별 테스트로 고정했다. parsing 정확성은 crawling 정책이 아니다.
+  parsing 외 유일한 동작 변화는 요청 헤더다 — `RobotFileParser.read()`가 `urlopen`을
+  맨손으로 불러 robots.txt만 `Python-urllib`로 받고 있었는데, 페이지와 같은
+  `DanceMate` 이름으로 요청한다(18개 origin 전부 status 동일 확인). ENGINE_VERSION은
+  **1.05 유지** — robots 판정은 `runtime.acquisition`/`runtime.robots`에만 있고 엔진은
+  둘 다 import하지 않으며 추출·분류 의미가 바뀌지 않았으므로, 2,543건을 다시 읽은
+  척하지 않는다. migration 043 유지)
 - Product Runtime: v0.96.21 (영문 월 + 같은 달 날짜 범위를 읽는다. `DATE_PATTERNS`의
   기존 8개 패턴은 전부 숫자형(`2026.10.08`, `9.18-20`, `10/8`) 또는 한글형
   (`10월 8일`, `9월 19,20일`)이라 **영어를 한 글자도 몰랐다**. 그래서 영문으로 날짜를
@@ -273,7 +318,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.21"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.22"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

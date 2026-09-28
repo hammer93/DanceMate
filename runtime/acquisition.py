@@ -30,10 +30,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.robotparser
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from . import robots
 
 # --- statuses ---------------------------------------------------------------
 # Reused verbatim by the admin console and the scheduler. FETCHED_FULL means the
@@ -492,29 +493,84 @@ def content_hash(text: str) -> str:
 
 # --- robots -----------------------------------------------------------------
 
+# origin -> robots.txt text, False for "no rules to honour", None for "withheld".
+# Process-local and unbounded, exactly as before; a restart re-reads.
 _ROBOTS_CACHE: dict[str, Any] = {}
+_ROBOTS_MISSING = object()
+# A robots.txt larger than this is not a robots.txt; read a bounded amount so a
+# misconfigured host cannot stream the acquisition worker to a halt.
+MAX_ROBOTS_BYTES = 512 * 1024
+
+
+def _read_robots(origin: str) -> str | None | bool:
+    """robots.txt for this origin: its text, False for "no rules", None for deny.
+
+    v0.96.22 keeps `urllib.robotparser.read()`'s HTTP policy exactly as it was -
+    this release corrects how robots.txt is *read*, not how much of the web this
+    project is willing to crawl:
+
+        401, 403   the file exists and is withheld -> deny everything (None)
+        other 4xx  no robots.txt -> no rules (False)
+        2xx        its text, to be evaluated
+        5xx        no rules (False), as before
+        network    no rules (False), as before
+
+    The one change is the request header. `RobotFileParser.read()` calls
+    `urlopen` bare, so robots.txt was fetched as `Python-urllib/3.x` while every
+    page was fetched as `USER_AGENT`. Asking for robots.txt under the same name
+    the crawler uses everywhere else is both more honest and what makes a
+    per-agent group meaningful; verified against all eighteen origins this
+    project fetches, the status is identical either way.
+    """
+    request = urllib.request.Request(
+        f"{origin}/robots.txt",
+        headers={"User-Agent": USER_AGENT, "Accept": "text/plain, */*"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT) as response:
+            raw = response.read(MAX_ROBOTS_BYTES)
+    except urllib.error.HTTPError as err:
+        code = err.code
+        err.close()
+        if code in (401, 403):
+            return None
+        return False
+    except Exception:                                        # noqa: BLE001
+        # An unreachable robots.txt is not a prohibition.
+        return False
+    return raw.decode("utf-8", "surrogateescape")
 
 
 def robots_allows(url: str, *, user_agent: str = "DanceMate") -> bool:
-    """Honour robots.txt. On any doubt, allow - but never on an explicit Disallow."""
+    """Honour robots.txt. On any doubt, allow - but never on an explicit Disallow.
+
+    v0.96.22: the decision now comes from `runtime.robots`, which reads
+    robots.txt the way RFC 9309 defines it - the most specific rule wins, and
+    `*` and `$` are wildcards rather than literals. The
+    module `urllib.robotparser` answers by file order and cannot express a
+    wildcard, which was letting this project fetch a path socialdancelive.com
+    disallows twice over. See `runtime/robots.py` for the reproduction of both
+    defects, and for the third one that was suspected and disproved.
+
+    ``user_agent`` is the product token a robots group is matched against, which
+    is not the HTTP header: the header identifies this crawler as
+    "Mozilla/5.0 (compatible; DanceMate/0.76; ...)" and the product token inside
+    it is `DanceMate`. Unchanged by this release, and no registered source's
+    robots.txt names a group that either spelling would pick differently.
+    """
     parsed = urllib.parse.urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    parser = _ROBOTS_CACHE.get(origin)
-    if parser is None:
-        parser = urllib.robotparser.RobotFileParser()
-        parser.set_url(f"{origin}/robots.txt")
-        try:
-            parser.read()
-        except Exception:
-            # An unreachable robots.txt is not a prohibition.
-            _ROBOTS_CACHE[origin] = False
-            return True
-        _ROBOTS_CACHE[origin] = parser
-    if parser is False:
-        return True
+    cached = _ROBOTS_CACHE.get(origin, _ROBOTS_MISSING)
+    if cached is _ROBOTS_MISSING:
+        cached = _read_robots(origin)
+        _ROBOTS_CACHE[origin] = cached
+    if cached is None:
+        return False            # robots.txt withheld (401/403): deny, as before
+    if cached is False:
+        return True             # no robots.txt to honour
     try:
-        return bool(parser.can_fetch(user_agent, url))
-    except Exception:
+        return robots.allows(cached, url, user_agent)
+    except Exception:                                        # noqa: BLE001
         return True
 
 
