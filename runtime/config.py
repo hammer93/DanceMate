@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.24"
+PRODUCT_VERSION = "0.96.25"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -316,6 +316,18 @@ PRODUCT_VERSION = "0.96.24"
 # moved date/start/end/fee on 7, every one reviewed, and the canonical graph
 # by zero rows. Extraction semantics changed, so the stamp has to change:
 # a row still marked 1.05 would claim a reading this engine no longer makes.
+#
+# v0.96.25 does NOT bump the engine, and the reason was checked rather than
+# assumed: the change is which images an acquisition fetch stores as a post's
+# own (`acquisition.danceinfo_own_images`, consulted by
+# `extract_content_images`), and the extractor reads exactly what it read
+# before from whatever it is handed. No extraction, classification, date,
+# time, venue, fee or identity rule changed, so a row's 1.06 stamp is still
+# true of how it was read. What changes is the *input*: a re-acquired
+# danceinfo item gets a new `fetched_at`, which is branch (1) of
+# `content_store.needing_reprocess()` - so the ordinary `engine-reprocess`
+# job re-reads exactly the items whose poster list actually changed, under
+# the same engine 1.06, with no version bump and no forced pass.
 DEFAULT_ENGINE_VERSION = "1.06"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

@@ -1,5 +1,164 @@
 # DanceMate Release Notes
 
+## v0.96.25 A Post Gets Its Own Poster, And Nobody Else's
+
+Product Runtime 0.96.25; Information Engine **1.06, unchanged**; migration
+**043, unchanged**. One reader and one condition in `runtime/acquisition.py`.
+No change to extraction, classification, dates, times, venues, fees, the
+duplicate and canonical rules, the OCR cache, or any host other than
+danceinfo.net.
+
+**What a reader was told, and why the OCR was not the problem.** v0.96.24
+stopped poster OCR from inventing a venue out of an unlabelled reading. It left
+the deeper fault untouched: the image itself belonged to somebody else.
+`장소: Ae" (분당)` was a *correctly labelled, correctly OCR'd* venue — of lesson
+4418's party. It was the stored venue of **six unrelated Events**
+(아수까 일요밀롱가, 러블리밀롱가 7주년, 분당러블리낮밀, 四喜四樂, and two more).
+`장소:홍턴지하2층6룸` was the venue of **two**. Nothing was misread. The evidence
+was attached to the wrong event.
+
+### Where it came from
+
+A danceinfo.net lesson page serves its own poster and then a
+"🔥 다가오는 추천 행사" carousel of other events' posters:
+
+```
+/lessons/4641
+  [0] images/ci_default_logo.png            w=640    site logo
+  [1] icons/icon_user.png                   w=64     site icon
+  [2] posters/4641/1789653229683-….png      w=3840   this post's own poster
+  [3] posters/1576/1789562675770-….png      w=640    somebody else's
+  [4] posters/4588/1789566571834-….jpg      w=640    somebody else's
+  …                                                  eight more
+```
+
+`acquisition.extract_content_images()` has a raw-HTML content boundary for Daum
+and K-TANGO posts and falls back to a whole-page `<img src>` scan when no
+boundary matches. danceinfo marks none, so every one of those images became this
+post's `poster_candidates`, was fetched, OCR'd, and handed to the extractor as
+evidence about this event.
+
+The spread, measured over Production's 237 stored danceinfo items and their
+2,177 stored candidate URLs:
+
+```
+poster 1576  attached to 83 items      poster 4875  attached to 65 items
+poster 4588  attached to 83 items      poster 4202  attached to 64 items
+poster 2300  attached to 80 items      poster 4760  attached to 47 items
+poster 4774  attached to 68 items      poster 3865  attached to 29 items
+```
+
+`posters/4202` is 검단 라틴솔's own poster — the party v0.96.23 had to rescue
+from a false merge — sitting on 64 other posts. `posters/3865` is the 홍턴
+reading. And it grows: `posters/4588` was on 39 items when v0.96.24 measured it
+and is on 83 now, because the carousel rotates.
+
+### The page answers ownership itself
+
+`danceinfo_payload_body()` has read this page's own hydration payload since
+v0.96.13. The same object names its images:
+
+```
+initialLesson.contentIdx = 4641                     ( == /lessons/4641 )
+initialLesson.posters    = ["…/posters/4641/….png"]  ← this lesson's own
+initialLesson.thumbnail  = "…/posters/4641/….png"
+initialRelated.links[]   = { href: "/lessons/1576",
+                             imageUrl: "…/posters/1576/….png" }  ← whose it is
+```
+
+So `acquisition.danceinfo_own_images()` reads `posters` + `thumbnail`, and
+`extract_content_images()` keeps only the page's own `<img>` entries that point
+at one of them. The URL stored is still the one the page serves — same origin,
+same bytes, same OCR cache entry. `_served_image_target()` compares through the
+`/_next/image?url=…&w=…` proxy so the payload's URL and the page's `src` are
+recognised as one image.
+
+Returning `None` for every page that is not a danceinfo lesson page is what
+keeps this out of every other host's way.
+
+### Two cheaper rules, measured and rejected
+
+Both were checked against 25 live pages chosen where they disagree, not assumed:
+
+| rule | result |
+|---|---|
+| `/posters/<lesson id>/` | the lesson id is always `contentIdx` (25/25) — but **25 of the 66** posters those pages call their own sit under a *different* poster-id directory. Drops a quarter of the real posters. |
+| the `w=3840` variant | every own poster is at `w=3840` (66/66) and every carousel poster at `w=640` (166/166) — but **12** of the site's own chrome images are at `w=3840`, and 19 stored items carry a *carousel* poster the page renders at `w=3840`. |
+
+Ownership is read from the source, not from the shape of its URLs.
+
+### Simulated over every stored item, with the shipping function
+
+The patched module was loaded beside the running one on the board and
+`extract_content_images()` itself was run over all 237 pages, read-only:
+
+```
+items                                     237      robots disallowed   0
+before urls                              2177      fetch failed        0
+after urls                                344
+removed                                  1835
+retained                                  342
+newly present (page changed since fetch)    2
+own poster lost (REMOVED BUT OWN)           0      <- hard gate
+foreign poster kept (RETAINED NOT OWN)      0      <- hard gate
+items with no poster after the fix          0
+items with more than one own poster         57
+own posters declared but not rendered       1
+```
+
+Every one of the 1,835 removals was then identified with no further network
+access, because all 237 pages had already told us their own poster lists:
+
+```
+site chrome (logo, user icon)                       615
+another held lesson's own poster - proven by that
+  lesson's own payload                              615
+a poster of a lesson this project does not hold     605   (60 distinct images)
+the removing page's own poster                        0
+```
+
+`items with no poster after the fix = 0`: even item 3831 (`/lessons/4275`),
+which looked poster-less under the id rule, has one by its own account. The one
+own poster the page declares but does not render is a legacy
+`/temp_smsimages/…` path on `/lessons/3294`, whose other own poster is kept —
+nothing is synthesised into a direct `img.danceinfo.net` fetch this project has
+never made.
+
+### Why ENGINE_VERSION stays 1.06, and how the correction reaches stored rows
+
+Checked, not assumed. The extractor reads exactly what it read before from
+whatever it is handed; what changes is which images it is handed. A row's 1.06
+stamp is still true of how it was read, so re-stamping 2,564 rows would claim a
+re-read that did not happen.
+
+The stored `poster_candidates` are acquisition output, and an engine re-extract
+does not touch them. They are corrected through the official path:
+`scheduler.acquisition_job.reacquire()` — the same function the Admin's
+`/admin/intake/{id}/reacquire` button calls, rate limited, one
+`acquisition.fetch()` + `content_store.record_outcome()` per item. That sets a
+new `fetched_at`, which is branch (1) of `content_store.needing_reprocess()`, so
+the ordinary `engine-reprocess` job re-reads exactly the items whose poster list
+changed, under the same engine 1.06, with no forced pass and no cursor edit. No
+`UPDATE` was written by hand, no `source_item_image` row deleted: a stale OCR
+row is simply never consulted again, because nothing lists that URL as this
+post's any more.
+
+`migration 043` is unchanged — nothing about the schema changes.
+
+### Tests
+
+`tests/test_v09625_danceinfo_poster_ownership.py` (22): the live page shape
+(T1); a poster under another id kept because the page claims it (T2); a carousel
+poster dropped even at the own poster's width (T3/T8); chrome dropped at that
+width too; a post with no poster of its own getting none rather than a
+neighbour's (T4); all of several own posters kept in served order (T5); the
+thumbnail counting as own (T17); DOM order not deciding (T7); a missing or
+changed width not mattering (T8); an unrendered payload poster not synthesised;
+no foreign OCR reachable for venue, time, fee, date or event words
+(T9/T11–T14); the post's own poster still reachable (T10); Daum, the
+template-board boundary, an unhydrated page, a non-lesson payload and a broken
+payload all behaving exactly as before (T21).
+
 ## v0.96.24 A Poster May Name The Venue, But Only If It Labels It
 
 Product Runtime 0.96.24; Information Engine **1.05 → 1.06**; migration

@@ -293,22 +293,85 @@ _DANCEINFO_FIELDS = (
 )
 
 
+def _danceinfo_lesson(raw_html: str) -> dict | None:
+    """The `initialLesson` object a danceinfo.net lesson page hydrates itself
+    from, or None when this is not such a page.
+
+    One reader for the two questions this module asks that payload: which
+    fields the post states (``danceinfo_payload_body``) and which images are
+    the post's own (``danceinfo_own_images``).
+    """
+    match = _DANCEINFO_PAYLOAD.search(raw_html)
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        return None
+    page = (payload.get("props") or {}).get("pageProps") or {}
+    lesson = page.get("initialLesson")
+    return lesson if isinstance(lesson, dict) else None
+
+
+def danceinfo_own_images(raw_html: str) -> list[str] | None:
+    """The image URLs this danceinfo.net lesson page says belong to *this*
+    lesson - ``initialLesson.posters``, plus its ``thumbnail``.
+
+    None when the page is not a danceinfo lesson page, so the caller scans as
+    it always has. A list otherwise, **including an empty one**: "this post
+    has no poster of its own" is an answer, not a reason to look further
+    (v0.96.25).
+
+    v0.96.25: a danceinfo lesson page ends with a "다가오는 추천 행사" carousel
+    of *other* events' posters, and the whole-page `<img>` scan below took all
+    of them. Measured over Production's 237 stored danceinfo items and 2,177
+    stored candidate URLs, and against 25 live pages chosen where the cheap
+    rules disagree:
+
+      * one carousel poster (`posters/4588/...`) had been attached to 39
+        different items, another (`posters/4418/...`) to 9 - and a *labelled*
+        venue read off one of them ("장소: Ae\" (분당)") was the stored venue of
+        six unrelated Events;
+      * the page answers ownership itself: every poster-path image on the page
+        is either in `initialLesson.posters`/`thumbnail` or in
+        `initialRelated.links[].imageUrl`, which carries the other lesson's own
+        `/lessons/<id>` href beside it. 0 of 232 poster images fell outside
+        that split.
+
+    Two cheaper rules were measured and rejected rather than assumed:
+
+      * **`/posters/<lesson id>/`** - the lesson id in the URL is always
+        `contentIdx` (25/25), but 25 of the 66 posters those pages declare as
+        their own live under a *different* poster-id directory, so the rule
+        drops a quarter of the real posters.
+      * **the `w=3840` variant** - every own poster is served at `w=3840`
+        (66/66) and every carousel poster at `w=640` (166/166), but 12 of the
+        site's own chrome images are served at `w=3840` too, so width alone
+        keeps images that are nobody's poster.
+
+    Ownership comes from the source, not from the shape of its URLs.
+    """
+    lesson = _danceinfo_lesson(raw_html)
+    if lesson is None:
+        return None
+    own: list[str] = []
+    for value in (lesson.get("posters") or []):
+        if isinstance(value, str) and value.strip() and value not in own:
+            own.append(value)
+    thumbnail = lesson.get("thumbnail")
+    if isinstance(thumbnail, str) and thumbnail.strip() and thumbnail not in own:
+        own.append(thumbnail)
+    return own
+
+
 def danceinfo_payload_body(raw_html: str) -> str:
     """One danceinfo.net lesson page's own fields, as the page lays them out.
 
     Empty string when this is not such a page, or when its payload carries
     nothing worth reading - the caller then falls through exactly as before.
     """
-    match = _DANCEINFO_PAYLOAD.search(raw_html)
-    if not match:
-        return ""
-    try:
-        payload = json.loads(match.group(1))
-    except (ValueError, TypeError):
-        return ""
-    lesson = (payload.get("props") or {}).get("pageProps") or {}
-    lesson = lesson.get("initialLesson")
-    if not isinstance(lesson, dict):
+    lesson = _danceinfo_lesson(raw_html)
+    if lesson is None:
         return ""
     parts = []
     date = lesson.get("date")
@@ -460,6 +523,22 @@ def extract_images(raw_html: str, base_url: str) -> list[str]:
     return seen
 
 
+def _served_image_target(url: str) -> str:
+    """The image a URL ultimately points at.
+
+    A Next.js page serves its images through `/_next/image?url=<encoded>&w=...`,
+    so the page's own `<img src>` and the URL its payload names are the same
+    image written two ways. Compared on the target so ownership can be decided
+    from the payload while the URL actually fetched stays the one the page
+    serves - same origin, same bytes, same OCR cache entry as before.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.path.startswith("/_next/image"):
+        return url
+    inner = urllib.parse.parse_qs(parsed.query).get("url") or [""]
+    return urllib.parse.urljoin(url, inner[0]) if inner[0] else url
+
+
 def extract_content_images(raw_html: str, base_url: str) -> list[str]:
     """A post's own attached images, scoped the same way `extract_article()`
     scopes its text (v0.84.3).
@@ -475,10 +554,23 @@ def extract_content_images(raw_html: str, base_url: str) -> list[str]:
     text, extended to images, not a new heuristic.
 
     Falls back to the whole-page scan when no known boundary matches -
-    every other source's current behaviour (Daum, DanceInfo, an unknown WEB
-    board) is unchanged, since none of those mark a raw-HTML image boundary
-    today.
+    every other source's current behaviour (Daum, an unknown WEB board) is
+    unchanged, since none of those mark a raw-HTML image boundary today.
+
+    v0.96.25: a danceinfo.net lesson page is asked *itself* which images are
+    its own (``danceinfo_own_images``) before any scanning, because that page
+    ends with a carousel of other events' posters and no boundary marker
+    separates them. The URLs returned are still the ones the page serves, in
+    the order it serves them - only the foreign ones are left out. Nothing
+    about any other host changes: the reader returns None for every page that
+    is not a danceinfo lesson page.
     """
+    own = danceinfo_own_images(raw_html)
+    if own is not None:
+        wanted = {_served_image_target(u) for u in own}
+        return [u for u in extract_images(raw_html, base_url)
+                if _served_image_target(u) in wanted]
+
     board_start = raw_html.find(_TEMPLATE_BOARD_START)
     board_end = raw_html.find(_TEMPLATE_BOARD_END, board_start + 1 if board_start >= 0 else 0)
     if board_start >= 0 and board_end > board_start:

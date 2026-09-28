@@ -9,6 +9,54 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.25 (**한 post에는 그 post의 poster만 붙인다.** v0.96.24는
+  poster OCR이 label 없는 읽기로 venue를 만들어내는 것을 막았지만, 더 깊은 결함은
+  남아 있었다 — **이미지 자체가 남의 것**이었다. `장소: Ae" (분당)`은 **정확히
+  labelled되고 정확히 OCR된** venue이고, 다만 lesson 4418 파티의 것이었다. 그것이
+  무관한 **6개 Event**(아수까 일요밀롱가·러블리밀롱가 7주년·분당러블리낮밀·四喜四樂 등)의
+  저장된 장소였고, `장소:홍턴지하2층6룸`은 **2개**였다. 잘못 읽은 게 아니라 **잘못된
+  행사에 붙인** 것이다. 원인: danceinfo 상세 페이지가 자기 poster를 `w=3840`으로 싣고
+  이어서 "🔥 다가오는 추천 행사" carousel로 다른 행사 poster들을 `w=640`으로 싣는데,
+  `acquisition.extract_content_images()`는 Daum·K-TANGO용 raw-HTML 경계만 알고 경계가
+  없으면 **전체 페이지 `<img src>` 스캔**으로 떨어진다. danceinfo는 경계를 표시하지 않아
+  carousel 전부가 이 post의 `poster_candidates`가 되고, fetch·OCR되어 이 행사에 대한
+  evidence로 extractor에 전달됐다. 전파 규모(저장된 237 item·2,177 candidate URL 전수):
+  poster 1576 → **83 item**, 4588 → 83, 2300 → 80, 4774 → 68, 4875 → 65,
+  **4202 → 64**, 4760 → 47, **3865 → 29**. `posters/4202`는 v0.96.23이 false merge에서
+  구해낸 바로 그 검단 라틴솔의 자기 poster인데 다른 64개 post에 붙어 있었고,
+  `posters/3865`가 홍턴 오염원이다. 게다가 carousel이 회전하므로 계속 늘어난다 —
+  `posters/4588`은 v0.96.24 측정 시 39 item이었고 지금 83이다. **페이지가 소유권을 직접
+  답한다**: v0.96.13부터 이미 읽고 있는 같은 hydration payload에
+  `initialLesson.posters`(+`thumbnail`)가 이 lesson의 자기 이미지 목록이고,
+  `initialRelated.links[]`가 carousel 이미지마다 그것이 속한 `/lessons/<id>`를 함께
+  싣는다. 그래서 `acquisition.danceinfo_own_images()`가 `posters`+`thumbnail`을 읽고,
+  `extract_content_images()`는 페이지가 **실제로 서빙하는** `<img>` 중 그 목록을 가리키는
+  것만 남긴다 — 저장되는 URL은 전과 같아서 origin·바이트·OCR 캐시 항목이 그대로다
+  (`_served_image_target()`이 `/_next/image?url=…&w=…` 프록시를 통과해 비교한다).
+  danceinfo lesson 페이지가 아니면 `None`을 답하므로 다른 host는 전혀 건드리지 않는다.
+  **더 싼 규칙 두 개는 측정해서 기각했다**(둘이 어긋나는 25개 실 페이지로 검증):
+  `/posters/<lesson id>/`는 lesson id가 항상 `contentIdx`(25/25)이지만 그 페이지들이
+  자기 것이라고 선언한 poster 66개 중 **25개가 다른 poster-id 디렉터리**에 있어 실제
+  poster의 1/4을 버린다. `w=3840`은 자기 poster가 전부 3840(66/66)이고 carousel이 전부
+  640(166/166)이지만 사이트 chrome 이미지 **12개**가 3840이고 저장된 item 19개가
+  **carousel poster를 3840으로** 싣고 있다. 소유권은 URL 모양이 아니라 source에서 읽는다.
+  **전수 시뮬레이션**(보드에서 patched 모듈을 나란히 올려 실제 shipping 함수로 237 페이지
+  read-only 재실행): before 2,177 URL → after **344**, 제거 1,835, 유지 342,
+  **own poster lost 0**, **foreign poster kept 0**, poster가 0개가 되는 item **0**,
+  자기 poster가 2개 이상인 item 57. 제거 1,835건의 정체는 추가 요청 없이 전부 규명했다
+  (237 페이지가 이미 각자의 poster 목록을 알려줬으므로): site chrome 615, **우리가
+  보유한 다른 lesson의 자기 poster 615**(그 lesson payload가 직접 증명), 보유하지 않은
+  lesson의 poster 605(distinct 60), 제거한 페이지 자신의 poster **0**. id 규칙에서
+  poster가 없어 보였던 item 3831(`/lessons/4275`)도 자기 선언으로는 poster를 가진다.
+  ENGINE_VERSION은 **1.06 유지** — extractor는 전과 똑같이 읽고, 바뀌는 것은 *무엇을
+  건네받는지*다. 저장된 `poster_candidates`는 acquisition 산출물이라 engine 재추출로는
+  고쳐지지 않으므로 공식 경로 `scheduler.acquisition_job.reacquire()`(Admin의
+  `/admin/intake/{id}/reacquire` 버튼이 부르는 그 함수, rate limited)로 갱신한다. 그것이
+  새 `fetched_at`을 남기고 그게 `content_store.needing_reprocess()` branch (1)이라
+  평소의 `engine-reprocess` job이 poster 목록이 실제로 바뀐 item만 같은 engine 1.06으로
+  다시 읽는다 — force도 cursor 조작도 없다. 수동 `UPDATE` 0건, `source_item_image` 삭제
+  0건(더 이상 아무도 그 URL을 이 post의 것으로 열거하지 않으므로 낡은 OCR 행은 그냥 다시
+  참조되지 않는다). migration 043 유지)
 - Product Runtime: v0.96.24 (**poster가 장소를 label했을 때만 그 장소를 믿는다.**
   Event 61개가 장소가 아닌 것을 장소로 표시하고 있었다 — `스스 me1`(8개 도시 18개
   파티), `정모비 1만원`, `월요일 | 8회`, `® 카카오 ziazia | 문4`,
@@ -432,7 +480,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.24"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.25"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
