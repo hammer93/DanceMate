@@ -701,6 +701,16 @@ class VenueReading:
     alias_candidates: list[str] = field(default_factory=list)
 
 
+# What ``VenueReading.label`` says when the post never wrote a field name and
+# the *shape* of the sentence was read as one instead: "@ 오초", "아미고
+# 스튜디오 9:15pm". Both are real forms a person writes, and both stay - on
+# body text. Named here because one caller has to tell them apart from a
+# genuine "장소:" label: see ``extractor._image_venue()``.
+VENUE_LABEL_AT = "@"
+VENUE_LABEL_SUFFIX = "SUFFIX"
+VENUE_SHORTCUT_LABELS = frozenset({VENUE_LABEL_AT, VENUE_LABEL_SUFFIX})
+
+
 def _strip_decoration(value: str) -> str:
     """Drop emoji and ornaments around a name, keep the name and its brackets."""
     value = value.strip().lstrip(_TRIM_LEAD).strip()
@@ -931,7 +941,7 @@ def extract_venue(text: str) -> VenueReading | None:
         return VenueReading(
             name=name,
             raw=re.sub(r"\s+", " ", match.group(0))[:120].strip(),
-            label="@",
+            label=VENUE_LABEL_AT,
             alias_candidates=[name],
         )
     for pattern in (_SUFFIX_VENUE_RE, _SUFFIX_VENUE_AFTER_CLOCK_RE):
@@ -959,7 +969,7 @@ def extract_venue(text: str) -> VenueReading | None:
         return VenueReading(
             name=name,
             raw=re.sub(r"\s+", " ", match.group(0))[:120].strip(),
-            label="SUFFIX",
+            label=VENUE_LABEL_SUFFIX,
             alias_candidates=[name],
         )
     return None

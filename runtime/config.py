@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.23"
+PRODUCT_VERSION = "0.96.24"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -303,7 +303,20 @@ PRODUCT_VERSION = "0.96.23"
 # re-stamping 2,543 rows would claim a re-read that never happened. Nor is a
 # re-extract needed to converge: the fold graph is rebuilt by the ordinary
 # `event-normalization` job, which has always ended in `duplicates.scan()`.
-DEFAULT_ENGINE_VERSION = "1.05"
+# v0.96.24 DOES bump the engine, and this is what the bump re-reads. A poster
+# may fill a venue the body never named (v0.84.3), narrowed there to "only if
+# the poster labelled it" - and written as a prefix test on the evidence
+# string, which two readings that are not labels answered to as well
+# ("LABEL:@", "LABEL:SUFFIX"). Measured over every venue reading the 1.05
+# engine had taken off a Production poster: 65 readings, 50 from the "@"
+# shortcut, and 49 of those 50 were not places - fees, clocks, session counts,
+# contact lines, genre words, taglines, OCR noise. Re-reading the corpus under
+# 1.06 removes the venue from 61 Events and changes nothing else about them;
+# the offline harness (base vs patched over all 537 posts with poster OCR)
+# moved date/start/end/fee on 7, every one reviewed, and the canonical graph
+# by zero rows. Extraction semantics changed, so the stamp has to change:
+# a row still marked 1.05 would claim a reading this engine no longer makes.
+DEFAULT_ENGINE_VERSION = "1.06"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

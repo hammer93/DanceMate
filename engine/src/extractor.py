@@ -3,6 +3,12 @@ from . import extraction_rules
 from . import classifier
 from .models import EventCandidate, Evidence
 
+# How a venue Evidence records which label the reading came from:
+# "LABEL:장소", "LABEL:Venue" - and, for the two readings that are not a label
+# at all, "LABEL:@" and "LABEL:SUFFIX" (extraction_rules.VENUE_SHORTCUT_LABELS).
+# One prefix, written once, because `_image_venue()` has to read it back.
+_LABEL_INFERENCE = "LABEL:"
+
 # v0.96.21: English month names, and the number each one means. A festival
 # page writes its dates the way an English-reading audience does - SEOUL
 # lindyfest 2026's own page says "DATE Oct 8-11, 2026" - and not one pattern
@@ -901,7 +907,8 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         ev.venue = place.name
         ev.evidences.append(Evidence(
             "venue", {"name": place.name, "alias_candidates": place.alias_candidates},
-            place.raw, source_role=source_role, inference=f"LABEL:{place.label}",
+            place.raw, source_role=source_role,
+            inference=f"{_LABEL_INFERENCE}{place.label}",
             context_id=context_id,
         ))
         return ev
@@ -1476,8 +1483,8 @@ def needs_image_fallback(ev) -> bool:
 
 def _image_venue(sub):
     """v0.84.3: a poster's own venue only counts as fallback evidence when
-    extract_venue() actually labelled it ("장소: ...") - never the bare
-    known-studio-name shortcut (PISTA/OCHO/오나다).
+    the poster actually *labelled* it ("장소: ...") - never a reading the
+    shape of the text was taken for a label.
 
     Found on a real K-TANGO poster: a multi-venue schedule table (~15
     studios across two days) happened to name "오나다" as one of many
@@ -1487,11 +1494,29 @@ def _image_venue(sub):
     passing; a dense OCR'd poster does, so the same shortcut that is safe
     on body text is not safe here. Body-text venue reading is unaffected -
     this only narrows what an *image* is trusted to contribute.
+
+    v0.96.24: the "@ name" and "<name>스튜디오 20:00" shortcuts were reaching
+    this gate, because ``extract_venue()`` reports them as labels too
+    ("LABEL:@", "LABEL:SUFFIX") and the prefix test could not tell them from
+    "LABEL:장소". They are what the section above says an image may not be
+    trusted for, and the corpus agrees flatly: of 50 "@" readings taken off
+    Production posters, 49 were not places at all. They were fees ("@ 정모비
+    1만원"), clocks ("@ x 수요일 9Al ~ 1041"), session counts ("@ 월요일 |
+    8회"), contact lines ("@® 카카오 ziazia"), genre words ("@ 바차타"),
+    taglines ("@ + we. SALSA ㆍ BACHATA") and OCR noise. That ratio is not
+    about social handles - none of those is one - it is about what OCR does
+    to a dense poster: a bullet, a ®, a ©, a ✦, a stray + all come back as
+    "@", and ``_AT_VENUE_RE`` then reads the next words as a place name. A
+    human-written body has no such decoration, which is exactly why the same
+    branch stays trusted there (v0.96.2's "@ 오초", "@Studio Ocho").
     """
     if sub.venue is None:
         return None
     evidence = next((e for e in sub.evidences if e.field == "venue"), None)
-    if evidence is None or not (evidence.inference or "").startswith("LABEL:"):
+    inference = (evidence.inference or "") if evidence is not None else ""
+    if not inference.startswith(_LABEL_INFERENCE):
+        return None
+    if inference[len(_LABEL_INFERENCE):] in extraction_rules.VENUE_SHORTCUT_LABELS:
         return None
     return sub.venue
 

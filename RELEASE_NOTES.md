@@ -1,5 +1,220 @@
 # DanceMate Release Notes
 
+## v0.96.24 A Poster May Name The Venue, But Only If It Labels It
+
+Product Runtime 0.96.24; Information Engine **1.05 → 1.06**; migration
+**043, unchanged**. One condition in `engine/src/extractor._image_venue()` and
+two named constants beside `extract_venue()`. No change to body-text venue
+reading, dates, times, fees, classification, acquisition, the duplicate and
+canonical rules, or what this project crawls.
+
+**What a reader was being told.** Sixty-one Events displayed a location that
+was not one. `검단 라틴솔 동호회 10월 미니파티` was at `스스 me1`. So were
+seventeen other parties in eight cities. Others were at `정모비 1만원`, at
+`월요일 | 8회`, at `® 카카오 ziazia | 문4`, at `+ we. SALSA ㆍ BACHATA «+ LATIN
+SOCIAL`, at `we BS`, at `x 수요일 9Al ~ 1041`.
+
+### The brief's framing was close, and the corpus corrects it
+
+The release was sent to stop poster OCR from reading a **social-media @handle**
+as a venue. The mechanism is the `@`, but almost none of these are handles.
+Every venue reading the 1.05 engine had taken off a Production poster — 65 of
+them — was classified by hand:
+
+| poster venue readings | count | of which places |
+|---|---|---|
+| labelled (`장소:`, `주소:`, `Venue:`) | 14 | mostly |
+| the `@` / `at ` shortcut | **50** | **1** |
+| the `<name>스튜디오 <clock>` shortcut | 1 | 0 |
+
+Of the 50 `@` readings, 49 were fees, clocks, session counts, contact lines,
+genre words, poster taglines, team names and OCR noise. **Not one was an
+`@username`.** v0.96.2 already refuses real handles (`_looks_like_account`,
+`_HANDLE_LIKE`, `_ACCOUNT_CONTEXT`), and those guards are untouched here —
+`스스 me1` slips past them because it is not an account name.
+
+The real mechanism is what OCR does to a dense poster: a bullet, a ®, a ©, a
+stray `+`, a `=` all come back as `@`, and `_AT_VENUE_RE` reads the next words
+as a place. The corpus shows the character itself being manufactured —
+`@®`, `@ =`, `@ + we.`, `@0`, `@ x`. A human-written body has no such
+decoration, which is exactly why the same branch stays trusted there.
+
+### The fix restores a contract that was already written down
+
+v0.84.3 gave an image the right to fill a missing venue and narrowed it in the
+same release: *"a poster's own venue only counts as fallback evidence when
+extract_venue() actually labelled it (`장소: ...`) — never the bare
+known-studio-name shortcut. A short, curated post body rarely mentions an
+unrelated studio in passing; a dense OCR'd poster does."* Its test
+`test_a_bare_known_studio_name_mentioned_in_a_listing_is_not_read_as_the_venue`
+still passes.
+
+The narrowing was written as `inference.startswith("LABEL:")`, and
+`extract_venue()` reports its two shortcut readings as labels too: the `@`
+branch as `LABEL:@`, the suffix branch as `LABEL:SUFFIX`. Both answered the
+prefix test. So `_image_venue()` now asks which label it was, against
+`extraction_rules.VENUE_SHORTCUT_LABELS` — the two values named once, beside
+the function that produces them, because two files have to agree on them.
+
+Rejected as too broad, each for a measured reason:
+
+* **reject every `LABEL:`** — would lose the 14 labelled poster venues,
+  including `장소 : 이데알, 부산 서면 700비어 3층` (venue 4222) and
+  `장소 : 까미니또 (대전 유성 계룡로66번길 5 / 3중)` (venue 1978);
+* **reject every `@`** — would break body-text reading that is right:
+  v0.96.2's `@ 오초`, `@Studio Ocho`, `@ 올어바웃스윙 홀`, and the whole
+  `AT_VENUE` fixture list;
+* **detect social handles harder** — the wrong target. 49 of the 50 bad
+  readings are not handles, so no handle rule reaches them.
+
+### Measured offline over the whole Production corpus
+
+The patched engine was loaded beside the running one on the board and both were
+run, read-only, over **all 537 stored posts that carry poster OCR**, using the
+OCR text already cached in `source_item_image`:
+
+```
+posts re-read                    537
+posts whose reading changed      120
+  venue only                      64
+  venue + conflict evidence       22
+  conflict evidence only          27
+  date/start/end/fee too           7   (every one reviewed by hand)
+posts with any venue        337 -> 248
+image-sourced venue         138 ->  49
+posts whose venue resolves   65 ->  62
+```
+
+Every venue change was resolved against the live Venue Master:
+
+```
+CORRECTED_FALSE_VENUE   86
+REPLACED                 4
+LEGIT_VENUE_LOST         3
+```
+
+**The three losses, named.** All three are the `@` shortcut on a 가또땅고
+weekly-schedule poster:
+
+* `@ 아미고 스튜디오` → venue 180, on
+  `[부산_탱고동호회]가또땅고 8월 첫째주 열탱즐탱`. That post's own body lists
+  **three venues running at the same hour that night** — 미오, 아미고 큰홀,
+  아미고 작은홀. The reading was right about one of three, which is not the
+  same as being right; it is the multi-venue listing v0.84.3 exists for.
+* `AT AMIGO STUDIO` → venue 180, on a five-day workshop the body splits
+  between 아미고 (10/5–10/7) and 윙빠 (10/8–10/9). **No Event row exists for
+  this item**, so no reader loses anything.
+* `@ 미오` → venue 4235, on `Lady Leaders Class`. Correct — and the body says
+  it too (`6월 11일(화)부터 미오에서는`), just without a label the reader can
+  match. **No Event row exists for this item either.**
+
+So exactly **one visible Event** loses a venue it had: event 1426426
+(2026-08-05, past), which also loses `region_id = 35` because that region was
+read off the venue. This release accepts that rather than keeping a reading
+that was one row of a three-venue schedule: a region is only ever as good as
+the place it came from, and keeping a fabricated venue to keep a region would
+be the wrong trade. The literal gate "legitimate poster venues lost = 0" is
+therefore **not** met — it is 1, stated here rather than rounded down.
+
+**The four replacements** are the next defect showing through, below.
+
+### Event and canonical effect
+
+```
+Events losing their venue        61   (50 past, 11 upcoming; all visible)
+  venue was UNRESOLVED           49
+  venue was already ABSENT       11
+  venue was RESOLVED              1
+Events whose venue changes        1
+
+canonical_event_id differences    0
+auto merges          base 0 -> patched 0
+new merges                        0
+merges lost                       0
+review pairs         base 74 -> patched 52   (-22, all false suspicions)
+new review pairs                  0
+
+visible rows        760 -> 760
+visible upcoming    115 -> 115
+visible TODAY         7 ->   7
+  Tango 83 / Salsa 28 / Swing 3 / Bachata 1, unchanged
+visible with a venue         446 -> 396
+visible with a resolved venue 341 -> 340
+```
+
+No Event is lost, gained, merged or split. The 22 review pairs that disappear
+are pairs the false venue created: eighteen parties claiming one address at the
+same hour looked related and were not.
+
+### The v0.96.23 pair, stronger than before
+
+```
+1603334  모두의 라틴 바차타 워크숍 및 살사 파티   canonical NULL, LISTED, venue ABSENT
+1603338  검단 라틴솔 동호회 10월 미니파티        canonical NULL, LISTED, venue ABSENT
+1600293  명절 메인 심야 파티!                   canonical NULL, LISTED, venue ABSENT
+1607998  BABARU 소셜 OPEN! 09/25                canonical NULL, LISTED, venue ABSENT
+```
+
+v0.96.23 kept them apart by refusing to merge on an unresolved string. They are
+now apart because neither claims a place at all — and the string that made
+them look alike is gone from all eighteen.
+
+### What is next: the carousel
+
+Three of the four replacements happen because removing one wrong venue hands
+the slot to another wrong venue **from a different event's poster**. DanceInfo's
+detail pages serve the post's own poster at `w=3840` and then a carousel of
+other events' posters at `w=640`, and the collector takes all of them in DOM
+order:
+
+```
+item 4415  /lessons/4641
+  [0] images/ci_default_logo.png
+  [1] icons/icon_user.png
+  [2] posters/4641/...  w=3840   <- this post's own poster
+  [3] posters/1576/...  w=640    <- somebody else's
+  [4] posters/4774/...  w=640
+  [5] posters/4588/...  w=640    <- the "스스 me1" poster
+  ...
+```
+
+One carousel poster (`posters/4588/...`) is attached to **39 different items**,
+another (`posters/4418/...`) to at least 9. A *labelled* reading off a foreign
+poster is still adopted today: `장소: Ae" (분당)` is the venue of six unrelated
+posts, `장소:홍턴지하2층6룸` of two. That is an acquisition defect, not an
+extraction one — different layer, different fix site — and it is the next
+release's single target. This release does not touch it, which is why the
+predicted-versus-actual comparison above stays verifiable.
+
+### Why ENGINE_VERSION goes to 1.06
+
+Extraction semantics changed: the same stored body and the same cached OCR now
+produce a different venue. A row still stamped 1.05 would claim a reading this
+engine no longer makes, so every one is re-read through the ordinary
+`engine-reprocess` incremental sweep (v0.96.3) — 25 rows per tick, the DB row
+as cursor, no forced pass and no cursor edit. A one-candidate post is re-read
+into the same `candidate_id` (v0.96.0), so its Event keeps its id; a
+multi-candidate post's candidates are replaced, and those Events are retired
+and rebuilt by `normalization`'s own orphan pass, exactly as every engine bump
+since v0.96.0 has done. `migration 043` is unchanged — nothing about the schema
+changes.
+
+### Tests
+
+`engine/tests/test_v09624_poster_venue_labels.py` (29): every bad shape found on
+a real poster refused (T1/T2/T10), a handle refused (T3), the suffix shortcut
+refused, five labelled forms still read (T6/T7), body-text `@` and suffix
+reading unchanged including v0.96.2's own account fixtures (T4/T5/T13), the body
+always winning (T8/T9), a conflict row gone with the reading it described but
+still recorded for a labelled disagreement, and the shared-poster case (§31) —
+one poster handed to four unrelated posts names none of their venues.
+
+`tests/test_v09624_poster_venue_fallout.py` (6): a candidate with no venue
+normalises to `ABSENT` and keeps everything else; two parties at one hour with
+no place are neither merged nor flagged (T11); a resolved-venue duplicate still
+folds (T12); an Event keeps its id when it loses a venue; a region read off a
+venue goes with it.
+
 ## v0.96.23 Two Parties At The Same Hour Are Two Events
 
 Product Runtime 0.96.23; Information Engine **1.05, unchanged**; migration

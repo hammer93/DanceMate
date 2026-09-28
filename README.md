@@ -9,6 +9,64 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.24 (**poster가 장소를 label했을 때만 그 장소를 믿는다.**
+  Event 61개가 장소가 아닌 것을 장소로 표시하고 있었다 — `스스 me1`(8개 도시 18개
+  파티), `정모비 1만원`, `월요일 | 8회`, `® 카카오 ziazia | 문4`,
+  `+ we. SALSA ㆍ BACHATA «+ LATIN SOCIAL`, `we BS`, `x 수요일 9Al ~ 1041`.
+  **브리프의 진단을 corpus로 교정했다**: 1.05 엔진이 Production poster에서 읽은 venue
+  evidence 65건을 전수 수동 분류한 결과 labelled(`장소:`/`주소:`/`Venue:`) 14건,
+  `@`/`at ` shortcut **50건**, suffix shortcut 1건이고, `@` 50건 중 **장소인 것은
+  단 1건**이었다. 나머지 49건은 요금·시각·회차·연락처·장르 단어·poster 카피·팀
+  이름·OCR 노이즈이고 **`@username` 형태의 social handle은 하나도 없었다**. v0.96.2가
+  이미 실제 handle을 막고 있고(`_looks_like_account`·`_HANDLE_LIKE`·
+  `_ACCOUNT_CONTEXT`, 이번에 건드리지 않음) `스스 me1`은 계정명이 아니라서 거기에
+  걸리지 않는다. 진짜 기제는 **OCR이 poster 장식을 `@`로 만들어내는 것**이다 —
+  corpus에 `@®`, `@ =`, `@ + we.`, `@0`, `@ x`가 그대로 남아 있다. 사람이 쓴 본문에는
+  그런 장식이 없고, 그래서 같은 분기가 본문에서는 계속 신뢰된다. 수정은 **이미 문서로
+  적혀 있던 계약의 복원**이다: v0.84.3이 image venue를 "poster가 label했을 때만"으로
+  좁혔는데(그 릴리스의 테스트가 지금도 통과한다) 그 좁힘이
+  `inference.startswith("LABEL:")`로 쓰였고 `extract_venue()`가 shortcut 두 개를
+  `LABEL:@`·`LABEL:SUFFIX`로 보고하는 바람에 둘 다 통과했다. 이제 `_image_venue()`가
+  **어느 label이었는지**를 `extraction_rules.VENUE_SHORTCUT_LABELS`로 되묻는다(두 파일이
+  합의해야 하는 값이라 생산 지점 옆에 한 번만 선언). 더 넓은 수정은 각각 측정해서
+  기각했다 — `LABEL:` 전부 차단은 labelled poster venue 14건(`장소 : 이데알, 부산 서면
+  700비어 3층`=venue 4222, `장소 : 까미니또`=venue 1978 포함)을 잃고, `@` 전부 차단은
+  v0.96.2의 `@ 오초`·`@Studio Ocho`·`@ 올어바웃스윙 홀`과 `AT_VENUE` fixture 전체를
+  깨고, social-handle 탐지 강화는 애초에 49건에 닿지 않는다. **전체 corpus offline
+  측정**(보드에서 patched 엔진을 나란히 올려 poster OCR이 있는 stored post 537건 전수를
+  `source_item_image` 캐시로 read-only 재추출): 변경 120건 — venue만 64, venue+conflict
+  22, conflict만 27, **date/start/end/fee까지 움직인 7건은 전수 수동 검토**. venue 보유
+  337→248, image 출처 venue 138→49, resolve되는 venue 65→62. 변경된 venue 문자열을
+  전부 live Venue Master에 resolve해서 판정: CORRECTED_FALSE_VENUE 86, REPLACED 4,
+  **LEGIT_VENUE_LOST 3**. 3건은 전부 가또땅고 주간일정 poster의 `@` 읽기다 —
+  `@ 아미고 스튜디오`(venue 180)는 그 post 본문이 **같은 시각에 세 장소**(미오·아미고
+  큰홀·아미고 작은홀)를 적고 있어 셋 중 하나를 맞힌 것이고(v0.84.3이 존재하는 이유인
+  multi-venue listing), `AT AMIGO STUDIO`와 `@ 미오`는 **Event row가 아예 없다**. 따라서
+  실제로 장소를 잃는 visible Event는 **1건**(event 1426426, 2026-08-05 과거)이고
+  `region_id=35`도 함께 잃는다(그 region이 venue에서 읽힌 값이고 SRC-D-030은 SECONDARY라
+  board fallback 자격이 없다). 이걸 받아들인다 — region은 출처가 된 장소만큼만 정확하고,
+  region을 지키려고 조작된 venue를 남기는 건 잘못된 교환이다. "legitimate poster venue
+  lost = 0" gate는 **문자 그대로는 충족되지 않았고(=1)** 내림하지 않고 그대로 적는다.
+  Event/canonical 영향: venue를 잃는 Event 61건(과거 50·upcoming 11, 전부 visible),
+  venue가 바뀌는 Event 1건, **canonical_event_id 차이 0**, auto merge 0→0, new merge 0,
+  lost merge 0, review pair 74→52(-22, 전부 거짓 의심), new pair 0. visible 760→760,
+  upcoming 115→115, TODAY 7→7, 장르별(Tango 83/Salsa 28/Swing 3/Bachata 1) 불변 —
+  **Event는 하나도 잃지 않는다**. v0.96.23이 분리한 두 쌍(1603334/1603338,
+  1600293/1607998)은 이제 unresolved 문자열을 거부해서가 아니라 **애초에 장소를 주장하지
+  않아서** 분리돼 있다. 다음 목표는 **carousel**이다: danceinfo 상세 페이지가 자기
+  poster를 `w=3840`으로, 그 뒤에 다른 행사 poster들을 `w=640`으로 싣고 collector가 DOM
+  순서로 전부 가져온다. carousel poster 한 장(`posters/4588/...`)이 **39개 item**에,
+  또 한 장(`posters/4418/...`)이 최소 9개에 붙어 있고, 남의 poster의 **labelled** 읽기는
+  지금도 채택된다(`장소: Ae" (분당)`이 무관한 6개 post의 장소, `장소:홍턴지하2층6룸`이
+  2개). 그건 extraction이 아니라 acquisition 결함이라 layer도 수정 지점도 달라서 이번에
+  넣지 않았다 — 섞으면 위의 predicted-vs-actual 비교를 검증할 수 없게 된다.
+  ENGINE_VERSION은 **1.05 → 1.06** — 같은 body와 같은 OCR 캐시로 다른 venue가 나오므로
+  추출 의미가 바뀌었고, 1.05로 남은 row는 이 엔진이 더는 하지 않는 읽기를 주장하게 된다.
+  재처리는 v0.96.3의 incremental `engine-reprocess` 정상 sweep(틱당 25건, DB row가 cursor,
+  force 없음·cursor 조작 없음)으로 수렴한다. candidate 1개 post는 같은 `candidate_id`로
+  다시 읽혀 Event id를 유지하고(v0.96.0), 다수 candidate post는 candidate가 교체되며
+  normalization의 orphan pass가 Event를 재구성한다 — v0.96.0 이후 모든 엔진 bump와 동일.
+  migration 043 유지)
 - Product Runtime: v0.96.23 (**같은 시각의 서로 다른 두 파티는 두 개의 Event다.**
   2026-10-03 토요일 21:00에 살사 파티가 두 개 있었다 — event 1603334 `모두의 라틴
   바차타 워크숍 및 살사 파티`(장소 **광주 J 라틴**, DJ 버퍼링, 21:00~01:00)와 event
@@ -374,7 +432,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.23"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.24"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
