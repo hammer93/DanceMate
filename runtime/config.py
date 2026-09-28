@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.25"
+PRODUCT_VERSION = "0.96.26"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -328,7 +328,21 @@ PRODUCT_VERSION = "0.96.25"
 # `content_store.needing_reprocess()` - so the ordinary `engine-reprocess`
 # job re-reads exactly the items whose poster list actually changed, under
 # the same engine 1.06, with no version bump and no forced pass.
-DEFAULT_ENGINE_VERSION = "1.06"
+#
+# v0.96.26 bumps the engine: `extraction_rules` now reads where a labelled venue
+# name ends. Three narrow additions, each measured against every venue string
+# Production holds *before* it was made - two fee labels the list was missing
+# (`수강료`, `강습료`), five section headings that never appear inside a correct
+# venue (`협찬`, `경품`, `후원`, `타임테이블`, `드레스코드`), and a pictograph
+# boundary once the name has started - plus a guard that stops the
+# "<name>스튜디오" shortcut from swallowing the label word itself
+# ("장소 카디즈 스튜디오" -> "카디즈 스튜디오"). `주차` was the one candidate
+# disqualified outright: it sits inside four *resolved* venues. Measured over all
+# 2,580 stored posts, re-read with the patched engine beside the running one: 20
+# changed, every one of them the venue and nothing else - 0 posts moved a date, a
+# time, a fee or a type - and 0 resolved venues lost. Extraction semantics
+# changed, so the stamp has to change with them.
+DEFAULT_ENGINE_VERSION = "1.07"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

@@ -9,6 +9,62 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.26 (**labelled venue 이름이 끝나는 지점을 읽는다.**
+  **브리프가 길이 문제로 보냈지만 corpus는 아니라고 답했다** — venue를 가진 Event
+  472건(distinct 114) 전수에서 60자 초과 **0건**, 40자 초과 110건 중 **107건이 이미
+  RESOLVED**다. 그 107건은 Miltang의 `이름 (한글 이름) (주소)` 표기이고 두 번째 괄호가
+  venue의 지역을 말하는 유일한 텍스트라서 v0.82.5가 의도적으로 보존한다 —
+  `venue_text[:40]`이면 4건을 고치려고 정상 venue 107건을 파괴한다. 브리프가 든 예시
+  자체가 같은 얘기를 한다: `홍턴지하2층6룸 )`은 11자이고 v0.96.25가 그 남의 poster를
+  제거해 **이미 사라져 있었고**, `장소 카디즈 스튜디오`는 10자다. 실제 결함은 둘이고 둘 다
+  "이름이 어디서 끝나는가"다. (1) labelled 값이 venue를 지나쳐 달렸다 —
+  `_VENUE_STOP_RE`가 `입장료`·`참가비`·`회비`·`요금`·`DJ`·`시간`·`문의`·`주최`는 알지만
+  `수강료`·`강습료`·`협찬`·`경품`·`후원`·`타임테이블`·`드레스코드`는 몰랐고, 이모지가 새
+  섹션을 연다는 것도 몰랐다. (2) `<이름>스튜디오` shortcut이 **label 단어를 삼켰다** —
+  `_SUFFIX_VENUE_RE`가 suffix 앞 3단어를 허용하는 건 `with DJ 롭 이데알 탱고 까페`에서
+  venue를 찾기 위한 것인데, 콜론 없이 쓴 본문 `00:00 장소 카디즈 스튜디오`에서는 그 3단어에
+  `장소`가 들어갔다. **모든 marker를 넣기 전에 측정했다**(저장 body 1,462건·OCR 1,675건에서
+  label 뒤 140자, 그리고 현재 정확한 venue 문자열 대조 — venue 안에 한 번도 안 나타나야
+  사용 가능): 수강료 17/0/0, 드레스코드 14/0/0, 강습료 3/0/0, 협찬 3/1(결함)/0,
+  경품 2/1(결함)/0, 후원 1/0/0, 타임테이블 1/1(결함)/0 → 채택. **`주차`는 즉시 실격** —
+  label 뒤 23건이지만 **RESOLVED venue 4건 안**에 있어(`…황제주차빌딩 2층`,
+  `…서면 황제주차장…`) 주차장을 주소에 쓴 venue가 그것을 잃는다. `파티`(venue 안 2건)와
+  `신청·할인·안내·무료·특강·이벤트·공지·소셜·모집`(각 0건)은 반대 이유로 제외했다 —
+  label 뒤에 흔하지만 **남은 결함이 없다**. 케이스를 가리킬 수 없는 규칙은 비용을 아무도
+  측정하지 않은 규칙이다(테스트로 고정). 이모지 boundary도 같은 셈이다: 오늘 Production
+  venue 안에 나타나는 이모지는 정확히 `🎂`,`🍾` 둘이고 **둘 다 이번에 잘라야 하는 그 문자열
+  안**인데, label 뒤 140자에는 이모지가 200건 이상 나온다(`♡❤☆🎉✅📞📍💰☎`). 이름이
+  **시작된 뒤에만** 발동한다 — label 값은 흔히 이모지로 시작하고(`장소: 📍 아미고`) 그건
+  `_strip_decoration()`이 지우는 몫이다. **전체 corpus 실측**(보드에서 patched engine을
+  나란히 올려 저장된 2,580 post 전수를 engine store와 OCR 캐시로 재독, 네트워크 없음):
+  변경 20건, **전부 `('venue',)` 단일 필드**, date·time·fee·type을 움직인 post **0건**,
+  **resolved venue 손실 0건**, venue 보유 773→774, venue>40 144→140. 20건 전수 검토 —
+  TRIMMED_INNER 11(label guard: `장소 카디즈 스튜디오` 5건, `장소 R스튜디오`,
+  `장소 양재동 스튜디오`, `장소 EDM 댄스스튜디오`, `장소 탱고 스튜디오`,
+  `장소 한라댄스스튜디오`, Naver 스윙 게시판의 `장소 경성홀` — Event 감사가 보여준 것보다
+  9건 더 넓었다), TRIMMED 6(`홍턴 지하 2층 💰 수강료…`→`홍턴 지하 2층`,
+  `일영 마당뜰 펜션 협찬`→`일영 마당뜰 펜션`, `분당 실루엣 - 수강료 25만원…`→`분당 실루엣`,
+  `신천 비바스윙 with 앙마의유혹쌤 ▣▣…`→`신천 비바스윙 with 앙마의유혹쌤`,
+  F1→`안산 단원구 민속공원로 85, B1`, F2), REPLACED 2(payload venue가 `스튜디오 흥`인 두
+  post — 옛 값 `장소 스튜디오`에서 label을 떼면 `스튜디오` 단독은 거부되어 뒤의 매치가
+  이긴다: `마포구 동교로27길 41 지하1층 스튜디오 흥(홍대점)`과 `마포구 동교로27길 41`.
+  둘 다 venue 이름은 아니고 resolve도 안 되지만, 옛 값이 label+일반명사였던 자리에 실제
+  장소가 들어온 것이다. suffix 패턴은 suffix 단어가 앞에 오는 `스튜디오 흥`을 애초에 읽지
+  못하고 그건 이번에 건드리지 않았다), ADDED 1(venue가 없던 Naver 스윙 post가 형제 post와
+  같은 `신천 비바스윙 with 앙마의유혹쌤`을 회복). **중간에 접근을 한 번 철회했다**: 처음에는
+  `danceinfo_payload_body()`가 `장소`에 콜론을 안 붙여 post 자신의 깨끗한 `placeName`이
+  안 읽히는 것을 원인으로 보고 acquisition을 고쳤는데, 전체 corpus 시뮬레이션이
+  **237 item 중 213의 venue가 바뀌고 date 8건까지 움직이는 것**을 보여줘 반증됐다
+  (`djNames`가 없으면 `장소: X 강의 소개 …`가 되고 `강의 소개`는 콜론이 없어 boundary가
+  아니다). 되돌리고 engine 쪽으로 옮겼다. **남은 잔재를 그대로 적는다**: `/lessons/4350`은
+  `압구정 TOP Bar 정택일 25주년 × 라틴시그니엘 3주년`이 된다 — 협찬 단락은 사라지지만
+  venue와 그 사이의 행사 제목은 아니다. `압구정 TOP Bar`와 `정택일 25주년`을 가르는 어휘적
+  근거가 없고(하나는 바, 하나는 사람과 주년), 그 post의 payload는 `탑`이라고 말하는데
+  `extract_venue()`가 1자 이름을 거부한다(OCR 조각을 막는 그 guard). 고쳤다고 주장하지 않고
+  테스트에 잔재로 고정했다. ENGINE_VERSION은 **1.06 → 1.07** — 같은 저장 body가 다른 venue를
+  내므로 추출 의미가 실제로 바뀌었고, 1.06으로 남은 row는 이 엔진이 더는 하지 않는 읽기를
+  주장하게 된다. v0.96.3의 incremental `engine-reprocess` 정상 sweep으로 재처리한다
+  (틱당 25건, DB row가 cursor, force 없음·cursor 조작 없음). migration 043 유지)
 - Product Runtime: v0.96.25 (**한 post에는 그 post의 poster만 붙인다.** v0.96.24는
   poster OCR이 label 없는 읽기로 venue를 만들어내는 것을 막았지만, 더 깊은 결함은
   남아 있었다 — **이미지 자체가 남의 것**이었다. `장소: Ae" (분당)`은 **정확히
@@ -480,7 +536,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.25"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.26"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

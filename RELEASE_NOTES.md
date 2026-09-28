@@ -1,5 +1,148 @@
 # DanceMate Release Notes
 
+## v0.96.26 Where A Labelled Venue Name Ends
+
+Product Runtime 0.96.26; Information Engine **1.06 → 1.07**; migration
+**043, unchanged**. Two fee labels, five section headings, a pictograph boundary
+and one guard, all in `engine/src/extraction_rules.py`. No change to
+classification, dates, times, fees, the duplicate and canonical rules, poster
+ownership, or acquisition.
+
+### The brief asked for a length problem. The corpus says it is not one.
+
+Over all 472 Production Events carrying a venue — 114 distinct strings:
+
+```
+venue_text longer than  40 chars : 110 Events    of which 107 already RESOLVED
+venue_text longer than  60 chars :   0
+venue_text longer than 100 chars :   0
+genuinely contaminated           :   4 Events    all UNRESOLVED
+```
+
+The 107 are Miltang's own `Name (한글 이름) (주소)` renderings —
+`MARINE TANGO (마린땅고) (경남 창원시 마산합포구 동서서4길 10, 2층 (태진전자음향 2층))`,
+`Andante (안단테) (서울시 마포구 양화로 12길 24 선진빌딩 B1(합정역 3번 출구))` — which
+v0.82.5 deliberately keeps whole, because that second bracket is the only text
+naming the venue's region. `venue_text[:40]` would have destroyed 107 correct
+venues to fix four. Length was never the defect.
+
+The two examples the brief quoted also make the point in the other direction:
+`홍턴지하2층6룸 )` is 11 characters and was already gone (v0.96.25 removed the
+foreign poster it came from), and `장소 카디즈 스튜디오` is 10.
+
+### Two defects, both about where a name ends
+
+**A labelled value ran past the venue** because the section after it carried no
+marker. `_VENUE_STOP_RE` knew `입장료`, `참가비`, `회비`, `요금`, `DJ`, `시간`,
+`문의`, `주최` — and not `수강료`, `강습료`, `협찬`, `경품`, `후원`, `타임테이블`
+or `드레스코드`, nor that a pictograph opens a new section.
+
+**The `<name>스튜디오` shortcut swallowed the label word.** `_SUFFIX_VENUE_RE`
+allows up to three words before the suffix, which is what lets it find the venue
+in `with DJ 롭 이데알 탱고 까페`. On a body that wrote the field with no colon at
+all — `00:00 장소 카디즈 스튜디오` — those three words included `장소`.
+
+### Every marker was measured before it was added
+
+Over 1,462 stored bodies and 1,675 stored OCR texts, counting occurrences within
+140 characters after a venue label, and then checked against the venue strings
+that are correct today. A marker is usable only if it never appears inside one:
+
+| candidate | after a label | inside a venue_text | inside a RESOLVED one | added |
+|---|---|---|---|---|
+| `수강료` | 17 | 0 | 0 | yes |
+| `드레스코드` | 14 | 0 | 0 | yes |
+| `강습료` | 3 | 0 | 0 | yes |
+| `협찬` | 3 | 1 (the defect) | 0 | yes |
+| `경품` | 2 | 1 (the defect) | 0 | yes |
+| `후원` | 1 | 0 | 0 | yes |
+| `타임테이블` | 1 | 1 (the defect) | 0 | yes |
+| **`주차`** | 23 | **5** | **4** | **no** |
+| `파티` | 8 | 2 | 0 | no |
+| `신청` / `할인` / `안내` / `무료` / `특강` / `이벤트` / `공지` / `소셜` / `모집` | 4–50 | 0 | 0 | no |
+
+`주차` is disqualified outright: it sits inside four *resolved* venues
+(`…황제주차빌딩 2층`, `…서면 황제주차장…`), so a venue whose address names a car
+park would lose it. The nine at the bottom are the opposite case — common after
+a label, 0 inside any venue, and **no remaining defect to fix**. A rule nobody
+can point at a case for is a rule whose cost nobody measured, so they were left
+out and a test records that they were.
+
+The pictograph boundary rests on the same kind of count: exactly two emoji appear
+inside any Production venue today, `🎂` and `🍾`, and both are inside the single
+string this release is here to cut. Against that, 200+ pictographs appear within
+140 characters after a venue label — `♡`, `❤`, `☆`, `🎉`, `✅`, `📞`, `📍`, `💰`,
+`☎` — every one of them opening a decoration or a new field. It fires only
+*after* the name has started, because a label's value routinely opens with one
+(`장소: 📍 아미고`) and `_strip_decoration()` is what removes those.
+
+### Measured over the whole corpus, with the shipping engine
+
+The patched engine was loaded beside the running one on the board and all 2,580
+stored posts were re-read from the engine store and the OCR cache — no network:
+
+```
+posts re-read                    2580
+posts changed                      20
+  changed field combinations       ('venue',) x 20
+  posts moving a date, time, fee or type   0      <- hard gate
+resolved venues lost                0              <- hard gate
+posts with a venue          773 -> 774
+venue longer than 40 chars  144 -> 140
+```
+
+Every one of the 20 reviewed:
+
+* **11 `TRIMMED_INNER`** — the label guard: `장소 카디즈 스튜디오` (five posts),
+  `장소 R스튜디오`, `장소 양재동 스튜디오`, `장소 EDM 댄스스튜디오`,
+  `장소 탱고 스튜디오`, `장소 한라댄스스튜디오`, and `장소 경성홀` on a Naver
+  swing board. The defect reached nine more posts than the Event-level audit
+  showed.
+* **6 `TRIMMED`** — `홍턴 지하 2층 💰 수강료 및 할인 혜택` → `홍턴 지하 2층`;
+  `일영 마당뜰 펜션 협찬` → `일영 마당뜰 펜션`;
+  `분당 실루엣 - 수강료 25만원 춤을 잘 추는 것보다…` → `분당 실루엣`;
+  `신천 비바스윙 with 앙마의유혹쌤 ▣▣…` → `신천 비바스윙 with 앙마의유혹쌤`;
+  F1 → `안산 단원구 민속공원로 85, B1`; F2 → below.
+* **2 `REPLACED`** — two posts whose payload venue is `스튜디오 흥`. Their old
+  reading was `장소 스튜디오`; with the label word gone, `스튜디오` alone is
+  refused (`_SUFFIX_VENUE_NOT_ALONE`) and a later match wins:
+  `마포구 동교로27길 41 지하1층 스튜디오 흥(홍대점)` and `마포구 동교로27길 41`.
+  Neither is the venue name, and neither resolves, but both are a real place
+  where the old value was a label plus a generic noun. The suffix pattern cannot
+  read `스튜디오 흥` at all — the suffix word comes *first* — and that is left
+  alone here.
+* **1 `ADDED`** — a Naver swing post that had no venue recovers
+  `신천 비바스윙 with 앙마의유혹쌤`, the same reading its sibling post already had.
+
+### The residual, stated
+
+`/lessons/4350` becomes
+`압구정 TOP Bar 정택일 25주년 × 라틴시그니엘 3주년` — the sponsor paragraph is gone,
+the event title between the venue and it is not. Nothing lexical separates
+`압구정 TOP Bar` from `정택일 25주년`: one is a bar, the other a person and an
+anniversary. Its own payload field says `탑`, which `extract_venue()` refuses for
+being one character — the guard that keeps OCR fragments out. Recorded as the
+residual and asserted as one, not claimed as fixed.
+
+### Why ENGINE_VERSION goes to 1.07
+
+Extraction semantics changed: the same stored body now yields a different venue.
+A row still stamped 1.06 would claim a reading this engine no longer makes, so
+every one is re-read through the ordinary incremental `engine-reprocess` sweep
+(v0.96.3) — 25 rows per tick, the DB row as cursor, no forced pass and no cursor
+edit. `migration 043` is unchanged.
+
+### Tests
+
+`tests/test_v09626_venue_label_boundary.py` (50): the four Production cases and
+the nine other posts the label guard reaches; each added heading ending a name;
+`주차` explicitly *not* ending one, on all three resolved venues that contain it;
+the ten words deliberately left out; the pictograph boundary firing after the
+name and not before; seven long resolved venues kept whole; `이데알, 부산 서면
+700비어 3층` still yielding `이데알`; the boundaries that were already there; the
+three-word suffix window still finding `이데알 탱고 까페` after `with DJ 롭`;
+v0.96.2's `@` readings; and v0.96.24's unlabelled-image contract.
+
 ## v0.96.25 A Post Gets Its Own Poster, And Nobody Else's
 
 Product Runtime 0.96.25; Information Engine **1.06, unchanged**; migration

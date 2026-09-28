@@ -661,9 +661,36 @@ _VENUE_LABEL_RE = re.compile(
 
 # Where the venue stops and the next field begins. Matched only outside
 # parentheses, so "라 벤따나 (서울 마포구 잔다리로 48, 2층)" keeps its address.
+#
+# v0.96.26 adds five section headings, and only five. Each was checked against
+# every venue string Production holds that is correct today (114 distinct, 77 of
+# them resolved to the Venue Master): a heading is usable only if it never
+# appears inside one. Measured over 1,462 stored bodies and 1,675 stored OCR
+# texts, counting occurrences within 140 characters after a venue label:
+#
+#     협찬        3 after a label   0 inside a resolved venue
+#     경품        2                 0
+#     후원        1                 0
+#     타임테이블    1                 0
+#     드레스코드   14                 0
+#     수강료      17                 0
+#     강습료       3                 0
+#
+# `수강료`/`강습료` are the two fee labels the list was missing - `입장료`,
+# `참가비`, `회비` and `요금` were already there - and they are what ends
+# "장소: 분당 실루엣 - 수강료 25만원 춤을 잘 추는 것보다…" at the venue.
+#
+# `주차` was the one candidate disqualified outright: 23 occurrences after a
+# label, but it sits inside four *resolved* venues ("…황제주차빌딩 2층",
+# "…서면 황제주차장…"), so a venue whose address names a car park would lose it.
+# `파티`, `소셜`, `무료`, `특강`, `이벤트`, `안내`, `공지`, `신청`, `할인` and
+# `모집` were left out for the opposite reason: each is common after a label but
+# no longer has a case to fix here, and a rule nobody can point at a defect for
+# is a rule whose cost nobody measured.
 _VENUE_STOP_RE = re.compile(
-    r"(?:DJ|디제이|시간|일시|날짜|입장료|참가비|회비|요금|계좌|문의|예약|예매|"
-    r"오거나이저|주최|주관|Organizer|Reservation|Contact|Fee|Time|Date|Price)"
+    r"(?:DJ|디제이|시간|일시|날짜|입장료|참가비|회비|요금|수강료|강습료|계좌|문의|예약|예매|"
+    r"오거나이저|주최|주관|협찬|경품|후원|타임\s*테이블|타임\s*라인|드레스\s*코드|"
+    r"Organizer|Reservation|Contact|Fee|Time\s*Table|Time|Date|Price)"
     r"\s*[:：]?"
     r"|[\[\]【】]"
     r"|\d[\d,]{2,}\s*원"          # a price starts the fee field, not the name
@@ -675,6 +702,13 @@ _VENUE_STOP_RE = re.compile(
     re.I,
 )
 
+# The same field names `_VENUE_LABEL_RE` reads, as a leading whole word - what
+# `_drop_leading_label()` removes when the suffix shortcut swallowed one.
+_LEADING_VENUE_LABEL_RE = re.compile(
+    r"^(?:장소|위치|오시는\s*곳|오시는\s*길|주소|Venue|Location|Place|Address)"
+    r"\s*[:：]?\s+", re.I,
+)
+
 # An administrative address after the venue name is the address, not the name.
 _ADDRESS_START_RE = re.compile(
     r"(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)"
@@ -682,6 +716,23 @@ _ADDRESS_START_RE = re.compile(
 )
 
 _TRIM_LEAD = "#＃@＠:：-–—·•*✦♦◆■●▶>《<「【 \t"
+
+# v0.96.26: a pictograph after the name is the next section, not more of the
+# name. Measured over every venue string Production holds: exactly two emoji
+# appear inside one, the cake and the bottle, and both are inside the single
+# string this release is here to cut ("...민속공원로 85, B1 [cake]파티음식 맛집!
+# [bottle]외부 술·반입 환영! [clock] 타임테이블 20"). Against that, 200+
+# pictographs appear within 140 characters after a venue label across the stored
+# corpus - hearts, stars, party poppers, phones, pins, money bags - every one of
+# them opening a decoration or a new field.
+#
+# Only *after* the name has started: a label's value routinely opens with one
+# ("장소: [pin] 아미고"), and `_strip_decoration()` is what removes those. That
+# is what `seen_name` tracks in `_cut_at_boundary()` - a character that is
+# neither trim-lead ornament nor pictograph has been passed.
+_PICTOGRAPH_RE = re.compile(
+    "[🀀-🫿←-⯿☀-➿️〰〽]"
+)
 
 # A search snippet that stops mid-sentence marks it with a trailing "..."/"…"
 # -- there was more text, the API just did not send it. Real production case:
@@ -725,6 +776,29 @@ def _strip_decoration(value: str) -> str:
     return value.strip()
 
 
+def _drop_leading_label(value: str) -> str:
+    """Drop a venue label the suffix shortcut swallowed as the name's first word.
+
+    ``_SUFFIX_VENUE_RE`` allows up to three words before the "…스튜디오" suffix,
+    which is what lets "with DJ 롭 이데알 탱고 까페" find its venue - and what let
+    a *label* in, on two real Production posts whose body wrote the field with no
+    colon at all::
+
+        "00:00 장소 카디즈 스튜디오"  ->  "장소 카디즈 스튜디오"
+        "19:00 장소 R스튜디오"       ->  "장소 R스튜디오"
+
+    Only a leading, whole-word label is dropped, and only when something is left
+    after it: a place *named* with one of these words keeps it (this never
+    matches "장소" alone), and no Korean venue is called "장소 X".
+    """
+    stripped = value.strip()
+    match = _LEADING_VENUE_LABEL_RE.match(stripped)
+    if match is None:
+        return value
+    remainder = stripped[match.end():]
+    return remainder if len(remainder.strip()) >= 2 else value
+
+
 def _cut_at_boundary(value: str) -> str:
     """Trim a labelled value down to the venue name itself.
 
@@ -745,6 +819,7 @@ def _cut_at_boundary(value: str) -> str:
     depth = 0
     index = 0
     length = len(value)
+    seen_name = False
     while index < length:
         char = value[index]
         if char in "(（":
@@ -774,6 +849,10 @@ def _cut_at_boundary(value: str) -> str:
                 break
         if matched:
             return value[:index]
+        if seen_name and _PICTOGRAPH_RE.match(value, index):
+            return value[:index]
+        if char not in _TRIM_LEAD and not _PICTOGRAPH_RE.match(value, index):
+            seen_name = True
         index += 1
     return value
 
@@ -963,7 +1042,7 @@ def extract_venue(text: str) -> VenueReading | None:
             if not step:
                 break
             value, position = value[step.end():], position + step.end()
-        name = _strip_decoration(value)
+        name = _strip_decoration(_drop_leading_label(value))
         if len(name) < 2 or _SUFFIX_VENUE_NOT_ALONE.match(name) or _ROOM_ONLY_RE.match(name):
             continue
         return VenueReading(
