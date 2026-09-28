@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.22"
+PRODUCT_VERSION = "0.96.23"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -290,6 +290,19 @@ PRODUCT_VERSION = "0.96.22"
 # page be fetched although its robots.txt disallows it twice. Measured over all
 # 1,148 URLs acquisition requests, the corrected reading changes exactly one
 # decision, and changes it to BLOCK - nothing becomes newly permitted.
+#
+# v0.96.23 does NOT bump the engine either, checked the same way. The whole
+# change is in `runtime.duplicates` (the canonical/fold resolver) plus the line
+# `scheduler.jobs` prints: an automatic merge now needs a *resolved* place, and
+# each scan re-asks the automatic merges it has already made. The Information
+# Engine has no notion of `canonical_event_id`, `venue_status` or the Venue
+# Master - it emits a venue *string*, and whether that string is a place is
+# decided here, by `normalization.resolve_venue()` against `venue_aliases`. No
+# extraction, classification, date, time, venue, fee or identity_key rule
+# changed, so every stored row's reading is still the 1.05 reading and
+# re-stamping 2,543 rows would claim a re-read that never happened. Nor is a
+# re-extract needed to converge: the fold graph is rebuilt by the ordinary
+# `event-normalization` job, which has always ended in `duplicates.scan()`.
 DEFAULT_ENGINE_VERSION = "1.05"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

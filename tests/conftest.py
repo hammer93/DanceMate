@@ -233,3 +233,30 @@ def engine_settings(env, monkeypatch):
         pytest.skip("engine collector fixtures are not present")
     monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
     return load_settings()
+
+
+def register_venue(con, name: str | None, *, region_code: str = "KR-SEOUL"):
+    """Put a venue string in the Venue Master, the way the Admin would.
+
+    v0.96.23: an automatic duplicate merge needs a *resolved* place. Identical
+    words for a venue nothing has resolved are a question for a person now, not
+    a merge - two posts can write the same words for two different places, and
+    a string nobody has matched to anywhere may not be a place at all (found
+    live: one poster's Instagram handle, OCR'd, attached to eighteen DanceInfo
+    listings in eight cities).
+
+    So a test that invents a studio and then expects two posts about one night
+    to fold has to register that studio first. Resolves before creating, so
+    calling it twice for one name is safe and a shared database is never given
+    a second row for the same place.
+    """
+    from runtime import master_data
+
+    if not (name or "").strip():
+        return None
+    existing = master_data.resolve_venue(con, name)
+    if existing:
+        return existing
+    region_id = next((r["region_id"] for r in master_data.list_regions(con)
+                      if r["code"] == region_code), None)
+    return master_data.create_venue(con, name=name, region_id=region_id)

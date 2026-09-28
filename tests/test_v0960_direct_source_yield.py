@@ -45,6 +45,7 @@ from runtime import (
     source_ops,
     sources,
 )
+from conftest import register_venue
 
 PUBLISHED = "2026-09-14"
 
@@ -97,6 +98,9 @@ def _engine_candidates(settings, source_url):
 
 
 def _normalize(pg, candidate):
+    # v0.96.23: an automatic merge needs a *resolved* venue, so whatever place
+    # the engine read is registered in the Venue Master first.
+    register_venue(pg, candidate.get("venue"))
     # What normalize_all() adds per row before calling normalize_candidate():
     # the collected item the post came from (provenance is fixed to LIVE here
     # because these fixture items have no collection run behind them).
@@ -393,7 +397,8 @@ def test_a_direct_post_found_later_represents_the_event_but_never_takes_its_id(p
             "source_item_id": item,
             "event_name": f"{name} {unique}", "event_type": "MILONGA",
             "event_date": "2026-11-20", "start_time": "20:00", "end_time": "23:00",
-            "end_day_offset": 0, "venue": f"venue-{unique}", "fee": 10000,
+            "end_day_offset": 0, "venue": register_venue(pg, f"venue-{unique}")["name"],
+            "fee": 10000,
             "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
             "time_evidence": "EXPLICIT",
         })

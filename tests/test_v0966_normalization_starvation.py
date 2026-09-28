@@ -60,6 +60,8 @@ from runtime import candidates as candidate_store
 from runtime import db, normalization
 from runtime.engine_adapter import ENGINE_DB_FILENAME
 
+from conftest import register_venue
+
 VERSION = normalization.NORMALIZATION_VERSION
 OLD_VERSION = "0"
 
@@ -564,6 +566,8 @@ def test_a_late_promoted_event_goes_through_the_ordinary_duplicate_rules(
     from runtime import duplicates
 
     when = "2027-12-31"
+    # v0.96.23: an automatic merge needs a *resolved* venue.
+    register_venue(pg, "LA VIDA")
     first = store.add(_id(unique, 1), collected_at=_day(1), event_date=when,
                       name="La Vida Milonga", venue="LA VIDA",
                       url="https://example.test/first")

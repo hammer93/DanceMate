@@ -17,6 +17,7 @@ from datetime import date, timedelta
 import pytest
 
 from runtime import duplicates, events_api, migrate, normalization, source_ops, source_priority
+from conftest import register_venue
 
 # v0.86.1: this file used to hardcode 2026-09-08 - the real date the
 # production incident it is modelled on (event_id 88436/221245, Solo
@@ -45,8 +46,11 @@ def _apply(pg, *versions: str) -> None:
 
 
 @pytest.fixture
-def seeded(pg):
+def seeded(pg, unique):
+    """v0.96.23: `_candidate()`'s studio is registered in the Venue Master -
+    an automatic merge needs a *resolved* place."""
     _apply(pg, "027")
+    register_venue(pg, f"venue-{unique}")
     return pg
 
 

@@ -29,6 +29,7 @@ from runtime import (
     sources,
 )
 from runtime import community_discovery as cd
+from conftest import register_venue
 
 EVENT_DATE = date(2026, 11, 10)
 
@@ -428,6 +429,9 @@ def _event(pg, unique, suffix, item, **over):
                "candidate_status": "POSSIBLE", "provenance": normalization.PROVENANCE_LIVE,
                "time_evidence": "EXPLICIT"}
     payload.update(over)
+    # v0.96.23: an automatic merge needs a *resolved* venue, so the studio
+    # this fixture invents is registered in the Venue Master first.
+    register_venue(pg, payload.get("venue"))
     stored = normalization.normalize_candidate(pg, payload)
     with pg.cursor() as cur:
         cur.execute("UPDATE events SET source_item_id = %s WHERE event_id = %s", (item, stored["event_id"]))

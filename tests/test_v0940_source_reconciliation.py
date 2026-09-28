@@ -30,6 +30,7 @@ from runtime import (
     web_discovery,
 )
 from runtime import community_discovery as cd
+from conftest import register_venue
 
 EVENT_DATE = date(2026, 11, 3)
 
@@ -81,8 +82,15 @@ def _item(pg, source_id, url, *, external=False, collected_at=None):
 
 
 def _event(pg, unique, suffix, source_item_id, **overrides):
-    """An event normalised through the real path, then pointed at its post."""
-    stored = normalization.normalize_candidate(pg, _candidate(unique, suffix, **overrides))
+    """An event normalised through the real path, then pointed at its post.
+
+    v0.96.23: the studio the candidate names is registered in the Venue Master
+    first - an automatic merge needs a *resolved* place, and every test here is
+    about which post represents an event once its posts have been folded.
+    """
+    payload = _candidate(unique, suffix, **overrides)
+    register_venue(pg, payload.get("venue"))
+    stored = normalization.normalize_candidate(pg, payload)
     with pg.cursor() as cur:
         cur.execute("UPDATE events SET source_item_id = %s WHERE event_id = %s",
                     (source_item_id, stored["event_id"]))

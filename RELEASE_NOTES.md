@@ -1,5 +1,207 @@
 # DanceMate Release Notes
 
+## v0.96.23 Two Parties At The Same Hour Are Two Events
+
+Product Runtime 0.96.23; Information Engine **1.05, unchanged**; migration
+**043, unchanged**. One rule in `runtime/duplicates.py` and one new pass in the
+scan it already ran. No change to extraction, classification, dates, times,
+venues, fees, the Stable Event Identity contract, which row wins canonical, or
+the representative-source election.
+
+**What a reader lost.** On Saturday 2026-10-03 at 21:00 two salsa parties were
+running, both read from DanceInfo:
+
+| | event 1603334 | event 1603338 |
+|---|---|---|
+| date | 2026-10-03 | 2026-10-03 |
+| start | 21:00 | 21:00 |
+| end | 01:00 (+1d) | 23:30 |
+| title | 모두의 라틴 바차타 워크숍 및 살사 파티 | 검단 라틴솔 동호회 10월 미니파티 |
+| place the post states | 장소 **광주 J 라틴** | 장소 **단춤** (인천 검단구 완정로7번길 1 단춤스튜디오 B1) |
+| DJ | 버퍼링 | 바밤바 |
+| fee | — | 1만원 (1음료 포함) |
+| source | DanceInfo 살사 (SRC-W-012), `/lessons/4641`, item 4415 | the same source, `/lessons/4202`, item 4411 |
+| stored `venue_text` | `스스 me1` | `스스 me1` |
+
+Gwangju and Incheon - about 300km apart. They were folded into one Event, so
+the whole of one of them was shown to nobody. The same thing had happened on
+2026-09-25 at 21:00 to a Gangnam party (`명절 메인 심야 파티!`, 클럽 라틴, 서울
+강남구 테헤란로6길 9) and a Daegu one (`BABARU 소셜 OPEN! 09/25`, 바바루, a
+40,000원 package).
+
+### Why they folded, at code level
+
+`duplicates.classify()` auto-merges on three fields and has always needed all
+three: the same date, the same place, the same start time. Date and clock cannot
+tell two parties apart on their own - that is exactly why the place is there.
+
+`_place()` read the place as a resolved `venue_id` **or**, failing that, an
+identical `venue_text` string. Both events have `venue_id` NULL and
+`venue_status` `UNRESOLVED`, and both strings are `스스 me1`, so `_place()`
+answered `text:스스me1` for both and the rule fired:
+
+```
+event 1603334 identity_key = 2026-10-03|text:스스me1|21:00
+event 1603338 identity_key = 2026-10-03|text:스스me1|21:00
+
+event_duplicate_decisions 1186
+  event 1603338 -> canonical 1603334, AUTO, SAME_DATE_VENUE_TIME
+  "same date, same venue and same start time"
+```
+
+`스스 me1` appears in neither post's body. Both bodies name their venue plainly
+("장소 단춤", "장소 광주 J 라틴") and `extract_venue()` reads neither, because
+neither writes the colon its label pattern requires. The string came from a
+poster image instead, and the engine recorded exactly where:
+
+```
+field         venue
+value         {"name": "스스 me1", "alias_candidates": ["스스 me1"]}
+raw_text      @ 스스 me1
+evidence_type IMAGE_OCR
+inference     https://danceinfo.net/_next/image?url=...posters/4588/1789566571834-25ef...jpg
+```
+
+The **same** poster URL supplied the venue for both candidates, and for
+**18 candidates in total** across eight dates and many real cities - an
+Instagram-style handle at the bottom of somebody's poster, read as a place.
+This release does not fix that (see *What is next*); it fixes the rule that
+turned it into a lost event.
+
+### The fix: an automatic merge needs a place that is known
+
+`classify()` now asks whether the agreeing place is actually *known* - a
+resolved Venue Master row on both sides. Identical unresolved words become
+`SAME_DATE_UNRESOLVED_VENUE_TIME`, an open question for a person, which is
+what this module has always done with what it cannot settle outright.
+
+It is deliberately **not** treated as evidence the events differ: two posts
+about one milonga often spell an unresolved venue identically. Nothing merges,
+nothing is hidden, and a reviewer sees both rows with a reason.
+
+Nothing about a resolved venue changed. `_place()` itself is untouched, so the
+representative-source eligibility test (`_place_and_clock_agree`) behaves
+exactly as before.
+
+### The scan re-asks its own merges
+
+A corrected rule that only applied to new rows would leave the two parties
+folded forever. `scan()` now begins with `_release_stale_auto_merges()`: every
+`AUTO` fold whose pair the current rules would no longer auto-merge is released
+through the module's own `record_decision(DISTINCT, AUTO)` path - audit row,
+`listing_state` restored, representative re-elected - the same thing
+`venue_resolution._release_automatic_duplicates()` already did when the venue a
+merge rested on was taken away. A person's verdict is never re-asked, and a
+canonical row outside the scan's window is not judged without it.
+
+### Measured against every fold in Production, not just the two
+
+Production held **66 canonical groups / 75 folded rows**, all `AUTO`, all
+`SAME_DATE_VENUE_TIME`. Every candidate discriminator was run over all of them:
+
+| discriminator | rows split | false merges fixed | true duplicates broken |
+|---|---|---|---|
+| **place must be resolved** | **2** | **2** | **0** |
+| different non-null DJ | 3 | 2 | 1 |
+| different non-null end time | 5 | 1 | 4 |
+| same source, different item | 11 | 2 | 9 |
+| different title | 27 | 2 | 25 |
+| different non-null fee | 0 | 0 | 0 (never fires) |
+| different source | 64 | 0 | 64 (inverted) |
+
+Only one of them separates the real defect without breaking a real duplicate,
+and the reason is structural rather than lucky: **64 of the 66 groups resolve
+their venue on every member.** The two that do not are the two false merges.
+
+The weaker discriminators fail on real data, which is why none was used. Title
+inequality would split 25 genuine duplicates (`Milonga La Vida` /
+`[부산탱고] 2026년 9월 5일 토요일 밀롱가 La Vida No...`; `orange` /
+`9/22(화) 오렌지밀 y 허그`). DJ disagrees across sources for one real milonga
+(`Milonga Julie`: 배영성 / 계명성) and is sometimes a Korean particle (`는`).
+End time drifts by ten minutes between two listings of 아수까 일요 밀롱가. Two
+source-native ids from one source is ordinary - the Daum board posted one
+로라밀롱가 twice, Miltang lists `milonga cabeceo` under two ids.
+
+### Offline simulation of the Production canonical graph
+
+The new module was loaded into the running container and run against all 843
+in-scope rows, read-only:
+
+```
+folded rows in scope      75
+kept folded               73
+RELEASED                   2   (1607998 from 1600293; 1603338 from 1603334)
+human-decided folds        0   (none exist; none overturned)
+new auto merges            0
+canonical A->B changes     0
+groups merged              0
+groups split               2
+```
+
+Protected relations re-checked under the new rule and still `auto=True`:
+`88436 -> 221245`, `1392910 -> 144289`, `1425406 -> 144289`.
+
+### What a reader gains
+
+```
+                  before   after
+visible rows        757      759
+visible upcoming    113      114
+visible TODAY         7        7
+  Tango              83       83
+  Salsa              27       28
+  Swing               2        2
+  Bachata             1        1
+```
+
+Two rows, not two duplicates: one Gwangju party and one Incheon party on
+2026-10-03, one Gangnam party and one Daegu party on 2026-09-25. Before, that
+Saturday offered one public choice where two parties existed. Three pairs also
+appear in the Admin's review queue, none of them recorded before.
+
+### What is next, measured
+
+The bogus venue itself is untouched and is the next release's target: 18 events
+carry `스스 me1` as their venue because `_image_venue()` in the engine accepts
+any venue reading whose evidence `inference` starts with `LABEL:`, and
+`extract_venue()`'s `@handle` branch reports `label="@"` - so `LABEL:@`
+satisfies a gate written (v0.84.3) to mean "only a `장소:` label". A poster's
+social handle is not a place. That is an engine change needing an
+`ENGINE_VERSION` bump and a re-extract, which is why it is not in this release:
+mixing a full 2,500-row re-read into a canonical-graph change would make the
+predicted-versus-actual comparison above unverifiable.
+
+### Why ENGINE_VERSION stays 1.05
+
+Checked, not assumed. The whole change is in `runtime/duplicates.py` (the
+canonical resolver) plus the line `scheduler/jobs.py` prints. The Information
+Engine has no notion of `canonical_event_id`, `venue_status` or the Venue
+Master: it emits a venue *string*, and whether that string is a place is
+decided in `runtime.normalization.resolve_venue()` against `venue_aliases`. No
+extraction, classification, date, time, venue, fee or identity-key rule
+changed, so every stored row's reading is still the 1.05 reading and
+re-stamping 2,543 rows would claim a re-read that never happened. No
+re-extraction is needed or run: the fold graph converges through the ordinary
+`event-normalization` job, which has always ended in `duplicates.scan()`.
+`migration 043` is unchanged - `event_duplicate_decisions.rule` and
+`event_duplicate_pairs.rule` are plain `TEXT` with no constraint on values.
+
+### Tests
+
+`tests/test_v09623_distinct_same_time_parties.py` (17): both Production pairs;
+a resolved venue still merges, under three spellings; one side resolved and one
+unknown is still not a merge; two different resolved venues are not a pair;
+title, DJ, end time and same-source-different-id each fail to split a resolved
+duplicate; a released fold is released through the scan and comes back LISTED; a
+human merge is never released; a still-valid merge never churns.
+
+`tests/test_duplicates.py` records the changed contract
+(`test_two_unresolved_venue_strings_are_a_question_not_a_merge`). Thirty-two
+tests across nine files were seeding a studio and expecting two posts about it
+to fold without ever registering that studio: each now calls
+`conftest.register_venue()`, so those tests exercise the merge they claim to be
+about instead of the unresolved-string path this release removed.
+
 ## v0.96.22 Read robots.txt The Way robots.txt Is Defined
 
 Product Runtime 0.96.22; Information Engine **1.05, unchanged**; migration

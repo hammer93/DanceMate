@@ -9,6 +9,62 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.23 (**같은 시각의 서로 다른 두 파티는 두 개의 Event다.**
+  2026-10-03 토요일 21:00에 살사 파티가 두 개 있었다 — event 1603334 `모두의 라틴
+  바차타 워크숍 및 살사 파티`(장소 **광주 J 라틴**, DJ 버퍼링, 21:00~01:00)와 event
+  1603338 `검단 라틴솔 동호회 10월 미니파티`(장소 **단춤**, 인천 검단구 완정로7번길 1
+  단춤스튜디오 B1, DJ 바밤바, 21:00~23:30, 1만원). 약 300km 떨어진 서로 다른 행사인데
+  하나로 접혀서 그 중 하나는 **아무에게도 보이지 않았다**. 2026-09-25 21:00에도 같은
+  일이 있었다(서울 강남 `클럽 라틴` vs 대구 `바바루`). 원인을 코드로 확정했다:
+  `duplicates.classify()`의 auto-merge는 날짜·장소·시작시각 **세 가지 전부**를 요구하고,
+  날짜와 시각만으로는 두 파티를 구분할 수 없다는 게 장소가 거기 있는 이유다. 그런데
+  `_place()`는 장소를 "resolved `venue_id` **또는** 동일한 `venue_text` 문자열"로 읽었다.
+  두 Event 모두 `venue_id` NULL, `venue_status` UNRESOLVED이고 문자열이 둘 다
+  `스스 me1`이어서 `_place()`가 양쪽에 `text:스스me1`을 답했고 규칙이 발동했다
+  (`event_duplicate_decisions` 1186, `SAME_DATE_VENUE_TIME`). `스스 me1`은 **두 본문
+  어디에도 없다**. 두 본문은 장소를 그대로 적고 있고("장소 단춤", "장소 광주 J 라틴")
+  `extract_venue()`는 둘 다 읽지 못한다(label 패턴이 요구하는 콜론이 없다). 그 문자열은
+  poster 이미지에서 왔고 엔진이 출처를 정확히 기록해 두었다 — `field=venue`,
+  `raw_text=@ 스스 me1`, `evidence_type=IMAGE_OCR`, `inference=.../posters/4588/...jpg`.
+  **같은 poster URL**이 두 candidate의 venue를 공급했고, 8개 날짜·여러 도시에 걸쳐
+  **총 18개 candidate**가 같은 값을 받았다. 누군가의 poster 하단 Instagram 핸들이
+  장소로 읽힌 것이다. 이번 릴리스는 그 잘못된 venue 자체를 고치지 않고(다음 목표),
+  그것이 **Event 하나를 잃게 만든 규칙**을 고친다: auto-merge는 이제 양쪽 모두
+  **resolved된** Venue Master 행을 요구한다. 동일한 unresolved 문자열은
+  `SAME_DATE_UNRESOLVED_VENUE_TIME`으로 **사람에게 가는 질문**이 되며, 이 모듈이 원래
+  해결할 수 없는 것에 대해 해 온 그대로다. 이를 "서로 다른 행사라는 증거"로 취급하지
+  **않는다** — 하나의 밀롱가를 다룬 두 post가 unresolved venue를 똑같이 적는 일은 흔하다.
+  `_place()` 자체는 손대지 않았으므로 representative-source 적격 판정
+  (`_place_and_clock_agree`)은 이전과 동일하다. 규칙만 고치면 이미 접힌 행은 영원히
+  접힌 채로 남으므로, `scan()`이 `_release_stale_auto_merges()`로 시작한다: 현재 규칙이
+  더는 auto-merge하지 않을 `AUTO` fold를 모듈 자신의 `record_decision(DISTINCT, AUTO)`
+  경로로 해제한다(audit 행, `listing_state` 복구, representative 재선출) —
+  `venue_resolution._release_automatic_duplicates()`가 merge의 근거였던 venue가 사라질 때
+  이미 하던 것과 같다. 사람의 판단은 다시 묻지 않는다. **discriminator를 추측하지 않고
+  Production의 fold 66 group·75 folded row 전수에서 측정했다**: place-must-be-resolved는
+  2행 분리(false merge 2건 수정, true duplicate **0건** 파괴), 다른 DJ 3행(1건 파괴),
+  다른 end_time 5행(4건 파괴), same-source-different-item 11행(9건 파괴), 다른 title
+  27행(**25건 파괴**), 다른 fee 0행, 다른 source 64행(역방향). 운이 아니라 구조다 —
+  **66 group 중 64개가 모든 member의 venue를 resolved로 가진다**. 그렇지 않은 2개가
+  바로 두 false merge다. Offline simulation(컨테이너에 새 모듈을 올려 843행 read-only):
+  kept folded 73, RELEASED 2, human fold 0, new auto merge 0, canonical A→B 변경 0,
+  group merged 0, group split 2. 보호 관계는 새 규칙에서도 `auto=True` — `88436→221245`,
+  `1392910→144289`, `1425406→144289`. 사용자 가치: visible 757→759, upcoming 113→114,
+  TODAY 7→7, Salsa upcoming 27→28, Tango/Swing/Bachata 불변. duplicate 증가가 아니라
+  **숨겨져 있던 서로 다른 Event의 복원**이다. 다음 목표는 그 잘못된 venue 자체다:
+  엔진 `_image_venue()`가 evidence `inference`가 `LABEL:`로 시작하면 통과시키는데
+  `extract_venue()`의 `@handle` 분기가 `label="@"`를 보고하므로 `LABEL:@`가 "`장소:`
+  label만"이라는 v0.84.3의 의도를 빠져나간다. 그건 엔진 변경이라 ENGINE_VERSION bump와
+  re-extract가 필요하고, 2,500행 재독을 canonical graph 변경에 섞으면 위의
+  predicted-vs-actual 비교를 검증할 수 없게 되므로 이번에 넣지 않았다. ENGINE_VERSION은
+  **1.05 유지** — 변경은 전부 `runtime/duplicates.py`(canonical resolver)와
+  `scheduler/jobs.py`의 출력 한 줄이고, 엔진은 `canonical_event_id`·`venue_status`·Venue
+  Master를 알지 못한다(엔진은 venue **문자열**을 낼 뿐이고 그것이 장소인지는
+  `runtime.normalization.resolve_venue()`가 `venue_aliases`로 판단한다). 추출·분류·날짜·
+  시각·venue·fee·identity_key 규칙이 하나도 바뀌지 않았으므로 2,543행을 다시 읽은 척하지
+  않는다. re-extract는 필요하지도 않고 돌리지도 않았다 — fold graph는 언제나
+  `duplicates.scan()`으로 끝나는 `event-normalization` job으로 수렴한다. migration 043
+  유지 — `rule` 컬럼은 값 제약 없는 `TEXT`다)
 - Product Runtime: v0.96.22 (robots.txt를 **정의된 대로** 읽는다. 이번 릴리스는
   robots 우회가 아니라 **판정 정확성** 수정이고, 방향이 예상과 반대였다. 프롬프트
   가설은 "`Sitemap:` 뒤의 `Disallow:`가 무시되어 접근 가능한 source가 잘못
@@ -318,7 +374,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.22"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.23"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

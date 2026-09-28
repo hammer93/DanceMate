@@ -138,7 +138,7 @@ def event_normalization(settings: Settings) -> str:
         found = duplicates.scan(con)
     detail += (
         f" | compared={found['compared']} auto_merged={found['auto_merged']} "
-        f"for_review={found['flagged_for_review']}"
+        f"for_review={found['flagged_for_review']} released={found['released']}"
     )
     return detail
 

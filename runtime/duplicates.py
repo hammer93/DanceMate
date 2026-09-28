@@ -8,11 +8,26 @@ So the rules are deterministic and narrow. Auto-merge needs all three of:
 
     the same date, the same place, and the same start time
 
-with the place being a resolved Venue Master row or an identical venue string,
-and the time actually present on both sides. Anything less specific -- same
-venue but two hours apart, same time but one venue unknown -- is an open
-question recorded for a person. There is no similarity score and no clustering:
-a number nobody can check is not a reason to merge two events.
+with the place being a *resolved* Venue Master row and the time actually
+present on both sides. Anything less specific -- same venue but two hours
+apart, same time but one venue unknown, same words for a venue nothing has
+resolved -- is an open question recorded for a person. There is no similarity
+score and no clustering: a number nobody can check is not a reason to merge
+two events.
+
+v0.96.23 (distinct same-time parties): an identical *unresolved* venue string
+used to count as the same place, and it is not one. DanceInfo attached a
+single poster's Instagram handle -- OCR'd as "@ 스스 me1" -- to eighteen
+listings, so a Gwangju party and an Incheon party at 21:00 on the same
+Saturday read as the same venue and one of them was folded away from every
+reader. The date and the clock were never able to tell two parties apart on
+their own; the place was the third thing, and words nobody has resolved to a
+place are not it. Such a pair now goes to a person (``RULE_UNRESOLVED_VENUE_TIME``)
+instead of being merged -- it is not evidence the events differ either, since
+two posts about one milonga often spell an unresolved venue identically.
+Nothing about a resolved venue changed, and each scan now re-asks its own
+automatic merges so a corrected rule reaches rows already folded under the
+old one (``_release_stale_auto_merges``).
 
 Nothing is deleted. A duplicate keeps its row, its candidate, its source URL,
 and points at the canonical event, so "which posts said this?" still has an
@@ -51,6 +66,11 @@ RULE_SAME_DATE_VENUE_TIME = "SAME_DATE_VENUE_TIME"
 # For a person: enough agrees to be suspicious, not enough to act.
 RULE_VENUE_TIME_DIFFERS = "SAME_DATE_VENUE_TIME_DIFFERS"
 RULE_TIME_NAME_VENUE_DIFFERS = "SAME_DATE_TIME_NAME_VENUE_DIFFERS"
+# v0.96.23: the date and the clock agree and both posts write the same venue
+# words, but neither of those words has been resolved to a place.
+RULE_UNRESOLVED_VENUE_TIME = "SAME_DATE_UNRESOLVED_VENUE_TIME"
+# v0.96.23: an automatic merge the rules would no longer make, released.
+RULE_STALE_AUTO_MERGE = "STALE_AUTO_MERGE"
 
 OPEN = "OPEN"
 MERGED = "MERGED"
@@ -123,6 +143,18 @@ def _place(event: dict[str, Any]) -> str | None:
     return f"text:{text}" if text else None
 
 
+def _place_is_known(event: dict[str, Any]) -> bool:
+    """Whether we actually know where this event is.
+
+    A resolved Venue Master row is knowledge: somebody matched that string to
+    a place, and every other spelling of it resolves to the same id. An
+    unresolved string is only the words a post used. Two posts using the same
+    words is not the same fact as two posts naming the same place - the words
+    may not be a place at all.
+    """
+    return event.get("venue_id") is not None
+
+
 def _clock(event: dict[str, Any]) -> str | None:
     value = event.get("start_time")
     return value.strftime("%H:%M") if hasattr(value, "strftime") else (str(value)[:5] or None)
@@ -144,11 +176,33 @@ def classify(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any] | No
     same_clock = bool(left_clock) and left_clock == right_clock
 
     if same_place and same_clock:
+        if _place_is_known(left) and _place_is_known(right):
+            return {
+                "rule": RULE_SAME_DATE_VENUE_TIME,
+                "auto": True,
+                "matched": ["event_date", "venue", "start_time"],
+                "differs": [],
+            }
+        # v0.96.23: same night, same clock, same venue *words* - and nothing
+        # knows what place those words are. Found on two real parties 300km
+        # apart: DanceInfo attached one poster's Instagram handle, OCR'd as
+        # "@ 스스 me1", to eighteen listings, so a Gwangju party and an
+        # Incheon party read as the same unresolved venue at 21:00 on the
+        # same Saturday and one of them stopped being shown to anybody.
+        #
+        # The place is the whole reason two posts about one night may be
+        # collapsed: date and clock alone cannot tell two parties apart,
+        # which is why this rule has always needed all three. An unresolved
+        # string is not the third thing. It is not evidence the events are
+        # different either - two posts about one milonga often spell its
+        # venue identically without it ever being resolved - so this is a
+        # question for a person, which is what the rules already do with
+        # everything they cannot settle outright, and not a merge.
         return {
-            "rule": RULE_SAME_DATE_VENUE_TIME,
-            "auto": True,
-            "matched": ["event_date", "venue", "start_time"],
-            "differs": [],
+            "rule": RULE_UNRESOLVED_VENUE_TIME,
+            "auto": False,
+            "matched": ["event_date", "start_time", "venue_text"],
+            "differs": ["venue_status"],
         }
     if same_place:
         return {
@@ -243,11 +297,70 @@ def _record_pair(con, left_id: int, right_id: int, finding: dict[str, Any]) -> b
         return cur.fetchone() is not None
 
 
+def _release_stale_auto_merges(con, events: list[dict[str, Any]]) -> list[int]:
+    """Undo automatic merges the rules would no longer make.
+
+    The fold graph is meant to be what the rules say about the rows as they
+    are now, plus whatever a person has decided. Without this it is instead a
+    record of what the rules said on the day each merge happened: correcting a
+    rule changes nothing that has already been folded, and the event a wrong
+    merge hid stays hidden for as long as the row lives.
+
+    So each automatic merge is re-asked, once per scan, and released when the
+    answer has changed - exactly what ``venue_resolution`` already does when
+    the venue a merge rested on is taken away, and for the same reason: a
+    merge that no longer follows from anything is not a merge.
+
+    A person's verdict is never re-asked. A canonical row outside this scan's
+    own window is not judged either, because the pair cannot be compared
+    without it; the next unwindowed scan reaches it.
+    """
+    by_id = {e["event_id"]: e for e in events}
+    released: list[int] = []
+    for event in events:
+        canonical_id = event.get("canonical_event_id")
+        if canonical_id is None or _decided_by_human(event):
+            continue
+        canonical = by_id.get(canonical_id)
+        if canonical is None:
+            continue
+        finding = classify(canonical, event)
+        if finding is not None and finding["auto"]:
+            continue
+        record_decision(
+            con,
+            event_id=event["event_id"],
+            canonical_event_id=None,
+            decision=DISTINCT,
+            decided_by=AUTO,
+            rule=RULE_STALE_AUTO_MERGE,
+            reason=("the rules no longer merge this pair: "
+                    + (finding["rule"] if finding else "nothing matches")),
+        )
+        event["canonical_event_id"] = None
+        event["duplicate_decided_by"] = AUTO
+        event["listing_state"] = (
+            "HIDDEN" if (event.get("review_state") or "").upper() in ("REJECTED", "DUPLICATE")
+            else "LISTED"
+        )
+        # The group it left is one member smaller: its representative post is
+        # re-elected, and _canonical_of() must not still believe it heads a
+        # group it no longer does.
+        canonical["folded_count"] = max(0, int(canonical.get("folded_count") or 0) - 1)
+        reconcile_primary_source(con, canonical_id)
+        released.append(event["event_id"])
+    return released
+
+
 def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[str, Any]:
     """Compare events sharing a date and act on what the rules can settle.
 
     Only events on the same day are ever compared, so the scan stays cheap and
     a weekly series can never collapse into one row.
+
+    v0.96.23: the pass begins by releasing automatic merges the rules would no
+    longer make (``_release_stale_auto_merges``), so a corrected rule reaches
+    rows that were folded under the old one instead of only new arrivals.
     """
     where = ["e.review_state <> 'REJECTED'"]
     params: list[Any] = []
@@ -280,6 +393,10 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
     by_date: dict[Any, list[dict[str, Any]]] = {}
     for event in events:
         by_date.setdefault(event["event_date"], []).append(event)
+
+    # Before anything is compared: a merge the rules would not make today is
+    # released, so what follows decides on the rows as they actually are.
+    released = _release_stale_auto_merges(con, events)
 
     merged = 0
     flagged = 0
@@ -324,7 +441,8 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
                     flagged += 1
 
     return {"events": len(events), "compared": compared,
-            "auto_merged": merged, "flagged_for_review": flagged}
+            "auto_merged": merged, "flagged_for_review": flagged,
+            "released": len(released)}
 
 
 def open_pairs(con, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:

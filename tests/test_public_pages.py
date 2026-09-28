@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from runtime import duplicates, normalization, public
+from conftest import register_venue
 
 
 @pytest.fixture
@@ -251,6 +252,9 @@ def _live(pg, unique, suffix, **overrides):
         "provenance": normalization.PROVENANCE_LIVE,
     }
     candidate.update(overrides)
+    # v0.96.23: an automatic merge needs a *resolved* venue, so the studio
+    # this fixture invents is registered in the Venue Master first.
+    register_venue(pg, candidate.get("venue"))
     return normalization.normalize_candidate(pg, candidate)
 
 

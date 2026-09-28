@@ -55,13 +55,18 @@ def test_two_dates_are_never_duplicates_however_alike():
     assert duplicates.classify(_event(1), _event(2, event_date=date(2026, 9, 12))) is None
 
 
-def test_two_unresolved_venue_strings_only_match_when_identical():
+def test_two_unresolved_venue_strings_are_a_question_not_a_merge():
+    """v0.96.23: identical words for a venue nothing has resolved used to be
+    read as the same place and merged. Two posts can write the same words for
+    two different places - and a string nothing resolved may not be a place at
+    all - so this is a person's call, not automation's."""
     unknown = {"venue_id": None, "venue_status": "UNRESOLVED"}
     same = duplicates.classify(
         _event(1, venue_text="미등록 스튜디오", **unknown),
         _event(2, venue_text="미등록 스튜디오", **unknown),
     )
-    assert same["auto"] is True
+    assert same["rule"] == duplicates.RULE_UNRESOLVED_VENUE_TIME
+    assert same["auto"] is False
 
     different = duplicates.classify(
         _event(1, venue_text="스튜디오 가", **unknown),
@@ -128,6 +133,20 @@ def test_a_row_that_already_heads_a_group_stays_the_root():
 
 # --- SQL --------------------------------------------------------------------
 
+@pytest.fixture
+def studio(pg, unique, seoul_id):
+    """The fixture venue as a real Venue Master row.
+
+    v0.96.23: an automatic merge needs a *resolved* place, so a test about
+    merging has to register the studio it invents. Without this the rules read
+    "스튜디오 X" as words nobody has matched to anywhere and - correctly - send
+    the pair to a person instead of merging it.
+    """
+    from runtime import master_data
+
+    return master_data.create_venue(pg, name=f"스튜디오 {unique}", region_id=seoul_id)
+
+
 def _candidate(unique: str, suffix: str, **overrides):
     base = {
         "candidate_id": int(f"{unique[-6:]}{suffix}"),
@@ -147,7 +166,7 @@ def _candidate(unique: str, suffix: str, **overrides):
     return base
 
 
-def test_three_posts_of_one_milonga_become_one_listed_event(pg, unique):
+def test_three_posts_of_one_milonga_become_one_listed_event(pg, unique, studio):
     stored = [
         normalization.normalize_candidate(pg, _candidate(unique, str(n)))
         for n in (1, 2, 3)
@@ -165,7 +184,7 @@ def test_three_posts_of_one_milonga_become_one_listed_event(pg, unique):
                for e in remaining if e["canonical_event_id"] is not None)
 
 
-def test_a_merge_keeps_every_source(pg, unique):
+def test_a_merge_keeps_every_source(pg, unique, studio):
     """Merging is only acceptable because nothing is lost by it."""
     stored = [
         normalization.normalize_candidate(pg, _candidate(unique, str(n)))
@@ -214,7 +233,7 @@ def test_a_person_can_merge_a_pair_the_rules_would_not(pg, unique):
     assert normalization.get(pg, first["event_id"])["canonical_event_id"] is None
 
 
-def test_automation_never_overturns_a_human_decision(pg, unique):
+def test_automation_never_overturns_a_human_decision(pg, unique, studio):
     """A person said these two are different events. Re-running the scan must
     not merge them on the next tick."""
     first = normalization.normalize_candidate(pg, _candidate(unique, "1"))
@@ -236,7 +255,7 @@ def test_automation_never_overturns_a_human_decision(pg, unique):
         assert event["duplicate_decided_by"] == duplicates.HUMAN
 
 
-def test_every_verdict_is_recorded_with_who_made_it(pg, unique):
+def test_every_verdict_is_recorded_with_who_made_it(pg, unique, studio):
     normalization.normalize_candidate(pg, _candidate(unique, "1"))
     normalization.normalize_candidate(pg, _candidate(unique, "2"))
     duplicates.scan(pg, on=date(2026, 9, 5))
@@ -250,7 +269,7 @@ def test_every_verdict_is_recorded_with_who_made_it(pg, unique):
     assert rule == duplicates.RULE_SAME_DATE_VENUE_TIME
 
 
-def test_rerunning_the_scan_is_idempotent(pg, unique):
+def test_rerunning_the_scan_is_idempotent(pg, unique, studio):
     stored = [normalization.normalize_candidate(pg, _candidate(unique, n)) for n in "12"]
     first = duplicates.scan(pg, on=date(2026, 9, 5))
     assert first["auto_merged"] >= 1

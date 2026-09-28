@@ -806,9 +806,11 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
 
     note = (
         '<p class="note">The rules merge only what they can settle outright: '
-        "same date, same venue, same start time. These pairs matched on some of "
-        "that and not the rest. Your answer is final - the scan will not "
-        "revisit a pair you have decided.</p>"
+        "same date, same <em>resolved</em> venue, same start time. These pairs "
+        "matched on some of that and not the rest - including two posts that "
+        "write the same venue words for a place nothing has resolved, which is "
+        "as likely to be two parties as one. Your answer is final - the scan "
+        "will not revisit a pair you have decided.</p>"
     )
     body = ("<h2>Duplicates</h2>" + cards + note + admin._table(
         ["Date", "Event", "Other", "Matched", "Differs", "Decide"], rows,

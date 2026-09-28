@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timedelta
 import pytest
 
 from runtime import duplicates, events_api, feedback, normalization, public, source_priority
+from conftest import register_venue
 
 
 # =============================================================================
@@ -549,6 +550,9 @@ def _live(pg, unique, suffix, **overrides):
         "provenance": normalization.PROVENANCE_LIVE,
     }
     candidate.update(overrides)
+    # v0.96.23: an automatic merge needs a *resolved* venue, so the studio
+    # this fixture invents is registered in the Venue Master first.
+    register_venue(pg, candidate.get("venue"))
     return normalization.normalize_candidate(pg, candidate)
 
 

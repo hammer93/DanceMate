@@ -19,6 +19,7 @@ from datetime import date
 import pytest
 
 from runtime import collectors, duplicates, events_api, migrate, normalization, source_priority, sources
+from conftest import register_venue
 
 
 def _apply(pg, *versions: str) -> None:
@@ -30,9 +31,15 @@ def _apply(pg, *versions: str) -> None:
 
 
 @pytest.fixture
-def seeded(pg):
-    """027 applied, uncommitted, on `pg`'s own connection."""
+def seeded(pg, unique):
+    """027 applied, uncommitted, on `pg`'s own connection.
+
+    v0.96.23: `_candidate()`'s studio is registered in the Venue Master too -
+    an automatic duplicate merge needs a *resolved* place, and these tests are
+    about what a directory/primary pair does once it has been folded.
+    """
     _apply(pg, "027")
+    register_venue(pg, f"venue-{unique}")
     return pg
 
 
