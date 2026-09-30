@@ -80,13 +80,28 @@ def read(name: str) -> str:
 # and skip when none is reachable.
 #
 # On a developer host PostgreSQL is not published (compose uses `expose`, and a
-# test asserts it stays that way), so these tests skip there and run inside the
-# runtime container:
+# test asserts it stays that way), so these tests run inside a container:
+#
+#     scripts/run-container-tests.sh
+#
+# which creates a disposable database, declares it so, migrates it, runs the
+# suite against it and drops it again.
+#
+# v0.96.28: what used to stand here was
 #
 #     docker compose exec -T runtime python -m pytest -q tests/
 #
-# Every test runs in a transaction that is rolled back, so a shared staging
-# database is never polluted.
+# with the reassurance that "every test runs in a transaction that is rolled
+# back, so a shared staging database is never polluted". That was false, and it
+# cost two releases (v0.96.14: 1,852 Production rows stamped; v0.96.27: 50). The
+# `pg` fixture below owns one connection and rolls it back; nine other test call
+# sites and most of the runtime open their own `db.connect(settings,
+# autocommit=True)` and commit through it. `engine_ingest.reprocess_acquired()`
+# is the one that bit: it stamps the re-extract cursor on real rows.
+#
+# So the suite no longer trusts a rollback to make a database safe. It asks the
+# database, once, before any test runs - see `pytest_sessionstart` below and
+# `runtime/scratch_db_guard.py` for why the answer is a database comment.
 
 _UNIQUE_COUNTER = {"n": 0}
 
@@ -98,6 +113,70 @@ _REAL_POSTGRES = {
     for key in ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
                 "POSTGRES_USER", "POSTGRES_PASSWORD")
 }
+
+
+def pytest_sessionstart(session):
+    """Refuse the whole session unless the target database is expendable.
+
+    Before any test runs, and about the database rather than about a connection
+    to it - because the connections that did the damage in v0.96.14 and v0.96.27
+    were not the fixture's. Two ways this exits quietly instead of failing:
+    there are no credentials (a developer checkout with no PostgreSQL: the
+    DB-backed tests already skip, and there is nothing to protect), or the
+    database cannot be reached (same). A database that *is* reachable and does
+    not declare itself disposable stops the run.
+    """
+    from runtime import scratch_db_guard
+
+    target = _REAL_POSTGRES.get("POSTGRES_DB")
+    if not (target and _REAL_POSTGRES.get("POSTGRES_PASSWORD")):
+        return
+
+    deployment = None
+    env_file = REPO_ROOT / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("POSTGRES_DB="):
+                deployment = line.split("=", 1)[1].strip()
+
+    collision = scratch_db_guard.deployment_collision_report(target, deployment)
+    if collision["status"] != "PASS":
+        pytest.exit(f"TEST DB TARGET: {target}\n{collision['detail']}", returncode=3)
+
+    from runtime import db
+    from runtime.config import load_settings
+
+    saved = {k: os.environ.get(k) for k in _REAL_POSTGRES}
+    try:
+        for key, value in _REAL_POSTGRES.items():
+            if value:
+                os.environ[key] = value
+        try:
+            with db.connect(load_settings()) as con, con.cursor() as cur:
+                cur.execute(scratch_db_guard.MARKER_READ_SQL)
+                row = cur.fetchone()
+                marker = row[0] if row else None
+        except Exception as exc:  # noqa: BLE001
+            # A connection that cannot be made cannot commit either, so an
+            # unreachable or unauthenticated database is left to the existing
+            # skip: refusing here would only stop a developer whose PostgreSQL
+            # is down from running the 2,000 tests that need none of it. Said
+            # out loud, though - a silent pass is how this whole class of
+            # problem stayed invisible for two releases.
+            print(f"TEST DB TARGET: {target} [UNREACHABLE: "
+                  f"{type(exc).__name__}] - DB-backed tests will skip")
+            return
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    verdict = scratch_db_guard.disposable_report(marker, target)
+    print(f"TEST DB TARGET: {target} [{verdict['status']}]")
+    if verdict["status"] != "PASS":
+        pytest.exit(f"TEST DB TARGET: {target}\n{verdict['detail']}", returncode=3)
 
 
 @pytest.fixture
@@ -119,7 +198,9 @@ def pg(env, monkeypatch):
     try:
         with db.connect(settings) as con:
             yield con
-            # Never commit: a shared staging database must survive the suite.
+            # Never commit: one test's rows must not be another's fixture. That
+            # is all this buys - it does not make the *database* safe, which is
+            # what `pytest_sessionstart` above is for.
             con.rollback()
     except db.DatabaseUnavailable as exc:
         pytest.skip(f"no PostgreSQL reachable for the SQL tests: {exc}")

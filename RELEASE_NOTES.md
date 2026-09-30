@@ -1,5 +1,147 @@
 # DanceMate Release Notes
 
+## v0.96.28 Test DB Safety Hardening
+
+Product Runtime 0.96.28; Information Engine **1.08, unchanged**; migration
+**043, unchanged**. No change to extraction, classification, dates, times,
+venues, fees, poster ownership, acquisition, or the duplicate rules. This
+release changes what the test suite is *allowed to write to*.
+
+### The promise that was false
+
+The runtime suite needs a real PostgreSQL — the master-data, source and intake
+modules are SQL, and a mock would only prove the mock works. For most of this
+project's life `tests/conftest.py` said:
+
+> Every test runs in a transaction that is rolled back, so a shared staging
+> database is never polluted.
+
+That is not true, and it has now cost two releases:
+
+| release | damage |
+|---|---|
+| v0.96.14 | `extracted_engine_version = 0.75` committed on **1,852** of 2,468 Production `source_item_content` rows |
+| v0.96.27 | the same, on **50** rows |
+
+The `pg` fixture owns one connection and rolls it back. Nine other test call
+sites and most of the runtime open their own `db.connect(settings,
+autocommit=True)` and commit through it —
+`engine_ingest.reprocess_acquired()` is the one that bit, because it stamps the
+re-extract cursor on whatever rows it selects. A guard living in the fixture is
+a guard around the wrong thing.
+
+### The second time, the command looked right
+
+```
+POSTGRES_DB=ct_9627 scripts/run-container-tests.sh
+```
+
+That sets a variable in the *host* shell. The script passed
+`--env-file "$ENV_FILE"` and took no database argument at all, so nothing
+forwarded it and the run silently targeted `dancemate`. The correct thing was
+not merely hard to do — it was unsayable.
+
+### A database now has to say it is expendable
+
+```sql
+COMMENT ON DATABASE your_scratch_db IS 'dancemate-disposable-test-db';
+```
+
+A comment, deliberately not a table:
+
+* **migrations can never create it**, so no amount of schema work makes a
+  production database look testable;
+* it survives repeated runs, so a scratch database is reusable and the guard
+  needs no "how many rows is too many" threshold — the kind of number
+  `guard_db_identity`'s `sources > 0` test shows the weakness of;
+* it is one statement to set by hand, which keeps an ad-hoc scratch database a
+  supported thing rather than a reason to reach for the live one.
+
+`tests/conftest.py` asks the database once, in `pytest_sessionstart`, before a
+single test runs — about the *database*, not about any connection to it, because
+the connections that did the damage were not the fixture's. A second, independent
+signal catches v0.96.27's exact shape before a container even starts: if the
+target equals `.env`'s own `POSTGRES_DB`, refuse, because an override that never
+arrived looks exactly like that.
+
+Two ways the guard stays quiet: no credentials, or no reachable database. Both
+already skip the DB-backed tests, and a connection that cannot be made cannot
+commit either — but it says so out loud, because a silent pass is how this class
+of problem stayed invisible for two releases.
+
+### The scratch database is now the runner's own business
+
+`scripts/run-container-tests.sh` creates one, declares it disposable, migrates
+it, runs the suite against it, and drops it on the way out — whether the suite
+passed, failed or was interrupted (`trap ... EXIT`). The `-e POSTGRES_DB`
+override is placed **after** `--env-file` so it wins, and the suite verifies the
+database it actually reached rather than trusting that it did.
+
+```
+scripts/run-container-tests.sh                      # generated scratch database
+scripts/run-container-tests.sh --db dm_test_local   # a name you pick
+scripts/run-container-tests.sh --keep-db -- tests/test_admin.py -q
+```
+
+Two smaller things the review turned up:
+
+* `drop_scratch_db` refuses to drop a database that does not carry the marker it
+  wrote. If a name ever collided with something real, losing the run beats
+  losing the data.
+* it also no longer reports "already gone" when it simply could not *ask*. An
+  unreachable PostgreSQL taking that branch is the one outcome that leaves a
+  scratch database behind for good.
+
+### Proved against Production, not asserted
+
+Three runs against the real board, before any of this was committed:
+
+```
+target = dancemate (the live database, via --env-file alone)
+  -> Exit: TEST DB TARGET: dancemate
+     refusing to run tests against 'dancemate': that is this deployment's own
+     database, named in .env as POSTGRES_DB. If an override was meant to apply,
+     it did not arrive.
+  -> exit 3, zero tests run, zero writes
+
+target = dm_unmarked (reachable, no marker)
+  -> Exit: TEST DB TARGET: dm_unmarked
+     database 'dm_unmarked' is not declared disposable (no comment) ...
+  -> exit 3, zero tests run
+
+target = dm_unmarked, after COMMENT ON DATABASE
+  -> TEST DB TARGET: dm_unmarked [PASS]
+  -> 12 passed
+```
+
+The live `dancemate` database carries no comment, and cannot acquire one by
+running migrations, so it is not a possible target for any invocation.
+
+### Why ENGINE_VERSION stays at 1.08
+
+Nothing about what the engine reads out of a stored body changed. Bumping it
+would make all ~3,100 rows stale and re-read for nine hours to arrive at the
+same values — the same reason v0.96.3 left 0.91 alone when it added the
+incremental re-extract itself. `migration 043` is unchanged, and this release
+expects **zero** Production data change.
+
+### Tests
+
+`tests/test_v09628_test_db_safety.py` (26): the decision logic refusing a
+database with no comment, a comment that merely mentions testing, and the
+deployment's own name, while accepting the marker with surrounding whitespace;
+`marker_set_sql()` refusing every name it cannot safely quote rather than
+escaping it; that **no migration contains the marker or any
+`COMMENT ON DATABASE`**, which is what makes the marker unreachable from the
+schema; that the shell and Python markers are the same string; the shell guard
+through real bash, including every name it must refuse; that `drop_scratch_db`
+never drops an unmarked database (a stub `docker` records any attempt); that the
+runner orders `-e POSTGRES_DB` after `--env-file`, guards before it creates
+anything, traps its own cleanup, and accepts a database argument at all; and that
+`conftest.py` refuses a session rather than skipping a test — and no longer
+states the promise two releases disproved, while keeping it quoted as the thing
+the correction is about.
+
 ## v0.96.27 Explicit Night Schedule Time Parsing
 
 Product Runtime 0.96.27; Information Engine **1.07 → 1.08**; migration

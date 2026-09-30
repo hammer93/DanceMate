@@ -340,6 +340,80 @@ guard_db_identity() {
   log "DB identity: database='$pg_db' sources=$count row(s) - looks like the real production database"
 }
 
+# --- disposable test databases (v0.96.28) -----------------------------------
+#
+# guard_db_identity above asserts a database *is* production, for a deploy.
+# These are its mirror image, for a test run: assert one is not, then create it,
+# declare it disposable and drop it again. The declaration is a database comment
+# and never a table, so migrations can never produce it - see
+# runtime/scratch_db_guard.py, which is the same decision in Python and what
+# tests/conftest.py refuses a session on.
+DISPOSABLE_DB_MARKER="dancemate-disposable-test-db"
+
+# A fresh name per run, so two runs never share state and a leftover from a
+# killed run never silently becomes the next run's database.
+scratch_db_name() {
+  printf 'dm_test_%s_%s' "$(date -u +%Y%m%d%H%M%S)" "$$"
+}
+
+# Refuse a database this deployment actually runs on. The v0.96.27 shape: an
+# override that never arrived leaves the target equal to .env's POSTGRES_DB.
+guard_not_deployment_database() {
+  local candidate="$1" deployment
+  deployment="$(env_value POSTGRES_DB || true)"
+  [[ -n "$candidate" ]] || die "no scratch database name given"
+  if [[ "$candidate" =~ [^A-Za-z0-9_] ]]; then
+    die "refusing scratch database '$candidate': a name may contain only letters, digits and underscores"
+  fi
+  if [[ -n "$deployment" && "$candidate" == "$deployment" ]]; then
+    die "refusing to run tests against '$candidate': that is this deployment's own database, named in .env as POSTGRES_DB. If an override was meant to apply, it did not arrive."
+  fi
+}
+
+create_scratch_db() {
+  local db="$1" user="${2:-dancemate}"
+  guard_not_deployment_database "$db"
+  log "creating scratch database: $db"
+  pg_run psql -U "$user" -d postgres -c "DROP DATABASE IF EXISTS $db" >/dev/null \
+    || die "could not drop a pre-existing '$db'"
+  pg_run psql -U "$user" -d postgres -c "CREATE DATABASE $db" >/dev/null \
+    || die "could not create scratch database '$db'"
+  # Declared before the migrations run, so nothing writes to it undeclared.
+  pg_run psql -U "$user" -d postgres \
+    -c "COMMENT ON DATABASE $db IS '$DISPOSABLE_DB_MARKER'" >/dev/null \
+    || die "could not declare '$db' disposable"
+}
+
+drop_scratch_db() {
+  local db="$1" user="${2:-dancemate}" marker
+  [[ -n "$db" ]] || return 0
+  guard_not_deployment_database "$db"
+  # Never drop a database that does not carry the marker this script wrote: if a
+  # name collided with something real, losing the run beats losing the data.
+  #
+  # "could not ask" and "carries no comment" are kept apart deliberately. Folding
+  # them together let an unreachable PostgreSQL report a scratch database as
+  # already gone, which is the one outcome that leaves one behind for good.
+  if ! marker="$(pg_run psql -U "$user" -d postgres -tAc \
+    "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = '$db'" \
+    2>/dev/null)"; then
+    warn "could not reach PostgreSQL to drop scratch database '$db' - drop it by hand"
+    return 0
+  fi
+  marker="$(tr -d '[:space:]' <<<"$marker")"
+  if [[ -z "$marker" ]]; then
+    log "scratch database '$db' is already gone; nothing to drop"
+    return 0
+  fi
+  if [[ "$marker" != "$DISPOSABLE_DB_MARKER" ]]; then
+    warn "not dropping '$db': it is not declared disposable (comment: $marker)"
+    return 0
+  fi
+  log "dropping scratch database: $db"
+  pg_run psql -U "$user" -d postgres -c "DROP DATABASE IF EXISTS $db" >/dev/null \
+    || warn "could not drop scratch database '$db' - drop it by hand"
+}
+
 # At most one of each. A second scheduler is the specific failure mode
 # Section 22 calls out: two workers ticking the same jobs against the same
 # database. Counts by container *command*, not by name, so it also catches a

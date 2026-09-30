@@ -9,59 +9,42 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.27 (**`pm 8~11:30`에서 `11:30`은 시작이 아니라 범위의 끝이다.**
-  화정은 매주 화요일 밤 8시에 여는 밀롱가인데 DanceMate가 **오전 11시 30분**이라고
-  말하고 있었다. 원인은 문법 하나다 — `_CLOCK`의 맨시(bare hour) 형태가 marker가
-  **뒤에** 붙은 `7pm`만 알았고, Production은 앞에 쓰는 `pm 8`·`오후 8`·`밤 10`을
-  최소한 그만큼 자주 쓴다. 범위로 읽히지 않으니 `parse_time_range()`가 아무것도
-  내지 못하고, lone-clock 규칙이 읽을 수 있는 유일한 clock인 **범위의 끝**을 시작으로
-  집었다. 문법에 그 형태를 가르치자 post가 이미 들고 있던 증거로 세 가지가 더 따라온다:
-  (1) 번호 붙은 뒤 세트의 시각은 밤의 시작이 아니다 — 안산 라소클은 `🚨20시~06시까지`라
-  말하는데 `2부24시~06시` 뒤 두 글자에 있는 `파티`가 그 범위를 끌어와 00:00으로
-  저장했다. 이 라벨은 class 단어와 달리 **방향성**이 있어(Production은 특강·워크샵을
-  clock 양쪽에 쓰지만 `2부`는 항상 앞에 쓴다) `_OTHER_PROGRAMME_TIME`에 넣으면
-  `1부 5:30~9:30 2부 10:00~11:00`에서 **두 읽기를 다 잃는다** — 뒤 범위를 가리키는
-  `2부`가 앞 범위의 window에 들어오기 때문이다. 그래서 앞쪽 텍스트만 보는 독립 질문으로
-  물었다. `1부`는 일부러 넣지 않았다. (2) marker 없는 아침 읽기는 명시된 저녁 읽기를
-  이기지 못한다 — 위드라틴은 `저녁 9시`를 두 번 쓰고 `소셜은 10시부터 라틴바로 이동`이라
-  쓰는데, `소셜`이 `10시부터` 옆에 있어 근접성이 밤을 **오전 10시**로 만들었다. 단
-  이 규칙은 **선호이고 구제가 아니다**: item 883의 `오전 9시부터 7.13.(월) 18:00까지
-  접수 기간`처럼 v0.96.18이 "여러 시각이면 추측하지 않는다"로 거부한 자리를 뒤집으면,
-  경쟁 읽기를 지워 그 09:00을 홀로 세워 이기게 만든다. 그래서 거부는 그대로 두고
-  선택만 바꾼다. (3) 하나뿐인 의미를 가진 endpoint는 다른 쪽의 증거다 — `소셜 9:00 ~
-  00:00`의 00:00은 자정일 수밖에 없고, 그 앞의 9:00은 21:00일 수밖에 없다. marker가
-  붙은 범위의 안 붙은 절반을 `_resolve_other()`가 이미 그렇게 읽는다. **문법은 measure
-  해서 좁혔다**: 끝에만 marker가 붙은 형태(`8-9PM`, `12-3PM`, `3-AM3`)까지 허용하면
-  Production post 4건을 더 읽지만 **읽어서는 안 되는 3건도 읽는다** — 보니따의
-  `워크샵(2): 8-9PM, 소셜 모픈: 9PM`은 소셜이 여는 21:00 대신 워크샵을 광고하고(3824),
-  부트캠프의 `12-3PM, 6-7PM`도 같은 식이며(2256), 마제밀의 음악비율
-  `탱3-발3-밀3-AM3`은 새벽 3시 범위가 된다(942). 앞에 붙은 marker는 이 release가
-  존재하는 이유인 형태들이 실제로 쓰는 쪽이고, 요금·비율·인원수와 혼동되지 않는 쪽이다.
-  맨시 endpoint가 날짜의 일부인 경우(`7.13.`)도 막았고, `부터`·`에서`는 clock을 잇기도
-  하지만 평범한 조사이기도 해서 맨시 endpoint를 그 뒤로는 아예 허용하지 않는다 —
-  corpus에서 그 조합은 홍턴의 `밤 9시부터 2만 CC가 소진될 때까지`(생맥주 2만cc,
-  item 4480)와 `오후8시부터 70분 수업`(소요시간, item 3140) 둘뿐이고 둘 다 틀렸다.
-  이 제약은 검증이 아니라 **문법**에 넣었다: 나중에 걸러내는 방식으로 쓰면
-  `신청은 2부터 오후 8~9시 소셜`에서 `2부터 오후 8`이 match를 먹고 실패해 진짜
-  `오후 8~9시`를 가려버린다. 근사치 어휘(`오후 3~4시쯤에`,
-  산문 일기 item 3261)도 막았다 — 저장 텍스트 3,237건 전수에서 clock이 근사치 어휘를
-  다는 경우는 **정확히 2건이고 둘 다 그 한 문장**이다. `_range_spans()`는 형태만 보고
-  읽기 가능성은 보지 않는다: item 3239의 `21:00-25:00`에는 25시가 없어 읽기가 없지만
-  그 21:00은 누군가 쓴 범위의 머리이고, 독립 시작으로 집으면 그 post 자신의 poster가
-  주는 끝을 잃는다. **전체 corpus 실측**(보드에서 candidate engine을 나란히 올려 저장된
-  2,615 post 전수를 engine store와 OCR 캐시로 재독, 네트워크 없음): 변경 19건, **전부
-  시간 단일**, date·fee·venue·event_type·candidate 수를 움직인 post **0건**, 읽기 손실
-  **0건**, 새로 생긴 틀린 시간 **0건**. 19건 전수 검토 — CORRECTED_START 8(화정
-  11:30→20:00~23:30, 안산 00:00→20:00, 위드라틴 10:00→21:00, 살사준중급
-  09:00→21:00, SALSA BASIS 06:30→17:00~18:30, PUMPKIN `24 PM`→18:00~20:00,
-  엘레나파소 13:00→20:00~22:00, 우리SAI 17:00→22:00으로 그 Event 날짜인 9/11
-  리허설과 일치), RECOVERED_MISSING 7(전부 본문이나 그 post 자신의 poster가 말하는
-  `marker+맨시~clock`), AMBIGUOUS 4(다중 슬롯 강습의 다른 실제 슬롯, 가시 upcoming
-  Event 없음). **canonical 영향 1건이고 참 중복이다**: 화정이 20:00이 되면서
-  ev 1605612가 ev 1097381 `Solo Tango 화요정모`(같은 날짜·같은 resolved venue 187)와
-  auto fold된다 — **2026-09-08에 이미 같은 쌍이 `88436 → 221245`로 fold돼 있고 그것이
-  이 브리프의 보호 계약**이다. 9/29가 안 묶여 있던 유일한 이유가 화정의 11:30
-  오독이었다. ENGINE_VERSION은 **1.07 → 1.08**, migration 043 유지)
+- Product Runtime: v0.96.28 (**테스트가 쓸 수 있는 DB를 구조적으로 제한한다.**
+  이 릴리스는 추출을 고치지 않는다. v0.96.27에서 내가 낸 사고를 다시 낼 수 없게 만드는
+  작업이다. runtime 테스트 suite는 실제 PostgreSQL이 필요한데(master-data·source·intake가
+  SQL이고 mock은 mock이 동작함만 증명한다), 오랫동안 그 답은 "공유 DB에 붙여라, 모든
+  테스트는 transaction을 rollback한다"였다. **그 약속은 거짓이고 두 릴리스를 대가로 치렀다**
+  — v0.96.14가 Production `source_item_content` 2,468행 중 1,852행에
+  `extracted_engine_version = 0.75`를 찍었고, v0.96.27이 50행에 같은 일을 했다. 두 번째는
+  명령이 **맞아 보였다**: `POSTGRES_DB=ct_9627 scripts/run-container-tests.sh`는 host
+  shell에 변수를 세우는데 그 스크립트는 `--env-file .env`를 하드코딩하고 DB 인자를 아예
+  받지 않아서 전달하지 않았다. 올바른 일이 어려운 게 아니라 **말할 수 없었다**. rollback은
+  이것을 담을 수 없다 — `pg` fixture는 연결 하나를 소유하고, 테스트 쪽 9곳과 runtime
+  대부분이 자기 `db.connect(settings, autocommit=True)`를 열어 commit한다
+  (`engine_ingest.reprocess_acquired()`가 재추출 cursor를 찍는 그것이다). 그래서 guard를
+  fixture에 두지 않고, **어떤 테스트도 돌기 전에 DB 자체에 대해** 판단한다: DB가 스스로
+  버려도 된다고 말해야 한다. 표식은 `COMMENT ON DATABASE`이고 일부러 테이블이 아니다 —
+  (1) migration이 만들 수 없으므로 스키마 작업을 아무리 해도 운영 DB가 테스트 가능해
+  보이지 않는다, (2) 재실행에 살아남아 scratch DB를 재사용할 수 있고 "몇 행이면 너무
+  많은가" 같은 임계값이 필요없다(`guard_db_identity`의 `sources > 0`이 그 약점을 보여준다),
+  (3) 손으로 선언하는 것이 한 문장이라 ad-hoc scratch DB가 계속 지원되는 길로 남는다.
+  두 번째 독립 신호도 둔다: 대상이 `.env`의 `POSTGRES_DB`와 같으면 거부한다 — v0.96.27의
+  정확한 형태(override가 도착하지 않은 경우)를 컨테이너가 시작되기도 전에 잡는다.
+  판단 로직은 `runtime/scratch_db_guard.py`에 순수 함수로 있고(DB 없이 단위 테스트된다,
+  `deploy_guard`/`ownership_guard`와 같은 report-dict 관용구), 집행은 그것이 실재하는
+  곳에 있다 — `tests/conftest.py`의 `pytest_sessionstart`가 session을 거부하고,
+  `scripts/_common.sh`/`run-container-tests.sh`가 컨테이너를 거부한다. 스크립트는 이제
+  scratch DB를 **자기 일로** 다룬다: 만들고, 선언하고, migrate하고, 그 DB에 대고 suite를
+  돌리고, 통과·실패·중단 어느 쪽이든 `trap`으로 drop한다. `-e POSTGRES_DB` override는
+  `--env-file` **뒤에** 놓여 이기고, suite는 그것을 신뢰하지 않고 실제로 도달한 DB를
+  스스로 확인한다. 이름이 진짜와 충돌했을 때를 위해 drop은 자기가 쓴 표식이 없는 DB를
+  절대 지우지 않는다 — 실행을 잃는 것이 데이터를 잃는 것보다 낫다. 또 `pg_run`이 실패했을
+  때 "이미 사라졌다"로 보고하던 것을 분리했다(그것이 scratch DB를 영구히 남기는 유일한
+  결말이었다). **Production에서 실제로 증명했다**: live DB를 가리킨 실행은 `exit 3`으로
+  테스트 0건 실행 후 거부되며 원인을 지목하고(`override가 도착하지 않았다`), 표식 없는
+  scratch DB도 거부되고(선언 방법을 알려준다), 표식을 붙이면 `TEST DB TARGET … [PASS]`와
+  함께 돌아간다. ENGINE_VERSION은 **1.08 유지** — 엔진이 읽는 것은 하나도 바뀌지 않으므로
+  3,100행을 9시간 동안 다시 읽어 같은 값에 도달하게 만들 이유가 없다. migration 043 유지)
 - Product Runtime: v0.96.25 (**한 post에는 그 post의 poster만 붙인다.** v0.96.24는
   poster OCR이 label 없는 읽기로 venue를 만들어내는 것을 막았지만, 더 깊은 결함은
   남아 있었다 — **이미지 자체가 남의 것**이었다. `장소: Ae" (분당)`은 **정확히
@@ -533,7 +516,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.27"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.28"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
@@ -685,9 +668,33 @@ DanceMate/
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
 
-pytest                       # product runtime tests (133)
-cd engine && pytest          # Information Engine regression (559)
+pytest                       # product runtime tests
+cd engine && pytest          # Information Engine regression
 ```
+
+The PostgreSQL-backed tests skip on a developer host (compose only `expose`s the
+database, and a test asserts it stays that way). To run them, use the container
+runner, which creates its own disposable database, declares it so, migrates it,
+runs the suite against it and drops it again:
+
+```bash
+scripts/run-container-tests.sh                      # generated scratch database
+scripts/run-container-tests.sh --db dm_test_local   # a name you pick
+scripts/run-container-tests.sh --keep-db -- tests/test_admin.py -q
+```
+
+**Never point the suite at a database anything depends on.** It commits through
+connections no fixture rolls back — `engine_ingest.reprocess_acquired()` stamps
+the re-extract cursor on real rows — and twice a run against the live database
+did exactly that (v0.96.14: 1,852 rows; v0.96.27: 50). Since v0.96.28 the suite
+refuses to start unless the database says it is expendable:
+
+```sql
+COMMENT ON DATABASE your_scratch_db IS 'dancemate-disposable-test-db';
+```
+
+A comment rather than a table, so no migration can ever make a production
+database look testable. See `runtime/scratch_db_guard.py`.
 
 ## Staging (ROCKPro64 target)
 

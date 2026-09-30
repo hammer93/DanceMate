@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.27"
+PRODUCT_VERSION = "0.96.28"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -357,6 +357,13 @@ PRODUCT_VERSION = "0.96.27"
 # the time and nothing else - 0 posts moved a date, a fee, a venue, a type or a
 # candidate count - 0 readings lost, and 0 new wrong times. Extraction semantics
 # changed, so the stamp changes with them.
+#
+# v0.96.28 deliberately does NOT bump this. It hardens what the test suite is
+# allowed to write to (runtime/scratch_db_guard.py, tests/conftest.py,
+# scripts/run-container-tests.sh) and changes nothing about what the engine
+# reads out of a stored body. Bumping it would make all 3,100 rows stale and
+# re-read for nine hours to arrive at the same values - the same reason v0.96.3
+# left 0.91 alone when it added the incremental re-extract itself.
 DEFAULT_ENGINE_VERSION = "1.08"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
