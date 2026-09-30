@@ -56,10 +56,44 @@ _CLOCK = (
 # ~ - – — to 부터 에서 . An en dash is what "PM 8시 – 12시" actually uses.
 _SEP = r"\s*(?:~+|-+|–|—|to|부터|에서)\s*"
 
+# v0.96.27: an endpoint written as a bare hour. "시간: pm 8~11:30" - 화정's
+# weekly notice - states a whole range, and `_CLOCK` could not read its head:
+# the bare-hour form above requires the marker to *follow* the digits ("7pm"),
+# and Production writes it in front at least as often ("pm 8", "오후 8", "밤 10").
+# With no range to read, `parse_start_time()` took the only clock `_CLOCK` did
+# match - the range's **end** - and advertised an 8pm milonga at 11:30 in the
+# morning. Twelve and a half hours off, on a night that happens every week.
+#
+# A bare number is only a clock when the range *opens* by saying which half of
+# the day it means, so the grammar admits it here and `_range_is_readable()`
+# refuses it unless a meridiem marker sits on the first endpoint. Without that
+# refusal "입장료 8~9만원", "3~4명" and "2026~2027" all become clock ranges.
+#
+# The marker has to be on the **first** endpoint, not merely somewhere in the
+# range, and that was measured rather than assumed. Admitting a trailing-only
+# marker ("8-9PM", "12-3PM", "3-AM3") reads four more Production posts, and it
+# also reads three it must not: 보니따's "워크샵(2): 8-9PM, 소셜 모픈: 9PM"
+# (item 3824) would advertise the workshop instead of the 21:00 the social opens
+# at, the bootcamp's "12-3PM, 6-7PM" (item 2256) the same way, and 마제밀's music
+# ratio "탱3-발3-밀3-AM3" (item 942) becomes a range at three in the morning.
+# A leading marker is what the shapes this release exists for actually write -
+# "pm 8~11:30", "오후 8~9시30분", "밤 10~12시", "PM 5~6:30" - and it is the half
+# of the grammar that cannot be confused with a fee, a ratio or a headcount.
+#
+# The head form also has to be joined to its other end by a *symbol*. Written as
+# a validation step instead, a bare number in front of a particle consumed the
+# match and hid the real range behind it: in "신청은 2부터 오후 8~9시 소셜" the
+# regex took "2부터 오후 8", failed it, and never offered "오후 8~9시" at all.
+# Grammar decides, so the engine backtracks and finds the range.
+_BARE = r"\d{1,2}(?![\d.])"
+_SYMBOL_SEP = r"\s*(?:~+|-+|–|—)"
+_CLOCK_OR_BARE_HEAD = rf"(?:{_CLOCK}|{_BARE}(?=\s*{_MARKER}?{_SYMBOL_SEP}))"
+_CLOCK_OR_BARE_TAIL = rf"(?:{_CLOCK}|{_BARE})"
+
 _RANGE_RE = re.compile(
-    rf"(?P<lead1>{_MARKER})?\s*(?P<t1>{_CLOCK})\s*(?P<trail1>{_MARKER})?"
+    rf"(?P<lead1>{_MARKER})?\s*(?P<t1>{_CLOCK_OR_BARE_HEAD})\s*(?P<trail1>{_MARKER})?"
     rf"{_SEP}"
-    rf"(?P<lead2>{_MARKER})?\s*(?P<t2>{_CLOCK})\s*(?P<trail2>{_MARKER})?",
+    rf"(?P<lead2>{_MARKER})?\s*(?P<t2>{_CLOCK_OR_BARE_TAIL})\s*(?P<trail2>{_MARKER})?",
     re.I,
 )
 
@@ -117,6 +151,66 @@ def _apply(hour: int, minute: int, marker: str) -> int:
 
 
 _BARE_HOUR_RE = re.compile(r"^(?P<h>\d{1,2})$")
+
+
+def _is_bare_hour(token: str) -> bool:
+    """A range endpoint written as digits alone - "8" in "pm 8~11:30"."""
+    return _BARE_HOUR_RE.match((token or "").strip()) is not None
+
+
+def _range_markers(match) -> tuple[str | None, str | None]:
+    """The half-of-day each endpoint of a range asserts, if it asserts one."""
+    first = _clock_parts(match.group("t1"))
+    second = _clock_parts(match.group("t2"))
+    if first is None or second is None:
+        return None, None
+    mark1 = (_meridiem(match.group("lead1"), first[0])
+             or _meridiem(match.group("trail1"), first[0]))
+    mark2 = (_meridiem(match.group("lead2"), second[0])
+             or _meridiem(match.group("trail2"), second[0]))
+    return mark1, mark2
+
+
+# A separator that is also an ordinary Korean particle. "8시부터 11시" is a
+# range; "밤 9시부터 2만 CC가 소진될 때까지" is a beer promotion and
+# "오후8시부터 70분 수업" is a duration. Both are the only two places in the
+# stored corpus where a bare endpoint is reached through one of these words, and
+# both are wrong, so a bare endpoint is not admitted across them at all.
+_WORD_SEP_RE = re.compile(r"부터|에서")
+
+
+def _range_is_readable(match) -> bool:
+    """Is this `_RANGE_RE` match a clock range at all?
+
+    v0.96.27: an endpoint written as a bare hour counts as a clock only when the
+    range's *first* endpoint carries a meridiem marker, both endpoints name an
+    hour, and the two are joined by a symbol rather than a particle - see
+    `_CLOCK_OR_BARE_HEAD` and `_WORD_SEP_RE` for the five Production posts that
+    measured those three conditions.
+    """
+    if not (_is_bare_hour(match.group("t1")) or _is_bare_hour(match.group("t2"))):
+        return True
+    first = _clock_parts(match.group("t1"))
+    second = _clock_parts(match.group("t2"))
+    if first is None or second is None:
+        return False
+    if _WORD_SEP_RE.search(match.string[match.end("t1"):match.start("t2")]):
+        return False
+    return bool(_meridiem(match.group("lead1"), first[0])
+                or _meridiem(match.group("trail1"), first[0]))
+
+
+def _range_spans(text: str) -> list[tuple[int, int]]:
+    """Where a clock range sits, for the clocks `parse_start_time()` must skip.
+
+    Shape, not readability: "9월 21일(토) 21:00-25:00" names no hour 25, so
+    `_readings()` yields nothing for it - but the 21:00 is still the head of a
+    range somebody wrote, not an independent start, and taking it as one loses
+    the end the post's own poster supplies (item 3239). Only the endpoints
+    v0.96.27 newly admitted are filtered here, so this keeps exactly the meaning
+    it had when it was `_RANGE_RE.finditer()` alone.
+    """
+    return [m.span() for m in _RANGE_RE.finditer(text or "") if _range_is_readable(m)]
 
 
 @dataclass
@@ -179,6 +273,47 @@ _OTHER_PROGRAMME_TIME = re.compile(
     r"class|lesson|workshop|after\s*party",
     re.I,
 )
+
+# v0.96.27: the numbered later set. A night that splits into sets writes each
+# one's hours, and the second set's are not when the night begins: 안산 라소클
+# (item 4496) says "🚨20시~06시까지" and then "2부24시~06시 라틴펍&파티룸", and
+# the 파티 two characters after that range pulled it in, storing a party that
+# opens at 20:00 as opening at midnight.
+#
+# Unlike a class word, this label is positional: Production writes 특강 and
+# 워크샵 on either side of the clock they own, but "2부" always sits in front of
+# the hours it names. Putting it in `_OTHER_PROGRAMME_TIME` - which searches
+# symmetrically - made "1부 5:30~9:30 2부 10:00~11:00" lose *both* readings,
+# because the 2부 heading the second range fell inside the first range's window.
+# So it is asked as its own question, of the text in front only, and nothing but
+# non-digit words may stand between the label and its clock.
+#
+# `1부` is deliberately left out: the first set begins when the night does, and
+# its clock is the one to keep. All four occurrences in the stored corpus want
+# that answer - 4538's "1부 21:00~22:30 … 2부 22:30~24:00 … 소셜 21:00~24:00",
+# 3770's "PM 9:00 ~ AM 00:00 … 1부 9:00~10:30 … 2부 10:30~12:00", 230's
+# "1부 (9~11 PM) … 2부 (11 PM~2 AM)" and 4496's own line.
+_LATER_SET_LABEL_RE = re.compile(r"[2-9]\s*부(?![가-힣])[^\d]{0,12}$")
+
+
+def _is_a_later_sets_clock(text: str, match: "re.Match") -> bool:
+    """Is this range labelled as a second or later set of the same night?"""
+    return bool(_LATER_SET_LABEL_RE.search(text[max(0, match.start() - 20):match.start()]))
+
+
+# v0.96.27: an hour somebody is approximating is being narrated, not scheduled.
+# 가또땅고's item 3261 is a diary entry - "아침부터 시작된 격무에 오후 3~4시쯤에
+# 이미 피곤해서" - and reading it gave a milonga an afternoon it never claimed.
+# Measured over all 3,237 stored bodies and OCR texts, a clock reading carries
+# one of these words exactly twice, and both are that one sentence.
+_APPROXIMATE_AFTER_RE = re.compile(r"^\s*(?:시|분)?\s*(?:쯤|무렵|경에|께)")
+
+
+def _is_approximate(text: str, end: int) -> bool:
+    """Does the text right after a clock call it an approximation?"""
+    return bool(_APPROXIMATE_AFTER_RE.match(text[end:end + 6]))
+
+
 _TIME_NEAR_BEFORE = 16
 _TIME_NEAR_AFTER = 16
 # v0.96.2: a class word on the other side of a structural break - a line
@@ -524,7 +659,7 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
     # A clock written as one end of a range is never an independent start:
     # the tail of "9:00-1:00 소셜" is when the social stops, and the head of
     # "9:00pm-12:30am 밀롱가" is already `parse_time_range()`'s to read.
-    ranges = [m.span() for m in _RANGE_RE.finditer(body)]
+    ranges = _range_spans(body)
     found = []
     for match in _SINGLE_CLOCK_RE.finditer(body):
         parts = _clock_parts(match.group("t"))
@@ -536,6 +671,8 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
             continue
         after = body[match.end():match.end() + 6]
         if _NOT_A_START_AFTER.match(after):
+            continue
+        if _is_approximate(body, match.end("t")):
             continue
         marker = (_meridiem(match.group("lead"), parts[0])
                   or _meridiem(match.group("trail"), parts[0]))
@@ -559,24 +696,52 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
         ), match.start(), match.end(), opens))
     if not found:
         return None
-    if words:
-        named = [f for f in found
-                 if re.search(words, _near_window(body, f[1], f[2]), re.I)]
-        if named:
-            # v0.96.18: among the clocks the event's own word qualifies, the one
-            # the post says it *opens* at is the start. Several can qualify at
-            # once - a day's "파티" heading sits beside its workshop hours as
-            # well as its own - and taking the first by position advertised the
-            # workshop. Position still breaks a tie between two openings.
-            opening = [f for f in named if f[3]]
-            return (opening or named)[0][0]
-    # Two different lone clocks for two different things ("클럽 오픈 오후
-    # 8시 ... 오후 7시 핸슨") and neither beside the event's word: which one
-    # is the start is anyone's guess, and this rule does not guess.
-    if len({r[0].start for r in found}) > 1:
+
+    def select(candidates):
+        if not candidates:
+            return None
+        if words:
+            named = [f for f in candidates
+                     if re.search(words, _near_window(body, f[1], f[2]), re.I)]
+            if named:
+                # v0.96.18: among the clocks the event's own word qualifies, the
+                # one the post says it *opens* at is the start. Several can
+                # qualify at once - a day's "파티" heading sits beside its
+                # workshop hours as well as its own - and taking the first by
+                # position advertised the workshop. Position still breaks a tie
+                # between two openings.
+                opening = [f for f in named if f[3]]
+                return (opening or named)[0][0]
+        # Two different lone clocks for two different things ("클럽 오픈 오후
+        # 8시 ... 오후 7시 핸슨") and neither beside the event's word: which one
+        # is the start is anyone's guess, and this rule does not guess.
+        if len({r[0].start for r in candidates}) > 1:
+            return None
+        explicit = next((r for r in candidates
+                         if r[0].meridiem_evidence == EVIDENCE_EXPLICIT), None)
+        return (explicit or candidates[0])[0]
+
+    chosen = select(found)
+    if chosen is None:
+        # v0.96.27: the rule below reorders preferences; it never overturns a
+        # refusal. item 883 writes "오전 9시부터 7.13.(월) 18:00까지 접수 기간" -
+        # an application window - and the class's own hours are on its poster.
+        # Dropping the post's other readings would leave that 09:00 standing
+        # alone and let it win, which is the guess the refusal above exists to
+        # avoid.
         return None
-    explicit = next((r for r in found if r[0].meridiem_evidence == EVIDENCE_EXPLICIT), None)
-    return (explicit or found[0])[0]
+    # v0.96.27: a marker-less morning reading never outranks an explicit one.
+    # 위드라틴 (item 2267) states "매주 목요일 저녁 9시" twice and then says the
+    # social *moves* at "10시부터"; the 10시 sits beside the word 소셜 and the
+    # 저녁 9시 does not, so proximity handed the night 10:00 - ten in the
+    # morning, from a clock that carries no marker at all. Proximity decides
+    # between readings of equal evidence, not against better evidence, which is
+    # the same trade `_readings()` makes for a range and v0.96.18 made for a
+    # clock a class word sat beside.
+    if not any(f[0].meridiem_evidence == EVIDENCE_EXPLICIT for f in found):
+        return chosen
+    stronger = [f for f in found if not (f[0].ambiguous and int(f[0].start[:2]) < 12)]
+    return select(stronger) or chosen
 
 
 def _readings(text: str, words: str | None = None):
@@ -593,13 +758,14 @@ def _readings(text: str, words: str | None = None):
         second = _clock_parts(match.group("t2"))
         if first is None or second is None:
             continue
+        if not _range_is_readable(match):
+            continue
+        if _is_a_later_sets_clock(text, match) or _is_approximate(text, match.end()):
+            continue
         vetoed = _is_other_programme(text, match)
         if vetoed and _range_belongs_to_other_programme(text, match, words):
             continue
-        mark1 = (_meridiem(match.group("lead1"), first[0])
-                 or _meridiem(match.group("trail1"), first[0]))
-        mark2 = (_meridiem(match.group("lead2"), second[0])
-                 or _meridiem(match.group("trail2"), second[0]))
+        mark1, mark2 = _range_markers(match)
 
         if mark1 and mark2:
             start_abs = _apply(*first, mark1)
@@ -613,6 +779,31 @@ def _readings(text: str, words: str | None = None):
             end_abs = _apply(*second, mark2)
             start_abs = _resolve_other(end_abs, *first, "start")
             evidence, ambiguous = EVIDENCE_EXPLICIT, False
+        elif len(_candidates(*second)) == 1 and len(_candidates(*first)) > 1:
+            # v0.96.27: no marker, but one endpoint has only one possible
+            # meaning - a 24-hour hour, or midnight. That endpoint is evidence
+            # for the other one, read the same way `_resolve_other()` already
+            # reads the unmarked half of a marked range: backwards in time from
+            # a known end. "뉴욕바 소셜 9:00 ~ 00:00" (item 2802) was stored as
+            # 09:00-00:00, a fifteen-hour morning social; the 00:00 can only be
+            # midnight, and the 9:00 before it can only be 21:00.
+            #
+            # This is not a promotion to the evening. Measured over all 38
+            # occurrences of the shape in the stored corpus, it changes exactly
+            # that one reading: "11:00~14:00", "12:40 – 14:00", "11:30-13:00",
+            # "12:00-13:20", "08:00~19:00" and the rest all resolve backwards to
+            # the very hour they are written as, because their end comes before
+            # the afternoon reading of their start.
+            end_abs = _literal(*second)
+            start_abs = _resolve_other(end_abs or 1440, *first, "start")
+            if start_abs == _literal(*first):
+                # Reading backwards landed on the hour as written, so nothing
+                # was learned and nothing is claimed: this stays the unmarked
+                # reading it has always been, including for v0.96.19's guard
+                # against admitting a guessed morning.
+                evidence, ambiguous = EVIDENCE_ABSENT, 1 <= first[0] <= 12
+            else:
+                evidence, ambiguous = EVIDENCE_PROPAGATED, False
         else:
             # No marker anywhere. Report exactly what is written. A dance event
             # is not evidence that 7:30 means 19:30.

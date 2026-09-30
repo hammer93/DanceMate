@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.26"
+PRODUCT_VERSION = "0.96.27"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -342,7 +342,22 @@ PRODUCT_VERSION = "0.96.26"
 # changed, every one of them the venue and nothing else - 0 posts moved a date, a
 # time, a fee or a type - and 0 resolved venues lost. Extraction semantics
 # changed, so the stamp has to change with them.
-DEFAULT_ENGINE_VERSION = "1.07"
+#
+# v0.96.27 -> 1.08. A clock range whose first endpoint is written as a bare hour
+# with the meridiem marker in front of it - "시간: pm 8~11:30", 화정's weekly
+# notice - was no range at all to `_RANGE_RE`, and the lone-clock rule then took
+# the only clock it could read: the range's **end**. An 8pm milonga was
+# advertised at 11:30 in the morning. With the grammar taught that shape, three
+# more readings follow from evidence the posts already carried - a numbered later
+# set's hours are not the night's ("2부24시~06시"), an unmarked morning never
+# outranks an explicit evening ("저녁 9시" x2 against "10시부터"), and a range
+# running to a midnight that can only be midnight did not start at nine in the
+# morning ("소셜 9:00 ~ 00:00"). Measured over all 2,615 stored posts, re-read
+# with the candidate engine beside the running one: 19 changed, every one of them
+# the time and nothing else - 0 posts moved a date, a fee, a venue, a type or a
+# candidate count - 0 readings lost, and 0 new wrong times. Extraction semantics
+# changed, so the stamp changes with them.
+DEFAULT_ENGINE_VERSION = "1.08"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

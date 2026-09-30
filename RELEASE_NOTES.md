@@ -1,5 +1,158 @@
 # DanceMate Release Notes
 
+## v0.96.27 Explicit Night Schedule Time Parsing
+
+Product Runtime 0.96.27; Information Engine **1.07 → 1.08**; migration
+**043, unchanged**. One grammar change and three reading rules, all in
+`engine/src/extraction_rules.py`. No change to classification, dates, fees,
+venues, event types, poster ownership, acquisition, or the duplicate rules.
+
+### `11:30` is not when that milonga begins. It is when it ends.
+
+화정 is 솔로땅고's Tuesday night at O Nada, every week, 20:00–23:30. Its own
+notice writes the hours plainly:
+
+```
+날짜: 9월 29일 화요일   시간: pm 8~11:30   DJ : 에이브   장소: Tango O nada
+```
+
+and DanceMate advertised it at **11:30 in the morning**. `_RANGE_RE` found no
+range in that line at all — `_CLOCK`'s bare-hour form requires the meridiem
+marker to *follow* the digits (`7pm`), and Production writes it in front at
+least as often (`pm 8`, `오후 8`, `밤 10`). With no range to read,
+`parse_start_time()` took the only clock `_CLOCK` could match: the range's end.
+
+### Three more readings follow from evidence the posts already carried
+
+**A numbered later set's hours are not the night's.** 안산 라소클 says
+`🚨20시~06시까지 썬업 진행!!` and later `2부24시~06시 라틴펍&파티룸`; the 파티 two
+characters after that range pulled it in and stored a party opening at 20:00 as
+opening at midnight. Unlike a class word, this label is *positional* — Korean
+posts write 특강 and 워크샵 on either side of the clock they own, but `2부` always
+stands in front of the hours it names. Putting it in `_OTHER_PROGRAMME_TIME`,
+which searches symmetrically, made `1부 5:30~9:30 2부 10:00~11:00` lose **both**
+readings, because the 2부 heading the second range fell inside the first range's
+window. So it is asked as its own question, of the text in front only. `1부` is
+deliberately left out: the first set begins when the night does.
+
+**An unmarked morning never outranks an explicit evening.** 위드라틴 writes
+`매주 목요일 저녁 9시` twice and then `소셜은 10시부터 라틴바로 이동합니다`; the
+word 소셜 sits beside the unmarked `10시부터` and not beside `저녁 9시`, so
+proximity handed the night 10:00. Proximity decides between readings of equal
+evidence, not against better evidence.
+
+This rule is a **preference, and never a rescue**. item 883 writes
+`오전 9시부터 7.13.(월) 18:00까지 접수 기간` — an application window, with the
+class's real hours on its poster. Dropping that post's other readings would
+leave the 09:00 standing alone and let it win, overturning the v0.96.18 refusal
+("which one is the start is anyone's guess, and this rule does not guess") that
+is the only reason the poster is consulted at all. So the refusal stands and only
+the choice among competing readings changes.
+
+**An endpoint with one possible meaning is evidence for the other.** `소셜 9:00 ~
+00:00` was stored as 09:00–00:00, a fifteen-hour morning social. The `00:00` can
+only be midnight, and the 9:00 before it can only be 21:00 — read backwards by
+`_resolve_other()`, which already reads the unmarked half of a *marked* range
+exactly that way. Over all 38 occurrences of the shape in the stored corpus it
+changes that one reading: `11:00~14:00`, `12:40 – 14:00`, `11:30-13:00`,
+`12:00-13:20` and `08:00~19:00` all resolve backwards to the very hour they are
+written as, and where nothing is learned the reading keeps the ABSENT/ambiguous
+evidence it had, so v0.96.19's guard against admitting a guessed morning keeps
+its meaning.
+
+### The grammar was narrowed by measurement, not widened by imagination
+
+Admitting a **trailing-only** marker (`8-9PM`, `12-3PM`, `3-AM3`) reads four more
+Production posts — and three it must not:
+
+| post | text | a trailing-only marker would read | the truth |
+|---|---|---|---|
+| 3824 | `워크샵(2): 8-9PM, 소셜 모픈: 9PM` | 20:00–21:00 | the social opens at 21:00 |
+| 2256 | `3시간 수업, 1시간 수업 및 리허설 12-3PM, 6-7PM` | 12:00–15:00 | class slots, not the event |
+| 942 | `탱3-발3-밀3-AM3` (a music ratio) | 03:00–03:00 | not a clock at all |
+
+A leading marker is the half of the grammar that cannot be confused with a fee,
+a ratio or a headcount, and it is what the shapes this release exists for
+actually write.
+
+Three further guards came out of the same review. A bare endpoint that is part
+of a date (`오전 9시부터 7.13.`) is not a clock. `부터` and `에서` join clocks but
+are also ordinary particles, and the only two places in the corpus where a bare
+endpoint is reached through one are 홍턴's `밤 9시부터 2만 CC가 소진될 때까지`
+(two *man* cc of free beer, item 4480) and `오후8시부터 70분 수업` (a duration,
+item 3140) — so a bare endpoint is not admitted across a particle at all, and
+that is enforced in the **grammar** rather than in validation: written as a check
+afterwards, `2부터 오후 8` consumed the match in `신청은 2부터 오후 8~9시 소셜`,
+failed, and hid the real `오후 8~9시` behind it. And an hour somebody is
+*approximating* is being narrated rather than scheduled — 가또땅고's diary
+entry `아침부터 시작된 격무에 오후 3~4시쯤에 이미 피곤해서` gave a milonga an
+afternoon it never claimed. Across all 3,237 stored bodies and OCR texts a clock
+reading carries an approximation word exactly twice, and both are that sentence.
+
+`_range_spans()` — the spans `parse_start_time()` must skip — asks about *shape*,
+not readability. item 3239 writes `21:00-25:00`; no hour 25 exists so no reading
+is yielded, but the 21:00 is still that range's head rather than an independent
+start, and taking it as one loses the end the post's own poster supplies.
+
+### Measured over the whole corpus, with the candidate engine
+
+Loaded beside the running one on the board; all 2,615 stored posts re-read from
+the engine store and the OCR cache — no network:
+
+```
+posts re-read                      2615
+posts changed                        19
+  changed field combinations   ('start','end') 14, ('start',) 3, (+'off') 2
+  posts moving a date, fee, venue, type or candidate count   0   <- hard gate
+  readings lost                                              0   <- hard gate
+  new wrong times                                            0   <- hard gate
+posts with a start          1115 -> 1122
+posts with an end            987 ->  998
+```
+
+All 19 reviewed against their own source text:
+
+* **8 `CORRECTED_START`** — 화정 `11:30 → 20:00~23:30`; 안산 라소클
+  `00:00 → 20:00`; 위드라틴 `10:00 → 21:00`; 살사 준중급 `09:00 → 21:00`;
+  SALSA BASIS `06:30 → 17:00~18:30` (the 06:30 was a stray lone clock, the post
+  says `PM 5~6:30`); PUMPKIN `24 PM → PM 6-8시`; 엘레나 파소 `13:00 → 20:00~22:00`
+  (13:00 was the tail of `오전10~13시`; the post says `매주 수요일 오후 8~10시`);
+  우리SAI `17:00 → 22:00`, which is the `9월 11일(금) 밤 10~12시` rehearsal — and
+  9/11 is that Event's own date.
+* **7 `RECOVERED_MISSING`** — each from a `marker + bare hour ~ clock` the body
+  or the post's own poster states, including 화정's sister poster
+  (`8/25. pm 8~11:30`) and 오스틴&카이닝's `[목] 오후 8~9시`.
+* **4 `AMBIGUOUS`** — a different real slot of a multi-slot class (`목요일 오후
+  8~9시, 토요일 오후 6시~8시`), or the item's own structured field replacing a
+  class quoted in its body. None has a visible upcoming Event.
+
+### One canonical fold changes, and it is a true duplicate
+
+With 화정 reading 20:00, ev 1605612 and ev 1097381 (`Solo Tango 화요정모`) agree on
+date, on resolved venue 187, and on the clock — so v0.96.23's rule folds them
+automatically. **The same pair is already folded on 2026-09-08**, `88436 →
+221245`, which this release's own brief lists as a protected contract. The only
+reason 9/29 stood apart was the 11:30. Corpus-wide this is the single
+`classify()` transition into an automatic fold.
+
+### Why ENGINE_VERSION goes to 1.08
+
+The same stored body now yields a different time, so every row still stamped 1.07
+would claim a reading this engine no longer makes. Re-read through the ordinary
+incremental `engine-reprocess` sweep (v0.96.3) — 25 rows per tick, the DB row as
+cursor, no forced pass and no cursor edit. `migration 043` is unchanged.
+
+### Tests
+
+`engine/tests/test_v09627_night_range_time.py` (70): the four Production cases;
+every bare-head shape the corpus writes and none it does not; the fee, headcount,
+season and level ranges a widened grammar would otherwise swallow; the three
+posts that measured the leading-marker rule; the date and approximation guards;
+midnight and 24:00 semantics; nine daytime ranges that must not move, with an
+assertion that an unmoved reading keeps the evidence it had; the later-set label
+speaking only for the clock after it; and what v0.96.0/18/19 settled, BABARU
+included.
+
 ## v0.96.26 Where A Labelled Venue Name Ends
 
 Product Runtime 0.96.26; Information Engine **1.06 → 1.07**; migration
