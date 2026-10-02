@@ -9,42 +9,64 @@ DanceMate는
 
 ## 현재 상태
 
-- Product Runtime: v0.96.28 (**테스트가 쓸 수 있는 DB를 구조적으로 제한한다.**
-  이 릴리스는 추출을 고치지 않는다. v0.96.27에서 내가 낸 사고를 다시 낼 수 없게 만드는
-  작업이다. runtime 테스트 suite는 실제 PostgreSQL이 필요한데(master-data·source·intake가
-  SQL이고 mock은 mock이 동작함만 증명한다), 오랫동안 그 답은 "공유 DB에 붙여라, 모든
-  테스트는 transaction을 rollback한다"였다. **그 약속은 거짓이고 두 릴리스를 대가로 치렀다**
-  — v0.96.14가 Production `source_item_content` 2,468행 중 1,852행에
-  `extracted_engine_version = 0.75`를 찍었고, v0.96.27이 50행에 같은 일을 했다. 두 번째는
-  명령이 **맞아 보였다**: `POSTGRES_DB=ct_9627 scripts/run-container-tests.sh`는 host
-  shell에 변수를 세우는데 그 스크립트는 `--env-file .env`를 하드코딩하고 DB 인자를 아예
-  받지 않아서 전달하지 않았다. 올바른 일이 어려운 게 아니라 **말할 수 없었다**. rollback은
-  이것을 담을 수 없다 — `pg` fixture는 연결 하나를 소유하고, 테스트 쪽 9곳과 runtime
-  대부분이 자기 `db.connect(settings, autocommit=True)`를 열어 commit한다
-  (`engine_ingest.reprocess_acquired()`가 재추출 cursor를 찍는 그것이다). 그래서 guard를
-  fixture에 두지 않고, **어떤 테스트도 돌기 전에 DB 자체에 대해** 판단한다: DB가 스스로
-  버려도 된다고 말해야 한다. 표식은 `COMMENT ON DATABASE`이고 일부러 테이블이 아니다 —
-  (1) migration이 만들 수 없으므로 스키마 작업을 아무리 해도 운영 DB가 테스트 가능해
-  보이지 않는다, (2) 재실행에 살아남아 scratch DB를 재사용할 수 있고 "몇 행이면 너무
-  많은가" 같은 임계값이 필요없다(`guard_db_identity`의 `sources > 0`이 그 약점을 보여준다),
-  (3) 손으로 선언하는 것이 한 문장이라 ad-hoc scratch DB가 계속 지원되는 길로 남는다.
-  두 번째 독립 신호도 둔다: 대상이 `.env`의 `POSTGRES_DB`와 같으면 거부한다 — v0.96.27의
-  정확한 형태(override가 도착하지 않은 경우)를 컨테이너가 시작되기도 전에 잡는다.
-  판단 로직은 `runtime/scratch_db_guard.py`에 순수 함수로 있고(DB 없이 단위 테스트된다,
-  `deploy_guard`/`ownership_guard`와 같은 report-dict 관용구), 집행은 그것이 실재하는
-  곳에 있다 — `tests/conftest.py`의 `pytest_sessionstart`가 session을 거부하고,
-  `scripts/_common.sh`/`run-container-tests.sh`가 컨테이너를 거부한다. 스크립트는 이제
-  scratch DB를 **자기 일로** 다룬다: 만들고, 선언하고, migrate하고, 그 DB에 대고 suite를
-  돌리고, 통과·실패·중단 어느 쪽이든 `trap`으로 drop한다. `-e POSTGRES_DB` override는
-  `--env-file` **뒤에** 놓여 이기고, suite는 그것을 신뢰하지 않고 실제로 도달한 DB를
-  스스로 확인한다. 이름이 진짜와 충돌했을 때를 위해 drop은 자기가 쓴 표식이 없는 DB를
-  절대 지우지 않는다 — 실행을 잃는 것이 데이터를 잃는 것보다 낫다. 또 `pg_run`이 실패했을
-  때 "이미 사라졌다"로 보고하던 것을 분리했다(그것이 scratch DB를 영구히 남기는 유일한
-  결말이었다). **Production에서 실제로 증명했다**: live DB를 가리킨 실행은 `exit 3`으로
-  테스트 0건 실행 후 거부되며 원인을 지목하고(`override가 도착하지 않았다`), 표식 없는
-  scratch DB도 거부되고(선언 방법을 알려준다), 표식을 붙이면 `TEST DB TARGET … [PASS]`와
-  함께 돌아간다. ENGINE_VERSION은 **1.08 유지** — 엔진이 읽는 것은 하나도 바뀌지 않으므로
-  3,100행을 9시간 동안 다시 읽어 같은 값에 도달하게 만들 이유가 없다. migration 043 유지)
+- Product Runtime: v0.96.29 (**DanceInfo가 `placeName`으로 이미 알려주는 장소를
+  우리가 산문으로 납작하게 만든 뒤 다시 읽지 못하고 있었다.** danceinfo.net은 lesson
+  페이지를 structured payload로 hydrate하고 `acquisition.danceinfo_payload_body()`가
+  그 필드들을 페이지가 배치한 순서대로 — `<date> 전체일정 … 일정정보 … 장소 … DJ …
+  강의 소개 …` — 콜론 **없이** 적는다(payload에 콜론이 없으므로). 그런데
+  `_VENUE_LABEL_RE`는 콜론을 요구하고, v0.96.2가 그 규칙을 넣은 이유는 타당하다
+  (`위치와 카프레제 파스타`, `위치 🕗 시간: PM 8시`가 venue가 되고 있었다). 그래서
+  깨끗한 `placeName`이 도착해 산문으로 평평해지고 venue reader가 거부했다. visible
+  upcoming 기준으로 **장소가 아예 없는 Event 44건**, **post 자신의 필드보다 나쁜 것을
+  들고 있는 13건**이다 — poster OCR 조각, post가 업장을 말하는데 도시, post가
+  `천안 턴(TURN)`을 말하는데 `Hotel`. 특히 Salsa는 upcoming 60건 중 venue 텍스트 13건,
+  **resolved venue 0건**이어서 "목록"과 "갈 수 있는 곳"의 차이였다. **renderer에 콜론을
+  붙이는 방향은 v0.96.26이 이미 측정으로 반증했다**: 237 item 중 213 venue가 움직이고
+  date 8건까지 따라왔다(`djNames`가 비면 `장소 X 강의 소개 …`가 되고 `강의 소개`에도
+  콜론이 없어 값이 설명으로 흘러든다). 그래서 **필드를 필드로 읽는다** — payload 자신의
+  닫힌 label 집합으로 양쪽을 경계 짓는다: (1) body가 payload 렌더링으로 **시작**해야
+  하고, (2) 구조화 영역은 **설명 필드가 시작되는 곳에서 끝난다**(그 값은 자유 산문이고
+  저장 body 3건이 그 안에 자기 `장소 : …`를 쓴다 — 바로 그것이 이 필드가 아니다),
+  (3) 그 영역 안에서 값은 다음 필드 label에서 끝난다. label은 import하지 않고 엔진에
+  재진술했다(`src`와 `runtime`은 서로 import하지 않는다 —
+  `classifier.MIN_TEXT_FOR_IMAGE_TRUST`가 acquisition의 최솟값을 재진술하는 것과 같다)
+  그리고 **테스트가 양쪽을 같게 고정한다**. **구현 전 측정**(저장 body 1,640건 전수):
+  payload 형태 306, 비어 있지 않은 `장소` 필드 287, distinct 97, 깨끗한 업장명 282,
+  맨 도시 3(부산·대전·수원), 지형물 주소 2, **광고·산문 유출 0**, 값 길이 **287건 전부
+  20자 이하**, 한 영역에 `장소` 두 번 **0**, 빈 label **0**(acquisition이 필드를 생략한다),
+  그리고 **저장 OCR 1,803건 중 이 형태에 맞는 것 0건** — v0.96.24 계약(라벨 없는 이미지
+  읽기는 venue가 되지 않는다)이 두 번째 gate 없이 **구조적으로** 지켜지는 이유다. 길이는
+  진단으로만 적고 규칙으로 쓰지 않았다. **전체 corpus 실측**(보드에서 candidate engine을
+  나란히 올려 저장 post 3,568건 전수 재독, 입력은 `engine_ingest._to_raw_post()`가 만들어
+  FETCH_BLOCKED item도 Production과 똑같이 먹인다 — v0.96.27의 harness가 engine store의
+  `raw_posts.body`를 읽어 item 3105를 놓쳤던 그 구멍을 닫았다): 변경 253건, **전부
+  `('venue',)` 단일 필드**, date·time·fee·type·candidate 수를 움직인 post **0건**, venue
+  추가 196 / 교체 57 / **제거 0**, **resolved venue 손실 0**·변경 0·획득 71, region 획득
+  71(전부 resolved venue의 자연 파생), **payload를 렌더링하는 두 source 밖 변경 0건**.
+  교체 57건 전수 검토 — **56건이 명확한 개선**(`국회의사당`(OCR)→`탱고라이프`,
+  `분당구 수내동 19-3 대덕프라자 509호 올리브영 건물 바일라모스!…`→`바일라모스`,
+  `SH 지하 2층 9`(OCR)→`홍턴`, `BEL | BRA ZUR 역심로3길17-5심영빌지 1층 —— LI`→`강턴`,
+  `(화,토)`→`이야호`, `Hotel`→`천안 턴(TURN)`, `실루엣/정자역4.5출구`→`분당 실루엣`,
+  `소셜타임 장소 EDM 댄스스튜디오`→`EDM 댄스스튜디오`, `일정정보 A홀`→`라틴`),
+  **1건은 AMBIGUOUS로 그대로 적는다** — item 3832의 필드는 `부산/울산`이고 Event는
+  `서면 인근 연습실`을 들고 있었다. 둘 다 resolve되지 않아 region은 어느 쪽으로도
+  움직이지 않고, region 쌍은 venue가 아니지만 그것이 site가 자기 `placeName`에 넣은 값이다.
+  거부하려면 엔진에 없는 도시 어휘가 필요하고 region master도 `수원`을 담지 않는다.
+  맨 도시 3건과 지형물 주소 2건은 unresolved venue 텍스트로 남긴다 — **Venue Master row·
+  alias·수동 매핑 추가 0**. **그리고 이 release가 만들어낼 fold 하나를 먼저 막았다**:
+  `duplicates._clock()`이 없는 시작시각을 문자열 `"None"`으로 보고해서(truthy이고 자기와
+  같다) **시각이 아예 없는 두 Event가 "같은 시각"으로 읽히고** `classify()`가 날짜와
+  업장만으로 자동 병합하면서 `matched`에 `start_time`을 넣었다 — 어느 쪽도 시각이 없는데.
+  한 번도 발화하지 않았다: fold는 양쪽 venue가 **resolved**여야 하고(v0.96.23) Production에
+  그런 쌍이 **0건**이었다. 이 release가 53건의 venue를 resolve시키므로 보니따 추석 쌍
+  (1600306·1612030, 둘 다 2026-09-26, 둘 다 시각 없음)이 그 첫 쌍이 된다. 없는 시각을
+  없다고 보고하면 그 쌍은 `VENUE_TIME_DIFFERS` — 사람의 판단으로 간다. **canonical
+  시뮬레이션**: resolved venue 획득 53 / 손실 0 / 변경 0, classify 전이 47건 중 자동 fold
+  **8건 = 4쌍**(양방향), split **0건**. 네 쌍 전부 **참 중복**이고 매번 한쪽 post의 본문이
+  다른 쪽 행사를 이름까지 지목한다(`…열리는 SEOUL SALSA WEEK 파티!`,
+  `9월 26일 토요일에는 토요소셜파티가 열리고`, 양쪽이 `월간 무차살사:소셜`,
+  금요 워크샵+소셜). `GANGNAM TURN`은 강턴이다. ENGINE_VERSION은 **1.08 → 1.09**,
+  migration 043 유지)
 - Product Runtime: v0.96.25 (**한 post에는 그 post의 poster만 붙인다.** v0.96.24는
   poster OCR이 label 없는 읽기로 venue를 만들어내는 것을 막았지만, 더 깊은 결함은
   남아 있었다 — **이미지 자체가 남의 것**이었다. `장소: Ae" (분당)`은 **정확히
@@ -516,7 +538,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.28"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.29"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

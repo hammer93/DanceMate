@@ -952,6 +952,112 @@ VENUE_LABEL_AT = "@"
 VENUE_LABEL_SUFFIX = "SUFFIX"
 VENUE_SHORTCUT_LABELS = frozenset({VENUE_LABEL_AT, VENUE_LABEL_SUFFIX})
 
+# --- the post's own place field (v0.96.29) ----------------------------------
+#
+# danceinfo.net hydrates its lesson pages from a structured payload, and
+# `acquisition.danceinfo_payload_body()` writes those fields out as the page
+# lays them out - "<date> 전체일정 … 일정정보 … 장소 … DJ … 강의 소개 …" - with
+# no colon after any label, because none of them is a colon in the payload.
+#
+# `_VENUE_LABEL_RE` below requires one, and does so for a good reason: v0.96.2
+# added it after "위치와 카프레제 파스타" and "위치 🕗 시간: PM 8시" became
+# venues. So the site states a clean `placeName` and we drop it. Over the
+# visible upcoming list that is 44 Events with no place at all and 13 carrying
+# a worse one than the post's own field - OCR fragments, a city where the post
+# names the room, "Hotel" where the post names 천안 턴(TURN).
+#
+# Making the renderer write "장소:" instead was measured and rejected in
+# v0.96.26: 213 of 237 item venues moved and 8 dates with them, because a
+# payload whose `djNames` is empty renders "장소 X 강의 소개 …" and `강의 소개`
+# carries no colon either, so the value runs straight into the description.
+#
+# What is read here is therefore the *field*, not a label in prose, and it is
+# bounded on both sides by the payload's own closed label set:
+#
+#   * the body must open as a payload rendering at all (`_PAYLOAD_SHAPE`);
+#   * the structured region ends where the description field begins - that
+#     value is free prose and routinely writes a "장소 : …" of its own, three
+#     items in the stored corpus do exactly that;
+#   * inside that region the value ends at the next field label.
+#
+# Measured over all 1,640 stored bodies: 287 carry the field, 97 distinct
+# names, every value 20 characters or shorter, 282 a clean venue name, 3 a
+# bare city, 2 a landmark-style address, 0 advertising, 0 prose leak. `장소`
+# never appears twice in one structured region, acquisition never writes the
+# label with an empty value (it omits the field), and **none of the 1,803
+# stored OCR texts** matches this shape - so v0.96.24's contract, that an
+# unlabelled image reading never becomes a venue, is untouched by construction
+# rather than by a second gate.
+#
+# The labels are restated rather than imported: `src` and `runtime` are
+# separate packages and neither imports the other, the same way
+# `classifier.MIN_TEXT_FOR_IMAGE_TRUST` restates acquisition's own minimum.
+# `tests/test_v09629_structured_place.py` holds the two sides equal.
+PAYLOAD_FIELD_LABELS = ("전체일정", "일정정보", "장소", "DJ", "강의 소개")
+PAYLOAD_PLACE_LABEL = "장소"
+#: The last field, whose value is the post's free-text description.
+PAYLOAD_PROSE_LABEL = "강의 소개"
+
+
+def _label_rx(label: str) -> str:
+    """A label as the rendered body spells it - one space, any whitespace."""
+    return re.escape(label).replace(r"\ ", r"\s*")
+
+
+_PAYLOAD_SHAPE = re.compile(
+    rf"(?:{_label_rx(PAYLOAD_FIELD_LABELS[0])}|{_label_rx(PAYLOAD_FIELD_LABELS[1])})\s")
+_PAYLOAD_PROSE_RE = re.compile(rf"\s{_label_rx(PAYLOAD_PROSE_LABEL)}\s")
+_PAYLOAD_NEXT_LABEL = re.compile(
+    r"(?:^|\s)(?:" + "|".join(_label_rx(lab) for lab in PAYLOAD_FIELD_LABELS
+                              if lab != PAYLOAD_PLACE_LABEL) + r")\s")
+# Not preceded by a Korean letter, so a word merely ending in 장소 is not the
+# label. The value must start with a non-space, so a bare label reads as none.
+_PAYLOAD_PLACE_RE = re.compile(
+    rf"(?<![가-힣]){_label_rx(PAYLOAD_PLACE_LABEL)}\s+(?P<value>\S.*)", re.S)
+#: `VenueReading.label` for a place the post stated in its own payload field.
+VENUE_LABEL_PAYLOAD_FIELD = "PAYLOAD_FIELD"
+# How far into the body the opening field may sit. The renderer puts the post's
+# own date first and `전체일정` immediately after it, so this only has to clear
+# a date; keeping it short is what stops a prose body that happens to say
+# 일정정보 halfway down from being read as a payload rendering.
+_PAYLOAD_HEAD = 140
+
+
+def _alias_candidates(name: str) -> list[str]:
+    """Strings worth trying against the Venue Master, best first.
+
+    A venue written "MARINE TANGO (마린땅고) (주소)" is worth trying whole, by
+    its head, and by each bracketed part - v0.82.5 keeps the brackets because
+    the second one names the region, and the Master may hold any of the three.
+    """
+    candidates = [name]
+    head = re.split(r"[(（]", name, maxsplit=1)[0].strip()
+    inner = re.findall(r"[(（]([^)）]{2,40})[)）]", name)
+    for extra in [head] + inner:
+        extra = _strip_decoration(extra)
+        if len(extra) >= 2 and extra not in candidates:
+            candidates.append(extra)
+    return candidates
+
+
+def payload_place_field(text: str) -> str | None:
+    """The place a danceinfo payload rendering states in its own field.
+
+    ``None`` for any text that is not such a rendering, which is every other
+    source's body and every stored OCR text.
+    """
+    body = text or ""
+    if not _PAYLOAD_SHAPE.search(body[:_PAYLOAD_HEAD]):
+        return None
+    prose = _PAYLOAD_PROSE_RE.search(body)
+    region = body[:prose.start()] if prose else body
+    match = _PAYLOAD_PLACE_RE.search(region)
+    if match is None:
+        return None
+    rest = match.group("value")
+    stop = _PAYLOAD_NEXT_LABEL.search(rest)
+    return (rest[:stop.start()] if stop else rest).strip() or None
+
 
 def _strip_decoration(value: str) -> str:
     """Drop emoji and ornaments around a name, keep the name and its brackets."""
@@ -1171,7 +1277,23 @@ def extract_venue(text: str) -> VenueReading | None:
         장소 : #데땅고 🌊 ♦︎ 오거나이저:            -> 데땅고
         Venue : Tango Andante 🔸️Reservation   -> Tango Andante
         위치와 카프레제 파스타                     -> None, no colon
+
+    v0.96.29: a post that states its place in its own structured field is read
+    from that field first - see `payload_place_field()`. Nothing the site chose
+    to put in a `placeName` is improved by guessing at the prose we rendered it
+    into, and the branches below are all guesses by comparison: a label whose
+    value runs to a stop word, a sentence shape, a name ending in a venue word.
     """
+    field_place = payload_place_field(text)
+    if field_place:
+        name = _strip_decoration(field_place)
+        if len(name) >= 2:
+            return VenueReading(
+                name=name,
+                raw=f"{PAYLOAD_PLACE_LABEL} {field_place}"[:120],
+                label=VENUE_LABEL_PAYLOAD_FIELD,
+                alias_candidates=_alias_candidates(name),
+            )
     for match in _VENUE_LABEL_RE.finditer(text or ""):
         raw_value = match.group("value")
         remainder = (text or "")[match.end("value"):]
@@ -1180,18 +1302,11 @@ def extract_venue(text: str) -> VenueReading | None:
         name = _strip_decoration(_cut_at_boundary(raw_value))
         if len(name) < 2:
             continue
-        candidates = [name]
-        head = re.split(r"[(（]", name, maxsplit=1)[0].strip()
-        inner = re.findall(r"[(（]([^)）]{2,40})[)）]", name)
-        for extra in [head] + inner:
-            extra = _strip_decoration(extra)
-            if len(extra) >= 2 and extra not in candidates:
-                candidates.append(extra)
         return VenueReading(
             name=name,
             raw=re.sub(r"\s+", " ", match.group(0))[:120].strip(),
             label=match.group("label"),
-            alias_candidates=candidates,
+            alias_candidates=_alias_candidates(name),
         )
     for match in _AT_VENUE_RE.finditer(text or ""):
         value = match.group("value")

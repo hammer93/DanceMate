@@ -156,7 +156,25 @@ def _place_is_known(event: dict[str, Any]) -> bool:
 
 
 def _clock(event: dict[str, Any]) -> str | None:
+    """The hour this event starts at, or None when nothing says.
+
+    v0.96.29: `str(None)[:5]` is `"None"`, a perfectly truthy string, so two
+    events with no start time at all read as agreeing on one - and
+    `classify()` below then returned `SAME_DATE_VENUE_TIME`, auto-merging on
+    date and venue alone while claiming `start_time` among the things that
+    matched. Nothing had matched; neither event had an hour.
+
+    It had never fired: a fold needs both places *resolved* (v0.96.23), and no
+    pair of time-less events at one resolved venue on one date existed in
+    Production - 0 of them. v0.96.29 is what would have created the first,
+    because reading a post's own `placeName` resolves the venue on 53 events
+    that had none. With the missing hour reported as missing, such a pair
+    falls to `RULE_VENUE_TIME_DIFFERS` instead: a question for a person, which
+    is what this module does with everything it cannot settle outright.
+    """
     value = event.get("start_time")
+    if value is None:
+        return None
     return value.strftime("%H:%M") if hasattr(value, "strftime") else (str(value)[:5] or None)
 
 

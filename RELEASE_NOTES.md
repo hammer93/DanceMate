@@ -1,5 +1,200 @@
 # DanceMate Release Notes
 
+## v0.96.29 Carry The Place A Post States In Its Own Field
+
+Product Runtime 0.96.29; Information Engine **1.08 → 1.09**; migration
+**043, unchanged**. One new reading in `engine/src/extraction_rules.py` and one
+correctness fix in `runtime/duplicates.py`. No change to classification, dates,
+times, fees, poster ownership, acquisition, or the Venue Master.
+
+### The site knew the place and we dropped it
+
+danceinfo.net hydrates its lesson pages from a structured payload, and
+`acquisition.danceinfo_payload_body()` writes those fields out as the page lays
+them out:
+
+```
+2026-10-03 전체일정 2026-10-03 일정정보 9시부터 장소 라소클 DJ MAX 강의 소개 …
+```
+
+with no colon after any label, because none of them is a colon in the payload.
+`extraction_rules._VENUE_LABEL_RE` requires one, and v0.96.2 gave it that rule
+for a good reason — `위치와 카프레제 파스타` and `위치 🕗 시간: PM 8시` were
+becoming venues. So a clean `placeName` arrived, was flattened into prose, and
+the venue reader refused it.
+
+Over the visible upcoming list that is **44 Events with no place at all** and
+**13 carrying something worse than the post's own field**: OCR fragments, a city
+where the post names the club, `Hotel` where the post names `천안 턴(TURN)`. For
+Salsa — 60 upcoming Events, 13 with any venue text, **0 with a resolved venue** —
+it was the difference between a listing and a place you can go to.
+
+### Read the field, not the prose we rendered it into
+
+Making the renderer write `장소:` instead was measured and rejected in v0.96.26:
+213 of 237 item venues moved and 8 dates with them, because a payload whose
+`djNames` is empty renders `장소 X 강의 소개 …` and `강의 소개` carries no colon
+either, so the value runs straight into the description.
+
+So the field is read as a field, bounded on both sides by the payload's own
+closed label set:
+
+* the body must open as a payload rendering at all;
+* the structured region **ends where the description field begins** — that value
+  is free prose and three stored bodies write a `장소 : …` of their own inside
+  it, which is not this field;
+* inside that region the value ends at the next field label.
+
+The labels are restated in the engine rather than imported — `src` and `runtime`
+never import each other, the same way `classifier.MIN_TEXT_FOR_IMAGE_TRUST`
+restates acquisition's own minimum — and a test holds the two sides equal.
+
+Measured over all 1,640 stored bodies before the change:
+
+```
+payload-shaped bodies                     306
+carrying a non-empty 장소 field            287
+distinct place names                       97
+  clean venue name                        282
+  bare city (부산 / 대전 / 수원)              3
+  landmark-shaped address                   2
+  advertising / prose leak                  0
+every value 20 characters or shorter      287 / 287
+장소 twice in one structured region          0
+bodies with an empty 장소 label               0   (acquisition omits the field)
+stored OCR texts matching the shape      0 / 1,803
+```
+
+That last line is why v0.96.24's contract — an unlabelled image reading never
+becomes a venue — survives by construction rather than by a second gate. Length
+is reported as a diagnostic and used as no rule.
+
+### Measured over the whole corpus, through the real input path
+
+The candidate engine was loaded beside the running one on the board and all
+3,568 stored posts re-read. The input is built by `engine_ingest._to_raw_post()`
+— the same call `reprocess_acquired()` makes — so a `FETCH_BLOCKED` item is fed
+from `source_items.raw` exactly as Production feeds it. v0.96.27's harness read
+`raw_posts.body` from the engine store instead and missed item 3105 for that
+reason.
+
+```
+posts compared                           3568
+posts changed                             253
+  changed field combinations     ('venue',) x 253
+  posts moving a date, time, fee, type or candidate count   0   <- hard gate
+venue added                               196
+venue replaced                             57
+venue removed                               0   <- hard gate
+resolved venues lost                         0   <- hard gate
+resolved venues changed                      0
+resolved venues gained                      71
+regions gained                              71   (every one from a resolved venue)
+posts with a venue                   820 -> 1016
+posts whose venue resolves            381 -> 452
+changed posts outside the two payload sources  0   <- hard gate
+```
+
+Evidence transitions: 196 from nothing, 39 from a prose colon label, 18 from the
+`<name>스튜디오` suffix shortcut, 18 from a poster's OCR, 2 from an `@` reading,
+2 from a `주소` label.
+
+### All 57 replacements reviewed against their source
+
+**56 CORRECT_REPLACE.** The field is the post's own name for the place, and what
+it replaces is a guess at the prose:
+
+| before | after |
+|---|---|
+| `국회의사당` (poster OCR) | `탱고라이프` → venue 4258 |
+| `분당구 수내동 19-3 대덕프라자 509호 올리브영 건물 바일라모스!…` | `바일라모스` → venue 4260 |
+| `SH 지하 2층 9` (poster OCR) | `홍턴` → venue 4247 |
+| `BEL \| BRA ZUR 역심로3길17-5심영빌지 1층 —— LI` | `강턴` → venue 4243 |
+| `(화,토)` | `이야호` |
+| `Hotel` | `천안 턴(TURN)` |
+| `실루엣/정자역4.5출구` | `분당 실루엣` |
+| `소셜타임 장소 EDM 댄스스튜디오` | `EDM 댄스스튜디오` |
+| `일정정보 A홀` | `라틴` |
+| `홍턴 지하2층『6룸` | `홍턴` → venue 4247 |
+
+**1 AMBIGUOUS, recorded as one.** item 3832's field says `부산/울산` where the
+Event carried `서면 인근 연습실`. Neither resolves, so no region moves either
+way, and a region pair is not a venue — but it is what the site put in its own
+`placeName`, and refusing it would need a city vocabulary the engine does not
+have and the region master does not cover (`수원` is not a region row). Reported
+rather than papered over.
+
+The three bare cities and two landmark addresses stay as unresolved venue text,
+which is what §16 of this release's brief asked for: no Venue Master rows were
+added, no aliases, no manual mapping.
+
+### The fold this release would otherwise have created
+
+`duplicates._clock()` reported a missing start time as the string `"None"` —
+truthy, and equal to itself — so two events with no hour at all read as agreeing
+on one, and `classify()` auto-merged them on date and venue alone while naming
+`start_time` among the things that matched. Nothing had matched; neither event
+had an hour.
+
+It had never fired: a fold needs both places *resolved* (v0.96.23), and
+Production held **0** pairs of time-less events at one resolved venue on one
+date. This release resolves the venue on 53 events that had none, and the 보니따
+추석 pair (events 1600306 and 1612030, both 2026-09-26, both without an hour) is
+the first such pair. With the missing hour reported as missing, that pair falls
+to `RULE_VENUE_TIME_DIFFERS` instead — a question for a person, which is what
+this module does with everything it cannot settle outright.
+
+### Canonical simulation: four new folds, all true duplicates
+
+```
+Events gaining a resolved venue_id          53
+Events losing one                            0
+Events whose resolved venue_id changes       0
+classify transitions                        47
+  -> SAME_DATE_VENUE_TIME_DIFFERS (question) 33
+  -> SAME_DATE_VENUE_TIME (automatic fold)    8   = 4 pairs, counted both ways
+  -> SAME_DATE_UNRESOLVED_VENUE_TIME          6
+transitions out of an automatic fold (a split)  0
+```
+
+Each of the four pairs is one night announced twice, and in every case one
+post's own text names the other's event:
+
+| pair | evidence |
+|---|---|
+| `강턴 주간일정 10/03` ↔ `SEOUL SALSA WEEK` (10-03, 강턴, 20:00) | the schedule post's description: "…열리는 **SEOUL SALSA WEEK 파티**!" |
+| `GANGNAM TURN 추석맞이 금요소셜파티` ↔ `BACHATA, SALSA, SOCIAL PARTY 09/25` | "9월 25일 금요일에는 특별한 시간과 워크샵이 진행됩니다" |
+| `GANGNAM TURN 추석맞이토요소셜파티` ↔ `… 09/26` | "9월 26일 토요일에는 **토요소셜파티**가 열리고" |
+| `LATIN DANCE CLUB 추석맞이 SPECIAL SOCIAL NIGHT` ↔ `… 09/27` | both name it **월간 무차살사:소셜** |
+
+`GANGNAM TURN` is 강턴. Only the first pair is upcoming.
+
+### Why ENGINE_VERSION goes to 1.09
+
+The same stored body now yields a different venue, so every row still stamped
+1.08 would claim a reading this engine no longer makes. Re-read through the
+ordinary incremental `engine-reprocess` sweep (v0.96.3) — 25 rows per tick, the
+DB row as cursor, no forced pass and no cursor edit. `migration 043` is
+unchanged, and no row of the Venue Master was touched.
+
+### Tests
+
+`tests/test_v09629_structured_place.py` (32), run through v0.96.28's own
+container runner: the engine's restated labels held equal to the ones
+`_DANCEINFO_FIELDS` actually renders and the place label held to the `placeName`
+key; the value ending at each of the four possible next fields and at the end of
+the structured region; a bracketed part offered to the Venue Master as well; an
+absent field reading as no venue; the next label never becoming the value; a
+`장소 :` inside the description refused; prose that merely says 장소 refused; a
+body that says 일정정보 far down refused; a word merely ending in 장소 refused;
+the colon label, the `@` reading, the suffix shortcut and v0.96.26's boundaries
+all unchanged; v0.96.24's unlabelled-image contract intact and an OCR-shaped
+text refused; the five measured Production cases; the field outranking a poster
+reading on the same post; and the duplicate rules — a missing hour reported as
+missing, two hour-less events a question rather than a merge, an hour on one
+side only still a question, two events that do agree still folding, and
+v0.96.23's unresolved-pair rule unchanged.
+
 ## v0.96.28 Test DB Safety Hardening
 
 Product Runtime 0.96.28; Information Engine **1.08, unchanged**; migration

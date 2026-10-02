@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.28"
+PRODUCT_VERSION = "0.96.29"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -364,7 +364,21 @@ PRODUCT_VERSION = "0.96.28"
 # reads out of a stored body. Bumping it would make all 3,100 rows stale and
 # re-read for nine hours to arrive at the same values - the same reason v0.96.3
 # left 0.91 alone when it added the incremental re-extract itself.
-DEFAULT_ENGINE_VERSION = "1.08"
+#
+# v0.96.29 -> 1.09. danceinfo.net states each post's place in a structured
+# `placeName`, and `acquisition.danceinfo_payload_body()` renders it - with no
+# colon, because the payload has none - into prose that `_VENUE_LABEL_RE`
+# refuses by design (v0.96.2: "위치와 카프레제 파스타"). So the site knew the
+# place and we dropped it: 44 visible upcoming Events with none at all and 13
+# carrying something worse than the post's own field. `extract_venue()` now
+# reads that field first, bounded by the payload's own closed label set.
+# Measured over all 3,568 stored posts, the candidate engine beside the running
+# one and the input built by `engine_ingest._to_raw_post()` so a FETCH_BLOCKED
+# item is fed exactly as Production feeds it: 253 changed, every one of them
+# `('venue',)` - 0 posts moved a date, a time, a fee, a type or a candidate
+# count - 196 venues added, 57 replaced, 0 removed, 0 resolved venues lost,
+# 71 gained, and 0 changes outside the two sources that render a payload.
+DEFAULT_ENGINE_VERSION = "1.09"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
