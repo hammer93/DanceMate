@@ -1,5 +1,161 @@
 # DanceMate Release Notes
 
+## v0.96.30 Carry A Post's Own Structured Place Into Each Dated Program
+
+Product Runtime 0.96.30; Information Engine **1.09 → 1.10**; migration
+**043, unchanged**. One fallback in `engine/src/extractor.py`, and v0.96.29's
+structured-place reader factored into one named function so both callers ask
+the same question. No change to classification, dates, times, fees, poster
+ownership, acquisition, the Venue Master or the region resolver.
+
+### The post knew its place; its nights did not
+
+v0.96.29 taught `extract_venue()` to read the place danceinfo states in its own
+payload field, and a payload post reads as that place whole. A multi-day
+announcement does not stay whole. `extract_schedule()` gives each dated program
+a scope running from that program's own date to the next one, and the
+structured header the renderer writes *before* the first date —
+
+```
+2026-10-06 전체일정 2026-10-06,...,2026-10-11 일정정보 매일 다양한 이벤트
+PM 9:00 ~ 장소 강턴 DJ 니쿠 강의 소개 한 주의 모든 강턴 이벤트를 한눈에! ...
+```
+
+— lands in no program's scope at all. So the post reads as 강턴 and every one
+of its six nights reads as nowhere.
+
+Which program keeps the place is pure accident of position. The post's own
+`전체일정` list produces date matches too, so the **last date in that list**
+owns the segment the header happens to fall in: 보니따's 추석 run kept 보니따 on
+09-27 and lost it on 09-24, 09-25 and 09-26, and 서울살사위크 lost it on all
+three of its nights because that segment named no night and was dropped.
+
+`extract_day_list()`, the other expansion route, was the first suspect and is
+not the defect: all seven posts that take it keep the field on every day, and
+this release moves none of them.
+
+### Two rules, and the second is the one with teeth
+
+```
+1. the program named a venue of its own          -> that value, untouched
+2. it named none, and the post states a place
+   in its own structured field                   -> the field
+3. the post's programs name two different places -> nothing is inherited
+4. otherwise                                     -> no venue, as before
+```
+
+**A day's own words always win.** This only ever fills a venue that is `None`;
+it never replaces one. 보니따's 09-27 read its place for itself and still says
+so — with its own `LABEL:장소` evidence, not the field's.
+
+The field is the only admissible fallback. Not a name guessed from the prose,
+not an unlabelled poster reading, not a city token, not the title:
+`payload_place_reading()` is the contract v0.96.29 measured over all 1,640
+stored bodies and all 1,803 stored OCR texts, and nothing else here has that
+evidence behind it. A post that is not a payload rendering gets no fallback,
+which is every other source's schedule post — four of the thirteen on this
+route, and none of them moved.
+
+Applied only after the route itself is settled, so whether a post expands at
+all is decided on exactly the information it was decided on before.
+
+### Measured over the whole corpus, through the real input path
+
+Both engine trees side by side on the board, all 3,897 stored posts re-read,
+the input built by `engine_ingest._to_raw_post()` — the same call
+`reprocess_acquired()` makes — and the branch order
+`live_pipeline.process_discovered_post()`'s own, so each post is read by the
+route Production reads it with.
+
+```
+posts compared                              3897
+  the classifier declined                   2319
+  compared as candidates                    1578
+route distribution, both trees  single 1558 | schedule 13 | day_list 7
+posts whose route changed                      0   <- hard gate
+
+posts changed                                  9   all SRC-W-012, all schedule
+candidates changed                            25
+changed-field combinations      ('venue','venue_evidence') x 9
+dated-program venue added                     25
+dated-program venue replaced                   0   <- hard gate
+dated-program venue removed                    0   <- hard gate
+date / start / end / offset / fee / type / name moved   0   <- hard gate
+candidate count moved                          0   <- hard gate
+changed posts off the schedule route           0   <- hard gate
+changed posts with no place field              0   <- hard gate
+```
+
+The thirteen posts on this route, classified:
+
+```
+SINGLE_SHARED_PLACE                9
+NO_FIELD (no fallback offered)     4   (items 3227, 4461, 4463, 4480)
+DAY_SPECIFIC_OVERRIDE              0
+MULTIPLE_INCOMPATIBLE_PLACES       0
+posts anywhere whose field contradicts a program    0
+```
+
+### All 25 reviewed against their own source
+
+**25 CORRECT_INHERIT, 0 WRONG_INHERIT, 0 AMBIGUOUS.** Every one is a single
+club's own multi-day announcement, and each post says so itself:
+
+| item | field | nights filled | what the post says |
+|---|---|---|---|
+| 3734 | 강턴 | 3 | `"워크샵 장소는 모두 강턴입니다` |
+| 3766 | 보니따 | 3 | title: `보니따에서 보내는 추석연휴` |
+| 3767 | 홍턴 | 4 | `📍 홍턴 라틴클럽` + 마포구 동교로 207 |
+| 3770 | 카디즈 스튜디오 | 1 | `📍 클럽 카디즈 송내대로 265번길 17` |
+| 3772 | 하바나 | 1 | title: `클럽 하바나 추석 연휴 공지` |
+| 3788 | 루에다 | 2 | `루에다 4층` / `루에다 2층` — one venue, two floors |
+| 3792 | 강턴 | 4 | 강턴 nine times in its own body |
+| 3801 | 맘보 | 1 | `📍 맘보클럽` |
+| 5730 | 강턴 | 6 | `한 주의 모든 강턴 이벤트를 한눈에!` |
+
+All 25 Events are visible and **all 25 had no venue at all**, so nothing was
+overwritten. 21 gain a resolved venue and a region with it. One is upcoming on
+the day of the release — item 5730's 10-11 `맘보도밍고 일요소셜파티`; the rest are
+the 추석 run that has since passed, and item 5730 is proof the shape recurs:
+it was collected after the audit that chose this release.
+
+### Canonical: three folds the last release could predict but not make
+
+```
+new automatic folds       3
+new questions            13
+folds released (a split)  0   <- hard gate
+Events churned            0
+```
+
+The three are item 3792's 09-25, 09-26 and 09-27 against items 3790, 3806 and
+3818 — both sides 강턴 4243 at 21:00. v0.96.29's simulation predicted exactly
+these three and Production never made them, because the peer had no place.
+Each is one night announced twice, and the two posts match line for line:
+
+| date | the pair agrees on |
+|---|---|
+| 09-25 | workshop `PM8:00~9:00`, 끌루이 & 달라, `움직임이 달라지면, 춤이 달라진다`, DJ 린넨, S4:B2 |
+| 09-26 | workshop `P.M8:00~9:00`, 백호 & 몽, `디테일이 만드는 춤의 차이`, DJ 헤이즐, S4:B2 |
+| 09-27 | the identical line `☑9월 27일(일) PM9:00~ 월간 무차살사:소셜 추석맞이 특별한 파티` |
+
+And v0.96.29's correctness fix does its job for the first time: events 1612920
+and 1600306 are both at 보니따 4248 on 09-26 and **neither states an hour**, so
+they fall to `SAME_DATE_VENUE_TIME_DIFFERS` with `auto=False` — a question for
+a person, not a merge. That is the pair the `_clock()` fix was written for.
+
+### Tests
+
+`engine/tests/test_v09630_schedule_shared_place.py` (18): the field reaching
+every program that named none, and recorded as the same `LABEL:PAYLOAD_FIELD`
+evidence v0.96.29 records; a program's own venue never replaced; a post naming
+two places inheriting nothing; a day that names the same place keeping its own
+`LABEL:장소` evidence; a non-payload schedule post inheriting nothing; a body
+that merely says the word 장소; a `장소 :` inside the description field; no
+field at all; a one-character value still refused; an OCR-shaped text refused;
+no other field moving; the candidate count unchanged; the three measured
+Production posts; and the two readers held to the same reading.
+
 ## v0.96.29 Carry The Place A Post States In Its Own Field
 
 Product Runtime 0.96.29; Information Engine **1.08 → 1.09**; migration

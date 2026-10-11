@@ -985,6 +985,50 @@ def _own_day_list_qualifies(title, body, text, matching, expanded, own_dates,
     return kept.start_time is not None
 
 
+def _inherit_shared_place(body, expanded, contexts, source_role) -> None:
+    """v0.96.30: a dated program with no venue of its own takes the place the
+    whole post states in its own structured field.
+
+    A program's scope runs from its own date to the next one, so the structured
+    header the renderer writes *before* the first date - `전체일정 ... 일정정보
+    ... 장소 강턴 DJ ...` - sits in no program's scope at all. The post reads as
+    "강턴" whole and every one of its nights reads as nowhere: measured over the
+    stored corpus, eight payload posts expand here and **every one of the eight
+    loses the field on at least one program**, 19 Events in all.
+
+    What a day's own words say always wins. 보니따's 추석 run (item 3766) names
+    its place inside the 09-27 line and not in the other three, and that day
+    must keep what it read for itself - this only ever fills a venue that is
+    `None`, and never replaces one.
+
+    The field is the *only* admissible fallback. Not a name guessed from the
+    prose, not an unlabelled poster reading, not a city token, not the title:
+    `payload_place_reading()` is the same contract v0.96.29 measured over all
+    1,640 stored bodies and all 1,803 stored OCR texts, and nothing else here
+    has that evidence behind it. A post that is not a payload rendering gets
+    no fallback, which is every other source's schedule post.
+
+    One post naming two places refuses the whole inheritance rather than
+    guessing which program the field belongs to. No stored post does this
+    today (0 of 8); the test for it is what keeps that true.
+    """
+    shared = extraction_rules.payload_place_reading(body)
+    if shared is None:
+        return
+    if any(ev.venue is not None and ev.venue != shared.name for ev in expanded):
+        return
+    for ev, context_id in zip(expanded, contexts):
+        if ev.venue is not None:
+            continue
+        ev.venue = shared.name
+        ev.evidences.append(Evidence(
+            "venue", {"name": shared.name, "alias_candidates": shared.alias_candidates},
+            shared.raw, source_role=source_role,
+            inference=f"{_LABEL_INFERENCE}{shared.label}",
+            context_id=context_id,
+        ))
+
+
 def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=None,
                      published=None):
     """One candidate per dated program of a schedule post, or None when the
@@ -1088,6 +1132,7 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
     if len(matching) < 2:
         return None
     out = []
+    contexts = []
     for context_id, start, end, seg_date in matching:
         scope = text[max(start, title_end):end]
         ev = extract_single(title, scope, source_role=source_role,
@@ -1102,10 +1147,14 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
             "context", SCHEDULE_ITEM, scope[:160], source_role=source_role, context_id=context_id,
         ))
         out.append(ev)
+        contexts.append(context_id)
     if not by_title and not _own_day_list_qualifies(
             title, body, text, matching, out, own_dates, event_type,
             published_date, source_role):
         return None
+    # Applied only once the route itself is settled, so whether a post expands
+    # at all is decided on exactly the information it was decided on before.
+    _inherit_shared_place(body, out, contexts, source_role)
     return out
 
 

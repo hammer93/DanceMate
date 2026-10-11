@@ -1059,6 +1059,29 @@ def payload_place_field(text: str) -> str | None:
     return (rest[:stop.start()] if stop else rest).strip() or None
 
 
+def payload_place_reading(text: str) -> "VenueReading | None":
+    """The payload field's place as a venue reading, or None.
+
+    v0.96.30: `extract_venue()` reads this for the scope it is given, and
+    `extractor.extract_schedule()` reads it for the *whole post* when one of
+    its dated programs named no venue of its own. Both are the same question -
+    "does this post state its place in its own field?" - so both ask it here
+    rather than each spelling the field contract out again.
+    """
+    field_place = payload_place_field(text)
+    if not field_place:
+        return None
+    name = _strip_decoration(field_place)
+    if len(name) < 2:
+        return None
+    return VenueReading(
+        name=name,
+        raw=f"{PAYLOAD_PLACE_LABEL} {field_place}"[:120],
+        label=VENUE_LABEL_PAYLOAD_FIELD,
+        alias_candidates=_alias_candidates(name),
+    )
+
+
 def _strip_decoration(value: str) -> str:
     """Drop emoji and ornaments around a name, keep the name and its brackets."""
     value = value.strip().lstrip(_TRIM_LEAD).strip()
@@ -1284,16 +1307,9 @@ def extract_venue(text: str) -> VenueReading | None:
     into, and the branches below are all guesses by comparison: a label whose
     value runs to a stop word, a sentence shape, a name ending in a venue word.
     """
-    field_place = payload_place_field(text)
-    if field_place:
-        name = _strip_decoration(field_place)
-        if len(name) >= 2:
-            return VenueReading(
-                name=name,
-                raw=f"{PAYLOAD_PLACE_LABEL} {field_place}"[:120],
-                label=VENUE_LABEL_PAYLOAD_FIELD,
-                alias_candidates=_alias_candidates(name),
-            )
+    field = payload_place_reading(text)
+    if field:
+        return field
     for match in _VENUE_LABEL_RE.finditer(text or ""):
         raw_value = match.group("value")
         remainder = (text or "")[match.end("value"):]

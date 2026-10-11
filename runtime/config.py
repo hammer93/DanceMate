@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.29"
+PRODUCT_VERSION = "0.96.30"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -378,7 +378,21 @@ PRODUCT_VERSION = "0.96.29"
 # `('venue',)` - 0 posts moved a date, a time, a fee, a type or a candidate
 # count - 196 venues added, 57 replaced, 0 removed, 0 resolved venues lost,
 # 71 gained, and 0 changes outside the two sources that render a payload.
-DEFAULT_ENGINE_VERSION = "1.09"
+#
+# v0.96.29 -> 1.10. v0.96.29 taught `extract_venue()` to read that field, and a
+# payload post reads as its own place whole - but a multi-day announcement does
+# not stay whole. `extractor.extract_schedule()` gives each dated program a
+# scope running from that program's date to the next one, and the structured
+# header sits *before* the first date, so it lands in no program's scope and
+# every night of the run reads as nowhere. Measured over the stored corpus at
+# v0.96.29: twelve posts take that route, eight carry a place field, and all
+# eight lose it on at least one program - 19 Events, every one visible. Which
+# program keeps it is accident of position: the last date of the post's own
+# `전체일정` list owns the segment the header happens to fall in. A program
+# that named a venue of its own keeps it, and a post naming two places inherits
+# nothing. The same stored body now yields a venue on those programs, so every
+# row still stamped 1.09 would claim a reading this engine no longer makes.
+DEFAULT_ENGINE_VERSION = "1.10"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

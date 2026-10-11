@@ -9,6 +9,44 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.30 (**글이 자기 필드로 말한 장소를, 그 글이 공지한 날짜별
+  Event가 잃고 있었다.** v0.96.29가 `extract_venue()`에게 danceinfo payload의 `장소`
+  필드를 읽게 했고 payload post는 통째로는 자기 장소로 읽힌다. 그런데 다일정 공지는
+  통째로 남지 않는다: `extract_schedule()`은 날짜별 program마다 **자기 날짜에서 다음
+  날짜까지**의 scope를 주고, renderer가 **첫 날짜보다 앞에** 적은 구조화 header
+  (`… 일정정보 … 장소 강턴 DJ …`)는 어느 program scope에도 들어가지 않는다. 그래서 글은
+  강턴으로 읽히고 그 글의 밤들은 전부 "어디인지 모름"이 된다. 어느 program이 장소를
+  지키는지는 **위치의 우연**이다 — 글 자신의 `전체일정` 목록도 날짜 match를 만들어서 그
+  목록의 **마지막 날짜**가 header를 품은 segment를 차지한다(보니따 추석 run은 09-27만
+  보니따를 얻고 09-24·25·26을 잃었다). 초기 용의자였던 `extract_day_list()`는 범인이
+  아니다: 그 경로를 타는 post 7건 전부 날마다 필드를 유지하고 이 release가 하나도 건드리지
+  않는다. 규칙은 둘이고 **두 번째가 핵심**이다 — (1) program이 자기 venue를 냈으면 그
+  값을 그대로 쓰고, (2) 못 냈고 글이 structured 필드로 장소를 말하면 그것을 상속하고,
+  (3) 글의 program들이 서로 다른 장소를 말하면 **아무것도 상속하지 않는다**.
+  **하루의 말이 언제나 이긴다**: 이 fallback은 `None`인 venue만 채우고 있는 값을 절대
+  바꾸지 않는다(보니따 09-27은 자기 `LABEL:장소` evidence를 그대로 유지한다). 허용되는
+  fallback은 **payload 필드 하나뿐**이다 — 산문 추측·라벨 없는 poster 판독·도시 token·
+  제목은 전부 금지이고, `payload_place_reading()`은 v0.96.29가 저장 body 1,640건과 저장
+  OCR 1,803건 전수로 측정한 그 계약이다. route가 확정된 **뒤에** 적용하므로 글이 확장되는지
+  여부는 이전과 똑같은 정보로 결정된다. **전체 corpus 실측**(두 engine tree를 보드에
+  나란히 올려 저장 post 3,897건 전수 재독, 입력은 `engine_ingest._to_raw_post()`,
+  분기 순서는 `live_pipeline.process_discovered_post()` 자신의 것): route 분포 양쪽 동일
+  (single 1558 / schedule 13 / day_list 7), **route 변경 0**, 변경 post **9건 전부
+  SRC-W-012·전부 schedule route**, 변경 candidate 25, 변경 field 조합 `('venue',
+  'venue_evidence')` 뿐, **venue 추가 25 / 교체 0 / 제거 0**, 날짜·시작·종료·offset·요금·
+  type·이름·candidate 개수 이동 **전부 0**, schedule route 밖 변경 **0**, 필드 없는 post
+  변경 **0**. schedule route 13건 분류: `SINGLE_SHARED_PLACE` 9, `NO_FIELD` 4,
+  `DAY_SPECIFIC_OVERRIDE` 0, `MULTIPLE_INCOMPATIBLE_PLACES` 0, corpus 전체에서 필드가
+  program과 모순되는 post **0**. 25건 전수 원문 검토 = **25 CORRECT_INHERIT /
+  0 WRONG_INHERIT / 0 AMBIGUOUS**, 25건 모두 visible이고 **모두 venue가 비어 있었다**
+  (덮어쓴 것 0), 21건이 resolved venue와 region을 함께 얻는다. **canonical 시뮬레이션**:
+  새 자동 fold **3건** — v0.96.29가 예측했지만 상대쪽에 장소가 없어 실제로 생기지 않았던
+  바로 그 세 쌍(item 3792의 09-25·26·27 ↔ 1600289·1600305·1600308, 양쪽 강턴 4243 ·
+  21:00)이고 두 글이 워크샵 시각·강사·문구·DJ·음악비율까지 일치하는 **참 중복**이다.
+  split 0, 새 질문 13건. 그리고 v0.96.29의 `duplicates._clock()` 수정이 처음 일한다:
+  1612920·1600306은 둘 다 보니따 4248·둘 다 시각 없음이어서 `auto=False`인
+  `VENUE_TIME_DIFFERS` — 병합이 아니라 사람의 판단으로 간다. ENGINE_VERSION은
+  **1.09 → 1.10**, migration 043 유지)
 - Product Runtime: v0.96.29 (**DanceInfo가 `placeName`으로 이미 알려주는 장소를
   우리가 산문으로 납작하게 만든 뒤 다시 읽지 못하고 있었다.** danceinfo.net은 lesson
   페이지를 structured payload로 hydrate하고 `acquisition.danceinfo_payload_body()`가
@@ -538,7 +576,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.29"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.30"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |
