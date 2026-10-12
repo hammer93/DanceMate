@@ -442,7 +442,9 @@ def test_genre_name_is_not_sent_to_the_miltang_parser(settings, monkeypatch):
         "genre_name": "살사",
     })
     collectors.collect(settings, source, mode=collectors.MODE_LIVE)
-    assert seen_kwargs == {}
+    # v0.96.31: `problems` is this parser's own keyword - the sink it reports
+    # unreadable days into. `genre_name` still must not reach it.
+    assert seen_kwargs == {"problems": []}
 
 
 def test_config_days_ahead_is_also_passed_to_the_miltang_parser(settings, monkeypatch):
@@ -463,7 +465,7 @@ def test_config_days_ahead_is_also_passed_to_the_miltang_parser(settings, monkey
         "days_ahead": 13,
     })
     collectors.collect(settings, source, mode=collectors.MODE_LIVE)
-    assert seen_kwargs == {"days_ahead": 13}
+    assert seen_kwargs == {"days_ahead": 13, "problems": []}
 
 
 def test_miltang_parser_dispatches_to_its_own_discovery_module(settings, monkeypatch):

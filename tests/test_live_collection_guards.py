@@ -87,7 +87,11 @@ def test_snapshot_runs_are_labelled_so_no_count_can_be_mistaken():
     "message,expected",
     [
         ("Naver HTTP 401: Unauthorized", collector_errors.AUTH_FAILED),
-        ("Naver HTTP 403: Forbidden", collector_errors.AUTH_FAILED),
+        # v0.96.31: 403 is a refusal, not a rejected credential. "Check the
+        # key in .env" is the wrong instruction for an endpoint that has no
+        # key, and following it wasted the only person who could have noticed
+        # TangoNOW's public read rule being withdrawn.
+        ("Naver HTTP 403: Forbidden", collector_errors.ACCESS_DENIED),
         ("Naver HTTP 429: Too Many Requests", collector_errors.RATE_LIMITED),
         ("Naver HTTP 500: Internal Server Error", collector_errors.NETWORK),
         ("Naver HTTP 503: Service Unavailable", collector_errors.NETWORK),

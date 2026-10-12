@@ -9,6 +9,58 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.31 (**부산에 밀롱가가 없던 것이 아니라, 우리가 읽기를
+  멈췄던 것이다.** 사용자가 "예전보다 밀롱가가 줄었고 부산은 하나도 안 보인다"고
+  했고, 맞았다. `miltang.com/milongas`는 날짜별 페이지이므로 수집기는 14일을 하루씩
+  요청하고, 그 controller가 `date=`만 주면 조용히 이번 주로 되돌아가기 때문에 **각
+  페이지가 스스로 밝힌 날짜**를 다시 읽어 확인한다. 2026-09-21까지 그 날짜는 눈에
+  보이는 `2026년 9월 5일` 헤더였다. 그날 그 헤더가 사라지고, 선택된 날짜가 달력
+  컴포넌트의 인자로 **서버 렌더링된 ISO 날짜**(`selected: '2026-10-14'`)가 됐다.
+  `_extract_page_date()`는 한글 헤더를 못 찾아 `None`을 돌려주고 `discover()`가
+  예외를 던졌다 — **14일 중 첫날에서**. 그래서 나머지 13일은 요청된 적이 없고,
+  **82회 연속 실패**했다. 나흘 뒤 TangoNOW가 다른 이유로 끊겼고, 이 둘이 지방
+  공급을 떠받치고 있었다: 부산 Tango Event 47건 중 Miltang 33 / TangoNOW 4,
+  **대구 10건은 전부 Miltang(유일 공급원)**, 대전 23건 중 Miltang 22. 서울은
+  Tango Calendar Korea가 정상이라 버텼고, 세 도시는 대체 공급이 없어 마지막
+  Event가 지나가는 대로 0이 됐다(부산 10-07, 대전 10-04, 대구 09-30). 상세
+  페이지는 하나도 바뀌지 않았다(같은 `Event` JSON-LD, 같은 DATE/TIME/PLACE 행) —
+  그래서 **모든 Event의 날짜는 여전히 자기 상세 페이지에서 오고 목록 URL에서 오지
+  않는다.** 고친 것: (1) `selected: 'YYYY-MM-DD'`를 먼저 읽고 옛 한글 헤더를
+  fallback으로 남긴다 — 연도를 품은 ISO 값이라 이전보다 나은 근거다(2026-10-12에
+  10-12·10-14·10-19·11-03·12-25·2027-01-02로 실측, 매번 요청한 `date=`와 일치).
+  (2) **행사가 없는 날과 못 읽는 날을 구분한다** — 날짜를 밝히고 목록이 비면
+  `VALID_EMPTY_DAY`, 날짜를 못 밝히면 `PARSING_FAILED`. 둘을 같게 취급하면 parser
+  고장이 "오늘은 행사 없음"으로 숨는다. (3) **하루가 실패해도 나머지 13일을 잃지
+  않는다** — 실패한 날은 기록하고 건너뛰며, 어느 날도 못 읽으면 여전히 예외를
+  던지고(구조가 진짜 바뀐 것), 일부만 읽은 창은 PASS가 아니라 `PARTIAL`로
+  기록한다. (4) **403은 401이 아니다** — TangoNOW의 Firestore는 09-25부터 공개 읽기
+  권한을 닫고 `returned 403`이라 말했는데 status parser가 "HTTP"를 찾느라 그 숫자를
+  못 읽어 `UNKNOWN`(재시도 가능)으로 분류했고, 그래서 133번 더 물었다. 이제 예외에
+  status를 숫자로 붙이고(산문보다 먼저 읽는다), 403은 자기 kind `ACCESS_DENIED`를
+  갖고 재시도 대상이 아니며, 없는 credential을 찾으라고 하지 않는다. 거부된 source는
+  매 tick이 아니라 하루에 한 번만 재확인한다(우회 없음 — 권한이 닫혀 있으면 닫힌
+  것으로 둔다). (5) **그리고 이 모든 일이 가능했던 이유를 고친다** — `job_runs`는
+  2,042회 연속 PASS였다. job 상태는 "tick이 끝났는가"에 답하고 "source가 작동했는가"에
+  답하지 않으며, `record_collection_result()`는 실패에도 `last_collected_at`을 갱신해
+  매 tick 실패하는 source가 stale로 보일 수 없고, `_source_health()`는
+  AUTH_FAILED/BAD_RESPONSE만 알아서 둘 다 UNKNOWN인 이 실패를 **ACTIVE**로 읽었다.
+  새 `runtime/source_freshness.py`는 기존 행만으로(컬럼·테이블·백그라운드 writer
+  없이) **run 이력**에서 상태를 읽는다 — 저장량으로는 절대 판정하지 않는다(681건을
+  저장한 source도 최근 133회가 실패했으면 FAILED). 배포 전 Production에 돌려
+  둘을 한 번에 지목했다: `TangoNOW ACCESS_DENIED 133회, 마지막 성공 09-25(16일)`,
+  `Miltang FAILED 82회, 마지막 성공 09-21(20일)`. 함께 지역별 미래 공급
+  (TODAY/D7/D14/D30 · 마지막 미래 날짜 · 남은 runway)과, **지역이 0인 네 가지 서로
+  다른 이유**를 제공한다(collector 고장 / 그 지역 source 미등록 — 지금 대구 /
+  Event는 있는데 region 미부여 / 전부 정상인데 미래 일정이 없음). collector는 그
+  지역 이력이 실제로 그 source에서 왔다고 말할 때만 원인으로 지목된다. Sources
+  페이지 최상단과 `GET /health/sources`에 노출하고 `/health`는 건드리지 않는다 —
+  외부 사이트 장애는 이 runtime의 장애가 아니지만, **물어볼 수는 있어야 한다.**
+  라이브 실측: 147건 수집, 못 읽은 날 0, 상세 URL 147/147 중복 없음, 147건 모두
+  자기 페이지 날짜 사용, 147건을 `json.loads`로 독립 재대조해 날짜·제목·장소 불일치
+  **0**. 본문이 말하는 도시별로 서울 77, **부산 21**, **대전 14**, **대구 6**,
+  청주 4, 광주 4 등 — 부산 동호회가 10-10에 공지한 `쁘롱가 10-14 21:15~23:15
+  아미고`가 그 안에 있다. ENGINE_VERSION은 **1.10 유지**(`engine/src` 무변경),
+  migration 043 유지)
 - Product Runtime: v0.96.30 (**글이 자기 필드로 말한 장소를, 그 글이 공지한 날짜별
   Event가 잃고 있었다.** v0.96.29가 `extract_venue()`에게 danceinfo payload의 `장소`
   필드를 읽게 했고 payload post는 통째로는 자기 장소로 읽힌다. 그런데 다일정 공지는
@@ -576,7 +628,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.30"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.31"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

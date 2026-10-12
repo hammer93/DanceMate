@@ -1,5 +1,173 @@
 # DanceMate Release Notes
 
+## v0.96.31 Restore The Stalled Regional Tango Supply, And Make A Dead Collector Say So
+
+Product Runtime 0.96.31; Information Engine **1.10, unchanged**; migration
+**043, unchanged**. Not one line of `engine/src` is touched and not one stored
+body reads differently: this is a collector repair, an error classification,
+and the monitoring whose absence let the first two go unnoticed for 21 days.
+
+### Busan had milongas. We had stopped reading them.
+
+A user said the regional milongas had disappeared - Busan showed nothing at
+all, Daegu and Daejeon nothing either. They were right, and the cause was one
+line of one page.
+
+`miltang.com/milongas` is day-scoped: the collector asks for 14 days, one at a
+time, and re-reads each page's own statement of which day it rendered, because
+`date=` alone is silently ignored by that controller. Until 2026-09-21 the page
+stated it as a visible `2026년 9월 5일` header. Then it stopped, and started
+server-rendering the selected day as an ISO date into its calendar component's
+own arguments instead:
+
+```
+x-data="milongaCalendar(JSON.parse('{"year":2026,"month":10,...}'),
+         { selected: '2026-10-14', query: '', endpoint: '/milongas/calendar' })"
+```
+
+`_extract_page_date()` found no Korean header, returned `None`, and
+`discover()` raised - **on the first of the fourteen days**, so the other
+thirteen were never requested. 82 consecutive failed runs. TangoNOW broke four
+days later for an unrelated reason (below), and between them they had been
+carrying the regions:
+
+| region | Miltang | TangoNOW | its own local source | other |
+|---|---:|---:|---:|---:|
+| 부산 | **33** | 4 | 6 | 4 |
+| 대구 | **10** | – | **none registered** | – |
+| 대전 | **22** | – | 1 | – |
+| 서울 | 135 | 39 | 22 | 56 |
+
+Seoul survived because Tango Calendar Korea is healthy and covers it. The three
+cities had no second supplier, so they went to zero - 부산 2026-10-07,
+대전 10-04, 대구 09-30 - exactly as their last Miltang-collected events expired.
+
+Nothing about the detail pages changed: the same `Event` JSON-LD, the same
+DATE/TIME/PLACE rows. So every event's date still comes from its own detail
+page and never from the list URL - the rule that matters most here, and the one
+a "the URL said 10/14" shortcut would have broken.
+
+### What changed
+
+**The day the page states.** `_extract_page_date()` reads the server-rendered
+`selected: 'YYYY-MM-DD'` first and keeps the old Korean header as a fallback.
+The new form is strictly better than the one it replaces: an explicit ISO date
+with the year in it and no locale to parse. Read live on 2026-10-12 for
+2026-10-12, -10-14, -10-19, -11-03, -12-25 and 2027-01-02; `selected` equalled
+the requested `date=` every time.
+
+**An empty day is an empty day.** 2026-12-25 and 2027-01-02 answer 200 with no
+cards. A page that states its day and lists nothing is `VALID_EMPTY_DAY`; a
+page that states no day is `PARSING_FAILED`. Those were one thing before, and
+conflating them is how a parser break hides as "no events today".
+
+**One bad day no longer costs the other thirteen.** Days are collected
+independently; the ones that fail are recorded and skipped. A window where
+*no* day is readable still raises - that is the shape genuinely changing - and
+a window that is partly readable is reported as `PARTIAL`, never as a pass.
+`CollectionResult.partial_failures` carries the failed days,
+`source_collection_runs.status` records `PARTIAL`, and a `PARTIAL_COLLECTION`
+row goes into `source_errors` with which days failed and why.
+
+**403 is not 401.** TangoNOW's Firestore has refused anonymous reads since
+2026-09-25, and said so: `TangoNOW Firestore returned 403 for ... - public read
+rules may have changed`. `collector_errors.status_code()` looked for
+`HTTP[ :]?(ddd)`, found no "HTTP" in that sentence, and reported no status - so
+a permanent refusal classified as `UNKNOWN`, which is *retryable*, and the
+scheduler asked 133 more times. Now the raiser attaches the status as a number
+(`classify()` reads `.status_code` before any prose), the message path
+recognises the forms a collector actually writes, and 403 has its own kind:
+`ACCESS_DENIED`, not retryable, with advice that does not send an operator
+after a credential that does not exist. `sources.is_due()` leaves a refused
+source alone for a day instead of a tick - slow enough to stop the noise, not
+so slow that a reopened rule goes unnoticed, and the [Test] button and a
+re-enable still go straight through. No access was bypassed and none will be:
+if the public read rule stays closed, the source stays unavailable.
+
+**And the part that let all of this happen.** `job_runs` recorded 2,042
+consecutive PASSes while two collectors failed every tick, because:
+
+* a job's status answers "did the tick finish", not "did the sources work";
+* `sources.record_collection_result()` writes `last_collected_at` on a failure
+  too, so a source failing every tick can never look stale; and
+* `admin._source_health()` named only AUTH_FAILED and BAD_RESPONSE, and both of
+  these classified as UNKNOWN - so Miltang read **ACTIVE**.
+
+`runtime/source_freshness.py` answers the question nobody was asking. It is
+read-only and computed from rows that already exist - no column, no table, no
+background writer - and the state comes from the *run history*, the only place
+that knows a streak:
+
+```
+HEALTHY  PARTIAL  STALE  DEGRADED  FAILED  ACCESS_DENIED
+NO_RECENT_CONTENT  DISABLED  UNKNOWN
+```
+
+Never from volume: a source with 681 stored items whose last 133 runs failed is
+FAILED. Run against Production before deploying, it named both at once:
+
+```
+SRC-W-002 TangoNOW  ACCESS_DENIED  133 consecutive failures, last success 2026-09-25 (16 days)
+SRC-W-005 Miltang   FAILED          82 consecutive failures, last success 2026-09-21 (20 days)
+```
+
+Alongside it, future supply per region - TODAY/D7/D14/D30, the last known
+future date and the days of runway left - and four distinct reasons a region
+can show zero, because they need four different actions:
+
+```
+COLLECTOR_FAILED               a source that used to serve this region is broken
+NO_SOURCE_FOR_REGION           nothing is registered for it (Daegu, today)
+EVENTS_EXIST_BUT_UNATTRIBUTED  visible future events carry no region
+SOURCES_WORKING_BUT_NO_FUTURE_EVENTS   everything collected; nobody has booked
+```
+
+A collector is only named as a region's reason when that region's own history
+says it used to come from there. Surfaced at the top of the Sources page and at
+`GET /health/sources`; `/health` itself is untouched, because a third-party
+site's outage is not this runtime being unwell - but it must be *askable*.
+
+### Measured against the live site
+
+The patched collector, run against miltang.com on 2026-10-12 (robots.txt
+disallows `/admin`, `/more`, `/requests`, `/nickname` and `/auth/`, and says in
+so many words that the list's week/date filters are deliberately not blocked):
+
+```
+records the collector would hand intake        147
+unreadable days                                  0
+distinct detail URLs                       147/147      <- no duplicate acquisition
+records whose date comes from their own page    147      <- never from the list URL
+records already stored                            0
+```
+
+Every one of the 147 re-read independently - its page's `application/ld+json`
+parsed with plain `json.loads`, no runtime parser involved - and compared
+against what the collector produced:
+
+```
+MATCHES_SOURCE 147 | DATE_MISMATCH 0 | TITLE_MISMATCH 0 | VENUE_MISMATCH 0
+```
+
+By the city each record's own body names: 서울 77, **부산 21**, **대전 14**,
+**대구 6**, 청주 4, 광주 4, 진주 2, 울산 2, 포항 2, 창원 2, other 13 - including
+`쁘롱가, 2026-10-14 21:15~23:15, Amigo (아미고), 부산`, which is the night the
+Busan community itself announced on 2026-10-10 and which DanceMate did not hold.
+
+### Tests
+
+`tests/test_v09631_miltang_recovery.py` (14) holds both page shapes, the empty
+day, the unreadable day, a window where nothing is readable, a page that renders
+the wrong day, the same card listed on three days fetched once, the week/day
+parameter pairing across a month boundary and a year boundary, and `/notices`
+unaffected. `tests/test_v09631_access_denied.py` (32) covers the status both
+structurally and from every phrasing, the bare numbers that are *not* statuses
+(a venue's street number, a record count), each kind's retryability, and the
+slow re-check. `tests/test_v09631_source_freshness.py` (20) holds the two
+collectors as they actually were, that volume never makes a failing source
+healthy, that a quiet source is not a broken one, and that a healthy scheduler
+cannot hide a failed source.
+
 ## v0.96.30 Carry A Post's Own Structured Place Into Each Dated Program
 
 Product Runtime 0.96.30; Information Engine **1.09 → 1.10**; migration

@@ -73,6 +73,70 @@ def get_health() -> dict[str, Any]:
     }
 
 
+@app.get("/health/sources")
+def get_source_health() -> dict[str, Any]:
+    """Which sources are collecting, and which regions still have a future.
+
+    v0.96.31, and deliberately a second endpoint rather than a field on
+    `/health`: that one is Docker's liveness probe and must stay a cheap
+    constant, and `health.collect()`'s six components are the contract
+    `scripts/check-server.sh` prints. Neither should start reporting a
+    third-party site's outage as this runtime being unwell - a failing
+    source is not a failing server. But it must be *askable*, because an
+    operator reading `{"status":"ok"}` concluded for three weeks that
+    everything upstream was fine.
+
+    Read-only, one connection, no writes.
+    """
+    from . import db, source_freshness                     # noqa: PLC0415
+
+    current = settings()
+    with db.connect(current) as con:
+        rows = source_freshness.report(con)
+        failing = source_freshness.failing(rows)
+        supply = source_freshness.regional_supply(con)
+        zero = source_freshness.zero_supply_reasons(con)
+    return {
+        "status": "ok" if not failing else "SOURCES_DEGRADED",
+        "version": current.version,
+        "sources": {
+            "total": len(rows),
+            "enabled": sum(1 for r in rows
+                           if r["state"] != source_freshness.DISABLED),
+            "failing": len(failing),
+            "by_state": {
+                state: sum(1 for r in rows if r["state"] == state)
+                for state in sorted({r["state"] for r in rows})
+            },
+            "not_collecting": [
+                {
+                    "source_key": r["source_key"],
+                    "name": r["name"],
+                    "state": r["state"],
+                    "consecutive_failures": r["consecutive_failures"],
+                    "last_success_at": (None if r["last_success_at"] is None
+                                        else str(r["last_success_at"])),
+                    "days_since_success": r["days_since_success"],
+                    "error": r["last_error_message"] or r["last_error_kind"],
+                }
+                for r in failing
+            ],
+        },
+        "regional_supply": [
+            {
+                "region": r["region_code"],
+                "today": r["today"], "d7": r["d7"], "d14": r["d14"],
+                "d30": r["d30"], "future_events": r["future_events"],
+                "latest_future_date": (None if r["latest_future_date"] is None
+                                       else str(r["latest_future_date"])),
+                "days_of_runway": r["days_of_runway"],
+            }
+            for r in supply
+        ],
+        "zero_supply": zero,
+    }
+
+
 @app.get("/version")
 def get_version() -> dict[str, Any]:
     current = settings()

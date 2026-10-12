@@ -28,7 +28,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from . import (
     acquisition, candidates, collectors, content_store, db, events_api, feedback,
     health, intake, master_data, public, quota, review, review_hints, source_ops,
-    source_priority, sources, timeline_settings, usage,
+    source_freshness, source_priority, sources, timeline_settings, usage,
 )
 from .admin_auth import require_admin
 from .config import Settings
@@ -1159,11 +1159,17 @@ HEALTH_AUTH_FAILED = "AUTH_FAILED"
 HEALTH_PARSER_ERROR = "PARSER_ERROR"
 HEALTH_STALE = "STALE"
 HEALTH_DISABLED = "DISABLED"
+# v0.96.31: the two states that were missing, and whose absence let a dead
+# collector read as ACTIVE. COLLECTION_FAILING is "its runs are failing right
+# now"; ACCESS_DENIED is "it refused us, and no key of ours fixes that".
+HEALTH_COLLECTION_FAILING = "COLLECTION_FAILING"
+HEALTH_ACCESS_DENIED = "ACCESS_DENIED"
 
 _HEALTH_TONE = {
     HEALTH_ACTIVE: "ok", HEALTH_NO_NEW_ITEMS: "warn", HEALTH_FETCH_BLOCKED: "bad",
     HEALTH_AUTH_FAILED: "bad", HEALTH_PARSER_ERROR: "bad", HEALTH_STALE: "warn",
     HEALTH_DISABLED: "muted",
+    HEALTH_COLLECTION_FAILING: "bad", HEALTH_ACCESS_DENIED: "bad",
 }
 
 # How many missed collection intervals with nothing fresh before a source
@@ -1173,14 +1179,104 @@ _HEALTH_TONE = {
 _STALE_INTERVAL_MULTIPLE = 6
 
 
-def _source_health(source: dict[str, Any], outcome: dict[str, Any]) -> str:
+def _collection_health_panel(failing: list[dict[str, Any]],
+                             supply: list[dict[str, Any]],
+                             zero_reasons: list[dict[str, Any]]) -> str:
+    """The panel that was missing: which sources are not working, and which
+    regions have no future left.
+
+    Deliberately at the top of the Sources page and deliberately loud when
+    there is something to say - and a single quiet line when there is not.
+    A scheduler saying "jobs ok" is not an answer to "is anything being
+    collected", and for three weeks nobody was asked the second question.
+    """
+    if failing:
+        rows = "".join(
+            "<tr>"
+            f"<td><a href=\"/admin/sources/{r['source_id']}\">"
+            f"{E(r['source_key'])}</a><div class=\"muted\">{E(r['name'] or '')}</div></td>"
+            f"<td>{_badge(r['state'], 'bad')}</td>"
+            f"<td>{E(str(r['last_success_at'])[:10] or 'never')}"
+            f"<div class=\"muted\">"
+            f"{'' if r['days_since_success'] is None else str(r['days_since_success']) + ' days ago'}"
+            "</div></td>"
+            f"<td>{r['consecutive_failures']}</td>"
+            f"<td>{E((r['last_error_message'] or r['last_error_kind'] or '')[:160])}</td>"
+            "</tr>"
+            for r in failing
+        )
+        sources_block = (
+            '<table class="compact"><thead><tr><th>Source</th><th>State</th>'
+            "<th>Last success</th><th>Consecutive failures</th><th>Error</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>"
+        )
+    else:
+        sources_block = '<p class="note">Every enabled source collected cleanly.</p>'
+
+    supply_cells = "".join(
+        "<tr>"
+        f"<td>{E(r['region_name'] or r['region_code'])}</td>"
+        + "".join(
+            f'<td class="{"bad" if not r[key] else ""}">{r[key]}</td>'
+            for key in ("today", "d7", "d14", "d30"))
+        + f"<td>{E(str(r['latest_future_date'] or '-'))}</td>"
+        f"<td>{'-' if r['days_of_runway'] is None else r['days_of_runway']}</td>"
+        "</tr>"
+        for r in supply
+    )
+    supply_block = (
+        '<table class="compact"><thead><tr><th>Region</th><th>TODAY</th>'
+        "<th>D7</th><th>D14</th><th>D30</th><th>Last future date</th>"
+        f"<th>Runway (days)</th></tr></thead><tbody>{supply_cells}</tbody></table>"
+    )
+    zero_block = "".join(
+        f'<li><strong>{E(r["region_name"] or r["region_code"])}</strong>: '
+        f'{_badge(r["reason"], "bad")} {E(r["evidence"])}</li>'
+        for r in zero_reasons
+    )
+    if zero_block:
+        zero_block = f"<ul>{zero_block}</ul>"
+    else:
+        zero_block = ('<p class="note">Every watched region has at least one '
+                      "future Tango event.</p>")
+    tone = "bad" if (failing or zero_reasons) else "ok"
+    return (
+        f'<details class="panel {tone}" open>'
+        "<summary>Collection health — sources and regional supply</summary>"
+        "<h3>Sources not collecting</h3>" + sources_block
+        + "<h3>Tango future supply by region</h3>" + supply_block
+        + "<h3>Why a region shows zero</h3>" + zero_block
+        + "</details>"
+    )
+
+
+def _source_health(source: dict[str, Any], outcome: dict[str, Any],
+                   freshness: dict[str, Any] | None = None) -> str:
     """A status richer than Enabled/Disabled, derived from last_status
     (already the collector's own operator-facing classification -
     collector_errors.py), collection recency, and read yield - never a new
-    tracking column, never a guess about why."""
+    tracking column, never a guess about why.
+
+    v0.96.31: `freshness` is that source's row from
+    `source_freshness.report()`, and when it says the source is failing,
+    that wins over everything below. It has to: this function used to
+    special-case only AUTH_FAILED and BAD_RESPONSE, every other failure kind
+    fell through, and `record_collection_result()` refreshes
+    `last_collected_at` on a *failure* too - so Miltang, which had failed 82
+    runs in a row, could not be stale and could not be any of the named
+    errors, and read ACTIVE for three weeks.
+    """
     if not source.get("enabled"):
         return HEALTH_DISABLED
+    state = (freshness or {}).get("state")
+    if state in (source_freshness.FAILED, source_freshness.DEGRADED,
+                 source_freshness.PARTIAL):
+        return HEALTH_COLLECTION_FAILING
+    if state == source_freshness.ACCESS_DENIED:
+        return HEALTH_ACCESS_DENIED
     last_status = (source.get("last_status") or "").upper()
+    if last_status == "ACCESS_DENIED":
+        return HEALTH_ACCESS_DENIED
     if last_status in ("AUTH_FAILED", "CREDENTIALS_MISSING"):
         return HEALTH_AUTH_FAILED
     if last_status == "BAD_RESPONSE":
@@ -1257,6 +1353,11 @@ def admin_sources(request: Request, genre: str = "ALL",
         operations = {o["source_id"]: o for o in source_ops.overview(con)}
         last_success = intake.last_success_per_source(con)
         last_error = intake.last_error_per_source(con)
+        # v0.96.31: whether each source's recent runs actually worked, and
+        # how much future each watched region still has. Both read-only.
+        freshness = {r["source_id"]: r for r in source_freshness.report(con)}
+        supply = source_freshness.regional_supply(con)
+        zero_reasons = source_freshness.zero_supply_reasons(con)
 
     genre_by_id = {g["genre_id"]: g["code"] for g in genres}
     region_by_id = {r["region_id"]: r["name"] for r in regions}
@@ -1333,7 +1434,8 @@ def admin_sources(request: Request, genre: str = "ALL",
             + _source_decision_form(operations.get(source["source_id"], {}))
             + "</div>"
         )
-        health = _source_health(source, outcomes.get(source["source_id"], {}))
+        health = _source_health(source, outcomes.get(source["source_id"], {}),
+                                freshness.get(source["source_id"]))
         # A source with no region_id is not "unknown location" the way a
         # venue is - an AGGREGATOR/DIRECTORY (TangoNOW, Tango Calendar
         # Korea, Miltang) genuinely covers many regions at once, and its own
@@ -1406,7 +1508,9 @@ def admin_sources(request: Request, genre: str = "ALL",
         "</p>"
     )
     body = (
-        "<h2>Sources</h2>" + genre_filter_bar + add_form + csv_bar
+        "<h2>Sources</h2>" + _collection_health_panel(
+            source_freshness.failing(list(freshness.values())), supply, zero_reasons)
+        + genre_filter_bar + add_form + csv_bar
         + _table(
             ["Source", "Genre / Tier", "Target", "Meta", "Activity",
              "Status / Last Run", "Actions"],
@@ -1634,12 +1738,15 @@ def admin_source_detail(
         bodies_by_item = content_store.bulk_extracted_text(con, item_ids)
         last_success = intake.last_success_per_source(con)
         last_error = intake.last_error_per_source(con)
+        source_state = next(
+            (r for r in source_freshness.report(con) if r["source_id"] == source_id),
+            None)
 
     genre_by_id = {g["genre_id"]: g["code"] for g in genres}
     region_by_id = {r["region_id"]: r["name"] for r in regions}
     capability = collectors.describe_capability(source["platform"], source)
     outcome = outcomes.get(source_id, {})
-    health = _source_health(source, outcome)
+    health = _source_health(source, outcome, source_state)
     tier = source_priority.tier_of(source["source_role"])
     tier_label = source_priority.label_of(source["source_role"])
 

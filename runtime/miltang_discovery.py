@@ -129,20 +129,43 @@ def _dated_milonga_url(base_url: str, day: date) -> str:
 
 
 _PAGE_DATE_RE = re.compile(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일")
+# v0.96.31: what the list page states today. The visible `2026년 10월 14일`
+# header is gone - the page now server-renders the selected day as an ISO
+# date into its own calendar component's arguments:
+#
+#   x-data="milongaCalendar(JSON.parse('{...}'), { selected: '2026-10-14',
+#            query: '', endpoint: '/milongas/calendar', ... })"
+#
+# which is a strictly better ground truth than the string it replaced: it
+# carries the year explicitly and needs no locale parsing. Read live on
+# 2026-10-12 for 2026-10-12, -10-14, -10-19, -11-03, -12-25 and 2027-01-02,
+# and in every case it equalled the requested `date=` - including the two
+# days that hold no milonga at all, which is what lets `discover()` tell an
+# empty day from a page it cannot read.
+_SELECTED_DATE_RE = re.compile(r"selected:\s*'(\d{4})-(\d{2})-(\d{2})'")
 
 
 def _extract_page_date(raw_html_text: str) -> date | None:
     """The day this fetched `/milongas` page actually claims to show, read
-    from its own visible header - the ground truth `discover()` checks the
-    requested date against, not the URL it sent."""
-    match = _PAGE_DATE_RE.search(raw_html_text)
-    if not match:
-        return None
-    year, month, day_num = (int(g) for g in match.groups())
-    try:
-        return date(year, month, day_num)
-    except ValueError:
-        return None
+    from the page's own statement of it - the ground truth `discover()`
+    checks the requested date against, never the URL it sent.
+
+    Two accepted forms, both the page's own explicit, year-bearing claim:
+    the server-rendered `selected: 'YYYY-MM-DD'` the site renders today, and
+    the `YYYY년 M월 D일` header it rendered until 2026-09-21. The old form is
+    kept because a cached or archived page is still readable by it, and
+    because nothing is gained by refusing a date the page does state.
+    """
+    for pattern in (_SELECTED_DATE_RE, _PAGE_DATE_RE):
+        match = pattern.search(raw_html_text)
+        if not match:
+            continue
+        year, month, day_num = (int(g) for g in match.groups())
+        try:
+            return date(year, month, day_num)
+        except ValueError:
+            return None
+    return None
 
 
 def _format_date_kr(raw_date: Any) -> str | None:
@@ -494,6 +517,7 @@ def parse_list(raw_html_text: str, list_url: str) -> list[dict[str, Any]]:
 def discover(
     list_url: str, *, source_id: str, platform: str = "WEB",
     timeout: int = DEFAULT_TIMEOUT, opener=None, days_ahead: int = 0,
+    problems: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Every milonga/notice detail Miltang links from `list_url`'s own
     board, fully parsed (Section 4's parser responsibilities are carried out
@@ -506,6 +530,16 @@ def discover(
     구조" - none exists here beyond requesting one day at a time, since the
     list itself is day-scoped, confirmed live); a `/notices` list_url is
     fetched once regardless, since notices are not date-scoped at all.
+
+    `problems` (v0.96.31), when a list is given, collects the days that
+    could not be read instead of abandoning the whole window at the first
+    one. Until this release a single unreadable day raised, and that is
+    exactly how one list-page change cost three weeks of collection: the
+    very first requested day failed, so the other thirteen were never asked
+    for. A day that fails is recorded and skipped, not guessed at; a window
+    in which **no** day could be read still raises, because that is the
+    shape genuinely having changed rather than one bad day. The caller is
+    responsible for not reporting a partial window as a clean pass.
     """
     prefix = _list_path_prefix(list_url)
     if prefix is None:
@@ -523,24 +557,51 @@ def discover(
                 detail_urls.append(url)
     else:
         span = max(0, min(days_ahead, MAX_DAYS_AHEAD))
+        days_read = 0
+        failures: list[str] = []
         for offset in range(span + 1):
             day = today + timedelta(days=offset)
             dated_url = _dated_milonga_url(list_url, day)
-            raw = _fetch_html(dated_url, timeout=timeout, opener=opener)
+            try:
+                raw = _fetch_html(dated_url, timeout=timeout, opener=opener)
+            except DiscoveryError as exc:
+                failures.append(f"{day.isoformat()}: FETCH_FAILED {exc}")
+                continue
             page_date = _extract_page_date(raw)
             if page_date is None:
-                raise DiscoveryError(
-                    f"{dated_url} has no readable day header - list page shape changed"
+                failures.append(
+                    f"{day.isoformat()}: PARSING_FAILED - {dated_url} has no "
+                    f"readable day header, list page shape changed"
                 )
+                continue
             if page_date != day:
-                raise DiscoveryError(
-                    f"{dated_url} rendered {page_date.isoformat()} instead of the "
-                    f"requested {day.isoformat()} - date-navigation shape changed"
+                failures.append(
+                    f"{day.isoformat()}: PARSING_FAILED - {dated_url} rendered "
+                    f"{page_date.isoformat()} instead of the requested day, "
+                    f"date-navigation shape changed"
                 )
+                continue
+            # The page stated this day and we read it. Whatever it lists -
+            # including nothing - is this day's real answer: a day with no
+            # milonga is VALID_EMPTY_DAY, never a parse failure.
+            days_read += 1
             for url in _extract_detail_urls(raw, dated_url, "milongas"):
                 if url not in seen:
                     seen.add(url)
                     detail_urls.append(url)
+        if days_read == 0:
+            raise DiscoveryError(
+                failures[0].split(": ", 1)[-1] if failures
+                else f"{list_url} produced no readable day"
+            )
+        if failures and problems is not None:
+            problems.extend(failures)
+        elif failures:
+            # No sink to report into: a partial window must not read as a
+            # whole one, so say so the only way left.
+            raise DiscoveryError(
+                f"{len(failures)} of {span + 1} days unreadable: {failures[0]}"
+            )
 
     detail_urls = detail_urls[:MAX_DETAIL_FETCHES]
     posts: list[dict[str, Any]] = []

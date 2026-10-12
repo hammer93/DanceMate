@@ -49,6 +49,10 @@ STATUS_PASS = "PASS"
 STATUS_SNAPSHOT = "SNAPSHOT"
 STATUS_SKIPPED = "SKIPPED"
 STATUS_FAIL = "FAIL"
+# v0.96.31: the collector read some of its window and not the rest. The items
+# it did read are stored - they are real - but the run is not a pass, because
+# calling it one is how a source that reads 1 day of 14 looks healthy.
+STATUS_PARTIAL = "PARTIAL"
 
 
 def snapshot_intake_allowed(source: dict[str, Any]) -> bool:
@@ -184,14 +188,25 @@ def collect_source(settings: Settings, con, source: dict[str, Any]) -> dict[str,
             duplicate_items=counts["DUPLICATE"], status=STATUS_PASS,
         )
     duration = (datetime.now(timezone.utc) - started).total_seconds()
+    partial = tuple(getattr(result, "partial_failures", ()) or ())
     intake.finish_run(
-        con, run_id, status=STATUS_PASS,
+        con, run_id,
+        status=STATUS_PARTIAL if partial else STATUS_PASS,
         discovered=len(result.items),
         new=counts["NEW"] + counts["REVISED"],
         duplicates=counts["DUPLICATE"],
+        error=(f"{len(partial)} unreadable: {partial[0]}" if partial else None),
     )
+    if partial:
+        intake.record_error(
+            con, source_id=source_id, collection_run_id=run_id,
+            kind=collector_errors.PARTIAL_COLLECTION,
+            detail="; ".join(partial)[:1000],
+        )
 
     status = STATUS_PASS if mode == collectors.MODE_LIVE else STATUS_SNAPSHOT
+    if partial:
+        status = STATUS_PARTIAL
     detail = (
         f"{result.mode}: {len(result.items)} found, {counts['NEW']} new, "
         f"{counts['REVISED']} revised, {counts['DUPLICATE']} duplicate, "
@@ -236,6 +251,7 @@ def run(settings: Settings) -> str:
               for r in results if r["status"] == STATUS_FAIL]
     quota_blocked = [r["source_key"] for r in results
                      if r["status"] == collector_errors.QUOTA_EXCEEDED]
+    partial_runs = [r["source_key"] for r in results if r["status"] == STATUS_PARTIAL]
 
     new_items = sum(r.get("NEW", 0) for r in results)
     revised = sum(r.get("REVISED", 0) for r in results)
@@ -249,6 +265,15 @@ def run(settings: Settings) -> str:
         summary += f", quota-blocked {quota_blocked}"
     if skipped:
         summary += f", skipped {skipped}"
+    if partial_runs:
+        summary += f", PARTIAL {partial_runs}"
     if failed:
         summary += f", FAILED {failed}"
+    # v0.96.31: the job's own one-line record must name the sources that did
+    # not work. "live 29/29 due sources" read as healthy for three weeks
+    # while two collectors failed every tick - job_runs is where an operator
+    # looks first, so the count of failing sources belongs in it.
+    if failed or partial_runs:
+        summary += (f" [sources failing: {len(failed)}, "
+                    f"partial: {len(partial_runs)}]")
     return summary

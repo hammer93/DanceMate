@@ -391,11 +391,22 @@ def record_collection_result(
         )
 
 
+# v0.96.31: how long to leave a source alone after it refused us. A withdrawn
+# public-read rule does not reopen between two ticks, and TangoNOW was asked
+# 133 times in three weeks to say 403 again. Once a day is often enough to
+# notice the day it reopens, and it is not a block: the operator's own [Test]
+# button and a re-enable still go straight through.
+REFUSED_RECHECK_MINUTES = 24 * 60
+_REFUSED_STATUSES = frozenset({"ACCESS_DENIED", "AUTH_FAILED"})
+
+
 def is_due(source: dict[str, Any], *, now: datetime | None = None) -> bool:
     """Has this source's collection interval elapsed?
 
     A source that has never been collected is always due; a disabled one never
-    is, whatever its interval says.
+    is, whatever its interval says. A source whose last answer was a refusal
+    (403/401) waits `REFUSED_RECHECK_MINUTES` instead of its own interval -
+    see that constant.
     """
     if not source.get("enabled"):
         return False
@@ -406,6 +417,8 @@ def is_due(source: dict[str, Any], *, now: datetime | None = None) -> bool:
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
     interval = int(source.get("collection_interval_minutes") or DEFAULT_INTERVAL_MINUTES)
+    if (source.get("last_status") or "").upper() in _REFUSED_STATUSES:
+        interval = max(interval, REFUSED_RECHECK_MINUTES)
     return now - last >= timedelta(minutes=interval)
 
 

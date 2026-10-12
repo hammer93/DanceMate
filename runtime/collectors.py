@@ -72,6 +72,12 @@ class CollectionResult:
     # has no search step. Lets an operator tell "the search found nothing"
     # from "the search found plenty, none of it inside this cafe".
     search_hits: int | None = None
+    # v0.96.31: the parts of this collection that could not be read, when a
+    # collector can read some of its window and not the rest. Empty for
+    # every collector that is all-or-nothing. A non-empty list means the
+    # items here are real but incomplete, and the caller must not record
+    # the run as a clean pass - see scheduler/intake_job.STATUS_PARTIAL.
+    partial_failures: tuple[str, ...] = ()
 
 
 def _engine_on_path(settings: Settings) -> None:
@@ -558,6 +564,13 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
     if parser == WEB_PARSER_DANCEINFO and "genre_name" in config:
         extra_kwargs["genre_name"] = config["genre_name"]
 
+    # v0.96.31: Miltang walks a day at a time, so it can read part of its
+    # window. It reports the days it could not read here instead of
+    # throwing the readable ones away; only this parser knows the keyword.
+    problems: list[str] = []
+    if parser == WEB_PARSER_MILTANG:
+        extra_kwargs["problems"] = problems
+
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for board_url in board_urls:
@@ -571,10 +584,14 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
                 seen.add(url)
             records.append(record)
 
+    detail = f"live WEB: {len(records)} records from {len(board_urls)} board(s)"
+    if problems:
+        detail += f"; {len(problems)} unreadable day(s): {problems[0]}"
     return CollectionResult(
         mode=MODE_LIVE,
         items=[_to_raw_item(r) for r in records],
-        detail=f"live WEB: {len(records)} records from {len(board_urls)} board(s)",
+        detail=detail,
+        partial_failures=tuple(problems),
     )
 
 

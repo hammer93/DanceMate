@@ -275,11 +275,19 @@ def _fetch_json(url: str, *, timeout: int, opener) -> dict[str, Any]:
         # blip - reported as a distinct, named source error rather than the
         # generic network-failure path other statuses fall into.
         if exc.code in (401, 403):
-            raise DiscoveryError(
+            # v0.96.31: carry the status as a number, not only inside the
+            # sentence. `collector_errors.classify()` reads `.status_code`
+            # first, so a refusal cannot be re-read as "no status stated"
+            # the way this one was for 133 consecutive runs.
+            error = DiscoveryError(
                 f"TangoNOW Firestore returned {exc.code} for {url} - "
                 "public read rules may have changed"
-            ) from exc
-        raise DiscoveryError(f"HTTP {exc.code} fetching {url}") from exc
+            )
+            error.status_code = exc.code
+            raise error from exc
+        error = DiscoveryError(f"HTTP {exc.code} fetching {url}")
+        error.status_code = exc.code
+        raise error from exc
     try:
         text = body.decode(charset, errors="replace")
     except LookupError:
