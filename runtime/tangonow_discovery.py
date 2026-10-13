@@ -37,6 +37,8 @@ WRONG_TIME_SQL case).
 
 from __future__ import annotations
 
+import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -631,4 +633,261 @@ def discover_bundle(
     for post in posts:
         post["source_id"] = source_id
         post["platform"] = platform
+    return posts
+
+
+# --- the operator's own declared crawl surface (v0.96.32) -------------------
+#
+# The Firestore registry above stopped answering on 2026-09-25: HTTP 403, the
+# public read rule withdrawn. That was not a fault to retry around - and it
+# was not the only thing that changed. ktnow.kr's robots.txt now carries a
+# dated decision of its own:
+#
+#     # [데이터 보호 2026-09-12] 전체 이벤트 번들 JSON 은 수집 대상 아님(권고).
+#     #   /events-snapshot 은 정확히 그 경로(+쿼리)만.
+#     # /events-snapshot-week 는 Googlebot 홈 렌더가 쓰므로 허용 유지.
+#     #   /e/ 공유 페이지도 허용.
+#     Disallow: /events-bundle
+#     Disallow: /events-snapshot$
+#     Disallow: /events-snapshot?
+#
+# So the bundle this module already knows how to parse is off limits by the
+# operator's explicit instruction, whichever host serves it, and
+# `discover_bundle()` above stays unwired - now for that reason rather than
+# for the schema-heterogeneity reason it was written with.
+#
+# What the same file keeps open, and says so in as many words, is the share
+# pages and the sitemap that lists them. Measured live on 2026-10-13 from a
+# logged-out client holding no token of any kind:
+#
+#     /                        200, a 7.7KB JS shell holding no event data
+#     /?mode=event             200, byte-identical to /
+#     /events-snapshot-week    401 {"error":"appcheck_required"}
+#     /events-bundle (CF)      401
+#     Firestore documents.list 403
+#     /sitemap-events.xml      200, 58 upcoming events
+#     /e/occ_<hash>            200, server-rendered schema.org Event JSON-LD
+#
+# A real headless Chrome run confirms the site itself shows a logged-out
+# visitor "이 날 일정 없어요" - its own list is empty for us, App Check token
+# exchange and all, and clicking the logo issues no request whatsoever. There
+# is no credential we are entitled to that changes any of that, and attempting
+# one is not on the table. The sitemap is a different thing entirely: a crawl
+# surface the operator publishes *in order* to be crawled, pointing at pages
+# whose JSON-LD they render for exactly this purpose. 58 of 58 parsed, every
+# one of them upcoming, every one `@type: Event` and `EventScheduled`.
+#
+# One request per second, which is this robots.txt's own Crawl-delay.
+
+SITEMAP_URL = "https://ktnow.kr/sitemap-events.xml"
+#: The share-page shape the sitemap lists. Anything else in it is not an event.
+_SHARE_URL_RE = re.compile(r"^https://ktnow\.kr/e/[A-Za-z0-9_.~-]{4,200}$")
+_SITEMAP_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
+_LD_JSON_RE = re.compile(
+    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', re.S)
+# "2026-10-13(화) · 19:30~24:00 · Andante · DJ Cya" - the one fact the page
+# renders that its JSON-LD has no field for. The page builds this string from
+# the same fields it renders as JSON-LD, in that order, and never includes the
+# event's own name, so the DJ is the last segment and only when it opens with
+# "DJ ". A venue called `DJ Bar` would occupy that last segment on a record
+# with no DJ, which is why `_share_dj()` also refuses a value that is just the
+# venue again.
+_SHARE_DJ_RE = re.compile(r"^DJ\s+(.{1,40})$")
+_SHARE_CLOCK_RE = re.compile(r"\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})")
+#: The site's own Crawl-delay, in seconds.
+CRAWL_DELAY = 1.0
+MAX_SHARE_PAGES = 400
+
+
+def _fetch_text(url: str, *, timeout: int, opener, accept: str) -> str:
+    """One GET, robots honoured, with the status carried on any refusal."""
+    if not acquisition.robots_allows(url):
+        raise DiscoveryError(f"robots.txt disallows {url}")
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": accept})
+    open_url = opener or urllib.request.urlopen
+    try:
+        with open_url(request, timeout=timeout) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        error = DiscoveryError(f"HTTP {exc.code} fetching {url}")
+        error.status_code = exc.code
+        raise error from exc
+    try:
+        return body.decode(charset, errors="replace")
+    except LookupError:
+        return body.decode("utf-8", errors="replace")
+
+
+def parse_sitemap(raw_xml: str, sitemap_url: str) -> list[str]:
+    """The share-page URLs a sitemap lists, in order, without repeats."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    for loc in _SITEMAP_LOC_RE.findall(raw_xml or ""):
+        url = loc.strip()
+        if not _SHARE_URL_RE.match(url) or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    if not urls and "<loc>" not in (raw_xml or ""):
+        raise DiscoveryError(f"{sitemap_url} is not a sitemap")
+    return urls
+
+
+def share_page_event(raw_html: str) -> dict[str, Any] | None:
+    """The schema.org Event a share page renders, or None."""
+    import json as _json
+
+    for block in _LD_JSON_RE.findall(raw_html or ""):
+        try:
+            document = _json.loads(block.strip())
+        except _json.JSONDecodeError:
+            continue
+        for candidate in (document if isinstance(document, list) else [document]):
+            if isinstance(candidate, dict) and candidate.get("@type") == "Event":
+                return candidate
+    return None
+
+
+def _share_clock(value: Any) -> str | None:
+    """`2026-10-13T19:30:00+09:00` -> `19:30`. None for a date-only value."""
+    match = _SHARE_CLOCK_RE.match(str(value or ""))
+    return f"{match.group(1)}:{match.group(2)}" if match else None
+
+
+def _share_dj(description: Any, venue: str | None) -> str | None:
+    """The DJ a share page's own description names, if it names one."""
+    segments = [s.strip() for s in str(description or "").split("·")]
+    tail = segments[-1] if segments else ""
+    # The venue is the segment before the DJ's, so a venue in the last
+    # segment means this record states no DJ at all - even one called `DJ Bar`.
+    if not tail or tail == (venue or "").strip():
+        return None
+    match = _SHARE_DJ_RE.match(tail)
+    return match.group(1).strip() or None if match else None
+
+
+def _synthesize_share_body(event: dict[str, Any]) -> str:
+    """A share page's JSON-LD as the same Korean-labelled paragraph the
+    Firestore path renders, so one extraction pipeline reads both.
+
+    Only fields the page actually states. There is no price and no region on a
+    share page, and neither is invented; `description` is not carried either,
+    because it is the page's own rendering of the date, time and venue already
+    stated above - repeating it as prose would offer the extractor a second
+    date to read beside the structured one.
+    """
+    parts: list[str] = []
+
+    start = str(event.get("startDate") or "")
+    event_date = _format_date_kr(start[:10] if len(start) >= 10 else None)
+    if event_date:
+        parts.append(event_date)
+
+    opens = _share_clock(event.get("startDate"))
+    closes = _share_clock(event.get("endDate"))
+    if opens and closes:
+        parts.append(f"시간: {opens}~{closes}")
+    elif opens:
+        parts.append(f"시간: {opens}")
+
+    location = event.get("location")
+    venue = (location or {}).get("name") if isinstance(location, dict) else None
+    venue = str(venue).strip() if venue else None
+    if venue:
+        parts.append(f"장소: {venue}")
+
+    dj = _share_dj(event.get("description"), venue)
+    if dj:
+        parts.append(f"DJ: {dj}")
+
+    organizer = event.get("organizer")
+    org = (organizer or {}).get("name") if isinstance(organizer, dict) else None
+    if org and str(org).strip():
+        parts.append(f"주최: {str(org).strip()}")
+
+    return " ".join(parts)
+
+
+def parse_share_page(raw_html: str, share_url: str) -> dict[str, Any] | None:
+    """One share page -> a RawPostRecord-shaped dict, or None.
+
+    None for a page that renders no Event, for one whose Event is cancelled or
+    postponed, and for one stating no date or no name: a record with nothing
+    to put on a calendar is not an event candidate, which is the rule
+    `parse_documents()` applies to the Firestore path.
+    """
+    event = share_page_event(raw_html)
+    if event is None:
+        return None
+    status = str(event.get("eventStatus") or "")
+    if status and not status.endswith(("EventScheduled", "EventRescheduled",
+                                      "EventMovedOnline")):
+        return None
+    title = str(event.get("name") or "").strip()
+    start = str(event.get("startDate") or "")
+    if not title or not _format_date_kr(start[:10] if len(start) >= 10 else None):
+        return None
+    return {
+        "source_url": share_url,
+        "title": title,
+        "body": _synthesize_share_body(event),
+        "published_at": None,
+        "acquisition_quality": "FETCHED_FULL",
+    }
+
+
+def discover_share_pages(
+    sitemap_url: str = SITEMAP_URL, *, source_id: str, platform: str = "WEB",
+    timeout: int = DEFAULT_TIMEOUT, opener=None,
+    problems: list[str] | None = None, crawl_delay: float = CRAWL_DELAY,
+    max_pages: int = MAX_SHARE_PAGES, sleep=None,
+) -> list[dict[str, Any]]:
+    """Every event the operator's own events sitemap points at.
+
+    The sitemap is fetched once, and a failure there is the whole run's
+    failure, because without it there is nothing to read. Each share page
+    after that is isolated the way v0.96.31 isolated Miltang's days: one page
+    that cannot be fetched is reported through ``problems`` and the rest are
+    still read, and only a run in which *no* page could be read fails outright.
+    """
+    pause = sleep if sleep is not None else time.sleep
+    raw = _fetch_text(sitemap_url, timeout=timeout, opener=opener,
+                      accept="application/xml,text/xml")
+    urls = parse_sitemap(raw, sitemap_url)[:max_pages]
+    if not urls:
+        raise DiscoveryError(f"{sitemap_url} lists no share pages")
+
+    posts: list[dict[str, Any]] = []
+    failures: list[str] = []
+    read = 0
+    for index, url in enumerate(urls):
+        if index and crawl_delay:
+            pause(crawl_delay)
+        try:
+            html = _fetch_text(url, timeout=timeout, opener=opener,
+                               accept="text/html")
+        except DiscoveryError as exc:
+            failures.append(f"{url}: FETCH_FAILED {exc}")
+            continue
+        read += 1
+        record = parse_share_page(html, url)
+        if record is None:
+            # A page rendering no datable Event is not a failure of ours: a
+            # withdrawn or cancelled occurrence is allowed to say nothing.
+            continue
+        record["source_id"] = source_id
+        record["platform"] = platform
+        posts.append(record)
+
+    if read == 0:
+        raise DiscoveryError(
+            failures[0].split(": ", 1)[-1] if failures
+            else f"none of the {len(urls)} share pages could be read")
+    if failures and problems is not None:
+        problems.extend(failures)
+    elif failures:
+        raise DiscoveryError(
+            f"{len(failures)} of {len(urls)} share pages unreadable: {failures[0]}")
     return posts

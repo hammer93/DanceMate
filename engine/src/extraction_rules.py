@@ -901,10 +901,56 @@ _LEADING_VENUE_LABEL_RE = re.compile(
 )
 
 # An administrative address after the venue name is the address, not the name.
+_ADMIN_REGION = (r"서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남"
+                 r"|경북|경남|제주")
 _ADDRESS_START_RE = re.compile(
-    r"(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주)"
-    r"(?:특별자치시|특별자치도|특별시|광역시|시|도)?\s"
+    rf"(?:{_ADMIN_REGION})(?:특별자치시|특별자치도|특별시|광역시|시|도)?\s"
 )
+
+# v0.96.32: the rule above says "after the venue name". At the *head* of a
+# labelled value there is no name for an address to follow, and some venues
+# are named after their city: miltang.com states `장소: 대전 땅고 오나다 (대전시
+# 유성구 대학로76번안길 23 지하)`, and the place's own page is
+# facebook.com/daejeon.tango.o.nada. Cutting at index 0 left the empty string,
+# so the one authoritative field in the post read as naming nothing - and
+# `extractor.extract_single()` then fell through to its hardcoded known-name
+# fallback, which matched the substring 오나다 and asserted the *Seoul* venue
+# `Tango O Nada`, 150km away, discarding both the 대전 prefix and the Daejeon
+# address standing beside it. Seven items, two of them folding a real Seoul
+# milonga away as a duplicate of a Daejeon one.
+#
+# So at the head the words have to actually read as an address, which is two
+# recognisable shapes and nothing more:
+#
+#   the region word carries its own suffix   서울시 / 대전광역시 / 경기도 ...
+#   the next token is a division or street   서울 마포구 / 경기 수원시 / 대전 서구
+#
+# Measured over every labelled value in the stored corpus: 43 begin with an
+# administrative word, and these two shapes separate them exactly - 31
+# addresses keep reading as addresses, and 12 names are recovered (the seven
+# above, `대전 스윙잇 댄스홀`, `부산 일빠(부산 부산진구 신천대로62번길 38 4층)` twice,
+# `서울 반포 한강공원 수변무대`, `서울 광진구...`'s truncated district).
+_ADMIN_HEAD_SUFFIXED_RE = re.compile(
+    rf"(?:{_ADMIN_REGION})(?:특별자치시|특별자치도|특별시|광역시|시|도)\s"
+)
+_ADMIN_BARE_HEAD_RE = re.compile(rf"(?:{_ADMIN_REGION})\s+")
+# A token that continues an address: an administrative division or a street.
+# Trailing punctuation is trimmed first, so a snippet cut mid-address
+# ("서울 광진구...") is still read as the address it is.
+_ADDRESS_TOKEN_RE = re.compile(r"\S*?(?:시|군|구|읍|면|동|리|가|로|길)\d*(?:번길|번안길)?")
+
+
+def _head_is_address(value: str) -> bool:
+    """Whether an administrative word at the head of a value opens an address."""
+    if _ADMIN_HEAD_SUFFIXED_RE.match(value):
+        return True
+    head = _ADMIN_BARE_HEAD_RE.match(value)
+    if not head:
+        return False
+    token = re.match(r"[^\s,(（]+", value[head.end():])
+    if not token:
+        return False
+    return bool(_ADDRESS_TOKEN_RE.fullmatch(token.group(0).rstrip(".…,)·")))
 
 _TRIM_LEAD = "#＃@＠:：-–—·•*✦♦◆■●▶>《<「【 \t"
 
@@ -1082,6 +1128,69 @@ def payload_place_reading(text: str) -> "VenueReading | None":
     )
 
 
+def states_a_place(text: str) -> bool:
+    """Whether the text labels a place at all - readable or not.
+
+    v0.96.32: `extractor.extract_single()` keeps a short list of known venue
+    names as a fallback "for posts that name the place without labelling it".
+    A post that *does* label its place is not such a post. When the label's
+    value cannot be read, the honest answer is that we do not know where this
+    is; substituting a hardcoded name is how a Daejeon milonga came to be
+    listed at a Seoul venue (see `_head_is_address`). Asked here rather than
+    in the extractor so the question is answered by the same patterns that
+    read the label in the first place.
+    """
+    if payload_place_field(text):
+        return True
+    return bool(_VENUE_LABEL_RE.search(text or "")
+                or _LEADING_VENUE_LABEL_RE.match(text or ""))
+
+
+# The three venue names `extractor.extract_single()` has recognised by name
+# since v0.73, for posts that name their place in prose and never label it
+# ("매주 토요일 밤, 홍대 PISTA에서 열리는 밀롱가", "📍 화정 오나다").
+#
+# v0.96.32: each has to be its own word, and must not be a parenthesised gloss
+# of the word before it. `오초(Ocho)` is the tango step, not the Hongdae venue,
+# and a Busan club's class diary - 가또땅고's write-up of a 쁠라네오 lesson,
+# which names no place anywhere in its 2,900 characters - was listed as a
+# Seoul event at OCHO because the Latin gloss of that step appeared in it.
+# The Korean compound `백오초` ("back ocho") never matched, only the gloss did.
+#
+# The raw text each one records is the historical constant, not the matched
+# span: it says which known name was recognised, which is the whole content of
+# this reading, and keeping it stable keeps this release's corpus diff about
+# venue identity rather than about evidence wording.
+_KNOWN_VENUE_FALLBACKS = (
+    (re.compile(r"(?<![0-9A-Za-z가-힣])PISTA(?![0-9A-Za-z가-힣])", re.I),
+     "PISTA", "PISTA"),
+    (re.compile(r"(?<![0-9A-Za-z가-힣])OCHO(?![0-9A-Za-z가-힣])", re.I),
+     "OCHO", "OCHO"),
+    (re.compile(r"(?<![0-9A-Za-z가-힣])(?:O\s*NADA|오나다)(?![0-9A-Za-z가-힣])", re.I),
+     "Tango O Nada", "O Nada/오나다"),
+)
+# "오초(Ocho)", "히로(Giro)" - a Korean word followed by its Latin gloss.
+_LATIN_GLOSS_RE = re.compile(r"[가-힣]\s*[(（]\s*$")
+
+
+def known_venue_fallback(text: str) -> tuple[str, str] | None:
+    """A known venue this text names in prose, as ``(name, raw)``.
+
+    ``None`` when the text labels a place (that label is the answer, readable
+    or not - see `states_a_place`), and when the only occurrence of a known
+    name is a gloss rather than a mention.
+    """
+    body = text or ""
+    if states_a_place(body):
+        return None
+    for pattern, name, raw in _KNOWN_VENUE_FALLBACKS:
+        for match in pattern.finditer(body):
+            if _LATIN_GLOSS_RE.search(body[:match.start()]):
+                continue
+            return name, raw
+    return None
+
+
 def _strip_decoration(value: str) -> str:
     """Drop emoji and ornaments around a name, keep the name and its brackets."""
     value = value.strip().lstrip(_TRIM_LEAD).strip()
@@ -1164,9 +1273,17 @@ def _cut_at_boundary(value: str) -> str:
             continue
         matched = False
         for pattern in (_VENUE_STOP_RE, _ADDRESS_START_RE):
-            if pattern.match(value, index):
-                matched = True
-                break
+            if not pattern.match(value, index):
+                continue
+            # v0.96.32: an address ends a name that has begun. Before the name
+            # begins, only an address that reads as one does - see
+            # `_head_is_address()`. A stop word is unaffected: a value opening
+            # on another field's label ("장소: DJ : 로띠") still names nothing.
+            if (pattern is _ADDRESS_START_RE and not seen_name
+                    and not _head_is_address(value[index:])):
+                continue
+            matched = True
+            break
         if matched:
             return value[:index]
         if seen_name and _PICTOGRAPH_RE.match(value, index):

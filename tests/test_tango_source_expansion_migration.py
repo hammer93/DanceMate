@@ -54,9 +54,18 @@ def test_registers_all_three_top3_immediate_sources(pg):
         rows = {r[0]: {"platform": r[1], "enabled": r[2], "parser": r[3]} for r in cur.fetchall()}
     assert set(rows) == set(keys)
     assert all(r["platform"] == "WEB" for r in rows.values())
-    assert rows["SRC-W-002"]["parser"] == "tangonow_firestore"
     assert rows["SRC-W-003"]["parser"] == "tangocalendar_json"
     assert rows["SRC-W-004"]["parser"] == "danceinfo_json"
+    # v0.96.32: SRC-W-002's parser is now in the same position as its
+    # `enabled` flag, for the same reason. This migration registers it as
+    # `tangonow_firestore`, and migration 044 moves it to the share-page
+    # crawl after the provider withdrew the Firestore public read rule. On a
+    # database the whole chain has run against, the row this migration's
+    # ON CONFLICT DO NOTHING correctly left alone is 044's - a fact about
+    # that database, not something this test may assert either way. What is
+    # still this migration's own business is the row it actually inserts.
+    if "SRC-W-002" not in pre_existing:
+        assert rows["SRC-W-002"]["parser"] == "tangonow_firestore"
     # A row this migration actually inserts must register disabled by
     # default. A row that already existed before this test ran - true of
     # SRC-W-004 since the prior release, and now also true of SRC-W-002/003
@@ -98,13 +107,21 @@ def test_k_tango_is_preserved_untouched(seeded):
 
 
 def test_collection_targets_are_the_real_endpoint_not_a_homepage(seeded):
+    """A collection target is an endpoint that serves the data, never a
+    homepage. v0.96.32: which endpoint that is has changed - the Firestore
+    registry answers 403 since 2026-09-25 and migration 044 points SRC-W-002
+    at the operator's own events sitemap instead - so this asserts the
+    property the test is named for against either of the two real targets,
+    rather than freezing whichever one the chain last wrote."""
     with seeded.cursor() as cur:
         cur.execute("SELECT source_key, url FROM sources WHERE source_key = 'SRC-W-002'")
         _, url = cur.fetchone()
-    assert url == (
+    assert url in (
         "https://firestore.googleapis.com/v1/projects/ktangoguide/databases/"
-        "(default)/documents/events?pageSize=300"
+        "(default)/documents/events?pageSize=300",
+        "https://ktnow.kr/sitemap-events.xml",
     )
+    assert url not in ("https://ktnow.kr/", "https://ktnow.kr")
 
 
 # --- migration 022: venue alias seed -----------------------------------------

@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.31"
+PRODUCT_VERSION = "0.96.32"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -401,7 +401,18 @@ PRODUCT_VERSION = "0.96.31"
 # `engine/src` changed and not one stored body reads differently, so bumping
 # it would re-read all 3,900 rows for hours to arrive at the same values - the
 # same reason v0.96.3 left 0.91 alone and v0.96.28 left 1.08 alone.
-DEFAULT_ENGINE_VERSION = "1.10"
+#
+# v0.96.32 DOES bump it, 1.10 -> 1.11. Two readings changed in `engine/src`.
+# A labelled value whose first word is a city is no longer thrown away, so
+# `장소: 대전 땅고 오나다 (대전시 유성구 ...)` reads as the venue it states
+# instead of as nothing - and the three hardcoded known venue names no longer
+# answer for a post that labelled its place, nor for a Latin gloss of a tango
+# step. Eleven stored bodies yield a different venue under this engine than
+# under 1.10, and the rows carrying the old reading are the ones that put two
+# Daejeon milongas in Seoul and hid two real Seoul milongas behind them, so
+# they have to be re-read: a row still stamped 1.10 would claim a venue this
+# engine does not read.
+DEFAULT_ENGINE_VERSION = "1.11"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

@@ -9,6 +9,62 @@ DanceMate는
 
 ## 현재 상태
 
+- Product Runtime: v0.96.32 (**이름이 같아도 도시가 다르면 다른 장소다.** 서울 마포구
+  지하 1층에 `Tango O Nada`가 있고, 대전 유성구 지하에도 `대전 땅고 오나다`가 있다.
+  Venue Master에는 서울 것만 등록돼 있고 alias로 `땅고 오나다`·`오나다`·`탱고 오나다`를
+  갖는다. 그런데 대전 행사가 서울 venue 187로 붙은 **경로는 alias가 아니었다** —
+  엔진이 그 글의 `장소` 필드를 **통째로 버렸기 때문이다.** 라벨 값 `대전 땅고 오나다
+  (대전시 유성구 대학로76번안길 23 지하)`에서 `_cut_at_boundary()`는 "이름 **뒤의**
+  행정 주소는 주소다"라는 규칙을 값의 **맨 앞**에서도 적용해 빈 문자열을 돌려줬다.
+  그래서 그 글에서 유일하게 권위 있는 필드가 "아무 장소도 말하지 않음"으로 읽히고,
+  `extract_single()`은 v0.73부터 갖고 있던 하드코딩 이름 fallback으로 떨어져
+  `"오나다" in scope`라는 **부분 문자열 일치**로 150km 떨어진 서울 venue를 단정했다 —
+  바로 옆에 서 있는 대전 주소와 `대전` 접두사를 버리고. 그 결과 7건이 서울로
+  표시되고, 날짜·venue_id·시각이 같아진 **실재하는 서울 밀롱가 2건이 그 대전 행사의
+  중복으로 접혀 숨었다**(10-16 `Milonga Bulgeum`, 10-17 `토나다`). 같은 fallback은
+  부산 가또땅고의 **강습 후기**도 서울 OCHO로 만들었다 — 2,900자 어디에도 장소가
+  없고, 걸린 단어는 탱고 스텝 `오초(Ocho)`의 라틴 주석이었다. 고친 것: (1) 머리의
+  행정구역 단어는 **실제로 주소처럼 읽힐 때만** 이름을 끝낸다 — 그 단어가 자기 접미사를
+  달거나(`서울시`·`대전광역시`·`경기도`), 바로 뒤 토큰이 행정구역/도로 접미사를 가질
+  때(`서울 마포구`·`경기 수원시`·`대전 서구`). 저장된 전체 코퍼스의 라벨 값 43건이
+  행정구역 단어로 시작하는데 이 두 모양이 **주소 31건과 이름 12건을 정확히 가른다**.
+  (2) 하드코딩된 세 이름은 **글이 장소를 라벨로 밝혔으면 절대 추측하지 않고**, 자기
+  단어 경계를 갖고 앞 단어의 괄호 주석이 아닐 때만 쓴다. (3) **도시 충돌 가드** 두
+  겹 — alias가 맞아도 그 venue가 글의 말이 배제하는 광역시에 있으면 그 venue가 아니고
+  다음 후보로 넘어간다(미해결로 남는 게 틀린 도시보다 안전하다, §6), 그리고 두 Event가
+  같은 venue_id를 공유하면서도 서로 배제하는 광역시를 말하면 자동 병합하지 않는다
+  (`SAME_DATE_VENUE_TIME_REGION_CONFLICT` — 사람에게 간다). 광역시만 비교한다:
+  창원은 경남 안에, 포항은 경북 안에 있고 이 프로젝트는 그 도시들을 각자 region으로
+  등록하므로, 도 이름과 시 region을 비교하면 **맞는 venue를 틀렸다고 읽는다.**
+  Production-equivalent 코퍼스 비교(4,156 item, 1,855 Event, 양쪽 엔진 트리를 나란히
+  실행): candidate 개수 변화 **0**, 날짜·시작·종료·요금·종류·DJ·제목 변화 **0**,
+  venue만 **10건** — 대전 오나다 7, 부산 강습 후기 1(OCHO → 없음), 그리고 자기 라벨에서
+  되살아난 2건(`대전 스윙잇 댄스홀`, `서울 반포한강공원 수변무대`). 그 10건을 runtime에
+  통과시키면 7건은 서울 venue 187 → **UNRESOLVED**(사람 확인 큐로, 주소까지 함께),
+  1건은 ABSENT, 거짓 fold **4건 해제**(숨어 있던 서울 밀롱가 2건 복귀), **신규 fold 0**.
+  (4) **TangoNOW** — 사용자가 "로고를 클릭해야 동작하는 것 같다"고 했다. 로그아웃
+  상태 실제 headless Chrome으로 측정한 답은 아니다: 로고는 이미 `/`에 있는 페이지의
+  `<a href="/">`이고, 클릭 후 URL 그대로, 카드 수 0 → 0, **네트워크 요청 0건**, 바뀐
+  것은 광고 배너뿐이다. 목록이 빈 이유는 사이트 자신의 데이터 endpoint가 우리를
+  거부하기 때문이다 — `/`와 `/?mode=event`는 **바이트 단위로 동일한** 7.7KB JS 셸이고
+  행사 데이터가 없으며, `/events-snapshot-week`와 번들 Cloud Function은 App Check
+  토큰 교환까지 끝낸 브라우저에도 **401 `appcheck_required`**, Firestore는 09-25부터
+  **403**이고, 페이지는 로그인하지 않은 방문자에게 사이트 자신의 "이 날 일정 없어요"를
+  보여준다. 우리가 가질 자격이 있는 credential은 없고 시도하지도 않는다. 그리고
+  `ktnow.kr/robots.txt`에는 **2026-09-12 날짜가 적힌 운영자의 결정**이 있다:
+  `Disallow: /events-bundle` · `/events-snapshot$` · `/events-snapshot?`,
+  주석으로 "전체 이벤트 번들 JSON 은 수집 대상 아님(권고)". 그래서 이 모듈이 이미
+  파싱할 수 있는 번들은 **능력 문제가 아니라 지시로** 쓰지 않으며 `discover_bundle()`은
+  계속 미배선이다. **같은 파일이 열어 둔 것**은 같은 주석이 이름까지 적어 둔다 —
+  "`/e/` 공유 페이지도 허용". `/sitemap-events.xml`은 200에 58개 URL, 전부 미래
+  행사이고, 각 `/e/occ_<hash>`는 200에 **서버 렌더링된 schema.org `Event`**
+  (name·startDate·endDate +09:00·location·organizer). 58/58이 파싱되고 전부
+  `EventScheduled`다. 그래서 SRC-W-002는 운영자가 **크롤되기 위해 공개한** 표면을
+  읽는다(migration 044, 초당 1회 — 그 robots.txt 자신의 Crawl-delay). 본문 합성은
+  Firestore 경로와 같은 한글 라벨 문단이고, 없는 필드는 만들지 않는다(요금·지역 없음).
+  ENGINE_VERSION은 **1.10 → 1.11** — `engine/src`의 두 읽기가 바뀌었고 11개 저장
+  본문이 다른 venue를 내놓으므로, 1.10으로 남은 행은 이 엔진이 하지 않는 읽기를
+  주장하게 된다. migration **044** 추가)
 - Product Runtime: v0.96.31 (**부산에 밀롱가가 없던 것이 아니라, 우리가 읽기를
   멈췄던 것이다.** 사용자가 "예전보다 밀롱가가 줄었고 부산은 하나도 안 보인다"고
   했고, 맞았다. `miltang.com/milongas`는 날짜별 페이지이므로 수집기는 14일을 하루씩
@@ -628,7 +684,7 @@ engine's database. See `deploy/rockpro64/README.md` for why and how.
 
 | Endpoint          | Purpose                                                      |
 |-------------------|--------------------------------------------------------------|
-| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.31"}`      |
+| `GET /health`     | cheap liveness probe: `{"status":"ok","version":"0.96.32"}`      |
 | `GET /version`    | product runtime version vs Information Engine version         |
 | `GET /status`     | six components; HTTP 503 if any FAILs                         |
 | `GET /status/summary` | the dotted operator report used by `check-server.sh`      |

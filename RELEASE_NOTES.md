@@ -1,5 +1,179 @@
 # DanceMate Release Notes
 
+## v0.96.32 Prevent Cross-Region Venue Collisions and Restore Incorrectly Folded Events
+
+Product Runtime 0.96.32; Information Engine **1.10 → 1.11**; migration **044**.
+
+### Two Daejeon milongas were listed in Seoul, and two Seoul milongas were hidden behind them
+
+`Tango O Nada` names a basement in 서울 마포구. `대전 땅고 오나다` names one in
+대전 유성구, 150km away, and its own page is `facebook.com/daejeon.tango.o.nada`.
+Only the Seoul venue is in the Venue Master, with `땅고 오나다`, `오나다` and
+`탱고 오나다` among its aliases.
+
+The path the Daejeon events took to venue 187 was **not** one of those aliases.
+`normalize_alias()` strips everything but letters and digits, so
+`대전땅고오나다` matches none of them, and the Venue Master audit confirms it:
+over 54 venues and 178 aliases there is not one ambiguous alias, not one name
+shared across regions, and not one alias whose own words name another region.
+
+The path was that the engine **threw the field away**. miltang.com states the
+place in a label:
+
+    2026년 10월 16일 시간: 21:00~02:00 장소: 대전 땅고 오나다
+    (대전시 유성구 대학로76번안길 23 지하) 주최: 바비 원문 링크: ...
+
+`_cut_at_boundary()` holds the rule "an administrative address **after** the
+venue name is the address, not the name", and applied it at index 0 - where
+there is no name for an address to follow. The whole value cut to the empty
+string, so the one authoritative field in the post read as naming nothing.
+
+`extract_single()` then fell through to the three hardcoded venue names it has
+carried since v0.73, a fallback written "for posts that name the place without
+labelling it". This post labelled its place. `"오나다" in scope` matched a
+substring and asserted the Seoul venue, discarding both the `대전` prefix and
+the Daejeon address standing beside it in the same field.
+
+From there the damage followed mechanically. `_region_id()` takes the region
+from the venue, so the events read KR-SEOUL. `identity_key` is
+date|venue|clock, so they collided with the real Seoul milonga of that night.
+`duplicates.classify()` saw the same date, the same resolved venue id and the
+same hour, both venues RESOLVED, and auto-merged - and the row it hid was
+whichever of the two had less evidence:
+
+    2026-09-11  밀롱가 센뜨레 (Daejeon)      folded into  Milonga Bulgeum (Seoul)
+    2026-09-18  Bobby Millonga (Daejeon)   folded into  Milonga Bulgeum (Seoul)
+    2026-10-16  Milonga Bulgeum (Seoul)    folded into  Bobby Millonga (Daejeon)
+    2026-10-17  토나다 (Seoul)              folded into  찐밀 (Daejeon)
+
+The existing `cross-region fold = 0` check could never see this: both rows
+carried the same wrong venue id, so they agreed on their region perfectly.
+
+The same fallback had one more victim. 가또땅고's write-up of a 쁠라네오 class -
+2,928 characters from a Busan club, naming no place anywhere - was listed as a
+Seoul event at OCHO, because the body explains the step `오초(Ocho)` and the
+Latin gloss matched.
+
+### What changed
+
+**An administrative word at the head of a labelled value ends the name only
+when the words actually read as an address.** Two shapes, and nothing more:
+the region word carries its own suffix (`서울시`, `대전광역시`, `경기도`), or the
+token after it carries an administrative or street suffix (`서울 마포구`,
+`경기 수원시`, `대전 서구`). Measured over every labelled value in the stored
+corpus: 43 begin with an administrative word, and these two shapes separate
+them exactly - 31 addresses still read as addresses, and 12 names are
+recovered. Seven are the Daejeon milongas; the rest are `대전 스윙잇 댄스홀`,
+`부산 일빠(부산 부산진구 신천대로62번길 38 4층)` twice, and
+`서울 반포한강공원 수변무대`.
+
+**The three hardcoded names are a fallback for posts that label nothing.** A
+post that does label its place is read from that label or not at all - when
+the label cannot be read, the honest answer is that we do not know where this
+is. Each name must also stand as its own word and must not be a parenthesised
+gloss of the word before it, which is what the class write-up's `오초(Ocho)`
+was. The two real posts that rely on this fallback (`매주 토요일 밤, 홍대
+PISTA에서 열리는 밀롱가`, `📍 화정 오나다`) still read correctly.
+
+**Two guards behind that, so the same shape cannot arrive through an alias.**
+`runtime/venue_identity.py` answers one question - whether two statements about
+a place name metropolitan cities that exclude each other - and two callers ask
+it. `resolve_venue()` refuses a name match whose venue sits in a metropolis the
+reading's own words exclude, and tries the next candidate; being left
+unresolved puts the string in front of a person, which is the right outcome for
+a place we cannot identify, and naming the wrong city is not.
+`duplicates.classify()` refuses to *auto*-merge two events that share a venue
+id and still name mutually exclusive cities, under a new rule
+`SAME_DATE_VENUE_TIME_REGION_CONFLICT`; a person decides.
+
+Only metropolitan cities are compared, deliberately. A metropolis contains no
+other first-level unit and is contained by none, so two different ones cannot
+both be right. 창원 lies inside 경남 and 포항 inside 경북, and this project
+registers those cities as regions of their own - comparing a province word
+against a city region would read a correct venue as a conflict. Both guards
+fire zero times on today's corpus, which is the point: the Venue Master has no
+collision in it, and these are what keep the next one from reaching a user.
+
+### Measured, both engine trees run side by side over the whole corpus
+
+    source_items compared           4,156
+    Events compared                 1,855
+    candidate cardinality changes       0
+    date / start / end / fee / type / dj / name changed   0
+    venue changed                      10
+
+    7   대전 땅고 오나다  Tango O Nada (venue 187, KR-SEOUL) -> UNRESOLVED
+    1   가또땅고 class diary        OCHO (venue 186, KR-SEOUL) -> ABSENT
+    2   recovered from their own label    none -> 대전 스윙잇 댄스홀 / 서울 반포한강공원 수변무대
+
+Through the runtime, with `duplicates.scan()`'s own logic re-asked over all
+1,237 events: **4 folds released**, every one of them a false merge above,
+**0 new folds**, 0 folds lost, 0 wrong region changes, 0 wrong relinks.
+
+The seven Daejeon events keep their own words and their address, and go to the
+Human Verification queue unresolved. They are no longer in Seoul; they are not
+yet in Daejeon either, because assigning a region from a string is not
+something this release does. An operator creating that venue from the queued
+string - which now carries the full address - puts them in 대전, and the
+`unresolved_venues` row is there for exactly that.
+
+### TangoNOW: the logo click, measured
+
+A user asked whether TangoNOW needs its logo clicked to work. Measured in a
+real logged-out headless Chrome on 2026-10-13, it does not. The logo is an
+`<a href="/">` on a page already at `/`. After clicking it the URL is
+unchanged, the event card count is unchanged (zero before, zero after), and
+**no network request is issued at all**; the only difference is a rotated ad
+banner.
+
+The list is empty because the site's own endpoints refuse us:
+
+    /                        200, a 7.7KB JS shell holding no event data
+    /?mode=event             200, byte-identical to /
+    /events-snapshot-week    401 {"error":"appcheck_required"}
+    /events-bundle (CF)      401
+    Firestore documents.list 403, the public read rule withdrawn 2026-09-25
+
+The browser completed a Firebase App Check token exchange and was still
+refused by both data endpoints, and the page rendered the site's own
+"이 날 일정 없어요". There is no credential we are entitled to, and none was
+attempted.
+
+Two weeks before that 403, `ktnow.kr/robots.txt` had already said what the
+operator wants, with a date on it:
+
+    # [데이터 보호 2026-09-12] 전체 이벤트 번들 JSON 은 수집 대상 아님(권고).
+    # /events-snapshot-week 는 Googlebot 홈 렌더가 쓰므로 허용 유지.
+    #   /e/ 공유 페이지도 허용.
+    Disallow: /events-bundle
+    Disallow: /events-snapshot$
+    Disallow: /events-snapshot?
+
+So the bundle this project already knows how to parse is out by instruction
+rather than by capability, whichever host serves it, and `discover_bundle()`
+stays unwired - now for that reason. What the same comment keeps open it names:
+the share pages. `/sitemap-events.xml` answers 200 with 58 URLs, every one
+upcoming, and every `/e/occ_<hash>` answers 200 with a complete,
+server-rendered schema.org `Event` - name, startDate and endDate with a KST
+offset, location, organizer. 58 of 58 parse; all are `EventScheduled`.
+
+That is a crawl surface published in order to be crawled, so SRC-W-002 now
+reads it (migration 044), one page per second as that robots.txt's own
+Crawl-delay asks. The body is synthesised as the same Korean-labelled
+paragraph the Firestore path rendered, so one extraction pipeline reads both,
+and a field the page omits is not invented - there is no price and no region on
+a share page. One unreadable page is reported and skipped the way v0.96.31
+isolated Miltang's days; only a run where no page can be read fails.
+
+v0.96.31's classification of the Firestore 403 is untouched, and so is the
+daily recheck behind it.
+
+### Engine version
+
+1.10 → 1.11. Two readings in `engine/src` changed and eleven stored bodies
+yield a different venue under this engine, so a row still stamped 1.10 would
+claim a venue this engine does not read.
+
 ## v0.96.31 Restore The Stalled Regional Tango Supply, And Make A Dead Collector Say So
 
 Product Runtime 0.96.31; Information Engine **1.10, unchanged**; migration

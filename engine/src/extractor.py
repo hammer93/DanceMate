@@ -913,22 +913,17 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
         ))
         return ev
 
-    up = scope.upper()
-    if "PISTA" in up:
-        ev.venue = "PISTA"
+    # v0.96.32: the same three known names, asked as one question so the two
+    # things that make a mention a mention - its own word boundaries, and a
+    # post that did not already label its place - are decided in one place
+    # beside the patterns that read a label. `"OCHO" in scope.upper()` was
+    # true of a Busan class diary explaining the step 오초(Ocho).
+    known = extraction_rules.known_venue_fallback(scope)
+    if known:
+        name, raw = known
+        ev.venue = name
         ev.evidences.append(Evidence(
-            "venue", "PISTA", "PISTA", source_role=source_role, context_id=context_id,
-        ))
-    elif "OCHO" in up:
-        ev.venue = "OCHO"
-        ev.evidences.append(Evidence(
-            "venue", "OCHO", "OCHO", source_role=source_role, context_id=context_id,
-        ))
-    elif "O NADA" in up or "오나다" in scope:
-        ev.venue = "Tango O Nada"
-        ev.evidences.append(Evidence(
-            "venue", "Tango O Nada", "O Nada/오나다", source_role=source_role,
-            context_id=context_id,
+            "venue", name, raw, source_role=source_role, context_id=context_id,
         ))
     return ev
 

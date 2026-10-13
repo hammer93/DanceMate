@@ -165,7 +165,8 @@ def content_mode(source: dict[str, Any]) -> str:
     parser = _config(source).get("parser") or WEB_PARSER_BOARD
     if parser in acquisition.NON_HTML_API_PARSERS:
         return CONTENT_MODE_NON_HTML_API
-    if parser in (WEB_PARSER_MILTANG, WEB_PARSER_TANGOCLASS):
+    if parser in (WEB_PARSER_MILTANG, WEB_PARSER_TANGOCLASS,
+                  WEB_PARSER_TANGONOW_SHARE):
         return CONTENT_MODE_DISCOVERY_FULL
     if parser == WEB_PARSER_DANCEINFO:
         return CONTENT_MODE_DETAIL_FETCH
@@ -452,6 +453,9 @@ def _collect_live(
 WEB_PARSER_BOARD = "board"
 WEB_PARSER_DANCEINFO = "danceinfo_json"
 WEB_PARSER_TANGONOW = "tangonow_firestore"
+# v0.96.32: the same provider read through the crawl surface its own
+# robots.txt keeps open - see runtime/tangonow_share_discovery.py.
+WEB_PARSER_TANGONOW_SHARE = "tangonow_share_pages"
 WEB_PARSER_TANGOCALENDAR = "tangocalendar_json"
 WEB_PARSER_MILTANG = "miltang_ssr"
 WEB_PARSER_TANGOCLASS = "tangoclass_wp_json"
@@ -494,6 +498,10 @@ def _web_discovery_module(parser: str):
         from . import tangonow_discovery  # noqa: PLC0415
 
         return tangonow_discovery
+    if parser == WEB_PARSER_TANGONOW_SHARE:
+        from . import tangonow_share_discovery  # noqa: PLC0415
+
+        return tangonow_share_discovery
     if parser == WEB_PARSER_TANGOCALENDAR:
         from . import tangocalendar_discovery  # noqa: PLC0415
 
@@ -568,7 +576,7 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
     # window. It reports the days it could not read here instead of
     # throwing the readable ones away; only this parser knows the keyword.
     problems: list[str] = []
-    if parser == WEB_PARSER_MILTANG:
+    if parser in (WEB_PARSER_MILTANG, WEB_PARSER_TANGONOW_SHARE):
         extra_kwargs["problems"] = problems
 
     records: list[dict[str, Any]] = []
@@ -586,7 +594,8 @@ def _collect_web(source: dict[str, Any], engine_source: dict[str, Any]) -> Colle
 
     detail = f"live WEB: {len(records)} records from {len(board_urls)} board(s)"
     if problems:
-        detail += f"; {len(problems)} unreadable day(s): {problems[0]}"
+        unit = "day" if parser == WEB_PARSER_MILTANG else "page"
+        detail += f"; {len(problems)} unreadable {unit}(s): {problems[0]}"
     return CollectionResult(
         mode=MODE_LIVE,
         items=[_to_raw_item(r) for r in records],

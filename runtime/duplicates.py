@@ -53,7 +53,7 @@ import json
 from datetime import date
 from typing import Any
 
-from . import source_evidence, source_priority
+from . import source_evidence, source_priority, venue_identity
 
 AUTO = "AUTO"
 HUMAN = "HUMAN"
@@ -69,6 +69,10 @@ RULE_TIME_NAME_VENUE_DIFFERS = "SAME_DATE_TIME_NAME_VENUE_DIFFERS"
 # v0.96.23: the date and the clock agree and both posts write the same venue
 # words, but neither of those words has been resolved to a place.
 RULE_UNRESOLVED_VENUE_TIME = "SAME_DATE_UNRESOLVED_VENUE_TIME"
+# v0.96.32: date, clock and venue id all agree, and the two posts still name
+# metropolitan cities that exclude each other - so the id is answering for two
+# places and a person has to say which.
+RULE_REGION_CONFLICT = "SAME_DATE_VENUE_TIME_REGION_CONFLICT"
 # v0.96.23: an automatic merge the rules would no longer make, released.
 RULE_STALE_AUTO_MERGE = "STALE_AUTO_MERGE"
 
@@ -194,6 +198,23 @@ def classify(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any] | No
     same_clock = bool(left_clock) and left_clock == right_clock
 
     if same_place and same_clock:
+        if venue_identity.texts_contradict(left.get("venue_text"),
+                                           right.get("venue_text")):
+            # v0.96.32: one venue id, and the two posts name metropolitan
+            # cities that exclude each other. A resolved venue is normally the
+            # strongest thing these rules have - somebody matched that string
+            # to a place - but it is still a name match, and a name can answer
+            # for two places: an alias of Seoul's `Tango O Nada` answered for
+            # `대전 땅고 오나다`, and this rule then folded the real Seoul
+            # milonga sharing that Friday hour away as its duplicate. The
+            # events' own words outrank the id they happen to share, and what
+            # they settle is only that this is not automatic.
+            return {
+                "rule": RULE_REGION_CONFLICT,
+                "auto": False,
+                "matched": ["event_date", "venue", "start_time"],
+                "differs": ["stated_region"],
+            }
         if _place_is_known(left) and _place_is_known(right):
             return {
                 "rule": RULE_SAME_DATE_VENUE_TIME,

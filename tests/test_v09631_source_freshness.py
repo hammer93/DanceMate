@@ -168,8 +168,12 @@ def test_a_healthy_scheduler_does_not_hide_a_failed_source():
 def test_admin_health_reports_a_failing_collector():
     from runtime import admin
 
+    # v0.96.32: `_source_health()` compares against the real clock, so this
+    # row's recency has to be real too - pinned to the module's own NOW it
+    # became STALE six hours after the release that wrote it, and the
+    # assertion below stopped testing the branch it names.
     source = {"enabled": True, "last_status": "UNKNOWN",
-              "last_collected_at": NOW - timedelta(minutes=5),
+              "last_collected_at": datetime.now(timezone.utc) - timedelta(minutes=5),
               "collection_interval_minutes": 60}
     outcome = {"items": 315, "fetched": 315, "blocked": 0, "events": 261}
     assert admin._source_health(source, outcome) == admin.HEALTH_ACTIVE, \
@@ -193,7 +197,8 @@ def test_admin_health_still_reports_the_states_it_always_did():
 
     assert admin._source_health({"enabled": False}, {}) == admin.HEALTH_DISABLED
     blocked = {"enabled": True, "last_status": "PASS",
-               "last_collected_at": NOW, "collection_interval_minutes": 60}
+               "last_collected_at": datetime.now(timezone.utc),
+               "collection_interval_minutes": 60}
     assert admin._source_health(
         blocked, {"items": 10, "fetched": 0, "blocked": 10, "events": 0},
         {"state": sf.HEALTHY}) == admin.HEALTH_FETCH_BLOCKED

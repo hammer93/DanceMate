@@ -28,7 +28,7 @@ import unicodedata
 from datetime import date, datetime, time
 from typing import Any
 
-from . import master_data, review
+from . import master_data, review, venue_identity
 
 VENUE_RESOLVED = "RESOLVED"
 VENUE_UNRESOLVED = "UNRESOLVED"
@@ -140,18 +140,28 @@ def resolve_venue(con, venue_text: str | None,
     Tries the whole string first, then the parts the extractor offered -- the
     name without its bracketed address, and the name inside the brackets. All
     of them are exact alias matches; none of them invents a venue.
+
+    v0.96.32: a match whose venue sits in a metropolis this reading's own words
+    exclude is not this venue, and the next candidate is tried instead. An
+    alias is a name, and a name can belong to two places - see
+    `venue_identity`. Being left unresolved puts the string in front of a
+    person, which is the right outcome for a place we cannot identify; naming
+    the wrong city is not.
     """
     if not venue_text:
         return {"venue_id": None, "venue_status": VENUE_ABSENT, "matched_on": None}
     for attempt in [venue_text] + [a for a in (alias_candidates or []) if a != venue_text]:
         found = master_data.resolve_venue(con, attempt)
-        if found:
-            return {
-                "venue_id": found["venue_id"],
-                "venue_status": VENUE_RESOLVED,
-                "matched_on": attempt,
-                "region_id": found.get("region_id"),
-            }
+        if not found:
+            continue
+        if venue_identity.region_conflict(con, found, venue_text, attempt):
+            continue
+        return {
+            "venue_id": found["venue_id"],
+            "venue_status": VENUE_RESOLVED,
+            "matched_on": attempt,
+            "region_id": found.get("region_id"),
+        }
     return {"venue_id": None, "venue_status": VENUE_UNRESOLVED, "matched_on": None}
 
 
