@@ -1,5 +1,140 @@
 # DanceMate Release Notes
 
+## v0.96.33 Recover Real Dance Events From Mixed Weekly Programmes Without Borrowing Another Programme's Time
+
+Product Runtime 0.96.33; Information Engine **1.11 → 1.12**; migration **044, unchanged**.
+
+Two defects. The brief asked whether they share a root cause, and the code says
+they do not: one is a routing gate in `live_pipeline`, the other an evidence
+priority in `extraction_rules`, and neither fix touches the other's path. What
+they share is a premise - that a post is one thing - which is false of a post
+that announces a week.
+
+### A club's own milonga, inside a week of its classes
+
+가또땅고 publishes its whole week in one post:
+
+    10/14(수)_8:00~9:10pm ① 소고귀ⓨ애비's 넥스트스텝 4주차 (아미고 큰홀)
+    ② 데이브ⓨ지브릴's 초중급2 4주차 (일빠) ③ 펠릭스ⓨ듀니's 초급심화 1주차
+    종강(미오) [가또땅고 쁘롱가] 9:15~11:15pm (DJ , 아미고 큰홀)
+    10/15(목)_아미고 큰홀 8:00-11:00pm 자율연습 Practica
+    18일(일) 휴강
+
+Three classes, then the club's own 쁘롱가 after them, a Thursday practica, and
+a cancelled Sunday. The post classifies CLASS, which is true of the post and
+false of the 쁘롱가 - and `live_pipeline.process_discovered_post()` returned on
+line 86 before any extractor ran:
+
+    if classification not in EVENT_CLASSIFICATIONS and not class_instance:
+        return {"classification": classification, "events": []}
+
+Ten such posts are stored. Not one produced an Event.
+
+Lifting that gate alone recovers nothing, which is worth stating because it is
+the obvious fix. `extract_schedule()` is handed **one** `event_type` and asks
+each dated segment to name that type's own word; measured on item 5906 it
+returns None for MILONGA, PRACTICA, CLASS and SOCIAL alike, because this post's
+two nights are a 쁘롱가 and a Practica and no single type covers both. The
+Wednesday segment is worse than that: it holds three classes *and* the milonga,
+so a segment-level verdict has to be wrong about one of them.
+
+Nor is proximity enough. `_nearest_near_clock()` would weigh 쁘롱가 against the
+class words beside it - v0.96.18/19's comparative rule - except that the
+brackets making `[가또땅고 쁘롱가]` a programme head are a `_PROGRAMME_BREAK`,
+so `_window_span()` clips the search at the `]` and the name is outside its own
+clock's window. Widening that window is a change to the machinery two releases
+built to stop wrong times, over 1,508 range candidates corpus-wide, to fix ten
+posts from one source. That is not a trade this release makes.
+
+**What it does instead is additive.** `extract_programmes()` reads neither the
+week nor the segment but each programme's own shape: **a name written against
+its own clock.**
+
+    [가또땅고 쁘롱가] 9:15~11:15pm        bracketed name, then its clock
+    "월간가또 밀롱가" 7:00~11:00pm        quoted name, then its clock
+    8:00-11:00pm 자율연습 Practica      clock, then its name
+
+A class in the same day is named by a level and a week number instead
+(`넥스트스텝 4주차`, `초급심화 1주차 종강`), a cancelled day by 휴강, a fee line
+by a colon, and a recap by 후기 - and none of those reads as a programme's name.
+Four refusals carry the rest, each for a post that breaks without it:
+
+* **the segment's own date, or nothing.** item 3178 writes its Thursday as
+  `7 /2(목)` and item 3157 its Wednesday as `8/126(수)`; the date matcher reads
+  neither, so their practica and their 스페셜 밀롱가 are left unread rather than
+  dated to the day above them. A recovered event with the wrong date is not a
+  recovered event.
+* **an hour the post actually marked.** item 3192's 쁘락띠까 writes
+  `8:00-8:20` with no meridiem anywhere, and a morning is worse than nothing.
+* **one programme per date and start time**, so a head read from both sides of
+  one clock is one night.
+* **nothing this post already reads.** The route runs only where the post
+  produced no events at all.
+
+### A Sunday milonga that had been starting on Monday night
+
+miltang.com renders Luminoso's Sunday milonga from its own fields and then
+carries that organiser's whole weekly roundup as the description:
+
+    2026년 10월 18일 시간: 14:00~18:00 장소: Ocho (오초) ... 반복: 매주 일요일
+    🖤 Monday Milonga 📍 En Paz 🕢 7:30 PM – 11:30 PM
+    🌸 Sunday Milonga 📍 Tango Club Ocho 🕑 2:00 PM – 6:00 PM
+    🦁 Luminoso Friday Milonga 📍 Andante 🕗 8:00 PM – 1:00 AM
+
+`parse_time_range()` first looks for a range the event's own word names
+closely, and finds none - the pin and the clock-face emoji between
+`Monday Milonga` and its hours are wider than `_TIME_NEAR_BEFORE`. It then
+falls back to "whichever reading carries an explicit am/pm marker", a rule
+written for a post that repeats *its own* time twice, once plainly and once
+marked. Here the two readings are different times belonging to different
+nights: the field's `14:00~18:00` carries no marker and the Monday line's
+`7:30 PM` does. Seven Sunday events were stored as starting at 19:30, four and
+a half hours after they had finished.
+
+The same shape put SDA's Halloween party at `오후 5시 ~ 8시` - the hours of the
+costume-makeup stall - instead of the `일시: 2026년 10월 31일(토) 20:00 ~ 02:00`
+it states.
+
+So a reading the post **labelled** as its own time now outranks a marker found
+elsewhere, and only when the post opens with it:
+
+* the **first** reading in the text must be the labelled one. 엘마르's own
+  poster writes `SOCIAL DAY © PM 9:00 ~ 11:30` first and
+  `© 시간: PM 8:00 ~ 9:00 > 강습비 : 1만원` after it, where the label is the
+  workshop's and the social's hours carry none. Preferring any labelled
+  reading moved that event to the lesson's hour; preferring only a leading one
+  leaves it where it was.
+* inside the labelled set the existing rule still decides, and has to: 가또's
+  own milonga notice labels its hour twice, `08시30분 - 11시30분` and
+  `8:30 PM – 11:30 PM`, and the marked notation is the right reading of both.
+* a range the event's own word names closely still wins first. v0.96.19's
+  rule is untouched: the social runs at 20:00, not at 15:00.
+
+### Measured, both engine trees run over the whole corpus
+
+    source_items compared                     4,279
+    Events compared                   1,922 -> 1,937
+
+    candidate cardinality changes                 9 posts, +15 candidates
+    existing candidates with a changed field      8  (start and end only)
+    date / fee / type / genre / venue / name      0
+
+The 15 new candidates are all 가또땅고's own weekly notices, and every date and
+hour was checked against the words it came from: 쁘롱가 and Practica on items
+5906, 5691, 4491 and 3638, 포트럭 쁘롱가 on 3178, 3179, 3181, 3188 and 3192,
+the 월간가또 밀롱가 of 3192 and 5691, and 5691's 와인밀롱가. The 8 changed hours
+are the seven Luminoso Sundays and SDA's Halloween party.
+
+Nothing else in the corpus moves. No class became an event, no cancelled day
+became an event, no promotional mention became an event - including the 순천 빅
+밀롱가 festival link and bus timetable sitting at the top of item 5906.
+
+### Engine version
+
+1.11 → 1.12. Fifteen candidates exist under this engine that did not exist
+under 1.11 and eight stored bodies yield a different hour, so a row still
+stamped 1.11 would claim a reading this engine does not make.
+
 ## v0.96.32 Prevent Cross-Region Venue Collisions and Restore Incorrectly Folded Events
 
 Product Runtime 0.96.32; Information Engine **1.10 → 1.11**; migration **044**.

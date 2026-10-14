@@ -493,6 +493,35 @@ def _range_belongs_to_other_programme(text: str, match: "re.Match",
     return other[0] <= event[0]
 
 
+# v0.96.33: the labels a post uses to state its own hours. The same words
+# `_VENUE_STOP_RE` already treats as "the next field begins here", read from
+# the other side: what follows one of these is the post's own time.
+_TIME_LABEL_RE = re.compile(r"(?:시간|일시|시각|Time)\s*[:：]", re.I)
+# How far a label may sit from the clock it introduces. `시간: 14:00~18:00` is
+# one character; `일시: 2026년 10월 31일(토) 20:00 ~ 02:00` is twenty, because
+# the field states its date first. Bounded so a label cannot reach past the
+# sentence it belongs to.
+_TIME_LABEL_WINDOW = 30
+
+
+def _is_labelled_time(text: str, start: int, readings) -> bool:
+    """Whether the reading beginning at ``start`` is one the post labelled.
+
+    True when a time label sits within `_TIME_LABEL_WINDOW` before it and no
+    *other* reading begins in between - so a label introduces one clock, not
+    every clock after it. A date between the two is allowed; that is the field
+    stating its own day first.
+    """
+    floor = max(0, start - _TIME_LABEL_WINDOW)
+    label = None
+    for match in _TIME_LABEL_RE.finditer(text[floor:start]):
+        label = match
+    if label is None:
+        return False
+    label_end = floor + label.end()
+    return not any(label_end <= other < start for _r, other, _e in readings)
+
+
 def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | None:
     """The clock range this event runs at, normalised to 24 hours.
 
@@ -541,6 +570,42 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
                 named.append((hit[0], reading))
         if named:
             return min(named, key=lambda pair: pair[0])[1]
+    # v0.96.33: nothing named the event type, but the post may have labelled
+    # one of these readings as its own time. That label is the post speaking
+    # about itself, and it outranks a marker found anywhere else in the body.
+    #
+    # The rule below was written for a post that repeats *its own* time twice,
+    # once plainly and once marked, and it is right about that case. It is not
+    # right when the two readings are different times belonging to different
+    # programmes. miltang.com renders Luminoso's Sunday milonga as
+    # `시간: 14:00~18:00` and then carries that organiser's whole weekly
+    # roundup as prose - `🖤 Monday Milonga 📍 En Paz 🕢 7:30 PM – 11:30 PM
+    # 🌸 Sunday Milonga 📍 Tango Club Ocho 🕑 2:00 PM – 6:00 PM ...`. No
+    # reading is near enough to a 밀롱가 to be named by it (the pin and the
+    # clock-face emoji between them are wider than `_TIME_NEAR_BEFORE`), the
+    # field's own `14:00~18:00` carries no marker, and the Monday line's does -
+    # so seven Sunday events were stored as starting at 19:30, four and a half
+    # hours after they had finished. The same shape put SDA's Halloween party
+    # at `오후 5시 ~ 8시`, the hours of the costume-makeup stall, instead of the
+    # `일시: 2026년 10월 31일(토) 20:00 ~ 02:00` it states.
+    #
+    # Within the labelled set the rule below still applies, and has to: 가또's
+    # own milonga notice labels its time twice, `08시30분 - 11시30분` and
+    # `8:30 PM – 11:30 PM`, and the marked one is the right reading of both.
+    #
+    # And it applies only when the *first* reading in the text is the labelled
+    # one - when the post opens by stating its own hours. A label deeper in the
+    # body can belong to a sub-programme instead: 엘마르's own poster writes
+    # `SOCIAL DAY © PM 9:00 ~ 11:30` first and `© 시간: PM 8:00 ~ 9:00
+    # > 강습비 : 1만원` after it, so there the label is the workshop's and the
+    # social's hours carry none. Preferring any labelled reading moved that
+    # event to the lesson's hour; preferring only a leading one leaves it where
+    # it was.
+    if readings and _is_labelled_time(text or "", readings[0][1], readings):
+        labelled = [r for r in readings
+                    if _is_labelled_time(text or "", r[1], readings)]
+        if labelled:
+            readings = labelled
     # No reading named the event type nearby (or none was given): the same
     # post can still repeat its own time, once plainly and once with an
     # explicit AM/PM marker (a structured summary line and a free-text body
@@ -1898,3 +1963,148 @@ def extract_fee(text: str, event_type: str = "MILONGA", *,
         display = f"{reading.amount:,}원 ({hour_text} 이후 {cond_amount:,}원)"
         reading = replace(reading, display=display)
     return reading
+
+
+# --- a programme inside a week of classes (v0.96.33) ------------------------
+#
+# 가또땅고 publishes its week as one post: three classes on Wednesday, then its
+# own milonga after them, a Thursday practica, and a Sunday of lessons.
+#
+#     10/14(수)_8:00~9:10pm ① 소고귀ⓨ애비's 넥스트스텝 4주차 (아미고 큰홀)
+#     ② 데이브ⓨ지브릴's 초중급2 4주차 (일빠) ③ 펠릭스ⓨ듀니's 초급심화 1주차
+#     종강(미오) [가또땅고 쁘롱가] 9:15~11:15pm (DJ , 아미고 큰홀)
+#     10/15(목)_아미고 큰홀 8:00-11:00pm 자율연습 Practica
+#     18일(일) 휴강
+#
+# The post classifies CLASS, which is right about the post and wrong about the
+# 쁘롱가 and the practica, and `live_pipeline` returned before any extractor ran.
+# Ten such posts are stored; not one produced an Event.
+#
+# What makes those two programmes readable is not the week's structure but each
+# programme's own: **a name written against its own clock**. The milonga's name
+# is in brackets right before its range, the practica's follows its range, and
+# every class in the same day is named by a level and a week number instead.
+# So this vocabulary answers one question - what does this programme call
+# itself - and the three tests below answer the other: is this a name at all.
+#
+# Deliberately not `EVENT_CONTEXT_WORDS`: that mapping folds practica spellings
+# into MILONGA (a Pronga is both), which is right for "which programme of an
+# ambiguous post is the reviewed one" and wrong here, where a practica must
+# read as a practica. And deliberately not `_EVENT_WORDS`, which does not know
+# 쁘롱 at all - the word this family's own milonga is named with.
+PROGRAMME_TYPE_WORDS = {
+    "MILONGA": r"밀롱가|milonga|쁘롱",
+    "PRACTICA": r"쁘락띠까|프락티카|practica|práctica|쁘락",
+    "SOCIAL": r"소셜|social|정모",
+    "PARTY": r"파티|party",
+}
+ANY_PROGRAMME_WORD = "|".join(PROGRAMME_TYPE_WORDS.values())
+
+# A programme head written before its clock is bracketed or quoted - that is
+# what makes it a head and not the tail of the previous sentence.
+_PROGRAMME_HEAD_BEFORE = re.compile(
+    r"[\[\"'“”『「《(]([^\[\]\"'“”』」》()\n]{2,40})[\]\"'“”』」》)]\s*$")
+# A head written after its clock runs to the end of its own item.
+_PROGRAMME_HEAD_AFTER = re.compile(r"^\s*([^\n\[\]()]{2,40})")
+_PROGRAMME_HEAD_WINDOW = 46
+
+# What disqualifies a head from being a programme's name.
+#
+# A level or a week number says class ("초중급2 4주차", "밀롱가 집중 4주차"), and
+# `_COURSE_EVIDENCE_RE`'s own words say enrolment. A cancellation says there is
+# no night to announce - 가또's 휴강 days are written exactly like its others.
+# A colon means the text is a field list and not a name at all ("- D J : 스톤
+# Stone - 밀롱가 참가비 : 12,000원"), and a quote inside a head means the head
+# is quoting something else (좐슨y버드's "밀롱가 집중" is a class by that name).
+_PROGRAMME_LEVEL = re.compile(
+    r"초급|중급|고급|입문|심화|기초|집중|\d+\s*주\s*차|\d+\s*회\s*차|"
+    r"강습|수업|클래스|클라스|레슨|특강|워크샵|워크숍|트레이닝|"
+    r"class|lesson|workshop|training", re.I)
+_PROGRAMME_CANCELLED = re.compile(r"휴강|휴무|취소|쉼|없음|cancel", re.I)
+# A head that looks back at a night, or sells a place at one, is not announcing
+# one: "지난주 밀롱가 후기", "밀롱가 사진 모음", "밀롱가 참가자 모집".
+_PROGRAMME_RETROSPECT = re.compile(
+    r"후기|리뷰|사진|앨범|모집|신청|접수|예매|정산|recap|review|photos?", re.I)
+_PROGRAMME_FIELD_LIST = re.compile(r"\S\s*[:：]")
+_PROGRAMME_INNER_QUOTE = re.compile(r"[\"'“”『「《]")
+# A day written in a form the date matcher does not read - `7 /2(목)`, with a
+# space before the slash, is how item 3178 writes its Thursday. A programme
+# whose clock sits after one of these belongs to that day and not to the
+# segment's own, and nothing here will guess which: it is skipped.
+# The day number is `\d{1,3}` and not `\d{1,2}` on purpose: item 3157 writes
+# its Wednesday as `8/126(수)`, a typo the date matcher cannot read either, and
+# a marker that misses it dates that night to the Monday above it.
+_UNREAD_DAY_MARKER = re.compile(
+    r"\d{1,2}\s*/\s*\d{1,3}\s*\(|\d{1,3}\s*일\s*\(")
+# The same day, as it reads inside a head, where the bracket that follows it
+# has already been cut away: `자율연습 Practica 18일`.
+_DAY_IN_HEAD = re.compile(r"\d{1,2}\s*/\s*\d{1,2}|\d{1,2}\s*일")
+
+
+def programme_type(head: str) -> str | None:
+    """Which kind of night this head names, by the word it uses first."""
+    best = None
+    for kind, words in PROGRAMME_TYPE_WORDS.items():
+        match = re.search(words, head or "", re.I)
+        if match and (best is None or match.start() < best[0]):
+            best = (match.start(), kind)
+    return None if best is None else best[1]
+
+
+def head_names_a_programme(head: str) -> bool:
+    """Whether this text is a programme's own name rather than a class, a
+    cancellation, a field list or a quotation."""
+    if not head or programme_type(head) is None:
+        return False
+    for pattern in (_PROGRAMME_LEVEL, _PROGRAMME_CANCELLED,
+                    _PROGRAMME_RETROSPECT, _PROGRAMME_FIELD_LIST,
+                    _PROGRAMME_INNER_QUOTE):
+        if pattern.search(head):
+            return False
+    return True
+
+
+def programme_heads(scope: str, start: int, end: int) -> list[str]:
+    """The names written against the clock at ``start``..``end``, nearest first.
+
+    A head is cut at a day marker the date matcher could not read, so
+    `자율연습 Practica 18일` reads as `자율연습 Practica` and the Sunday that
+    follows it is nobody's name.
+    """
+    heads = []
+    before = scope[max(0, start - _PROGRAMME_HEAD_WINDOW):start]
+    match = _PROGRAMME_HEAD_BEFORE.search(before)
+    if match:
+        heads.append(match.group(1).strip())
+    after = scope[end:end + _PROGRAMME_HEAD_WINDOW]
+    match = _PROGRAMME_HEAD_AFTER.match(after)
+    if match:
+        value = match.group(1)
+        cut = _DAY_IN_HEAD.search(value)
+        heads.append((value[:cut.start()] if cut else value).strip())
+    return [h for h in heads if h]
+
+
+def readings_in(text: str, words: str | None = None):
+    """Every clock range in ``text``, as `(reading, start, end)`.
+
+    The public form of `_readings()`, for `extractor.extract_programmes()`:
+    the same ranges, judged by the same rules, with ``words`` deciding whether
+    a range beside a class word is weighed against the event's own word or
+    vetoed outright (v0.96.19).
+    """
+    return list(_readings(text, words))
+
+
+def day_marker_before(text: str, position: int, after: int = 0) -> bool:
+    """Whether a day the date matcher cannot read sits before ``position``.
+
+    `7 /2(목)` is how item 3178 writes a Thursday. A clock after one of these
+    belongs to that day rather than to the segment's own, and this module does
+    not guess which - the caller skips it. ``after`` is where to start looking,
+    so a segment's own date header is not mistaken for a later day.
+    """
+    if position <= after:
+        return False
+    match = _UNREAD_DAY_MARKER.search(text or "", after, position)
+    return match is not None

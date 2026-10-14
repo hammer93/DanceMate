@@ -1707,3 +1707,122 @@ def extract_ocho_weekly(title: str, body: str, published=None):
         )
         out.append(ev)
     return out
+
+
+# --- a week of classes with a night in it (v0.96.33) ------------------------
+
+PROGRAMME_ITEM = "PROGRAMME_ITEM"
+
+
+def extract_programmes(title: str, body: str, source_role="SECONDARY",
+                       published=None):
+    """One candidate per dated programme that names itself a night, or None.
+
+    `extract_schedule()` above reads a schedule post as a run of dated
+    programmes that are all the *same* kind of thing - it is handed one
+    `event_type` and asks each segment to name that type's own word. A weekly
+    club notice is not that shape. 가또땅고's week is three classes on
+    Wednesday and its own 쁘롱가 after them, a Thursday practica, and a Sunday
+    of lessons, and the post as a whole is a CLASS - which is true of the post
+    and false of the 쁘롱가. `live_pipeline` returned before any extractor ran,
+    so ten such posts produced nothing at all.
+
+    What this reads is not the week. It is each programme's own name written
+    against its own clock: `[가또땅고 쁘롱가] 9:15~11:15pm`,
+    `"월간가또 밀롱가" 7:00~11:00pm`, `8:00-11:00pm 자율연습 Practica`. A class
+    in the same day is named by a level and a week number instead
+    (`초중급2 4주차`), a cancelled day by 휴강, and neither reads as a name -
+    see `extraction_rules.head_names_a_programme()`.
+
+    Four refusals, each for a post that breaks without it:
+
+    * **the segment's own date, or nothing.** A programme whose clock sits
+      after a day the date matcher could not read belongs to that day: item
+      3178 writes its Thursday as `7 /2(목)`, and dating its practica to the
+      Wednesday above it would be a wrong date, not a recovered event.
+    * **an hour the post actually marked.** item 3192's `8:00-8:20` carries no
+      meridiem anywhere, and a morning is worse than nothing.
+    * **one programme per date and start time.** A head read from both sides of
+      the same clock is one night.
+    * **nothing this post already reads.** The route runs only where the post
+      produced no events at all, so every post that works today is untouched.
+
+    Measured over the whole stored corpus at ENGINE 1.11: 18 posts have a
+    programme head of this shape and 10 of them produce no Event today - every
+    one of those ten is 가또땅고's own weekly notice, and between them they
+    announce 15 nights nobody could see.
+    """
+    text = f"{title} {body}"
+    title_end = len(title or "") + 1
+    if not _SCHEDULE_TITLE_RE.search(title or ""):
+        return None
+    published_date = _as_date(published)
+    matches = [m for m in _all_date_matches(text) if m.start() >= title_end]
+    if len(matches) < 2:
+        return None
+
+    out = []
+    seen = set()
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = (matches[index + 1].start() if index + 1 < len(matches)
+               else len(text))
+        seg_date, _ = _resolve_date_match(match, published_date, set())
+        if not seg_date:
+            continue
+        scope = text[start:end]
+        for reading, r_start, r_end in extraction_rules.readings_in(
+                scope, extraction_rules.ANY_PROGRAMME_WORD):
+            if reading.meridiem_evidence == extraction_rules.EVIDENCE_ABSENT:
+                continue
+            if extraction_rules.day_marker_before(
+                    scope, r_start, after=match.end() - start):
+                continue
+            for head in extraction_rules.programme_heads(scope, r_start, r_end):
+                if not extraction_rules.head_names_a_programme(head):
+                    continue
+                kind = extraction_rules.programme_type(head)
+                key = (seg_date, reading.start)
+                if key in seen:
+                    break
+                seen.add(key)
+                context_id = f"prog{len(out) + 1}"
+                ev = EventCandidate(
+                    name=f"{re.sub(r'\s+', ' ', title).strip()} {head}".strip(),
+                    event_type=kind,
+                    date=seg_date,
+                    start_time=reading.start,
+                    end_time=reading.end,
+                    end_day_offset=reading.end_day_offset,
+                )
+                ev.evidences.append(Evidence(
+                    "event_date", seg_date,
+                    re.sub(r"\s+", " ", scope[:60]).strip(),
+                    source_role=source_role, context_id=context_id))
+                ev.evidences.append(Evidence(
+                    "start_time", reading.start, reading.raw,
+                    source_role=source_role,
+                    inference=reading.meridiem_evidence, context_id=context_id))
+                if reading.end:
+                    ev.evidences.append(Evidence(
+                        "end_time", reading.end, reading.raw,
+                        source_role=source_role,
+                        inference=reading.meridiem_evidence,
+                        context_id=context_id))
+                ev.evidences.append(Evidence(
+                    "context", PROGRAMME_ITEM,
+                    re.sub(r"\s+", " ", head)[:160],
+                    source_role=source_role, context_id=context_id))
+                place = extraction_rules.extract_venue(scope)
+                if place:
+                    ev.venue = place.name
+                    ev.evidences.append(Evidence(
+                        "venue",
+                        {"name": place.name,
+                         "alias_candidates": place.alias_candidates},
+                        place.raw, source_role=source_role,
+                        inference=f"{_LABEL_INFERENCE}{place.label}",
+                        context_id=context_id))
+                out.append(ev)
+                break
+    return out or None

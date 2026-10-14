@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.32"
+PRODUCT_VERSION = "0.96.33"
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -412,7 +412,15 @@ PRODUCT_VERSION = "0.96.32"
 # Daejeon milongas in Seoul and hid two real Seoul milongas behind them, so
 # they have to be re-read: a row still stamped 1.10 would claim a venue this
 # engine does not read.
-DEFAULT_ENGINE_VERSION = "1.11"
+#
+# v0.96.33 bumps it again, 1.11 -> 1.12. `live_pipeline` now offers a post that
+# classifies CLASS one more reading before giving up - a dated programme that
+# names itself a night against its own clock - and `parse_time_range()` lets a
+# leading labelled time field outrank a marker found elsewhere in the body.
+# Fifteen candidates exist under this engine that did not exist under 1.11, and
+# eight stored bodies yield a different hour, so a row still stamped 1.11 would
+# claim a reading this engine does not make.
+DEFAULT_ENGINE_VERSION = "1.12"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

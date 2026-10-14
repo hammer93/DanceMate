@@ -1,6 +1,7 @@
 from .classifier import classify_with_image_evidence
-from .extractor import (DATE_PATTERNS, extract_day_list, extract_schedule,
-                        extract_single, extract_with_image_fallback)
+from .extractor import (DATE_PATTERNS, extract_day_list, extract_programmes,
+                        extract_schedule, extract_single,
+                        extract_with_image_fallback)
 from .verifier import verify
 from .database import persist_events
 
@@ -84,7 +85,27 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
                       and getattr(post, "class_event_opt_in", False)
                       and _dated_class_instance(post))
     if classification not in EVENT_CLASSIFICATIONS and not class_instance:
-        return {"classification": classification, "events": []}
+        # v0.96.33: a post can be a class notice and still announce a night.
+        # 가또땅고 publishes its whole week in one post - three Wednesday
+        # classes, then its own 쁘롱가 after them, a Thursday practica - and
+        # the post is a CLASS, which is true of the post and false of the
+        # 쁘롱가. Ten such posts are stored and not one produced an Event,
+        # because this return came first. What follows reads nothing about the
+        # week: only a programme that names itself a night against its own
+        # clock, which a class in the same day does not - see
+        # `extract_programmes()` for the four refusals that keep a cancelled
+        # day, a class level, a fee line and an unreadable date out.
+        programmes = extract_programmes(
+            post.title, post.body, source_role=source_role,
+            published=getattr(post, "published_at", None),
+        )
+        if not programmes:
+            return {"classification": classification, "events": []}
+        for ev in programmes:
+            verify(ev, source_role=source_role)
+            if post.acquisition_quality == "METADATA_ONLY" and ev.status == "VERIFIED":
+                ev.status = "POSSIBLE"
+        return {"classification": classification, "events": programmes}
     # v0.96.0: a schedule post ("9월 소셜 일정: 9/5 ... 9/12 ... 9/19") is one
     # candidate per dated program; anything less clear-cut stays one
     # candidate with MULTI_EVENT_CONTEXT for a person, exactly as before.
