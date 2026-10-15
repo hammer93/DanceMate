@@ -1061,7 +1061,15 @@ class VenueReading:
 # genuine "장소:" label: see ``extractor._image_venue()``.
 VENUE_LABEL_AT = "@"
 VENUE_LABEL_SUFFIX = "SUFFIX"
-VENUE_SHORTCUT_LABELS = frozenset({VENUE_LABEL_AT, VENUE_LABEL_SUFFIX})
+# v0.96.34: the two places a weekly notice writes a programme's own room -
+# beside its DJ in the clock's own bracket, and in the day's own header.
+# Shortcuts like the two above, and named for the same reason.
+VENUE_LABEL_PROGRAMME = "PROGRAMME"
+VENUE_LABEL_DAY_HEADER = "DAY_HEADER"
+VENUE_SHORTCUT_LABELS = frozenset({
+    VENUE_LABEL_AT, VENUE_LABEL_SUFFIX,
+    VENUE_LABEL_PROGRAMME, VENUE_LABEL_DAY_HEADER,
+})
 
 # --- the post's own place field (v0.96.29) ----------------------------------
 #
@@ -1448,14 +1456,20 @@ def _looks_like_person_or_prose(name: str) -> bool:
     if len(words) > 1 and any(_PREDICATE_WORD.search(word) for word in words):
         return True
     return bool(_PREDICATE_END.search(words[-1]))
+# The name shape both suffix rules read: up to three words, then a word that
+# ends in a venue word. Named (v0.96.34) so `programme_place()` can ask the
+# same question of a day's own header instead of repeating the pattern.
+_VENUE_SUFFIX_NAME = (
+    r"(?:[가-힣A-Za-z][가-힣A-Za-z]{0,12}\s){0,3}"
+    r"[가-힣A-Za-z]*(?:스튜디오|까페|카페|탱고바|스윙바|라틴바|살사바|홀|Studio|Cafe|Hall)"
+)
 # v0.96.0: an unlabelled name that ends in a venue word - "이데알 탱고 까페
 # 저녁 8시", "홍대 스윙바 20:00" - read only when nothing labels a venue and
 # the name sits right before the night's clock, so the suffix alone
 # ("스튜디오 대관", "카페 추천") never makes a place.
 _SUFFIX_VENUE_RE = re.compile(
     r"(?:^|(?<=[\s:：]))"
-    r"(?P<value>(?:[가-힣A-Za-z][가-힣A-Za-z]{0,12}\s){0,3}"
-    r"[가-힣A-Za-z]*(?:스튜디오|까페|카페|탱고바|스윙바|라틴바|살사바|홀|Studio|Cafe|Hall))"
+    rf"(?P<value>{_VENUE_SUFFIX_NAME})"
     rf"\s*(?:{_MARKER}\s*)?(?:\d{{1,2}}\s*(?::\s*\d{{2}}|시))",
     re.I,
 )
@@ -1464,8 +1478,7 @@ _NAME_OWNER_BEFORE = re.compile(r"(?:DJ|디제이|with|by|feat\.?)\s*$", re.I)
 # The same name right *after* the clock: "19:00-23:00 이데알 탱고 까페".
 _SUFFIX_VENUE_AFTER_CLOCK_RE = re.compile(
     r"\d{1,2}\s*(?::\s*\d{2}|시(?:\s*\d{1,2}\s*분?)?)\s*(?:[ap]\.?m\.?)?(?:부터|시작)?\s+"
-    r"(?P<value>(?:[가-힣A-Za-z][가-힣A-Za-z]{0,12}\s){0,3}"
-    r"[가-힣A-Za-z]*(?:스튜디오|까페|카페|탱고바|스윙바|라틴바|살사바|홀|Studio|Cafe|Hall))"
+    rf"(?P<value>{_VENUE_SUFFIX_NAME})"
     r"(?=\s|$|[,.!)])",
     re.I,
 )
@@ -2108,3 +2121,127 @@ def day_marker_before(text: str, position: int, after: int = 0) -> bool:
         return False
     match = _UNREAD_DAY_MARKER.search(text or "", after, position)
     return match is not None
+
+
+# --- a programme's own place (v0.96.34) -------------------------------------
+#
+# `extract_programmes()` recovers each night a weekly notice announces, and
+# called `extract_venue()` on the day's whole segment to find where it is
+# held. That answers None for every one of them: 가또땅고's board labels no
+# place at all. It writes each programme's room in one of three shapes, and
+# the day's classes write *theirs* in their own brackets - `(미오)`,
+# `(아미고 작은홀)`, `(일빠)` - which is why none of this reads the segment as
+# a whole. A Wednesday holds three classes in three rooms and then the club's
+# own 쁘롱가; "some place in this day" would hand the milonga a classroom.
+#
+#     [가또땅고 쁘롱가] 9:15~11:15pm (DJ 비스트, 아미고 큰홀)   its clock's bracket
+#     10/15(목)_아미고 큰홀 8:00-11:00pm 자율연습 Practica     the day's header
+#     10/10(토)_이데알 "월간가또 밀롱가" 7:00~11:00pm          header, quoted name
+#
+# Measured over all 4,338 stored items before the change: 30 matches in 29
+# items, every one on this one board, and three distinct values - 아미고 큰홀,
+# 아미고, 이데알. Each was read against the post it came from. Nothing else in
+# the corpus matches any of the three shapes, which is the point of anchoring
+# each of them to one programme rather than to a day.
+_PROGRAMME_PAREN_RE = re.compile(r"\s*[(（]([^)）\n]{2,60})[)）]")
+_PAREN_PART_SPLIT = re.compile(r"[,/·]")
+# Who else a bracket beside a clock names: the DJ, the organiser, a performer,
+# the person to ask. None of them is where the night is held.
+_PAREN_NAME_OWNER = re.compile(
+    r"^(?:DJ|디제이)\b|^with\b|오거나이저|주최|문의|공연|사회|오픈마켓|예매|신청",
+    re.I)
+_HEADER_PLACE_RE = re.compile(
+    rf"_(?P<value>{_VENUE_SUFFIX_NAME})\s*(?:\d{{1,2}}\s*(?::\s*\d{{2}}|시))",
+    re.I)
+# The header form that needs no venue word, because the programme's own name
+# is quoted right after it: `_이데알 "월간가또 밀롱가"`. The quoted name has to
+# be the head this candidate was built from, or the token before it is not
+# this programme's place.
+_HEADER_QUOTED_PLACE_RE = re.compile(
+    r"_(?P<value>[^\s_\"'“”()（）\[\]]{2,14})\s+"
+    # Double quotes only: the apostrophe in `"26-1기's 와인밀롱가"` belongs
+    # inside the name, and reading it as the closing quote cuts the head this
+    # candidate was built from off its own place.
+    r"[\"“『「](?P<head>[^\"”』」\n]{2,40})[\"”』」]")
+_PLACE_HAS_DIGIT = re.compile(r"\d")
+_VENUE_SUFFIX_FULL_RE = re.compile(_VENUE_SUFFIX_NAME, re.I)
+
+
+def _is_place_value(value: str) -> bool:
+    """Whether a read token can be a place at all."""
+    name = _strip_decoration(value or "").strip()
+    if len(name) < 2 or _PLACE_HAS_DIGIT.search(name):
+        return False
+    if _SUFFIX_VENUE_NOT_ALONE.match(name) or _ROOM_ONLY_RE.match(name):
+        return False
+    return not _looks_like_person_or_prose(name)
+
+
+def _paren_place(inner: str) -> str | None:
+    """The place in "(DJ 비스트, 아미고 큰홀)", or None.
+
+    A bracket that names only one thing is not read: `(DJ 스톤)` is a DJ and
+    `(미오)` is the classroom of the lesson it follows, not of a later night.
+    What is left after the DJ has to read as a name - one word, or a phrase
+    ending in a venue word. `(예매X, 현장 결재)` says how to pay, and two words
+    beside a DJ are not a place just because they are not a DJ.
+    """
+    parts = [p.strip() for p in _PAREN_PART_SPLIT.split(inner) if p.strip()]
+    if len(parts) < 2:
+        return None
+    rest = [p for p in parts if not _PAREN_NAME_OWNER.search(p)]
+    if len(rest) != 1 or not _is_place_value(rest[0]):
+        return None
+    name = _strip_decoration(rest[0]).strip()
+    if " " in name and not _VENUE_SUFFIX_FULL_RE.fullmatch(name):
+        return None
+    return name
+
+
+def _last_match(pattern, text: str):
+    """The last match in ``text``, i.e. the one nearest the programme."""
+    found = None
+    for found in pattern.finditer(text):
+        pass
+    return found
+
+
+def _place_reading(name: str, raw: str, label: str) -> VenueReading:
+    return VenueReading(
+        name=name,
+        raw=re.sub(r"\s+", " ", raw)[:120].strip(),
+        label=label,
+        alias_candidates=_alias_candidates(name),
+    )
+
+
+def programme_place(scope: str, start: int, end: int, head: str,
+                    after: int = 0) -> "VenueReading | None":
+    """Where the programme at ``start``..``end`` says it is held, or None.
+
+    ``scope`` is the day's own segment, ``after`` where its date header ends,
+    and ``head`` the name this candidate was built from. The programme's own
+    bracket is asked first and the day's header second: a night that states
+    its own room keeps it even on a day whose header names another.
+    """
+    paren = _PROGRAMME_PAREN_RE.match(scope or "", end)
+    if paren:
+        place = _paren_place(paren.group(1))
+        if place:
+            return _place_reading(place, paren.group(0), VENUE_LABEL_PROGRAMME)
+    # The venue-word form ends *at* a clock, so its span runs through this
+    # reading; the quoted-name form is complete before the clock begins.
+    match = _last_match(_HEADER_PLACE_RE, (scope or "")[after:end])
+    if match and _is_place_value(match.group("value")):
+        return _place_reading(_strip_decoration(match.group("value")).strip(),
+                              match.group(0), VENUE_LABEL_DAY_HEADER)
+    wanted = re.sub(r"\s+", " ", head or "").strip()
+    for match in _HEADER_QUOTED_PLACE_RE.finditer((scope or "")[after:start]):
+        quoted = re.sub(r"\s+", " ", match.group("head")).strip()
+        if not wanted or wanted not in quoted:
+            continue
+        if _is_place_value(match.group("value")):
+            return _place_reading(
+                _strip_decoration(match.group("value")).strip(),
+                match.group(0), VENUE_LABEL_DAY_HEADER)
+    return None

@@ -1809,11 +1809,24 @@ def extract_programmes(title: str, body: str, source_role="SECONDARY",
                         source_role=source_role,
                         inference=reading.meridiem_evidence,
                         context_id=context_id))
+                # v0.96.34: the same "time" evidence every other route writes.
+                # Without it `candidates.time_evidence()` finds no row for a
+                # programme and the Event carries no time provenance at all -
+                # which the reader then has to read as "nothing is known",
+                # for an hour this route only accepted *because* the post
+                # marked it.
+                ev.evidences.append(Evidence(
+                    "time", reading.as_dict(), reading.raw,
+                    source_role=source_role,
+                    inference=reading.meridiem_evidence, context_id=context_id))
                 ev.evidences.append(Evidence(
                     "context", PROGRAMME_ITEM,
                     re.sub(r"\s+", " ", head)[:160],
                     source_role=source_role, context_id=context_id))
-                place = extraction_rules.extract_venue(scope)
+                place = (extraction_rules.extract_venue(scope)
+                         or extraction_rules.programme_place(
+                             scope, r_start, r_end, head,
+                             after=match.end() - start))
                 if place:
                     ev.venue = place.name
                     ev.evidences.append(Evidence(

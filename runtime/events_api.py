@@ -335,7 +335,9 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "ends_next_day": bool(row.get("end_day_offset")),
         # False when the post wrote a bare clock and nothing said which half of
         # the day it meant. The value is what the post says; this says how much
-        # that is worth.
+        # that is worth. v0.96.34: ABSENT is now only that case - an hour
+        # written as 14:00 carries no marker either, and is reported
+        # UNAMBIGUOUS rather than conflated with a 2 o'clock nobody placed.
         "time_confirmed": (None if row.get("start_time") is None
                            else row.get("time_evidence") != "ABSENT"),
         "venue": {

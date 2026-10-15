@@ -567,12 +567,26 @@ def all_candidate_ids(settings: Settings) -> set[int] | None:
     return {row["candidate_id"] for row in rows}
 
 
+#: What the engine writes when a clock carried no PM/오후 marker at all.
+ENGINE_EVIDENCE_ABSENT = "ABSENT"
+#: The hour needs no marker to be certain: the post wrote it as 14:00, and
+#: `extraction_rules` recorded `ambiguous: False` because no reading of 14
+#: o'clock is twelve hours out. Distinguished from ABSENT (v0.96.34) because
+#: the two had been stored as one value, and the reader showed both as a time
+#: nobody had confirmed - 659 of the 711 ABSENT Events were of this kind, and
+#: none of them started before noon.
+EVIDENCE_UNAMBIGUOUS = "UNAMBIGUOUS"
+
+
 def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str]:
     """How the engine knew which half of the day each time belongs to.
 
-    EXPLICIT when the post carried a PM/오후/저녁 marker, ABSENT when it wrote a
-    bare clock and the engine declined to guess. Read back rather than
-    re-derived so the reader is told exactly what the extractor decided.
+    EXPLICIT when the post carried a PM/오후/저녁 marker, UNAMBIGUOUS when it
+    wrote the hour in a notation that has only one reading, ABSENT when it
+    wrote a bare clock and the engine declined to guess. Read back rather than
+    re-derived so the reader is told exactly what the extractor decided -
+    including its own `ambiguous` verdict, which is recorded beside the
+    marker evidence in the same row and had never been read.
     """
     if not candidate_ids:
         return {}
@@ -583,7 +597,7 @@ def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str
     try:
         placeholders = ",".join("?" for _ in candidate_ids)
         rows = con.execute(
-            "SELECT candidate_id, inference FROM evidences "
+            "SELECT candidate_id, inference, value FROM evidences "
             f"WHERE field = 'time' AND candidate_id IN ({placeholders})",
             tuple(candidate_ids),
         ).fetchall()
@@ -591,7 +605,21 @@ def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str
         return {}
     finally:
         con.close()
-    return {row["candidate_id"]: row["inference"] for row in rows if row["inference"]}
+    return {row["candidate_id"]: _time_evidence_value(row)
+            for row in rows if row["inference"]}
+
+
+def _time_evidence_value(row) -> str:
+    """The row's own verdict on this time, marker and ambiguity together."""
+    if row["inference"] != ENGINE_EVIDENCE_ABSENT:
+        return row["inference"]
+    try:
+        reading = json.loads(row["value"]) if row["value"] else None
+    except (TypeError, ValueError):
+        return row["inference"]
+    if isinstance(reading, dict) and reading.get("ambiguous") is False:
+        return EVIDENCE_UNAMBIGUOUS
+    return row["inference"]
 
 
 def genre_hints(settings: Settings, candidate_ids: list[int]) -> dict[int, list[str]]:

@@ -84,6 +84,10 @@ def completeness(con, *, upcoming_only: bool = False) -> dict[str, Any]:
             "SELECT count(*) AS events, "
             "  count(*) FILTER (WHERE event_date IS NOT NULL) AS date_known, "
             "  count(*) FILTER (WHERE start_time IS NOT NULL) AS time_known, "
+            # v0.96.34: ABSENT means the post wrote a bare 1..12 clock and
+            # nothing said which half of the day it meant. An hour written as
+            # 14:00 reports UNAMBIGUOUS and is not counted here - it never
+            # needed confirming.
             "  count(*) FILTER (WHERE start_time IS NOT NULL "
             "                     AND time_evidence = 'ABSENT') AS time_unconfirmed, "
             "  count(*) FILTER (WHERE venue_text IS NOT NULL) AS venue_extracted, "

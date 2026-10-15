@@ -1,5 +1,110 @@
 # DanceMate Release Notes
 
+## v0.96.34 Recover Programme-Owned Venues and Preserve Correct Time Evidence
+
+Product Runtime 0.96.34; Information Engine **1.12 → 1.13**; migrations
+**045** (one venue alias) and **046** (what `time_evidence` can say).
+
+Two things, with different owners. One is extraction: a recovered night should
+say where it is held. The other is provenance: a time that was read correctly
+should not be reported as a time nobody confirmed.
+
+### Where each recovered night is held
+
+v0.96.33 recovered 15 nights out of 가또땅고's weekly notices and every one of
+them carried no place at all. `extract_programmes()` did ask - it called
+`extract_venue()` on the day's whole segment - and the answer is None for all
+15, because this board labels no place anywhere. It writes each programme's
+room in one of three shapes:
+
+    [가또땅고 쁘롱가] 9:15~11:15pm (DJ 비스트, 아미고 큰홀)   beside its own DJ
+    10/15(목)_아미고 큰홀 8:00-11:00pm 자율연습 Practica     the day's header
+    10/10(토)_이데알 "월간가또 밀롱가" 7:00~11:00pm          header, quoted name
+
+And the same Wednesday's three lessons write **their** rooms in their own
+brackets - `(아미고 큰홀)`, `(일빠)`, `(미오)` - which is why none of this reads
+the segment as a whole. "Some place in this day" hands the milonga a
+classroom, and on two of these posts it would be the wrong one.
+
+`programme_place()` anchors each shape to one programme:
+
+* **the bracket that follows this programme's own clock.** The DJ, the
+  organiser, the person to ask and the ticket line are dropped; what is left
+  has to read as a name - one word, or a phrase ending in a venue word - so
+  `(예매X, 현장 결재)` says how to pay and not where to go, and a bracket that
+  names only one thing is not read at all (`(DJ 스톤)` is a DJ, `(미오)` is the
+  classroom of the lesson it follows).
+* **the day's own header**, between the date and the day's first clock: a name
+  ending in a venue word, after this board's own `_` separator. v0.96.0
+  already reads that name before a clock when a space separates them, and
+  still does; this adds the separator, not the shape.
+* **the token before this programme's quoted name**, which is how 아미고 and
+  이데알 are written - no venue word, and none needed, because the quoted name
+  is the head this candidate was built from.
+
+Measured over all 4,338 stored items before a line was changed: 30 matches in
+29 items, every one on this one board, three distinct values. Ten of the 15
+gain a place; **five keep none**, because those posts name a DJ and nothing
+else, and borrowing the lesson's room would be worse than an empty field.
+
+Finding the place in the post and finding it in the Venue Master are separate
+steps. 아미고 and 이데알 resolve as they are. `아미고 큰홀` resolved to nothing,
+because `normalize_alias()` is exact by design (v0.96.32), so **migration 045
+adds that one spelling** to the studio already registered - on the corpus's own
+evidence, not on a resemblance of names:
+
+    item 5598  장소: 아미고 스튜디오 (부산진구 부전로 34)   일시: 10월 07일 9:15-11:15pm
+    item 5691  [가또땅고 쁘롱가] 9:15~11:15pm (DJ 비스트, 아미고 큰홀)
+
+Same club, same Wednesday, same hour, same DJ. 아미고 작은홀 is deliberately
+left out: no recovered programme is held there, and an alias nothing needs is
+an assertion nothing has tested. Four of the recovered nights then fold with
+Events miltang and the club's own milonga posts had already listed at that
+venue and hour - three sources agreeing on one night, which is the fold
+working rather than a fold to be afraid of. The 10/15 practica does **not**
+fold with the 19:30 쁘락 miltang lists at the same venue that day: the hours
+differ, and that stays a question for a person.
+
+### A time that needed no marker
+
+`events.time_evidence` carried the engine's marker verdict and nothing else -
+EXPLICIT where the post wrote PM/오후, ABSENT where it wrote none - and the
+reader turned ABSENT into `time_confirmed: false`. But a post that states
+`시간: 14:00~18:00` writes no marker either, and needs none: 14 o'clock has
+one reading. The engine has recorded exactly that since v0.74, as
+`ambiguous: False` in the same evidence row, and `candidates.time_evidence()`
+read only the marker beside it.
+
+Measured on Production: of **711** ABSENT Events, **659** are of this kind,
+**none** of them starts before noon, and across all 669 such readings the hour
+the post wrote is the hour that was stored, every one outside 1..12. Those 659
+now report UNAMBIGUOUS and read as confirmed. The remaining **52** wrote a bare
+1..12 clock with nothing to place it - `9:15~11:15`, `8:00-8:20` - and stay
+unconfirmed, which is what v0.96.18/19 built and this release does not touch.
+No stored time changes value.
+
+A recovered programme also writes the `time` evidence row every other route
+writes. Without it the Event carried no time provenance at all, and the reader
+had been treating that absence as confirmation - for an hour this route only
+ever accepted *because* the post had marked it.
+
+### Measured, both engine trees over the whole corpus
+
+    source_items compared                     4,350
+    candidate cardinality changes                 0
+    date / start / end / fee / type / genre / name / DJ   0
+    venue added                                  10
+    venue changed / removed                       0
+    time evidence rows added                     15
+
+Nothing moves but the two fields this release is about.
+
+### Engine version
+
+1.12 → 1.13. Ten candidates carry a venue they did not carry under 1.12 and
+all fifteen carry their hour's provenance, so a row still stamped 1.12 would
+be missing both.
+
 ## v0.96.33 Recover Real Dance Events From Mixed Weekly Programmes Without Borrowing Another Programme's Time
 
 Product Runtime 0.96.33; Information Engine **1.11 → 1.12**; migration **044, unchanged**.
