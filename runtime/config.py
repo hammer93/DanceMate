@@ -427,7 +427,7 @@ PRODUCT_VERSION = "0.96.34"
 # writes. Ten of the fifteen gain a venue they did not have and all fifteen
 # gain their hour's provenance, so a row still stamped 1.12 would be missing
 # both. Nothing a 1.12 row says changes: no date, no hour, no candidate.
-DEFAULT_ENGINE_VERSION = "1.13"
+DEFAULT_ENGINE_VERSION = "1.14"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

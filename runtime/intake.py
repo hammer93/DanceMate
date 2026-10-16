@@ -54,6 +54,53 @@ class RawItem:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+#: What a collector *judges* about an item, as against what it read off the
+#: page. None of these is content, so none of them is hashed above: the same
+#: page collected twice is the same page, and a judgement is the runtime's own
+#: reading of it rather than something the upstream edited.
+#:
+#: They still have to be able to change. A collector that learns to recognise
+#: something it used to miss (v0.96.35: a TangoNOW share page carries no event
+#: type, so its structure has to answer for one) produces a better record for
+#: a page whose text has not moved at all, and before this the better record
+#: was simply dropped - `store_item()` returned DUPLICATE and left the stored
+#: `raw` as it was, so the improvement reached new pages only and never the
+#: ones already collected. The alternative, writing something into the body to
+#: shift its hash, is worse twice over: it puts a word the page never said in
+#: front of the extractor, and it re-keys every item to move a fact about a
+#: few.
+#:
+#: Deliberately a named list rather than "did `raw` change at all": a
+#: collector's record may legitimately carry volatile fields (a signed image
+#: URL, a discovery query), and none of those is a reason to re-read a post.
+JUDGEMENT_KEYS = (
+    # v0.82.5 - which kind of night the page's own structure guarantees.
+    "known_event_type",
+    # v0.80 - whether a dated class board opts into class-instance events.
+    "class_event_opt_in",
+    # v0.96.10 - what the source itself files this post as.
+    "source_category",
+    # v0.96.35 - that the page's structure guarantees a night at all, and the
+    # sentence saying why, kept so the reason stays readable afterwards.
+    "source_night_fallback",
+    "night_evidence",
+)
+
+
+def _judgement(raw: Any) -> dict[str, Any]:
+    """Only the judgement keys a record actually carries - absent and null are
+    different answers, and a collector that has gone quiet about one of them
+    is as much a change as one that has changed its mind."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {key: raw[key] for key in JUDGEMENT_KEYS if key in raw}
+
+
 def _row(cur) -> dict[str, Any] | None:
     columns = [c.name for c in cur.description]
     row = cur.fetchone()
@@ -126,7 +173,7 @@ def store_item(
     digest = item.content_hash()
     with con.cursor() as cur:
         cur.execute(
-            "SELECT source_item_id, content_hash FROM source_items "
+            "SELECT source_item_id, content_hash, raw FROM source_items "
             "WHERE source_id = %s AND external_id = %s",
             (source_id, item.external_id),
         )
@@ -146,8 +193,42 @@ def store_item(
             _settle_if_fetched_full(con, source_item_id, item)
             return "NEW"
 
-        source_item_id, previous_hash = existing
+        source_item_id, previous_hash, previous_raw = existing
         if previous_hash == digest:
+            # v0.96.35: the same page, but not necessarily the same reading of
+            # it. When the collector's judgement about this unchanged page has
+            # moved (JUDGEMENT_KEYS), the stored record is refreshed and the
+            # item is put back in the engine's re-extract queue. The page is
+            # not a revision; our record of it is.
+            #
+            # Why the re-extract queue and not `ingest_state = PENDING`:
+            # `database.persist_raw_post()` keys a post on its own URL and
+            # returns `is_new = False` for one already stored, and
+            # `engine_ingest.ingest_pending()` extracts only a new post - so
+            # re-ingesting an item we already hold does nothing at all, and
+            # the better record would never be read.
+            #
+            # Safe by construction: body, title, url and published date are
+            # identical on this branch, so the engine re-reads exactly the
+            # text it read before and cannot produce a new date, time, venue
+            # or fee from doing so. Only the judgement that travels beside
+            # that text can move. Idempotent, too: once the stored judgement
+            # matches, the next collection of the same page is a DUPLICATE
+            # again, so an unchanged page cannot churn on every cycle.
+            if _judgement(previous_raw) != _judgement(item.raw):
+                cur.execute(
+                    "UPDATE source_items SET collection_run_id = %s, "
+                    "  raw = %s::jsonb, collected_at = now() "
+                    "WHERE source_item_id = %s",
+                    (collection_run_id,
+                     json.dumps(item.raw, ensure_ascii=False, default=str),
+                     source_item_id),
+                )
+                _settle_if_fetched_full(con, source_item_id, item)
+                from . import content_store  # local: avoids a load cycle
+
+                content_store.mark_needs_reextract(con, source_item_id)
+                return "REVISED"
             # Same content the engine has already seen - but if a shared
             # acquisition/reprocess cycle degraded this item's settled
             # content in the meantime (Section 46's "self-healing" case),

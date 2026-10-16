@@ -1244,21 +1244,45 @@ _KNOWN_VENUE_FALLBACKS = (
 )
 # "오초(Ocho)", "히로(Giro)" - a Korean word followed by its Latin gloss.
 _LATIN_GLOSS_RE = re.compile(r"[가-힣]\s*[(（]\s*$")
+# v0.96.35: the known name is sitting in some *other* field's labelled value.
+#
+# The three names above are read "for posts that name their place in prose and
+# never label it", and a labelled value is the opposite of prose: whatever
+# follows `주최:` is the organiser, whatever follows `DJ:` is the DJ, and a
+# venue name appearing there answers that question and not the place one.
+# Found on TangoNOW's share pages, whose organiser field routinely holds the
+# club that runs the night: `PISTA | The PISTA` states no place at all and its
+# body reads `DJ: Eddy 주최: PISTA`, so the night was being placed at the Seoul
+# venue PISTA on the strength of who was hosting it. The same site proves why
+# that cannot be assumed - `A.B.Tango | 치초 후아나 Grand Milonga` is held at
+# PISTA while `A.B.Tango | MU!!LONGA` is held at Andante, so this provider's
+# brand and its venue are genuinely many-to-many.
+#
+# Bounded to the head of the value (20 characters, no further label between),
+# so this declines the organiser *named* in the field and not a known venue
+# mentioned in a long prose value further on.
+_FIELD_VALUE_HEAD_RE = re.compile(
+    r"(?:주최자?|주관|오거나이저|호스트|주최측|문의|예약|신청|DJ|디제이)"
+    r"\s*[:：][^:：]{0,20}$", re.I)
 
 
 def known_venue_fallback(text: str) -> tuple[str, str] | None:
     """A known venue this text names in prose, as ``(name, raw)``.
 
     ``None`` when the text labels a place (that label is the answer, readable
-    or not - see `states_a_place`), and when the only occurrence of a known
-    name is a gloss rather than a mention.
+    or not - see `states_a_place`), when the only occurrence of a known name is
+    a gloss rather than a mention, and when it is the value of another field
+    (v0.96.35 - see `_FIELD_VALUE_HEAD_RE`).
     """
     body = text or ""
     if states_a_place(body):
         return None
     for pattern, name, raw in _KNOWN_VENUE_FALLBACKS:
         for match in pattern.finditer(body):
-            if _LATIN_GLOSS_RE.search(body[:match.start()]):
+            before = body[:match.start()]
+            if _LATIN_GLOSS_RE.search(before):
+                continue
+            if _FIELD_VALUE_HEAD_RE.search(before):
                 continue
             return name, raw
     return None

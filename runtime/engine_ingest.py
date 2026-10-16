@@ -168,6 +168,13 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         # did; an item collected before it has no such key and classifies
         # by text alone, which is what every other source does anyway.
         source_category=raw.get("source_category"),
+        # v0.96.35: the collector's structural answer to "is there a night
+        # here at all", for a source whose pages carry no event type to read.
+        # Read off the stored raw the same way known_event_type above is, so
+        # a re-extraction sees exactly what the ingest pass saw; an item
+        # collected before v0.96.35 has no such key and classifies by text
+        # alone, which is what every other source does anyway.
+        source_night_fallback=raw.get("source_night_fallback"),
         # v0.86.9: the Settings terminology for this source's genre -
         # see _detection_terms_by_source().
         event_terms=event_terms,

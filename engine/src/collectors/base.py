@@ -36,6 +36,17 @@ class RawPostRecord:
     # a source that labels each post itself may set it. None (the default)
     # leaves classification exactly as it was for every other collector.
     source_category: Optional[str] = None
+    # v0.96.35: the weak counterpart to known_event_type above. That one
+    # answers "which kind of night is this", and outranks every keyword
+    # reading. This one answers only "is there a night here at all", for a
+    # source that publishes a dated, clocked occurrence carrying no event
+    # type of any kind to read (TangoNOW's share pages state `@type: Event`
+    # and no category, no genre). classify() therefore asks it last, after
+    # every refusal and after the post's own words have found nothing, so it
+    # can promote an unreadable brand name to a night but can never weaken
+    # or overrule a classification. None (the default) leaves classification
+    # exactly as it was for every existing collector.
+    source_night_fallback: Optional[str] = None
 
     def to_dict(self):
         return asdict(self)

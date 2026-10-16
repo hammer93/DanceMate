@@ -694,6 +694,42 @@ _LD_JSON_RE = re.compile(
 # venue again.
 _SHARE_DJ_RE = re.compile(r"^DJ\s+(.{1,40})$")
 _SHARE_CLOCK_RE = re.compile(r"\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})")
+#: The share-page form TangoNOW gives an occurrence of a *registered,
+#: recurring* night: `dov_brand_<brand id>_<n>_<date>`, the operator's own
+#: identifier for instance n of a brand they maintain. A one-off occurrence is
+#: `occ_<hash>` instead. Read only as one of the two corroborations below; if
+#: the provider ever changes the form, those pages stop qualifying and produce
+#: no event, which is the safe direction to fail in.
+_SHARE_BRAND_RE = re.compile(r"^https://ktnow\.kr/e/dov_brand_[A-Za-z0-9_.~-]{4,200}$")
+#: How long one night may run before it stops being one night (v0.96.35). A
+#: milonga that closes after midnight is still one night - the stored pages run
+#: from 14:00~18:00 to 23:30~04:30, the longest of them seven hours - and a
+#: festival, a tango week or a marathon is not. Measured over every stored
+#: share page: no qualifying night exceeds seven hours and no multi-day event
+#: comes near twelve, so this separates them without sitting on top of either.
+NIGHT_MAX_HOURS = 12
+#: The weakest classification DanceMate's taxonomy actually has for a night
+#: out, and therefore the only one this evidence earns. Deliberately not
+#: MILONGA: these pages state no event type at all, so naming the specific
+#: format would invent exactly the fact that is missing. A page whose own name
+#: says 밀롱가 or 쁘락띠까 never reaches the fallback anyway - the engine has
+#: already read it and answered MILONGA itself.
+SHARE_NIGHT_FALLBACK = "SOCIAL"
+#: Formats a page announces *in its own name* that are not a social dance
+#: night. A refusal list, never an allow list: nothing here promotes a page,
+#: and a brand name wrongly caught by it simply produces no event, which costs
+#: a recovery and never creates a false one. This is what keeps a timed movie
+#: night at a tango venue out even though its venue and its clock would look
+#: exactly like a milonga's - `Club Troilo | 트로일로 무비 나잇!!!` is real and
+#: is stored, and the same sitemap publishes festivals, tango weeks and
+#: marathons beside the milongas.
+_NOT_A_SOCIAL_RE = re.compile(
+    r"무비|영화|상영|페스티발|페스티벌|축제|마라톤|위크|워크샵|워크숍|세미나"
+    r"|공연|콘서트|대회|강습|수업|클래스|클라스|강좌|레슨|총회|설명회|모집"
+    r"|\bmovie\b|\bscreening\b|\bfestival\b|\bmarathon\b|\bweek\b"
+    r"|\bweekend\b|\bworkshop\b|\bseminar\b|\bconcert\b|\brecital\b"
+    r"|\bchampionship\b|\bcompetition\b|\bclass(?:es)?\b|\blesson(?:s)?\b",
+    re.I)
 #: The site's own Crawl-delay, in seconds.
 CRAWL_DELAY = 1.0
 MAX_SHARE_PAGES = 400
@@ -810,6 +846,81 @@ def _synthesize_share_body(event: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def share_night_evidence(event: dict[str, Any], share_url: str) -> str | None:
+    """Why this page's own structure says a social dance night is on it - or
+    None, when it does not say so.
+
+    The problem this exists for: a share page carries no event type. The live
+    JSON-LD vocabulary is `@type`, `name`, `url`, `description`, `startDate`,
+    `endDate`, `eventStatus`, `eventAttendanceMode`, `inLanguage`, `image`,
+    `location`, `organizer` - no category, no genre - and `description` is only
+    the date, clock and venue restated. The clubs publishing here name their
+    nights `cabeceo`, `ORANGE`, `이뚜밀`, `볼베르`, `The PISTA`, so 28 of the 68
+    stored pages hold a real dated, clocked night that no vocabulary can read.
+    What this function must *not* do is answer that by trusting the source: the
+    same sitemap lists a movie night, eight festivals and marathons, and two
+    tango weeks.
+
+    So nothing here reads the name for what the event *is*. Every test is
+    structural, and all of them must hold:
+
+    * **one night, with both ends stated.** `startDate` and `endDate` both
+      carry a clock, in that order, no more than `NIGHT_MAX_HOURS` apart. This
+      alone excludes every clockless page the site publishes - all eight
+      festivals and marathons, both tango weeks, the movie night - and it
+      excludes a multi-day span even when it is clocked. A milonga closing at
+      02:00 or 04:30 is still one night and still passes.
+    * **the name announces no other format.** `_NOT_A_SOCIAL_RE`, a refusal
+      list, for the timed non-dance page the clock test would otherwise let
+      through: a 19:00~22:00 screening is structurally identical to a milonga
+      and only its own name says otherwise.
+    * **one independent corroboration that this is a dance night**, because "a
+      scheduled thing with a clock on a tango calendar" is not one. Either the
+      page names the **DJ** who plays this occurrence - the one operational
+      fact a milonga has that a screening, a lesson and a festival programme do
+      not - or it is an occurrence of a **registered recurring brand** that
+      states its own venue, which is the operator's own record that this is a
+      regular night at a fixed place and hour.
+
+      Measured over all 68 stored pages: these two together admit 27 of the 28
+      clocked nights and none of the 10 pages that are not one. The one they
+      decline, `O Nada | In the mood for Tango`, is a one-off occurrence naming
+      no DJ, which is genuinely the weaker evidence - and `The Best Tangueros
+      Seoul` names a DJ but states no clock, so the first test declines it
+      before this one is asked.
+
+    Returns the sentence to store as this reading's own provenance, so the
+    reason a page was admitted stays readable in `source_items.raw` long after
+    this release. Never returns a type: `parse_share_page()` pairs it with
+    `SHARE_NIGHT_FALLBACK`, and the engine decides what to do with that.
+    """
+    opens = _share_clock(event.get("startDate"))
+    closes = _share_clock(event.get("endDate"))
+    if not opens or not closes:
+        return None
+    start = _parse_iso(event.get("startDate"))
+    end = _parse_iso(event.get("endDate"))
+    if start is None or end is None:
+        return None
+    hours = (end - start).total_seconds() / 3600.0
+    if not 0 < hours <= NIGHT_MAX_HOURS:
+        return None
+    if _NOT_A_SOCIAL_RE.search(str(event.get("name") or "")):
+        return None
+
+    location = event.get("location")
+    venue = (location or {}).get("name") if isinstance(location, dict) else None
+    venue = str(venue).strip() if venue else None
+    night = f"{start.date().isoformat()} {opens}~{closes}"
+    dj = _share_dj(event.get("description"), venue)
+    if dj:
+        return f"TangoNOW share page: one dated night {night}, DJ {dj}"
+    if venue and _SHARE_BRAND_RE.match(share_url or ""):
+        return (f"TangoNOW share page: one dated night {night}, "
+                f"recurring brand occurrence at {venue}")
+    return None
+
+
 def parse_share_page(raw_html: str, share_url: str) -> dict[str, Any] | None:
     """One share page -> a RawPostRecord-shaped dict, or None.
 
@@ -829,13 +940,30 @@ def parse_share_page(raw_html: str, share_url: str) -> dict[str, Any] | None:
     start = str(event.get("startDate") or "")
     if not title or not _format_date_kr(start[:10] if len(start) >= 10 else None):
         return None
-    return {
+    record = {
         "source_url": share_url,
         "title": title,
         "body": _synthesize_share_body(event),
         "published_at": None,
         "acquisition_quality": "FETCHED_FULL",
     }
+    # v0.96.35: the page's own facts stay in the body, and the judgement about
+    # them stays out of it. Writing a word like 소셜 into the synthesized text
+    # would put a word the page never said in front of the extractor as though
+    # the page had said it - and it would change the body hash of all 68 stored
+    # pages in order to move a fact about 28 of them. These two keys travel in
+    # the collector's own record instead, which is where `known_event_type` has
+    # travelled since v0.82.5, and `intake.store_item()` is what notices when
+    # they change.
+    #
+    # Both keys are absent, not null, on a page that does not qualify: an
+    # unchanged page has to produce a byte-identical record, or every ordinary
+    # collection would read as a revision of something.
+    evidence = share_night_evidence(event, share_url)
+    if evidence:
+        record["source_night_fallback"] = SHARE_NIGHT_FALLBACK
+        record["night_evidence"] = evidence
+    return record
 
 
 def discover_share_pages(

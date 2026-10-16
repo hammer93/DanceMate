@@ -72,6 +72,16 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
     this on the RawPostRecord it hands in, skipping the guess entirely.
     Defaults to None on RawPostRecord, which is exactly today's keyword-
     guessing behaviour - unchanged for every post that does not set it.
+
+    ``post.source_night_fallback`` (v0.96.35, RawPostRecord): the weak
+    counterpart to the prior above. Where ``known_event_type`` says "this page
+    guarantees *which* kind of night", this says only "this page's structure
+    guarantees there *is* a night here" - so classify() asks it last, after
+    every refusal and every reading of the post's own words, and it can only
+    turn "no evidence of anything" into the weakest classification the
+    taxonomy has. Set by a collector whose source publishes a dated, clocked
+    occurrence with no type of its own to read (TangoNOW's share pages);
+    defaults to None, which is every other collector.
     """
     classification, image_evidence_ref = classify_with_image_evidence(
         post.title, post.body,
@@ -80,6 +90,7 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         published=getattr(post, "published_at", None),
         event_terms=getattr(post, "event_terms", None),
         source_category=getattr(post, "source_category", None),
+        source_night_fallback=getattr(post, "source_night_fallback", None),
     )
     class_instance = (classification == "CLASS"
                       and getattr(post, "class_event_opt_in", False)

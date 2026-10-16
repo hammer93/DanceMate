@@ -1,5 +1,162 @@
 # DanceMate Release Notes
 
+## v0.96.35 Recover Verified TangoNOW Dance Events Without Inventing Their Type or Venue
+
+Product Runtime 0.96.35; Information Engine **1.13 → 1.14**; no migration.
+
+Twenty-eight of the 68 TangoNOW share pages DanceMate holds carry a real dated,
+clocked night and produced nothing at all. Nine of them are nights no other
+source has. This release recovers them without claiming one fact the pages do
+not state.
+
+### Why the classifier refused them
+
+A share page has no event type. Captured live on 2026-10-16, all 57 pages the
+sitemap then listed render exactly this vocabulary and no more:
+
+    @type  name  url  description  startDate  endDate  eventStatus
+    eventAttendanceMode  inLanguage  image  location  organizer
+
+No `category`, no `genre`, no `eventType`, and `description` is only the date,
+clock and venue restated in prose - so nothing was being thrown away by
+`_synthesize_share_body()` declining to carry it. The only place a type word
+could appear is the name, and these clubs name their nights `cabeceo`,
+`ORANGE`, `이뚜밀`, `볼베르`, `The PISTA`, `MU!!LONGA`. Every page that *does*
+classify today has a word in its own title - `까사밀롱가`, `금요 쁘락띠까`,
+`심야 밀롱가`, `JB milonga` - and every page that does not, has a brand name.
+`live_pipeline.process_discovered_post()` returned at `classification not in
+EVENT_CLASSIFICATIONS`, before a candidate existed. Normalization never saw
+them: of the 68, 30 produced candidates and all 30 normalized.
+
+### What the source may and may not answer for
+
+`known_event_type` has been admissible since v0.80 and keeps its precedence: a
+collector reading a dedicated milonga board knows **which kind** of night every
+post on it announces, so `classify()` returns it over any keyword reading.
+This release adds the opposite kind of evidence, with the opposite precedence.
+`source_night_fallback` says only "there **is** a night here", and `classify()`
+asks it last - after v0.96.8's recap guard, after a course, after a lesson sold
+in a title, and after every reading of the post's own words. It can therefore
+turn "no evidence of anything" into a night and nothing else: it cannot
+overturn a refusal and it cannot weaken a MILONGA, which is checked over the
+real Production bodies of `OCHO | 까사밀롱가` and `엔빠스 | 금요 쁘락띠까`. It
+accepts only a real event classification, so a collector cannot inject CLASS,
+OTHER or a type of its own invention.
+
+The value it is given is **SOCIAL**, not MILONGA. The taxonomy has four event
+classifications (MILONGA, MILONGA_WITH_CLASS, SOCIAL, SOCIAL_WITH_CLASS) and no
+PRACTICA - `쁘락`/`practica` are MILONGA_WORDS, which is why `금요 쁘락띠까`
+classifies as MILONGA and must keep doing so. SOCIAL is the weakest of the four
+and the only one this evidence earns: the pages state that a dance night is on,
+not which format it is. A page whose own name says `밀롱가` never reaches the
+fallback at all, so nothing is downgraded by choosing the weaker answer.
+
+### What makes a page qualify
+
+`tangonow_discovery.share_night_evidence()` reads only structure, never the
+name for what the event *is*. All of these must hold:
+
+* **one night, both ends stated.** `startDate` and `endDate` each carry a
+  clock, in that order, at most twelve hours apart. This alone excludes every
+  page on the sitemap that is not a night - four festivals, two marathons, two
+  tango weeks, a weekend and a movie night, none of which state a clock - and
+  excludes a multi-day span even when it is clocked. A milonga closing at
+  02:00 or 04:30 is still one night and still passes.
+* **the name announces no other format.** A refusal list, for the case the
+  clock test cannot reach: a 19:00~22:00 screening at a tango venue is
+  structurally identical to a milonga, and only its own name says otherwise.
+  `Club Troilo | 트로일로 무비 나잇!!!` is real, is stored, and states 18:30 in
+  its description already.
+* **one independent corroboration that this is a dance night**, because "a
+  scheduled thing with a clock on a tango calendar" is not one. Either the page
+  names the **DJ** who plays this occurrence - the operational fact a milonga
+  has and a screening, a lesson and a festival programme do not - or it is an
+  occurrence of a **registered recurring brand** that states its own venue,
+  which is the provider's own record that this is a regular night at a fixed
+  place and hour.
+
+Measured over all 68 stored pages, those two corroborations together admit 27
+of the 28 clocked nights and none of the ten pages that are not one. The one
+they decline, `O Nada | In the mood for Tango`, is a one-off occurrence naming
+no DJ. `The Best Tangueros Seoul` names a DJ and states no clock, so the first
+test declines it before the third is asked.
+
+### The title's first word is not the venue
+
+The pages are titled `<brand> | <night>`, and the brand is sometimes the venue
+and sometimes the organiser. This provider proves it itself: `A.B.Tango |
+MU!!LONGA` is held at **Andante** and `A.B.Tango | 치초 후아나 Grand Milonga` at
+**PISTA**, while `La melodia | La Melodía` is at Andante too. Five pages state
+no `location.name` at all.
+
+Two readings were giving those five a place anyway, and both are corrected
+where they are made rather than by distrusting a name:
+
+* `known_venue_fallback()` matched a known venue inside **another field's
+  labelled value**. `PISTA | The PISTA` states no place and its body reads
+  `DJ: Eddy 주최: PISTA`, so the night was placed at the Seoul venue PISTA on
+  the strength of who was hosting it. The three known names exist "for posts
+  that name their place in prose and never label it", and a labelled value is
+  the opposite of prose.
+* `extract_single()` asked that same prose fallback of the **heading**. A
+  heading is not prose either, and `PISTA | 비비밀` names no place anywhere.
+  The fallback is now asked of the body, which is the same `title_end` cut
+  `extract_schedule()` has made before reading a date since v0.96.0.
+
+A page that labels its place keeps it, `PISTA | 마제밀` included - whose heading
+and whose own `장소` field agree. The fix is not "distrust PISTA", it is "read
+the field the page filled in". The five that state nothing now carry
+`venue_status = ABSENT` and no region, which is what "we do not know" looks
+like.
+
+### Carrying a better reading to a page that has not changed
+
+`RawItem.content_hash()` has never hashed the collector's judgement, and that
+is right: collecting the same post twice must be a duplicate. But the
+judgement has to be able to change, and `store_item()` used to return DUPLICATE
+and leave the stored `raw` alone - so a collector that learned to recognise
+something reached newly discovered pages only, and the 68 pages already
+collected would have stayed unreadable.
+
+Two ways out were rejected. Writing a type word into the synthesized body puts
+a word the page never said in front of the extractor as though the page had
+said it, and shifts the body hash of all 68 pages to move a fact about 28.
+Re-queueing ingest does nothing at all: `database.persist_raw_post()` keys a
+post on its own URL and `ingest_pending()` extracts only a new post.
+
+So `store_item()` compares a declared list of `JUDGEMENT_KEYS`, and when one
+has moved it refreshes `raw` and puts the item back in the **re-extract** queue
+(`content_store.mark_needs_reextract()`). Body, title, url and published date
+are identical on that branch, so the engine re-reads exactly the text it read
+before and can produce no new date, time, venue or fee - only the
+classification it was refusing. It is idempotent: once the stored judgement
+matches, the next collection of the same page is a DUPLICATE again, so an
+unchanged page cannot churn on every cycle. A withdrawn judgement is a
+revision too, so a page that stops qualifying loses the reading rather than
+keeping it because nobody noticed.
+
+ENGINE_VERSION rises to 1.14 because the engine package changed. Measured
+before deployment by running both engine trees over all 4,392 stored items:
+**24 items classify differently and 24 extract differently, all 24 are
+TangoNOW share pages, and nothing outside that source changes at all** - no
+item loses an event, and the 15 pages that carry the new fallback while naming
+their own night are unaffected by it.
+
+### What it recovers
+
+Twenty-four pages gain an event. By the canonical rules, read against live
+Production on 2026-10-16:
+
+    15  fold onto a milonga Miltang already serves - same date, same
+        resolved venue, same clock. New evidence on an existing night,
+        not a new choice for anybody.
+     4  new standalone events with a verified venue
+     5  new standalone events whose page states no place, left unresolved
+
+The nine new nights are 서울 +2 (EN PAZ, La Ventana), 부산 +2 (이데알 탱고 까페,
+스튜디오 242) and five with no region, because five pages state no place and
+nothing may supply one. Ten recovered nights do not make ten new Seoul events.
+
 ## v0.96.34 Recover Programme-Owned Venues and Preserve Correct Time Evidence
 
 Product Runtime 0.96.34; Information Engine **1.12 → 1.13**; migrations

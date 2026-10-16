@@ -638,7 +638,7 @@ def night_event_bundle(title: str, body: str, *, source_category=None) -> bool:
 
 
 def classify(title: str, body: str, known_event_type=None, event_terms=None,
-             source_category=None) -> str:
+             source_category=None, source_night_fallback=None) -> str:
     # v0.96.8: the recap/administrative guard is asked *before* the collector's
     # own answer, and it is the only thing that may overrule it.
     #
@@ -831,6 +831,45 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None,
         return "SOCIAL"
     if notice_evidence_bundle(title, body):
         return "SOCIAL"
+    # v0.96.35: the one place a source's own *structure* may answer a question
+    # this post's own words cannot, and the only rule in this function that is
+    # asked after every other judgment has already been made.
+    #
+    # `known_event_type` at the top is the opposite kind of evidence and keeps
+    # the opposite precedence. It is a collector saying "the page I read this
+    # off guarantees which kind of night it is" - a dedicated milonga board -
+    # so it is trusted over any keyword reading. This one is a collector
+    # saying only "the structure I read this off guarantees there *is* a
+    # night here", which is a weaker claim, so it is admitted only where the
+    # words found nothing at all.
+    #
+    # What made it necessary: TangoNOW's share pages carry no event type of
+    # any kind. Measured on the live pages, the whole JSON-LD vocabulary is
+    # `@type`, `name`, `url`, `description`, `startDate`, `endDate`,
+    # `eventStatus`, `eventAttendanceMode`, `inLanguage`, `image`, `location`
+    # and `organizer` - no category, no genre - and `description` is only the
+    # date, clock and venue restated in prose. The clubs publishing through it
+    # name their nights `cabeceo`, `ORANGE`, `이뚜밀`, `볼베르`, `The PISTA`:
+    # brand names with no word in them any vocabulary could read. 28 of the 68
+    # stored share pages reached this return carrying a real dated, clocked
+    # night and became nothing, nine of them nights no other source has.
+    #
+    # Reaching here is itself the whole safety argument. A refusal is never
+    # reached from here - is_non_event_notice() returned OTHER before anything
+    # else ran, a course and a lesson sold in the title returned CLASS - and a
+    # night this post's own words name has already been returned as its own
+    # type. So this can only turn "no evidence of anything" into a night, and
+    # never overrule a refusal, never weaken a MILONGA to a SOCIAL, and never
+    # touch a post from a source that does not set it.
+    #
+    # Restricted to the real event classifications: a collector cannot inject
+    # CLASS, OTHER, or a type of its own invention through this door. The type
+    # check is not decoration - a collector handing in a list or a dict would
+    # otherwise raise `unhashable type` out of the membership test and fail the
+    # whole ingest of a post that should simply have classified as OTHER.
+    if (isinstance(source_night_fallback, str)
+            and source_night_fallback in _SOCIAL_CONTEXT_CLASSIFICATIONS):
+        return source_night_fallback
     return "OTHER"
 
 
@@ -851,7 +890,8 @@ MIN_TEXT_FOR_IMAGE_TRUST = 20
 
 def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None,
                                  known_event_type=None, published=None,
-                                 event_terms=None, source_category=None):
+                                 event_terms=None, source_category=None,
+                                 source_night_fallback=None):
     """classify(), then - only when the body itself was too thin to decide -
     a second, stricter look at each trusted poster OCR text (v0.84.4).
 
@@ -886,7 +926,8 @@ def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None
     """
     classification = classify(title, body, known_event_type=known_event_type,
                               event_terms=event_terms,
-                              source_category=source_category)
+                              source_category=source_category,
+                              source_night_fallback=source_night_fallback)
     if classification != "OTHER":
         return classification, None
     if known_event_type:

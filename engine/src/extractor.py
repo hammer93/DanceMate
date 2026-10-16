@@ -918,7 +918,19 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     # post that did not already label its place - are decided in one place
     # beside the patterns that read a label. `"OCHO" in scope.upper()` was
     # true of a Busan class diary explaining the step 오초(Ocho).
-    known = extraction_rules.known_venue_fallback(scope)
+    #
+    # v0.96.35: asked of the body, never of the heading. This fallback is for
+    # "posts that name their place in prose and never label it", and its own
+    # three examples are all body prose ("매주 토요일 밤, 홍대 PISTA에서 열리는
+    # 밀롱가", "📍 화정 오나다"). A heading is not prose: on an aggregator that
+    # titles every page `<brand> | <night>`, the first word is the brand, which
+    # may be the venue and may be the organiser - `PISTA | 비비밀` names no
+    # place anywhere and was being placed at PISTA by its own title. Excluding
+    # the heading is the same `title_end` cut `extract_schedule()` already
+    # makes before reading a date, for the same reason.
+    title_end = min(len(title or "") + 1, len(text))
+    prose = text[max(seg_start, title_end):seg_end]
+    known = extraction_rules.known_venue_fallback(prose)
     if known:
         name, raw = known
         ev.venue = name

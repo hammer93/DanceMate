@@ -481,6 +481,34 @@ def mark_extracted_engine_version(con, source_item_id: int, engine_version: str)
         )
 
 
+def mark_needs_reextract(con, source_item_id: int) -> None:
+    """Put one item back in the incremental re-extract queue (v0.96.35).
+
+    The mirror image of `mark_extracted_engine_version()` above: that one
+    stamps a row as already read by the running engine, this one withdraws
+    the claim. `needing_reprocess()` branch (3) selects on
+    `extracted_engine_version` not matching the running version, so clearing
+    it is exactly "this item has not been read by the current engine", which
+    is true again the moment the input the engine reads has changed.
+
+    The caller is `intake.store_item()`, for an item whose *text* is
+    unchanged - so none of the content-event branches (1) and (2) would ever
+    fire for it - but whose collector record now carries a different
+    judgement than the one the engine last read. Re-ingesting cannot help
+    there: `database.persist_raw_post()` keys on the post's own URL and
+    returns `is_new = False`, and `ingest_pending()` only extracts a new
+    post, so without this the better record would sit in `source_items.raw`
+    and never be read. Does not touch `reprocessed_at`: no content arrived,
+    so branch (1)'s body-arrived-later pass must stay available.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "UPDATE source_item_content SET extracted_engine_version = NULL, "
+            "  updated_at = now() WHERE source_item_id = %s",
+            (source_item_id,),
+        )
+
+
 def best_fetched_text_length(con, source_item_ids: list[int]) -> dict[int, int]:
     """The longest body we have ever actually been served for each item.
 
