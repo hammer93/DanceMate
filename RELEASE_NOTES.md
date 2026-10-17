@@ -1,5 +1,97 @@
 # DanceMate Release Notes
 
+## v0.96.36 Regional Search Consistency & Overnight Event Integrity
+
+Product Runtime 0.96.36; Information Engine 1.14 (unchanged); no migration.
+
+Two independent defects, both in how events that already exist are served. No
+event is created, no venue or region is written, and nothing about a row
+changes except its `end_day_offset`.
+
+### Part A - one region, one answer, however it is spelled
+
+Measured on Production at 2026-10-17 12:00 KST (upcoming):
+
+    ?region=KR-SEOUL 103    ?region=서울 125    서울 chip 103
+    ?region=KR-DAEJEON 8    ?region=대전  11    대전 chip   8
+
+Three readings of the same question used three rules. The code reached only
+resolved events: `terms_for_label("KR-SEOUL")` is empty, so the unresolved
+branch was skipped for the very spelling the API documents. The name added
+unresolved events by `venue_text ILIKE '%서울%'` - a substring, not the label a
+reader is shown beside them. And the chips asked only the curated city labels
+(청주, 진주 ...), so an unresolved Seoul address was found by ?region=서울 and
+counted on no chip. 49 of 504 (region x window x genre) cells disagreed; the
+28 events behind them (서울 22, 대전 3, 청주 1, 창원 1, 경기 1) all carry a real
+administrative address in their own venue text - `(서울 마포구 월드컵북로6길 69
+B1)`, `(대전시 유성구 대학로76번안길 23 지하)`.
+
+`events_api.region_condition()` is now the one rule, shared by `search()`,
+`week_counts()` and - through the same guess - the chips. `region_rows()`
+resolves a value to its region master row by code, by the master's own name,
+or by the Korean label `guess_region_label()` gives that code. The bridge is
+the master's **code** (`LABEL_REGION_CODES`), never a name: names are the
+operator's to edit (KR-SEOUL is seeded "Seoul" and Production renamed it 서울).
+A resolved event matches by its own `region_id`, which always wins; an
+unresolved one when its displayed label stands for that code. So a filter
+returns exactly the events that display the region it names. Related places
+are not spellings of one another: 경남 and 창원 each answer for their own row.
+
+`guess_region_label()` reads whole place-name tokens instead of substrings.
+`황제주차빌딩` read as 제주 (25 events, every one at 부산진구 in Busan),
+`전남광주통합특별시` as 전남, and a club's name `울산탱고` as 울산. A token is a
+place only on its own or followed directly by the district it contains
+(`부산진구`, `분당정자동`); a city still beats its own province (진주 over 경남);
+two places neither of which contains the other answer None; bare `광주`
+keeps v0.83.2's rule. Over all 1,411 stored events the guess now disagrees
+with a resolved venue's region once (경남 venue, 창원 address - a hierarchy,
+not an error) instead of 30 times. Two past events lose a label they only had
+by substring (`DLC 대전라틴클럽`, `남산N서울타워`): a name is not an address.
+
+Nothing is written. A region read off an address is evidence for a search,
+never a `region_id` or a venue.
+
+### Part B - an overnight event says it ends the next day
+
+The engine store held `end_day_offset = 1` on 321 candidates; the `events`
+table on none of its 1,411 rows. `normalize_candidate()` has written the
+column since migration 007, but none of `runtime/candidates.py`'s SELECTs ever
+read it, so the key was always absent and `or 0` always won. Every overnight
+night - `20:00~02:00`, `17:00~00:00` - was served with `ends_next_day: false`,
+and the "now on" check could never fire for one.
+
+The three projections now read the column, and `_end_day_offset()` carries the
+engine's answer rather than re-deriving it from `end < start`: no end time
+(including one withheld as ambiguous) has no day to end on, and an end time a
+person corrected is not the clock the engine's offset describes. The 321 are
+the 317 events whose end is at or before their start - exactly - plus 4
+candidates with no date that never became an event.
+
+The existing rows are repaired by the queue's own contract, not by SQL:
+`NORMALIZATION_INPUT_COLUMNS` gains `end_day_offset` ("a column normalization
+starts reading must be added here in the same change"), so every candidate's
+digest moves once and the scheduler re-flows the store in its ordinary
+500-row batches. Simulated on a disposable clone of Production with the
+engine store copied: 5 ticks, 2,056 candidates, 0 created, 0 failed, 0 merged,
+0 released; 317 events 0 -> 1, 0 the other way, and no other field of any
+event changed. 25 folded rows read LISTED until the duplicates scan next
+decides them - the known v0.96.33 effect of re-normalization, served in no
+public window.
+
+### Tests
+
+`tests/test_v09636_regional_search.py` and
+`tests/test_v09636_overnight_integrity.py` (the latter through the real route:
+an engine SQLite store, the runtime's SELECTs, `normalize_all()` into
+PostgreSQL, `events_api.search()` and the public JSON). One expectation in
+`tests/test_regional_coverage.py` moved: `Ulsan Tango Sociedad (울산탱고)` is a
+club's name, not an address, and now reads as no region (the venue itself is
+resolved to 울산 in the master).
+
+Runtime suite in the container against its own disposable database
+(`scripts/run-container-tests.sh`): 3,207 passed, 16 skipped, 0 failed. Engine
+suite: 1,976 passed, 1 skipped, 0 failed (the engine is unchanged).
+
 ## v0.96.35 Recover Verified TangoNOW Dance Events Without Inventing Their Type or Venue
 
 Product Runtime 0.96.35; Information Engine **1.13 → 1.14**; no migration.

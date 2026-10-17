@@ -212,6 +212,73 @@ CURATED_CITY_HINTS: dict[str, str] = {
 }
 
 
+# v0.96.36: the place words guess_region_label() accepts, each as a *whole*
+# token. Every spelling an address really uses for the same place - "서울",
+# "서울시", "서울특별시" - and the curated cities above under their own label.
+# A token is a run of Hangul, Latin letters and digits, so "황제주차빌딩" is one
+# token and never reads as 제주, and "울산탱고" (a club's name) never reads as
+# 울산: only a word that is a place name on its own, or a place name followed
+# directly by the district it contains ("부산진구", "분당정자동"), is evidence.
+# Bare "광주" is absent on purpose - see _GWANGJU_METRO_GU.
+_PLACE_TOKENS: dict[str, str] = {
+    "서울": "서울", "서울시": "서울", "서울특별시": "서울",
+    "부산": "부산", "부산시": "부산", "부산광역시": "부산",
+    "대구": "대구", "대구시": "대구", "대구광역시": "대구",
+    "인천": "인천", "인천시": "인천", "인천광역시": "인천",
+    "광주광역시": "광주",
+    "대전": "대전", "대전시": "대전", "대전광역시": "대전",
+    "울산": "울산", "울산시": "울산", "울산광역시": "울산",
+    "세종": "세종", "세종시": "세종", "세종특별자치시": "세종",
+    "경기": "경기", "경기도": "경기",
+    "강원": "강원", "강원도": "강원", "강원특별자치도": "강원",
+    "충북": "충북", "충청북도": "충북", "충남": "충남", "충청남도": "충남",
+    "전북": "전북", "전라북도": "전북", "전북특별자치도": "전북",
+    "전남": "전남", "전라남도": "전남",
+    "경북": "경북", "경상북도": "경북", "경남": "경남", "경상남도": "경남",
+    "제주": "제주", "제주도": "제주", "제주시": "제주", "제주특별자치도": "제주",
+    "청주": "청주", "청주시": "청주", "진주": "진주", "진주시": "진주",
+    "창원": "창원", "창원시": "창원", "포항": "포항", "포항시": "포항",
+    "분당": "경기", "분당구": "경기", "성남": "경기", "성남시": "경기",
+}
+# The province a curated city sits in. A string naming both ("경남 창원시
+# 마산합포구") names one place, and the city is the more useful label (the
+# v0.82.4 rule); naming two places neither of which contains the other is
+# not evidence of either.
+_CITY_PROVINCE = {"청주": "충북", "진주": "경남", "창원": "경남", "포항": "경북"}
+# The region master code each label stands for - the bridge from a label read
+# off an address to the master row a filter or a chip is about. A code, not a
+# name: the master's names are the operator's to edit (KR-SEOUL is seeded as
+# "Seoul" and Production renamed it 서울), its codes are not. The metro and
+# province codes are _REGION_BY_ADMIN's; the four cities are migration 024's
+# own rows.
+LABEL_REGION_CODES: dict[str, str] = {
+    label: code for label, (code, _english) in _REGION_BY_ADMIN.items()
+}
+LABEL_REGION_CODES.update({
+    "청주": "KR-CHEONGJU", "진주": "KR-JINJU",
+    "창원": "KR-CHANGWON", "포항": "KR-POHANG",
+})
+_TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]+")
+# What may follow a place name inside the same token: the district it
+# contains, never a building, a road or a club ("황제주차빌딩", "서울대입구역").
+_GLUED_DISTRICT_RE = re.compile(r"[가-힣]{1,4}[구군동읍면]")
+_PLACE_FORMS = sorted(_PLACE_TOKENS, key=len, reverse=True)
+
+
+def _token_place(token: str, following: str | None) -> str | None:
+    """The place one token names, or None."""
+    if token in _PLACE_TOKENS:
+        return _PLACE_TOKENS[token]
+    if token == "광주":
+        return "광주" if following in _GWANGJU_METRO_GU else None
+    if token.startswith("광주") and token[2:] in _GWANGJU_METRO_GU:
+        return "광주"
+    for form in _PLACE_FORMS:
+        if token.startswith(form) and _GLUED_DISTRICT_RE.fullmatch(token[len(form):]):
+            return _PLACE_TOKENS[form]
+    return None
+
+
 def guess_region_label(raw_text: str | None) -> str | None:
     """A best-effort, read-only region label for a raw venue string whose
     venue is not yet resolved into the master (so `events.region_id` is
@@ -223,50 +290,70 @@ def guess_region_label(raw_text: str | None) -> str | None:
     judgement still belongs to an operator, unchanged from this module's own
     rule.
 
-    Curated cities first (Section 19 of the v0.82.4 task: a reader finds
-    "청주" more useful than its enclosing province "충북"), then the same
-    province-name table the admin's own New Venue suggestion form already
-    uses, since a raw string that does carry a full province name (e.g.
-    "제주특별자치도 서귀포시...") deserves at least that label.
+    v0.96.36: read from whole place-name tokens (`_PLACE_TOKENS`), not by
+    substring. Before, "황제주차빌딩" read as 제주 and "전남광주통합특별시" as
+    전남, because `"제주" in text` cannot tell a place from the middle of a
+    word. A curated city still beats the province it sits in (진주 over
+    경남); two places neither of which contains the other answer None,
+    because a string that names both is not evidence of either. Nothing
+    recognisable answers None - UNKNOWN rather than a guess.
     """
-    text = raw_text or ""
-    for city, label in CURATED_CITY_HINTS.items():
-        if city in text:
-            return label
-    for admin in _REGION_BY_ADMIN:
-        if admin == "광주":
-            # Same collision this module guards against everywhere else:
-            # "광주" alone is ambiguous with Gyeonggi-do's 광주시, which has
-            # no gu-level districts - only trust an explicit "광주광역시" or
-            # "광주" + one of the metro's own five gu.
-            if "광주광역시" in text or any(
-                re.search(rf"광주\s*{gu}", text) for gu in _GWANGJU_METRO_GU
-            ):
-                return admin
-            continue
-        if admin in text:
-            return admin
-    return None
+    text = unicodedata.normalize("NFKC", raw_text or "")
+    tokens = _TOKEN_RE.findall(text)
+    found: set[str] = set()
+    for index, token in enumerate(tokens):
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+        place = _token_place(token, following)
+        if place:
+            found.add(place)
+    found -= {_CITY_PROVINCE[city] for city in found if city in _CITY_PROVINCE}
+    return found.pop() if len(found) == 1 else None
 
 
 def terms_for_label(label: str) -> list[str]:
-    """The raw substrings that would make `guess_region_label()` return
-    `label` - the reverse of the table above, for a caller (the region
-    filter) that needs to match an unresolved event by the same rule a
-    resolved one is already matched by name."""
-    terms = [city for city, mapped in CURATED_CITY_HINTS.items() if mapped == label]
+    """The raw substrings at least one of which any text `guess_region_label()`
+    places in `label` must contain - the reverse of the table above, for a
+    caller (the region filter, the chip counts) that needs to narrow the rows
+    it reads before asking the guess itself (`unresolved_event_ids()`).
+
+    v0.96.36: every spelling in `_PLACE_TOKENS`, minus the ones another
+    spelling already covers - "경상남도" does not contain "경남", so both."""
     if label == "광주":
         # Bare "광주" would also pull in Gyeonggi-do's 광주시 by substring
-        # match (events_api.search() wraps each of these in "%...%" and runs
-        # it as ILIKE) - so search only for the same safe evidence
-        # guess_region_label() itself requires. The embedded "%" here is
-        # deliberate: wrapped again by the caller it becomes "%광주%동구%",
-        # matching "광주 동구" and "광주동구" alike.
-        terms.append("광주광역시")
-        terms.extend(f"광주%{gu}" for gu in _GWANGJU_METRO_GU)
-    elif label in _REGION_BY_ADMIN:
-        terms.append(label)
-    return terms
+        # match (callers wrap each of these in "%...%" and run it as ILIKE)
+        # - so search only for the same safe evidence guess_region_label()
+        # itself requires. The embedded "%" here is deliberate: wrapped again
+        # by the caller it becomes "%광주%동구%", matching "광주 동구" and
+        # "광주동구" alike.
+        return ["광주광역시"] + [f"광주%{gu}" for gu in _GWANGJU_METRO_GU]
+    forms = [form for form, mapped in _PLACE_TOKENS.items() if mapped == label]
+    return [form for form in forms
+            if not any(other != form and other in form for other in forms)]
+
+
+def unresolved_event_ids(con, label: str) -> list[int]:
+    """The events with no resolved region that `guess_region_label()` places
+    in `label` - exactly the ones a reader is shown under that label.
+
+    v0.96.36: the region filter and the chip counts both used to approximate
+    the guess with `venue_text ILIKE '%term%'`, which is not the same rule:
+    "%제주%" matches "황제주차빌딩", and the chips only ever asked for the
+    curated city labels, so an unresolved Seoul address counted under
+    ?region=서울 but not on the 서울 chip. The ILIKE survives only to narrow
+    the rows read; the guess itself decides.
+    """
+    terms = terms_for_label(label)
+    if not terms:
+        return []
+    ors = " OR ".join(["venue_text ILIKE %s"] * len(terms))
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT event_id, venue_text FROM events "
+            f"WHERE region_id IS NULL AND ({ors})",
+            tuple(f"%{term}%" for term in terms),
+        )
+        return [row[0] for row in cur.fetchall()
+                if guess_region_label(row[1]) == label]
 
 
 def _normalized_address(value: str | None) -> str:

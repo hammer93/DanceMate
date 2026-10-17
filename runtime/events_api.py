@@ -79,6 +79,59 @@ def window(when: str | None, *, now: datetime | None = None) -> tuple[date, date
     )
 
 
+def region_rows(con, region: str) -> list[dict[str, Any]]:
+    """The region master rows ``region`` names - by code, by the master's own
+    name, or by the label `guess_region_label()` gives that code (v0.96.36).
+
+    Three spellings of one row: ``KR-SEOUL``, whatever the operator named it
+    (seeded "Seoul", renamed 서울 on Production), and 서울. Matched through the
+    master's code, never by a string resembling it, and no further: 경남 and
+    창원 are related places, not two spellings of one, and each answers only
+    for its own row.
+    """
+    from . import master_data
+
+    value = region.strip()
+    regions = master_data.list_regions(con)
+    rows = [r for r in regions if (r.get("code") or "").upper() == value.upper()]
+    if not rows:
+        rows = [r for r in regions if (r.get("name") or "").casefold() == value.casefold()]
+    if not rows:
+        code = venue_resolution.LABEL_REGION_CODES.get(value)
+        rows = [r for r in regions if code and r.get("code") == code]
+    return rows
+
+
+def region_condition(con, region: str) -> tuple[str, list[Any]]:
+    """The WHERE fragment for ``?region=``, whichever way the region is named.
+
+    v0.96.36: a region is one row of the region master, and its code and its
+    name are two spellings of that one row - ``KR-SEOUL`` and ``서울`` must
+    answer the same events. Before, only the name reached the unresolved-venue
+    branch (``terms_for_label("KR-SEOUL")`` is empty), so the documented code
+    silently dropped every Seoul milonga whose venue nobody had resolved yet.
+
+    Resolved events match on their own ``region_id`` (the venue master's
+    region always wins). Unresolved ones match when ``guess_region_label()``
+    - the label a reader is shown beside them - stands for this region's
+    code, so the filter returns exactly the events that display the region it
+    names. A value the master does not know keeps the old literal match on
+    code or name, plus any unresolved event the guess places under it.
+    """
+    rows = region_rows(con, region)
+    if rows:
+        labels = {label for label, code in venue_resolution.LABEL_REGION_CODES.items()
+                  if code in {r.get("code") for r in rows}}
+        guessed = sorted({event_id for label in labels
+                          for event_id in venue_resolution.unresolved_event_ids(con, label)})
+        return ("(e.region_id = ANY(%s::bigint[]) OR e.event_id = ANY(%s::bigint[]))",
+                [[r["region_id"] for r in rows], guessed])
+    value = region.strip()
+    guessed = venue_resolution.unresolved_event_ids(con, value)
+    return ("(r.code = %s OR r.name ILIKE %s OR e.event_id = ANY(%s::bigint[]))",
+            [value.upper(), value, guessed])
+
+
 def week_window(offset: int = 0, *, now: datetime | None = None) -> tuple[date, date]:
     """Monday through Sunday for the week ``offset`` weeks from this one.
 
@@ -135,19 +188,9 @@ def week_counts(con, *, start: date, end: date, genre: str | None = None,
         else:
             where.append("false")
     if region:
-        region_value = region.strip()
-        guess_terms = venue_resolution.terms_for_label(region_value)
-        if guess_terms:
-            placeholders = " OR ".join(["e.venue_text ILIKE %s"] * len(guess_terms))
-            where.append(
-                f"(r.code = %s OR r.name ILIKE %s "
-                f"OR (e.region_id IS NULL AND ({placeholders})))"
-            )
-            params.extend([region_value.upper(), region_value])
-            params.extend(f"%{term}%" for term in guess_terms)
-        else:
-            where.append("(r.code = %s OR r.name ILIKE %s)")
-            params.extend([region_value.upper(), region_value])
+        condition, condition_params = region_condition(con, region)
+        where.append(condition)
+        params.extend(condition_params)
     clause = " AND ".join(where)
 
     with con.cursor() as cur:
@@ -709,23 +752,13 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
         else:
             where.append("false")
     if region:
-        region_value = region.strip()
-        # An unresolved event (region_id NULL) matches too, by the same raw
-        # substring guess_region_label() itself uses for display - so
-        # selecting "청주" actually returns the real Cheongju milongas, not
-        # just the (currently zero) ones with a resolved venue.
-        guess_terms = venue_resolution.terms_for_label(region_value)
-        if guess_terms:
-            placeholders = " OR ".join(["e.venue_text ILIKE %s"] * len(guess_terms))
-            where.append(
-                f"(r.code = %s OR r.name ILIKE %s "
-                f"OR (e.region_id IS NULL AND ({placeholders})))"
-            )
-            params.extend([region_value.upper(), region_value])
-            params.extend(f"%{term}%" for term in guess_terms)
-        else:
-            where.append("(r.code = %s OR r.name ILIKE %s)")
-            params.extend([region_value.upper(), region_value])
+        # An unresolved event (region_id NULL) matches too, by the same
+        # guess_region_label() present() shows - so selecting "청주" actually
+        # returns the real Cheongju milongas, not just the ones with a
+        # resolved venue. region_condition() has the v0.96.36 rule.
+        condition, condition_params = region_condition(con, region)
+        where.append(condition)
+        params.extend(condition_params)
     if status:
         where.append("e.engine_status = %s")
         params.append(status.strip().upper())

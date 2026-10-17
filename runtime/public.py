@@ -687,27 +687,34 @@ def _unresolved_region_counts(con, clause: str, params: list,
     above already refuses to tell. Genre-scoped the same way the resolved
     region count is (v0.85.7 Section 25), so the two halves of one chip's
     number never disagree about which genre they are counting.
+
+    v0.96.36: every unresolved event is asked, under every label the guess
+    can give - not only the curated city labels with an ILIKE standing in for
+    the guess. The 서울 chip used to leave out the unresolved Seoul addresses
+    that ?region=서울 itself returned; now chip and filter are the same rule
+    (events_api.region_condition()).
     """
+    from . import master_data
+
+    # Keyed by the master row's own name (the chip's value), reached through
+    # the label's code - the master's names are the operator's to edit.
+    names = {row["code"]: row["name"] for row in master_data.list_regions(con)}
     counts: dict[str, int] = {}
-    labels = sorted({label for label in venue_resolution.CURATED_CITY_HINTS.values()})
     genre_join = "JOIN genres g ON g.genre_id = e.genre_id " if genre_codes else ""
     genre_where = " AND g.code = ANY(%s)" if genre_codes else ""
+    query_params = tuple(params) + ((genre_codes,) if genre_codes else ())
     with con.cursor() as cur:
-        for label in labels:
-            terms = venue_resolution.terms_for_label(label)
-            if not terms:
-                continue
-            ors = " OR ".join(["e.venue_text ILIKE %s"] * len(terms))
-            query_params = (tuple(params) + tuple(f"%{t}%" for t in terms)
-                            + ((genre_codes,) if genre_codes else ()))
-            cur.execute(
-                f"SELECT count(*) FROM events e {genre_join}WHERE {clause} "
-                f"AND e.region_id IS NULL AND ({ors}){genre_where}",
-                query_params,
-            )
-            n = cur.fetchone()[0]
-            if n:
-                counts[label] = counts.get(label, 0) + n
+        cur.execute(
+            f"SELECT e.venue_text, count(*) FROM events e {genre_join}WHERE {clause} "
+            f"AND e.region_id IS NULL AND e.venue_text IS NOT NULL{genre_where} "
+            "GROUP BY 1",
+            query_params,
+        )
+        for venue_text, n in cur.fetchall():
+            label = venue_resolution.guess_region_label(venue_text)
+            if label:
+                key = names.get(venue_resolution.LABEL_REGION_CODES.get(label), label)
+                counts[key] = counts.get(key, 0) + n
     return counts
 
 

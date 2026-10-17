@@ -31,7 +31,11 @@ from runtime import collectors, events_api, normalization, venue_resolution
     ("JINJU MILONGA (진주 탱고피플 (진주시 평거로7 3층))", "진주"),
     ("ESPERAR MILONGA (Tango club Mi Noche (경남 창원시 마산합포구 가포로25))", "창원"),
     ("바모스 (PosTango (포항시 남구 중앙로 83))", "포항"),
-    ("Milonga La Boca (Ulsan Tango Sociedad (울산탱고))", "울산"),
+    # v0.96.36: "Milonga La Boca (Ulsan Tango Sociedad (울산탱고))" left this
+    # list - "울산탱고" is the club's name, not an address, and a place name
+    # inside another word is no longer read as a region (the venue itself is
+    # resolved to 울산 in the master, which is what the reader is shown).
+    # test_v09636_regional_search.py holds it among the negatives.
     ("디디디 (Tango Cafe Dia (대구 북구 침산로 168))", "대구"),
     ("JEJU Summ Milonga (씨오르리조트 (제주특별자치도 서귀포시 이어도로 989))", "제주"),
     ("러블리밀롱가 (실루엣 분당정자동 23-1 지파크프라자 5층)", "경기"),

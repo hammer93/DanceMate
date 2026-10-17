@@ -64,6 +64,7 @@ _CANDIDATE_SELECT = """
            c.event_date,
            c.start_time,
            c.end_time,
+           c.end_day_offset,
            c.venue,
            c.event_type,
            c.status      AS candidate_status,
@@ -457,10 +458,16 @@ def venue_alias_candidates(settings: Settings,
 # A column that normalization ignores is deliberately absent: changing it must
 # not cost a re-normalization, and a column normalization starts reading must
 # be added here in the same change.
+#
+# v0.96.36: end_day_offset. normalize_candidate() has always written it, but
+# none of this module's SELECTs read it, so every events row said 0 and every
+# overnight milonga was served as ending before it began. Adding it here moves
+# every candidate's digest once, which is what re-flows the rows already built
+# without it - the queue's own contract, not a reset.
 NORMALIZATION_INPUT_COLUMNS = (
     "post_id", "event_name", "event_type", "event_date", "start_time",
-    "end_time", "venue", "candidate_status", "fee", "fee_display_text", "dj",
-    "source_url", "evidence_count", "last_evidence_id",
+    "end_time", "end_day_offset", "venue", "candidate_status", "fee",
+    "fee_display_text", "dj", "source_url", "evidence_count", "last_evidence_id",
 )
 
 
@@ -498,6 +505,7 @@ def normalization_inputs(settings: Settings) -> list[dict[str, Any]] | None:
                    c.event_date,
                    c.start_time,
                    c.end_time,
+                   c.end_day_offset,
                    c.venue,
                    c.status      AS candidate_status,
                    c.fee,

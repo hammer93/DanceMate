@@ -405,6 +405,24 @@ def _event_formats(con, event_name: str | None, genre_id: int | None,
     return list(hit["formats"]) if hit else None
 
 
+def _end_day_offset(candidate: dict[str, Any], end: time | None,
+                    corrected_fields: set[str]) -> int:
+    """The day the event ends on, relative to its date - the engine's own word.
+
+    The engine decided it while reading the clock (`20:00~02:00`, and
+    `20:00~00:00` too: the night ends at the next day's midnight), so it is
+    carried, never re-derived here: an `end < start` comparison would invent
+    an answer for a clock the engine read differently. Two cases have no
+    engine answer to carry. No end time published - including one withheld
+    as ambiguous - has no day to end on. An end time a person corrected is not
+    the clock the engine's offset describes, so it keeps the 0 it has always
+    had until a person says otherwise.
+    """
+    if end is None or "end_time" in corrected_fields:
+        return 0
+    return _as_int(candidate.get("end_day_offset")) or 0
+
+
 def normalize_candidate(con, candidate: dict[str, Any], *,
                         review_state: dict[str, Any] | None = None,
                         alias_candidates: list[str] | None = None,
@@ -462,7 +480,7 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         "event_date": event_date,
         "start_time": start,
         "end_time": end,
-        "end_day_offset": _as_int(candidate.get("end_day_offset")) or 0,
+        "end_day_offset": _end_day_offset(candidate, end, corrected_fields),
         "venue_text": venue_text,
         "venue_id": venue_id,
         "venue_status": resolution["venue_status"],
