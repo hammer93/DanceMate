@@ -134,7 +134,8 @@ def _as_int(value: Any) -> int | None:
 
 
 def resolve_venue(con, venue_text: str | None,
-                  alias_candidates: list[str] | None = None) -> dict[str, Any]:
+                  alias_candidates: list[str] | None = None, *,
+                  without: tuple[int, str] | None = None) -> dict[str, Any]:
     """Match an extracted venue string against the Venue Master.
 
     Tries the whole string first, then the parts the extractor offered -- the
@@ -147,12 +148,21 @@ def resolve_venue(con, venue_text: str | None,
     `venue_identity`. Being left unresolved puts the string in front of a
     person, which is the right outcome for a place we cannot identify; naming
     the wrong city is not.
+
+    v0.96.38: ``without=(venue_id, normalized_text)`` answers "what would this
+    resolve to if that one decision had never been taken" - the alias of that
+    text on that venue, and a queue decision for that text, are read as
+    absent. It is how a revert writes what the next normalization derives
+    rather than a guess at it.
     """
     if not venue_text:
         return {"venue_id": None, "venue_status": VENUE_ABSENT, "matched_on": None}
     for attempt in [venue_text] + [a for a in (alias_candidates or []) if a != venue_text]:
         found = master_data.resolve_venue(con, attempt)
         if not found:
+            continue
+        if (without and found["venue_id"] == without[0]
+                and master_data.normalize_alias(attempt) == without[1]):
             continue
         if venue_identity.region_conflict(con, found, venue_text, attempt):
             continue
@@ -162,7 +172,8 @@ def resolve_venue(con, venue_text: str | None,
             "matched_on": attempt,
             "region_id": found.get("region_id"),
         }
-    decided = _linked_decision(con, venue_text)
+    decided = (None if without and master_data.normalize_alias(venue_text) == without[1]
+               else _linked_decision(con, venue_text))
     if decided and not venue_identity.region_conflict(con, decided, venue_text):
         return {
             "venue_id": decided["venue_id"],
@@ -328,6 +339,14 @@ def _region_id(con, venue_id: int | None) -> int | None:
         cur.execute("SELECT region_id FROM venues WHERE venue_id = %s", (venue_id,))
         row = cur.fetchone()
     return row[0] if row else None
+
+
+def derived_region_id(con, venue_id: int | None, source_item_id: int | None) -> int | None:
+    """The region normalize_candidate() gives an event: its venue's, else an
+    official board's, else a structured listing's own."""
+    return (_region_id(con, venue_id)
+            or _official_board_region_id(con, source_item_id)
+            or _structured_event_region_id(con, source_item_id))
 
 
 def _official_board_region_id(con, source_item_id: int | None) -> int | None:
@@ -532,13 +551,8 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         # engine's single classification, untouched.
         "event_formats": _event_formats(con, merged.get("event_name"), genre_id,
                                         terms_map),
-        "region_id": (
-            _region_id(con, venue_id)
-            or _official_board_region_id(con, _as_int(candidate.get("source_item_id")))
-            or _structured_event_region_id(
-                con, _as_int(candidate.get("source_item_id"))
-            )
-        ),
+        "region_id": derived_region_id(con, venue_id,
+                                       _as_int(candidate.get("source_item_id"))),
         "engine_status": (candidate.get("candidate_status") or "POSSIBLE").upper(),
         "review_state": state,
         "field_origin": json.dumps(origin, ensure_ascii=False),

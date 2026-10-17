@@ -67,6 +67,12 @@ class Admin:
 
     def request(self, path: str, *, method: str = "GET", data=None):
         headers = {"Authorization": self.authorization}
+        if method.upper() != "GET":
+            # v0.96.38: a state-changing admin request carries a request
+            # token for its own path, read with the credential first.
+            token = self.request("/api/admin/csrf-token?" + urllib.parse.urlencode(
+                {"path": urllib.parse.urlsplit(path).path}))
+            headers[token["header"]] = token["token"]
         payload = None
         if data is not None:
             if isinstance(data, dict):

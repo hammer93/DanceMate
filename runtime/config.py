@@ -14,7 +14,13 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.34"
+PRODUCT_VERSION = "0.96.38"
+# v0.96.38: the release's VERSION file is the source of truth. The deploy
+# script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
+# container reports that value (`runtime_version()`) on /health, /version and
+# the OpenAPI document alike. This constant is only the default for a process
+# started without it - it had stayed at 0.96.34 through three releases, so
+# tests/test_config.py now holds it to the VERSION file.
 # v0.82 bumped this for parse_time_range()'s fallback-ordering fix (prefer an
 # EVIDENCE_EXPLICIT reading over an ambiguous one - see extraction_rules.py) -
 # a real change to what the engine reads, not just new Source rows.
@@ -505,11 +511,17 @@ class Settings:
         )
 
 
+def runtime_version() -> str:
+    """The product version this process runs as (DANCEMATE_VERSION, else the
+    in-code default)."""
+    return _env("DANCEMATE_VERSION", PRODUCT_VERSION)
+
+
 def load_settings() -> Settings:
     engine_root = Path(_env("ENGINE_ROOT", str(REPO_ROOT / "engine")))
     return Settings(
         env=_env("DANCEMATE_ENV", "staging"),
-        version=_env("DANCEMATE_VERSION", PRODUCT_VERSION),
+        version=runtime_version(),
         engine_version=_env("ENGINE_VERSION", DEFAULT_ENGINE_VERSION),
         listen_address=_env("DANCEMATE_HOST", "0.0.0.0"),
         port=_env_int("DANCEMATE_PORT", 8080),

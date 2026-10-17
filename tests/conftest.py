@@ -9,6 +9,45 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+def _install_console_request_tokens() -> None:
+    """Make the test client post the way the console's own pages do.
+
+    v0.96.38: every state-changing admin request needs a request token bound
+    to its path (`runtime.admin_csrf`). A browser gets it from the hidden
+    field of the form it submits; the existing route tests post straight to
+    the route, so the client adds the same token as `X-CSRF-Token` - unless
+    the test sets that header itself, or the client is built with
+    ``client.console_tokens = False``, which is how the security tests send
+    a request without one (tests/test_v09638_admin_security.py).
+    """
+    from urllib.parse import urlsplit
+
+    from starlette.testclient import TestClient
+
+    if getattr(TestClient, "_console_tokens_installed", False):
+        return
+    original = TestClient.request
+
+    def request(self, method, url, *args, **kwargs):
+        path = urlsplit(str(url)).path
+        if (getattr(self, "console_tokens", True)
+                and method.upper() not in ("GET", "HEAD", "OPTIONS")
+                and (path.startswith("/admin") or path.startswith("/api/admin"))):
+            headers = dict(kwargs.get("headers") or {})
+            if not any(k.lower() == "x-csrf-token" for k in headers):
+                from runtime import admin_csrf
+
+                headers["X-CSRF-Token"] = admin_csrf.issue(path)
+                kwargs["headers"] = headers
+        return original(self, method, url, *args, **kwargs)
+
+    TestClient.request = request
+    TestClient._console_tokens_installed = True
+
+
+_install_console_request_tokens()
+
 BASE_ENV = {
     "DANCEMATE_ENV": "test",
     "DANCEMATE_VERSION": "0.80",

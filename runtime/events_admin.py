@@ -688,7 +688,8 @@ def _events_table(events: list[dict[str, Any]], venue_label: str) -> str:
         E(e.get("event_type") or "-"),
         E(_clock_range(e)),
         E(f'{e.get("venue_text") or "-"}') + (" (resolved)" if e.get("venue_id") else ""),
-        E(venue_label),
+        E(f'#{e["proposed_venue_id"]} {e["proposed_venue_name"]}'
+          if e.get("proposed_venue_name") else venue_label),
         E(e.get("region_code") or "-") + " &rarr; " + E(e.get("proposed_region_code") or "-"),
         ("바뀜" if e["identity_changes"] else "유지"),
         (f'folded into #{e["canonical_event_id"]}' if e.get("canonical_event_id")
@@ -708,9 +709,22 @@ def _canonical_table(outlook: list[dict[str, Any]]) -> str:
                         rows, empty="다른 Event와 병합될 가능성이 없습니다")
 
 
+def _also_linked_block(events: list[dict[str, Any]]) -> str:
+    if not events:
+        return ""
+    rows = [[f'#{e["event_id"]}', E(str(e["event_date"])), E((e.get("event_name") or "")[:50]),
+             E(e.get("venue_text") or "-"), E(e.get("matched_on") or "-"),
+             "공개" if e.get("publicly_visible") else "비공개"] for e in events]
+    return ("<h3>다음 정규화에서 함께 연결되는 Event</h3>"
+            '<p class="note">이 결정이 등록하는 철자를 게시글이 읽고 있어, 승인 후 다음 정규화가 '
+            "이 Event들도 같은 장소로 연결합니다. 승인 자체는 위 표의 Event만 바꿉니다.</p>"
+            + admin._table(["Event", "Date", "Title", "Venue text", "Matched spelling", "Now"],
+                           rows, empty=""))
+
+
 def _preview_page(title: str, preview: dict[str, Any], *, venue_label: str,
                   facts: str, confirm_action: str, fields: dict[str, Any],
-                  confirm_label: str, extra: str = "") -> HTMLResponse:
+                  confirm_label: str, extra: str = "", form_extra: str = "") -> HTMLResponse:
     summary = preview["summary"]
     cards = admin._cards([
         ("Events", summary["events"], "this decision changes"),
@@ -733,6 +747,7 @@ def _preview_page(title: str, preview: dict[str, Any], *, venue_label: str,
         decision = (
             f'<form method="post" action="{E(confirm_action)}">'
             + _hidden({**fields, "token": preview["token"]})
+            + form_extra
             + f'<div class="actions"><button class="primary">{confirm_label}</button> '
             f'<a href="{_QUEUE}"><button type="button">Cancel</button></a></div></form>'
             '<p class="note">승인 시점에 이 미리보기를 다시 계산해 위 내용과 같을 때만 '
@@ -746,6 +761,7 @@ def _preview_page(title: str, preview: dict[str, Any], *, venue_label: str,
            if warnings else "")
         + extra
         + "<h3>바뀌는 Event</h3>" + _events_table(preview["events"], venue_label)
+        + _also_linked_block(preview.get("also_linked") or [])
         + "<h3>병합(canonical) 영향</h3>" + _canonical_table(preview["canonical"])
         + decision
         + f'<p class="note"><a href="{_QUEUE}">← 대기열로 돌아가기</a></p>'
@@ -806,7 +822,7 @@ def admin_link_preview(
     unresolved_venue_id: int,
     venue_id: str = Form(""),
     add_alias: str = Form(""),
-    _: str = Depends(require_admin),
+    reviewer: str = Depends(require_admin),
 ) -> Any:
     if not venue_id.isdigit():
         return admin._back(_QUEUE, "연결할 장소를 선택하세요", "bad")
@@ -814,7 +830,7 @@ def admin_link_preview(
         with _connection() as con:
             preview = venue_resolution.preview_link(
                 con, unresolved_venue_id=unresolved_venue_id, venue_id=int(venue_id),
-                add_alias=(add_alias == "1"))
+                add_alias=(add_alias == "1"), reviewer=reviewer, settings=admin._settings())
     except LookupError as exc:
         return _refused("찾을 수 없습니다", [str(exc)], status=404)
     venue, entry = preview["venue"], preview["entry"]
@@ -842,7 +858,8 @@ def admin_link_existing_venue(
         return admin._back(_QUEUE, "연결할 장소를 선택하세요", "bad")
     result = _confirm(lambda con: venue_resolution.confirm_link(
         con, unresolved_venue_id=unresolved_venue_id, venue_id=int(venue_id),
-        add_alias=(add_alias == "1"), token=token, reviewer=reviewer))
+        add_alias=(add_alias == "1"), token=token, reviewer=reviewer,
+        settings=admin._settings()))
     if not isinstance(result, dict):
         return result
     return admin._back(
@@ -878,13 +895,14 @@ def admin_create_preview(
     aliases: str = Form(""),
     notes: str = Form(""),
     force: str = Form("0"),
-    _: str = Depends(require_admin),
+    reviewer: str = Depends(require_admin),
 ) -> Any:
     fields = _create_fields(name, region_id, address, aliases, notes, force)
     try:
         with _connection() as con:
             preview = venue_resolution.preview_create(
-                con, unresolved_venue_id=unresolved_venue_id, **_create_args(fields))
+                con, unresolved_venue_id=unresolved_venue_id, reviewer=reviewer,
+                settings=admin._settings(), **_create_args(fields))
             regions = master_data.list_regions(con, enabled_only=True)
     except LookupError as exc:
         return _refused("찾을 수 없습니다", [str(exc)], status=404)
@@ -939,7 +957,7 @@ def admin_create_and_link_venue(
     fields = _create_fields(name, region_id, address, aliases, notes, force)
     result = _confirm(lambda con: venue_resolution.confirm_create(
         con, unresolved_venue_id=unresolved_venue_id, token=token, reviewer=reviewer,
-        **_create_args(fields)))
+        settings=admin._settings(), **_create_args(fields)))
     if not isinstance(result, dict):
         return result
     return admin._back(
@@ -954,7 +972,7 @@ def admin_group_link_preview(
     unresolved_venue_id: list[int] = Form(...),
     venue_id: str = Form(...),
     add_alias: str = Form("1"),
-    _: str = Depends(require_admin),
+    reviewer: str = Depends(require_admin),
 ) -> Any:
     """Show exactly what Group Apply is about to do before it does it - every
     string, every event it moves, and what the next scan would fold - and
@@ -965,7 +983,7 @@ def admin_group_link_preview(
         with _connection() as con:
             preview = venue_resolution.preview_group(
                 con, unresolved_venue_ids=unresolved_venue_id, venue_id=int(venue_id),
-                add_alias=(add_alias == "1"))
+                add_alias=(add_alias == "1"), reviewer=reviewer, settings=admin._settings())
     except LookupError as exc:
         return _refused("찾을 수 없습니다", [str(exc)], status=404)
     if not preview["rows"]:
@@ -1003,7 +1021,8 @@ def admin_group_link_confirm(
         return _refused("찾을 수 없습니다", [f"venue id {venue_id}"], status=404)
     result = _confirm(lambda con: venue_resolution.confirm_group(
         con, unresolved_venue_ids=unresolved_venue_id, venue_id=int(venue_id),
-        add_alias=(add_alias == "1"), token=token, reviewer=reviewer))
+        add_alias=(add_alias == "1"), token=token, reviewer=reviewer,
+        settings=admin._settings()))
     if not isinstance(result, dict):
         return result
     return admin._back(
@@ -1017,23 +1036,32 @@ def admin_group_link_confirm(
 @router.post("/admin/venues/unresolved/{unresolved_venue_id}/revert/preview",
              response_class=HTMLResponse)
 def admin_revert_preview(unresolved_venue_id: int,
-                         _: str = Depends(require_admin)) -> Any:
+                         reviewer: str = Depends(require_admin)) -> Any:
     try:
         with _connection() as con:
             preview = venue_resolution.preview_revert(
-                con, unresolved_venue_id=unresolved_venue_id)
+                con, unresolved_venue_id=unresolved_venue_id, reviewer=reviewer,
+                settings=admin._settings())
     except LookupError as exc:
         return _refused("찾을 수 없습니다", [str(exc)], status=404)
     entry, venue, alias = preview["entry"], preview["venue"], preview["alias"]
+    decision = preview["decision"]
     facts = (f'<p><code>{E(entry["venue_text"])}</code> &middot; 현재 {E(entry["state"])}'
              + (f' &rarr; #{venue["venue_id"]} {E(venue["name"])}' if venue else "")
-             + "</p><p>되돌리면 이 항목은 다시 OPEN이 되고"
+             + "</p>"
+             + (f'<p class="note">되돌릴 결정: #{decision["venue_action_id"]} '
+                f'{E(decision["action"])} &middot; {E(decision["reviewer"])} &middot; '
+                f'{E(str(decision["created_at"])[:16])}</p>' if decision else "")
+             + "<p>되돌리면 이 항목은 다시 OPEN이 되고"
              + (f', alias <code>{E(alias["alias"])}</code>가 제거되며' if alias else "")
-             + " 아래 Event는 원문 장소 문자열로 돌아갑니다. 장소 자체는 지워지지 않습니다.</p>")
+             + " 아래 Event는 이 결정이 없었을 때 정규화가 읽는 상태로 돌아갑니다. "
+             "장소 자체는 지워지지 않습니다.</p>")
     return _preview_page(
         "Revert 미리보기", preview, venue_label="(원문 문자열, 미확정)", facts=facts,
         confirm_action=f"{_QUEUE}/{unresolved_venue_id}/revert", fields={},
         confirm_label="Confirm Revert",
+        form_extra=('<p><label>사유 <input name="reason" maxlength="500" '
+                    'placeholder="왜 되돌리는지 (감사 기록에 남습니다)"></label></p>'),
     )
 
 
@@ -1041,10 +1069,12 @@ def admin_revert_preview(unresolved_venue_id: int,
 def admin_revert_decision(
     unresolved_venue_id: int,
     token: str = Form(""),
+    reason: str = Form(""),
     reviewer: str = Depends(require_admin),
 ) -> Any:
     result = _confirm(lambda con: venue_resolution.revert_decision(
-        con, unresolved_venue_id=unresolved_venue_id, token=token, reviewer=reviewer))
+        con, unresolved_venue_id=unresolved_venue_id, token=token, reviewer=reviewer,
+        reason=reason[:500], settings=admin._settings()))
     if not isinstance(result, dict):
         return result
     return admin._back(

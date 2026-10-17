@@ -339,7 +339,8 @@ def test_an_entry_is_decided_once(pg, unique):
     first = _venue(pg, "Tango Pasion", "KR-SEOUL")
     second = _venue(pg, f"두번째 {unique}", "KR-SEOUL")
     uid = _entry(pg, PASION)["unresolved_venue_id"]
-    preview = venue_resolution.preview_link(pg, unresolved_venue_id=uid, venue_id=first["venue_id"])
+    preview = venue_resolution.preview_link(pg, unresolved_venue_id=uid, venue_id=first["venue_id"],
+                                            reviewer="tester")
     venue_resolution.confirm_link(pg, unresolved_venue_id=uid, venue_id=first["venue_id"],
                                   token=preview["token"], reviewer="tester")
     before = _fingerprint(pg)
@@ -439,7 +440,8 @@ def test_an_approved_daejeon_venue_reaches_the_daejeon_filter_and_not_seouls(pg,
 
     preview = venue_resolution.preview_create(
         pg, unresolved_venue_id=onada["entry"]["unresolved_venue_id"],
-        name="대전 땅고 오나다", region_id=daejeon, address="대전시 유성구 대학로76번안길 23 지하")
+        name="대전 땅고 오나다", region_id=daejeon, address="대전시 유성구 대학로76번안길 23 지하",
+        reviewer="human-approved-tester")
     result = venue_resolution.confirm_create(
         pg, unresolved_venue_id=onada["entry"]["unresolved_venue_id"], name="대전 땅고 오나다",
         region_id=daejeon, address="대전시 유성구 대학로76번안길 23 지하",
@@ -471,7 +473,8 @@ def test_the_audit_row_says_who_what_and_which_preview(pg, unique):
     _event(pg, unique, "1", venue=PASION)
     venue = _venue(pg, "Tango Pasion", "KR-SEOUL")
     uid = _entry(pg, PASION)["unresolved_venue_id"]
-    preview = venue_resolution.preview_link(pg, unresolved_venue_id=uid, venue_id=venue["venue_id"])
+    preview = venue_resolution.preview_link(pg, unresolved_venue_id=uid, venue_id=venue["venue_id"],
+                                            reviewer="kim-pro")
     result = venue_resolution.confirm_link(pg, unresolved_venue_id=uid, venue_id=venue["venue_id"],
                                            token=preview["token"], reviewer="kim-pro")
     action = result["action"]
@@ -562,13 +565,14 @@ def test_revert_puts_back_exactly_what_the_link_changed(pg, unique):
     venue = _venue(pg, "Tango Pasion", "KR-SEOUL")
     uid = _entry(pg, PASION)["unresolved_venue_id"]
     original = {e["event_id"]: _row(pg, e["event_id"]) for e in (first, second)}
-    preview = venue_resolution.preview_link(pg, unresolved_venue_id=uid, venue_id=venue["venue_id"])
+    preview = venue_resolution.preview_link(pg, unresolved_venue_id=uid, venue_id=venue["venue_id"],
+                                            reviewer="tester")
     venue_resolution.confirm_link(pg, unresolved_venue_id=uid, venue_id=venue["venue_id"],
                                   token=preview["token"], reviewer="tester")
     duplicates.scan(pg, on=original[first["event_id"]]["event_date"])
     assert any(_row(pg, i)["canonical_event_id"] for i in original)
 
-    back = venue_resolution.preview_revert(pg, unresolved_venue_id=uid)
+    back = venue_resolution.preview_revert(pg, unresolved_venue_id=uid, reviewer="tester")
     assert back["blockers"] == []
     assert back["summary"]["events"] == 2 and back["summary"]["released_folds"] == 1
     result = venue_resolution.revert_decision(pg, unresolved_venue_id=uid, token=back["token"],
@@ -649,7 +653,12 @@ def test_revert_leaves_a_persons_merge_alone(pg, unique):
                                rule="HUMAN_REVIEW", reason="a person said so")
     back = venue_resolution.preview_revert(pg, unresolved_venue_id=uid)
     assert back["summary"]["released_folds"] == 0
-    venue_resolution.revert_decision(pg, unresolved_venue_id=uid, token=back["token"])
+    # v0.96.38: the person's verdict was taken on the event at this venue, so
+    # it depends on the decision - the revert is refused rather than taken
+    # around it, and the verdict stays exactly as the person left it.
+    assert any("merged into" in b and "by a person" in b for b in back["blockers"])
+    with pytest.raises(venue_resolution.DecisionRefused):
+        venue_resolution.revert_decision(pg, unresolved_venue_id=uid, token=back["token"])
     assert _row(pg, first["event_id"])["canonical_event_id"] == other["event_id"]
 
 
@@ -764,7 +773,8 @@ def test_the_console_previews_then_confirms_with_the_token(console, pg, unique):
     assert page.status_code == 200
     assert "Confirm &amp; Link" in page.text and "바뀌는 Event" in page.text
     assert _fingerprint(pg) == before
-    token = re.search(r'name="token" value="([0-9a-f]{64})"', page.text).group(1)
+    # v0.96.38: "<issued>.<hmac>" - the preview token now carries when it was shown.
+    token = re.search(r'name="token" value="([0-9]+\.[0-9a-f]{64})"', page.text).group(1)
 
     forged = console.post(f"/admin/venues/unresolved/{uid}/link",
                           data={"venue_id": str(venue["venue_id"]), "add_alias": "1",

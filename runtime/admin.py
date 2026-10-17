@@ -30,6 +30,7 @@ from . import (
     health, intake, master_data, public, quota, review, review_hints, source_ops,
     source_freshness, source_priority, sources, timeline_settings, usage,
 )
+from . import admin_csrf
 from .admin_auth import require_admin
 from .config import Settings
 
@@ -343,7 +344,8 @@ def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None 
         tone, message = flash
         banner = f'<p class="flash {tone}">{E(message)}</p>'
     body_class = ' class="wide"' if wide else ""
-    return f"""<!doctype html>
+    # v0.96.38: every POST form leaves with its own request token.
+    return admin_csrf.inject(f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{E(title)} - DanceMate Admin</title><style>{STYLE}</style></head>
@@ -355,7 +357,7 @@ def _page(title: str, current: str, body: str, *, flash: tuple[str, str] | None 
 </div><nav>{nav}</nav></header>
 <main>{banner}{body}</main>
 {SUBMIT_ONCE}
-</body></html>"""
+</body></html>""")
 
 
 def _cards(items: list[tuple[str, Any, str]]) -> str:

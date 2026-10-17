@@ -11,7 +11,10 @@ def test_defaults_load_without_any_environment(monkeypatch):
     for key in ("DANCEMATE_VERSION", "POSTGRES_HOST", "SCHEDULER_HEARTBEAT_SECONDS"):
         monkeypatch.delenv(key, raising=False)
     loaded = config.load_settings()
-    assert loaded.version == config.PRODUCT_VERSION == "0.96.34"
+    # v0.96.38: the in-code default is the release's VERSION file, not a
+    # literal this test carries (it said 0.96.34 through three releases).
+    assert loaded.version == config.PRODUCT_VERSION == (
+        config.REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert loaded.postgres_host == "postgres"
     assert loaded.scheduler_heartbeat_seconds == 60
 

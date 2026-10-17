@@ -17,17 +17,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import admin, admin_pages, events_admin, health, master_admin, public
+from . import admin, admin_csrf, admin_pages, events_admin, health, master_admin, public
 from . import directory_admin  # v0.88.0: Communities and Notices
 from . import discovery_admin  # v0.89.0: Community Discovery
-from .config import PRODUCT_VERSION, Settings, load_settings
+from .config import Settings, load_settings, runtime_version
 
 app = FastAPI(
     title="DanceMate Runtime",
-    version=PRODUCT_VERSION,
+    # The deployed version, as /health reports it (v0.96.38: this read the
+    # in-code default, which had stopped at 0.96.34).
+    version=runtime_version(),
     description=(
         "LAN-only staging runtime for the ROCKPro64 deployment target. "
         "The operator console lives at /admin."
@@ -46,16 +48,16 @@ def settings() -> Settings:
 
 # The admin console shares one Settings instance with the API.
 admin.bind(lambda: settings())
-app.include_router(admin.router)
-app.include_router(admin.api)
-app.include_router(admin_pages.router)
-app.include_router(admin_pages.api)
-app.include_router(events_admin.router)
-app.include_router(events_admin.api)
-app.include_router(master_admin.router)
-app.include_router(master_admin.api)
-app.include_router(directory_admin.router)
-app.include_router(discovery_admin.router)
+# v0.96.38: every admin router refuses a state-changing request that is
+# cross-site or lacks its request token (`admin_csrf`). The dependency runs
+# `require_admin` first, so authentication is still its own, earlier check.
+_ADMIN_ROUTERS = (
+    admin.router, admin.api, admin_pages.router, admin_pages.api,
+    events_admin.router, events_admin.api, master_admin.router, master_admin.api,
+    directory_admin.router, discovery_admin.router, admin_csrf.api,
+)
+for _router in _ADMIN_ROUTERS:
+    app.include_router(_router, dependencies=[Depends(admin_csrf.protect)])
 
 # The alpha user surface: / , /events , /events/{id} and /api/events. Mounted
 # last so it can never shadow an operator route.

@@ -1,5 +1,118 @@
 # DanceMate Release Notes
 
+## v0.96.38 Admin Security Hardening, Safe Decision Reversal & Venue Operation Readiness
+
+Product Runtime 0.96.38; Information Engine 1.14 (unchanged); migration 047
+(unchanged - no schema change). Registers nothing: Production's Venue Master
+and every queue entry are as they were, and the five high-priority venues are
+ready for a person to approve, previewed but not approved.
+
+### Every state-changing admin request now needs a request token
+
+HTTP Basic says who is asking; it cannot say whether the operator meant to.
+A browser that has the console's credential cached attaches it to any
+request for this origin, including a form another page submits. Until now
+only the v0.96.37 venue confirms carried something a third-party page could
+not produce. Measured: 60 state-changing admin routes (every POST/PATCH under
+`/admin` and `/api/admin`, enumerated from the app). 4 are read-only
+previews and 4 are the token-bound venue confirms; the other 52 - Dismiss,
+Unlink & Delete, Master Data and alias edits, Sources, Review, Duplicates,
+Communities, Notices, Discovery, CSV imports, settings, the JSON API - had no
+check beyond Basic, and 46 of them could be triggered by a plain cross-site
+form post (the other 6 parse only a JSON body, which such a form cannot
+send).
+
+`runtime/admin_csrf.py` is a second contract beside authentication, applied
+once in `app.py` to every admin router, so a new route cannot miss it:
+
+* a request whose browser names another origin (`Origin`, `Sec-Fetch-Site`
+  other than same-origin, `Referer`) is refused before its token is read;
+* otherwise it needs a request token - an HMAC over the authenticated user,
+  the one path it may be posted to, and when it was issued, expiring after
+  12 hours. Every POST form the console renders carries its own as a hidden
+  `csrf_token`; a script asks `GET /api/admin/csrf-token?path=...` and sends
+  `X-CSRF-Token` (`scripts/apply-board-sources.py` does). Never in a URL.
+
+Authentication still runs first and is not replaced: the guard depends on
+`require_admin`, so a request without the credential is 401 whatever it
+carries. A refused request opens no database connection at all.
+
+Compatibility: the console works unchanged (its own forms carry the token). A
+hand-written client that POSTs to the admin API now gets 403 until it sends
+the header; `apply-board-sources.py` is the only one in the repository and
+is updated.
+
+### Decision tokens: one reviewer, two hours, one use
+
+The v0.96.37 preview token bound a confirm to the facts previewed. It was
+signed with a hash of the admin password, never expired, named no reviewer,
+and - because a revert puts an entry back exactly as it was - matched again
+after a revert. It now carries when it was issued (refused after two hours),
+is bound to the reviewer shown the preview, and its facts include the entry's
+latest audit row, so any later decision kills it. Every token is signed with a
+key derived for its use alone (`ADMIN_TOKEN_SECRET` if set, else
+`ADMIN_PASSWORD`); none contains or is keyed with the credential itself, and
+rotating either value invalidates all of them at once.
+
+### Revert writes what normalization would derive
+
+Reproduced: the v0.96.37 revert decided whether the next normalization would
+re-link a reverted event from the queue entry's one stored list of spellings
+- whichever post was normalized last. One string read by two posts, A beside
+spelling Y and B beside Z: the entry stored A's list; a person later taught
+the venue Z; the revert check passed, and the real normalization pass linked
+B straight back (`test_reproduced_the_queues_one_list_missed_another_posts_spelling`).
+The revert also wrote `region_id = NULL` where normalization derives an
+official board's or a structured listing's region.
+
+`preview_revert()` now asks `normalization.resolve_venue(..., without=...)` -
+"what does this resolve to if that one decision had never been taken" - for
+every event at the venue, each with its own alias candidates from the engine
+store, and the region `normalization.derived_region_id()` gives it. What it
+writes is therefore what the next pass derives. It refuses when an event
+would still resolve to the venue through another spelling, when a person
+later edited the decision's own spelling in Master Data, or when a person's
+duplicate verdict sits on a moved event (those are corrected by hand first).
+An event another venue's spelling now claims is shown going there. The audit
+row (`DECISION_REVERT`) records the original decision, the reason, every
+event before and after, and the original row stays untouched.
+
+### Previews say what the next normalization does too
+
+Found on the Production clone: New Venue for `STUDIO RYU (스튜디오 류) (...)`
+registers the venue's own name, and two past events whose post read just
+`STUDIO RYU` - another queue entry - were linked by the next pass without the
+preview listing them. Link and New Venue previews now list the waiting
+events their new spellings will link on the next normalization, read the way
+`normalize_all()` reads them.
+
+### One version everywhere
+
+`PRODUCT_VERSION` had stayed at 0.96.34 through three releases; the OpenAPI
+document showed it while `/health` showed the deployed version. The OpenAPI
+version now comes from `config.runtime_version()` (DANCEMATE_VERSION, as
+/health), the constant is 0.96.38, and `tests/test_config.py` holds it to the
+VERSION file.
+
+### Measured
+
+Production-equivalent simulation on a disposable clone, every step through
+the console's own HTTP forms: the five HIGH entries approved as New Venue
+(Tango Pasion 16 events, La Vida Studio 4, 대전 땅고 오나다 7 in KR-DAEJEON,
+Social Tango Academy 4, STUDIO RYU 4); written == previewed for all five; the
+scan made exactly the 2 predicted folds; normalization of all 2,061
+candidates afterwards differed only where the preview said it would (the two
+`STUDIO RYU` events) plus the known folded-row `listing_state`. Then a wrong
+Link Existing, its Revert, and Unlink & Delete of the five venues, all over
+HTTP; after normalization every one of 1,414 events equalled the clone's
+starting state, Venue Master 54/179 as before, the original audit rows
+unchanged. Without the request token 403, cross-origin 403, without the
+credential 401, a forged preview token 409, 대전 → Seoul 187 refused.
+
+Tests: runtime 3,471 passed / 16 skipped / 0 failed (disposable PostgreSQL;
++213 new, skips unchanged), engine 1,976 passed /
+1 skipped.
+
 ## v0.96.37 Venue Human Verification & Safe Regional Coverage Recovery
 
 Product Runtime 0.96.37; Information Engine 1.14 (unchanged); migration **047**

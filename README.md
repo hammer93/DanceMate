@@ -823,6 +823,17 @@ credentials come from
 `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env`, and the console refuses every
 request when no password is set. JSON equivalents live under `/api/admin/`.
 
+v0.96.38부터 상태를 바꾸는 모든 관리자 요청(POST/PUT/PATCH/DELETE)은 인증과
+별개로 **요청 토큰**이 필요하다. 콘솔의 폼은 자기 action에 묶인 `csrf_token`을
+숨은 필드로 이미 담고 있고, 다른 사이트에서 온 요청(`Origin`/`Sec-Fetch-Site`/
+`Referer`가 다른 출처)은 토큰이 있어도 거부된다. 스크립트는 먼저
+`GET /api/admin/csrf-token?path=<보낼 경로>`로 토큰을 받아 `X-CSRF-Token`
+헤더로 보낸다(`scripts/apply-board-sources.py`가 그렇게 한다). 토큰은 사용자·
+경로·발급 시각에 묶이고 12시간 뒤 만료된다. 서명 키는 `ADMIN_TOKEN_SECRET`
+(선택)이 있으면 그것, 없으면 `ADMIN_PASSWORD`에서 용도별로 파생하며, 둘 중
+하나를 바꾸면 발급된 모든 토큰이 즉시 무효가 된다(열려 있던 페이지는 새로
+고침하면 된다).
+
 Dashboard는 **오늘 할 일**로 시작한다 — 오늘 / 내일 / 이번 주 / 검토 대기 /
 검토 완료 / 지난 행사, 그리고 바로 이어지는 다섯 개의 Review 필터. 수집 총계는
 그 아래 Collection으로 내려갔다. 아침에 필요한 것은 총계가 아니라 오늘이다.
