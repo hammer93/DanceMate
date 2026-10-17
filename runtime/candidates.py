@@ -577,6 +577,9 @@ def all_candidate_ids(settings: Settings) -> set[int] | None:
 
 #: What the engine writes when a clock carried no PM/오후 marker at all.
 ENGINE_EVIDENCE_ABSENT = "ABSENT"
+#: Every half-of-day verdict the engine records for a time
+#: (`extraction_rules.EVIDENCE_*`).
+ENGINE_MERIDIEM_VERDICTS = frozenset({"EXPLICIT", "PROPAGATED", ENGINE_EVIDENCE_ABSENT})
 #: The hour needs no marker to be certain: the post wrote it as 14:00, and
 #: `extraction_rules` recorded `ambiguous: False` because no reading of 14
 #: o'clock is twelve hours out. Distinguished from ABSENT (v0.96.34) because
@@ -613,21 +616,41 @@ def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str
         return {}
     finally:
         con.close()
-    return {row["candidate_id"]: _time_evidence_value(row)
-            for row in rows if row["inference"]}
+    found = {}
+    for row in rows:
+        verdict = _time_evidence_value(row)
+        if verdict:
+            found[row["candidate_id"]] = verdict
+    return found
 
 
-def _time_evidence_value(row) -> str:
-    """The row's own verdict on this time, marker and ambiguity together."""
-    if row["inference"] != ENGINE_EVIDENCE_ABSENT:
-        return row["inference"]
+def _time_evidence_value(row) -> str | None:
+    """The row's own verdict on this time, marker and ambiguity together.
+
+    v0.96.39: a time read off a poster is recorded with the image it came
+    from in `inference` - extract_with_image_fallback() keeps that column as
+    the pointer to the image for every field it fills, the Review page's
+    Image Evidence section reads it there - and the reading's own verdict in
+    `value` (`meridiem_evidence`, `ambiguous`). Taking `inference` as the
+    verdict put 33 image URLs into `events.time_evidence`, a column that says
+    how certain a time is. The pointer stays where it is; the verdict is read
+    from the reading. A value that is neither is not a verdict, and is not
+    passed on as one.
+    """
     try:
         reading = json.loads(row["value"]) if row["value"] else None
     except (TypeError, ValueError):
-        return row["inference"]
-    if isinstance(reading, dict) and reading.get("ambiguous") is False:
+        reading = None
+    if not isinstance(reading, dict):
+        reading = {}
+    verdict = row["inference"]
+    if verdict not in ENGINE_MERIDIEM_VERDICTS:
+        verdict = reading.get("meridiem_evidence")
+    if verdict not in ENGINE_MERIDIEM_VERDICTS:
+        return None
+    if verdict == ENGINE_EVIDENCE_ABSENT and reading.get("ambiguous") is False:
         return EVIDENCE_UNAMBIGUOUS
-    return row["inference"]
+    return verdict
 
 
 def genre_hints(settings: Settings, candidate_ids: list[int]) -> dict[int, list[str]]:

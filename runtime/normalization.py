@@ -48,6 +48,23 @@ GENRE_BY_EVENT_TYPE = {
 # Review outcomes that must never reach the alpha search.
 UNLISTABLE_REVIEW_STATES = {"REJECTED", "DUPLICATE"}
 
+# v0.96.39: what `listing_state` is. An event is HIDDEN when its review state
+# says it may not be listed, or when it is folded under another event
+# (`canonical_event_id` set); otherwise LISTED. Every other writer already
+# kept to that - `duplicates.record_decision()` hides the row it folds and
+# relists the one it rules DISTINCT, and a released or pruned fold is relisted
+# by its review state - but this upsert recomputed the column from the review
+# state alone, while leaving `canonical_event_id`, which it does not write,
+# as it was. The duplicate scan never visits a row that is already folded, so
+# every fold that was re-normalized afterwards stayed LISTED under its
+# canonical: 142 of 142 on Production 0.96.38. Readers were never misled (each
+# one also requires `canonical_event_id IS NULL`), the column was. The fold
+# itself is the scan's and the reviewer's to make or undo; here it is kept.
+_FOLDED_STAYS_HIDDEN = (
+    "CASE WHEN events.canonical_event_id IS NOT NULL THEN 'HIDDEN' "
+    "ELSE EXCLUDED.listing_state END"
+)
+
 _DECORATION = re.compile(r"[^0-9A-Za-z가-힣]+")
 # Dates, weekdays and ordinals inside a title: "9/5(토) 더 피스타 밀롱가" and
 # "9월 12일 더 피스타 밀롱가" are the same series on different days.
@@ -572,7 +589,10 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
     placeholders = ", ".join(
         "%s::jsonb" if c == "field_origin" else "%s" for c in columns
     )
-    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns if c != "candidate_id")
+    updates = ", ".join(
+        f"{c} = {_FOLDED_STAYS_HIDDEN}" if c == "listing_state" else f"{c} = EXCLUDED.{c}"
+        for c in columns if c != "candidate_id"
+    )
     with con.cursor() as cur:
         cur.execute(
             "INSERT INTO events (" + ", ".join(columns) + ") "
@@ -834,7 +854,12 @@ def source_of(con, source_url: str | None) -> dict[str, Any]:
 # its ordinary batches, the way an ENGINE_VERSION bump re-flows re-extraction.
 # It is deliberately not the product version: a release that does not change
 # normalization must not re-normalise everything to prove it.
-NORMALIZATION_VERSION = "1"
+#
+# "2" (v0.96.39): a poster-read time's verdict is read from the reading, not
+# the image pointer beside it, and a re-normalized fold keeps HIDDEN - both
+# change rows whose inputs have not moved, so nothing short of this reaches
+# them.
+NORMALIZATION_VERSION = "2"
 
 # A candidate whose normalization raises steps aside after this many tries,
 # with its error still on the row. Without a cap it would be selected first on

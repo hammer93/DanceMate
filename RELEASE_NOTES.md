@@ -1,5 +1,100 @@
 # DanceMate Release Notes
 
+## v0.96.39 Event Evidence Semantics & Canonical Listing State Integrity
+
+Product Runtime 0.96.39; Information Engine 1.14 (unchanged - no engine code
+changed); migration 047 (unchanged - no schema change). Normalization version
+1 -> 2, so the scheduler rebuilds every events row once in its ordinary
+500-candidate batches (five ticks on a Production clone). Nothing a reader is
+served changes: on that clone the public API returned the same 1,258 events
+with every field equal, and the five time windows listed the same ids.
+Registers nothing: no venue, alias, queue decision or duplicate verdict is
+written.
+
+### A poster's time says how certain it is, not which image it came from
+
+`events.time_evidence` says how certain a time is (migration 046: EXPLICIT,
+UNAMBIGUOUS, PROPAGATED, ABSENT, HUMAN, NULL). On Production 0.96.38 there
+were 33 events whose value was an image URL. The engine records a time read off a
+poster (`extract_with_image_fallback()`) with the image it came from in the
+evidence row's `inference` - the pointer it keeps for every field a poster
+fills, and the one the Review page's Image Evidence section reads - and the
+reading's own verdict in `value` (`meridiem_evidence`, `ambiguous`).
+`candidates.time_evidence()` took `inference` as the verdict.
+
+Nobody was shown a wrong time. The engine only takes a poster time it can place
+(an ambiguous one is kept as `IMAGE_TIME_AMBIGUOUS` context, never as the
+time), so all 33 readings were `ambiguous: false`, and `time_confirmed` (true
+unless ABSENT) was true and right. What was wrong was the column. Any reader
+asking whether a time was EXPLICIT could not see these rows: the quality
+gauge's `WRONG_TIME_SQL`, for example. The verdict is now read from the
+reading whenever `inference` is not one. A value that is neither a verdict nor
+a reading is not passed on as one. The 33 become 22 EXPLICIT and 11
+UNAMBIGUOUS, and `time_confirmed` stays true on all 33.
+`start_time`/`end_time`/`end_day_offset` are not touched. The image stays
+where it was: in the engine's evidence row, in `source_item_image`
+(`used_as_fallback`) and on the Review page. Nothing read it from
+`events.time_evidence`.
+
+Not changed: the 10 timed events with `time_evidence IS NULL`. They are pre-v0.74
+rows with provenance UNKNOWN, none of them served. Their engine rows carry
+no verdict at all, and their readings (`19:00-23:00`, `09:00 pm to 02:00 am`)
+are unambiguous, so `time_confirmed: true` is not a false confirmation.
+
+### A folded event stays HIDDEN
+
+On Production 0.96.38, all 142 folded events (`canonical_event_id` set) read
+`listing_state = LISTED`, and none read HIDDEN. Every other writer treats the
+column as derived:
+
+* `duplicates.record_decision()` hides the row it folds;
+* it relists the row it rules DISTINCT by its review state;
+* a released or pruned fold is relisted by its review state.
+
+The normalization upsert recomputed the column from the review state alone,
+and left `canonical_event_id`, which it does not write, as it was. The
+duplicate scan never revisits a row that is already folded, so every fold that
+was re-normalized afterwards stayed LISTED under its canonical, permanently.
+That is the 1617066/1617067 effect seen on the 0.96.38 clone. Readers were
+never misled: every public, dashboard and source-health query also requires
+`canonical_event_id IS NULL`. The column, however, contradicted the fold.
+
+The invariant, which every writer now keeps:
+`listing_state = HIDDEN` exactly when the review state is REJECTED/DUPLICATE
+or the event is folded. The upsert keeps HIDDEN for a row that carries a
+canonical, and leaves the fold alone: making or undoing a fold stays the
+scan's and the reviewer's job. No canonical reference, duplicate decision or
+event id changes.
+
+Human decisions:
+
+* a person's merge stays HIDDEN and stays a merge through re-normalization
+  and scans;
+* a person's keep-separate stays LISTED;
+* the v0.96.37 venue Revert still releases the automatic fold its approval
+  made, and both rows stay listed afterwards.
+
+### Measured
+
+Production-equivalent simulation on a disposable clone (the new tree, a copy
+of the engine store), converged by the scheduler's own `event_normalization`
+job:
+
+* 1,415 events before and after, and 175 rows changed: the 33 verdicts and the
+  142 listings, nothing else;
+* invariant violations 142 -> 0; folded rows in public 0 -> 0; chains,
+  dangling or cross-region folds 0;
+* Venue Master, aliases, queue, duplicate decisions and pairs, reviews and
+  event genres unchanged;
+* idempotent: further ticks rebuild nothing, and a second full re-flow plus
+  scan changes 0 rows.
+
+The admin quality gauge's all-time `wrong_time` count becomes 2 instead of 1.
+The additional row is past event 1597462 (2025), whose poster read `PM 24:00`.
+It is now visible to the gauge as EXPLICIT; the upcoming count stays 0.
+
+Tests: runtime 3,496 passed / 16 skipped / 0 failed (disposable PostgreSQL), engine 1,976 passed / 1 skipped.
+
 ## v0.96.38 Admin Security Hardening, Safe Decision Reversal & Venue Operation Readiness
 
 Product Runtime 0.96.38; Information Engine 1.14 (unchanged); migration 047
