@@ -162,7 +162,46 @@ def resolve_venue(con, venue_text: str | None,
             "matched_on": attempt,
             "region_id": found.get("region_id"),
         }
+    decided = _linked_decision(con, venue_text)
+    if decided and not venue_identity.region_conflict(con, decided, venue_text):
+        return {
+            "venue_id": decided["venue_id"],
+            "venue_status": VENUE_RESOLVED,
+            "matched_on": venue_text,
+            "region_id": decided.get("region_id"),
+        }
     return {"venue_id": None, "venue_status": VENUE_UNRESOLVED, "matched_on": None}
+
+
+def _linked_decision(con, venue_text: str) -> dict[str, Any] | None:
+    """The venue a person linked this exact string to, when no alias says so.
+
+    v0.96.37: Link Existing can be told not to register the string as an alias
+    (an operator who does not want it offered as a spelling of the venue). The
+    events were linked anyway, and then the next re-normalization - every
+    candidate is re-read whenever the Venue Master changes - resolved the
+    string through the aliases alone, found nothing and put them back to
+    UNRESOLVED, while the queue entry went on saying LINKED. The decision is a
+    fact about this string as much as an alias is, so it is read here too.
+
+    It is not part of master_revision() and does not need to be: every change
+    to a decision (link, revert, delete-and-requeue) writes its effect on the
+    events in the same transaction that records it, so what is stored is
+    already what this would derive.
+    """
+    normalized = master_data.normalize_alias(venue_text)
+    if not normalized:
+        return None
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT v.* FROM unresolved_venues u "
+            "JOIN venues v ON v.venue_id = u.resolved_venue_id "
+            "WHERE u.state = 'LINKED' AND u.normalized_text = %s",
+            (normalized,),
+        )
+        names = [c.name for c in cur.description]
+        row = cur.fetchone()
+    return None if row is None else dict(zip(names, row))
 
 
 def record_unresolved_venue(con, venue_text: str,
@@ -609,11 +648,22 @@ def unresolved_venues(con, *, state: str = "OPEN", limit: int = 100) -> list[dic
             "  (SELECT count(*) FROM events e "
             "    WHERE e.venue_status = 'UNRESOLVED' "
             "      AND e.provenance = 'LIVE' "
-            "      AND lower(e.venue_text) = lower(u.venue_text)) AS live_event_count "
+            "      AND lower(e.venue_text) = lower(u.venue_text)) AS live_event_count, "
+            # v0.96.37: what a dancer would actually see change - the events
+            # still to come that are listed and not folded under another row,
+            # counted once each. A string a hundred past posts used matters less
+            # than one with three nights next week.
+            "  (SELECT count(*) FROM events e "
+            "    WHERE e.venue_status = 'UNRESOLVED' "
+            "      AND e.provenance = 'LIVE' AND e.listing_state = 'LISTED' "
+            "      AND e.canonical_event_id IS NULL "
+            "      AND e.event_date >= (now() AT TIME ZONE 'Asia/Seoul')::date "
+            "      AND lower(e.venue_text) = lower(u.venue_text)) AS upcoming_event_count "
             "FROM unresolved_venues u WHERE u.state = %s "
-            # Strings with live posts behind them first: those are the ones a
-            # decision actually changes something for.
-            "ORDER BY live_event_count DESC, event_count DESC, u.last_seen_at DESC "
+            # Strings with upcoming nights first, then live posts behind them:
+            # those are the ones a decision actually changes something for.
+            "ORDER BY upcoming_event_count DESC, live_event_count DESC, "
+            "  event_count DESC, u.last_seen_at DESC "
             "LIMIT %s",
             (state, limit),
         )
@@ -633,12 +683,17 @@ def unresolved_venue(con, unresolved_venue_id: int) -> dict[str, Any] | None:
 
 
 def link_unresolved_venue(con, unresolved_venue_id: int, venue_id: int, *,
-                          reviewer: str = "admin", add_alias: bool = True) -> dict[str, Any]:
+                          reviewer: str = "admin", add_alias: bool = True,
+                          event_ids: list[int] | None = None) -> dict[str, Any]:
     """A person says this string is that venue.
 
     Records the string as an alias so the same reading resolves next time, then
     re-resolves the events that were waiting on it. This is the only path from
     an unrecognised string to the Venue Master, and a person is on it.
+
+    ``event_ids`` (v0.96.37): only these events, when given - the ones a
+    preview showed. An event that started waiting on the string after the
+    preview is left for normalization, which resolves it the same way.
     """
     with con.cursor() as cur:
         cur.execute(
@@ -683,15 +738,17 @@ def link_unresolved_venue(con, unresolved_venue_id: int, venue_id: int, *,
             "  region_id = (SELECT region_id FROM venues WHERE venue_id = %s), "
             "  updated_at = now() "
             "WHERE venue_status = 'UNRESOLVED' AND lower(venue_text) = lower(%s) "
-            "RETURNING event_id",
-            (venue_id, venue_id, entry["venue_text"]),
+            + ("" if event_ids is None else "AND event_id = ANY(%s::bigint[]) ")
+            + "RETURNING event_id",
+            (venue_id, venue_id, entry["venue_text"],
+             *(() if event_ids is None else (list(event_ids),))),
         )
-        updated = [r[0] for r in cur.fetchall()]
+        updated = sorted(r[0] for r in cur.fetchall())
     # The identity key contains the venue, so it has to be recomputed.
     for event_id in updated:
         _refresh_keys(con, event_id)
     return {"unresolved_venue_id": unresolved_venue_id, "venue_id": venue_id,
-            "events_updated": len(updated)}
+            "events_updated": len(updated), "event_ids": updated}
 
 
 def dismiss_unresolved_venue(con, unresolved_venue_id: int, *,

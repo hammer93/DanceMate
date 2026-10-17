@@ -12,6 +12,11 @@ Three things an operator needs before they can decide, and one after:
     a sensible starting form           suggest()
     all of it applied at once          create_and_link()
 
+v0.96.37 put a preview in front of every decision (preview_link(),
+preview_create(), preview_group(), preview_revert()) and made the decision
+itself carry that preview's token, so what is written is exactly what the
+operator was shown - or nothing at all.
+
 `create_and_link` is one transaction on purpose. Creating the venue and then
 failing to link it leaves a master record nobody asked for and a queue entry
 that still looks untouched -- the operator would reasonably create it again.
@@ -22,16 +27,23 @@ string to a venue, and no threshold above which one is created automatically.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
 import re
 import unicodedata
 from typing import Any
 
-from . import master_data, normalization
+from . import master_data, normalization, venue_identity
 
 CREATE_AND_LINK = "CREATE_AND_LINK"
 LINK_EXISTING = "LINK_EXISTING"
 NOT_A_VENUE = "NOT_A_VENUE"
+# v0.96.37: a person takes back a LINK_EXISTING, CREATE_AND_LINK or
+# NOT_A_VENUE decision. The decision's own row stays; this one says it was
+# undone, by whom, and what it put back.
+DECISION_REVERT = "DECISION_REVERT"
 
 # Removing a venue: nothing referenced it, or the events go back to the raw
 # string they were read from, or it stays and comes out of circulation.
@@ -42,7 +54,8 @@ VENUE_REACTIVATE = "VENUE_REACTIVATE"
 
 RESOLUTION_ACTIONS = (CREATE_AND_LINK, LINK_EXISTING, NOT_A_VENUE)
 REMOVAL_ACTIONS = (VENUE_DELETE, VENUE_UNLINK_DELETE, VENUE_DEACTIVATE, VENUE_REACTIVATE)
-ACTIONS = RESOLUTION_ACTIONS + REMOVAL_ACTIONS
+CORRECTION_ACTIONS = (DECISION_REVERT,)
+ACTIONS = RESOLUTION_ACTIONS + REMOVAL_ACTIONS + CORRECTION_ACTIONS
 
 # How much of the post to show around the venue string. Enough to tell
 # "장소: OCHO" from "일루미밀롱가 @ OCHO", not enough to paste the article into
@@ -64,7 +77,6 @@ _ADDRESS_START_RE = re.compile(rf"^\s*(?:{_ADMIN})\b")
 _ROAD_RE = re.compile(r"(?:[가-힣A-Za-z0-9]+(?:로|길|가|동|읍|면|리))\s*\d")
 _ADMIN_HEAD_RE = re.compile(rf"^\s*({_ADMIN})")
 
-_PARENTHETICAL_RE = re.compile(r"^(?P<head>[^(（]*)[(（](?P<inner>[^)）]*)[)）]\s*$")
 
 # Gwangju Metropolitan City's own five gu - the only safe way to tell it apart
 # from Gyeonggi-do's unrelated 광주시 (Gwangju-si), which has no gu-level
@@ -81,6 +93,23 @@ class DuplicateVenue(Exception):
     def __init__(self, matches: list[dict[str, Any]]):
         super().__init__("a similar venue is already registered")
         self.matches = matches
+
+
+class DecisionRefused(Exception):
+    """A decision the current state does not allow. Nothing was written.
+
+    Unlike DuplicateVenue this is not a question: a queue entry somebody has
+    already decided, a venue in a city the post's own words exclude, a spelling
+    another venue already owns. Carries every reason, not just the first.
+    """
+
+    def __init__(self, reasons: list[str]):
+        super().__init__("; ".join(reasons))
+        self.reasons = list(reasons)
+
+
+class StalePreview(DecisionRefused):
+    """What would be written is no longer what the operator was shown."""
 
 
 def looks_like_an_address(text: str) -> bool:
@@ -111,18 +140,28 @@ def suggest(raw_venue: str, alias_candidates: list[str] | None = None) -> dict[s
     name, address = raw, None
     aliases: list[str] = []
 
-    match = _PARENTHETICAL_RE.match(raw)
-    if match:
-        head = match.group("head").strip()
-        inner = match.group("inner").strip()
-        if head and looks_like_an_address(inner):
-            name, address = head, inner
-        elif head and inner:
-            name = head
-            aliases.append(inner)
+    head, groups = _trailing_groups(raw)
+    split = bool(head) and bool(groups)
+    if split:
+        name = head
+        # v0.96.37: a provider writes `Name (한글 이름) (주소)` - two brackets,
+        # one of them an address that may hold a bracket of its own
+        # (`(창원시 ... 24-2 (창동) 2층)`). Exactly one address-shaped bracket
+        # is an address; two are a question the operator answers, so neither
+        # is filled in. Every other bracket is another name for the place.
+        addresses = [g for g in groups if looks_like_an_address(g)]
+        if len(addresses) == 1:
+            address = addresses[0]
+        aliases.extend(g for g in groups if g not in addresses)
 
     for extra in [raw] + list(alias_candidates or []):
         extra = (extra or "").strip()
+        # v0.96.37: the engine offers the bare address among its readings
+        # (`서울시 서초구 방배천로 60 청도빌딩 B1F`). An address is the address
+        # field's, not a spelling of the venue: as an alias it would answer for
+        # every other room in the building. The raw string always stays.
+        if extra != raw and looks_like_an_address(extra):
+            continue
         if extra and extra not in aliases and extra != name:
             aliases.append(extra)
 
@@ -133,8 +172,38 @@ def suggest(raw_venue: str, alias_candidates: list[str] | None = None) -> dict[s
         "region_hint": _safe_admin_head(address),
         # True when the split was inferred rather than read off a label. The
         # form says so, so nobody assumes it was verified.
-        "split_inferred": bool(match) and name != raw,
+        "split_inferred": split and name != raw,
     }
+
+
+def _trailing_groups(raw: str) -> tuple[str, list[str]]:
+    """The text before the brackets a string ends with, and each bracket's
+    contents in order - nested brackets kept whole.
+
+    `라 벤따나 (서울 마포구 잔다리로 48, 2층)` is one group; `Tango Pasion (탱고
+    빠시온) (서울 마포구 월드컵북로6길 69 B1)` is two. A string whose brackets
+    do not balance, or that has nothing before them, is not split at all.
+    """
+    rest = raw.rstrip()
+    groups: list[str] = []
+    while rest.endswith((")", "）")):
+        depth = 0
+        for at in range(len(rest) - 1, -1, -1):
+            if rest[at] in ")）":
+                depth += 1
+            elif rest[at] in "(（":
+                depth -= 1
+                if depth == 0:
+                    break
+        else:
+            return "", []
+        if depth != 0:
+            return "", []
+        inner = rest[at + 1:-1].strip()
+        if inner:
+            groups.insert(0, inner)
+        rest = rest[:at].rstrip()
+    return rest.strip(), groups
 
 
 def _safe_admin_head(address: str | None) -> str | None:
@@ -175,6 +244,12 @@ _REGION_BY_ADMIN = {
 }
 
 
+_PROVINCE_SHORT = {
+    "경상남도": "경남", "경상북도": "경북", "충청남도": "충남", "충청북도": "충북",
+    "전라남도": "전남", "전라북도": "전북",
+}
+
+
 def suggested_region_id(con, region_hint: str | None) -> int | None:
     """The registered region an address names, if one is registered.
 
@@ -185,7 +260,9 @@ def suggested_region_id(con, region_hint: str | None) -> int | None:
     """
     if not region_hint:
         return None
-    mapped = _REGION_BY_ADMIN.get(region_hint[:2])
+    # v0.96.37: the full name of a province is not its first two syllables -
+    # 경상남도 is 경남, not "경상" - so `경상남도 창원시 ...` selected nothing.
+    mapped = _REGION_BY_ADMIN.get(_PROVINCE_SHORT.get(region_hint, region_hint[:2]))
     if mapped is None:
         return None
     code, english = mapped
@@ -493,7 +570,9 @@ def context(con, venue_text: str, *, limit: int = 3) -> list[dict[str, Any]]:
 def create_and_link(con, *, unresolved_venue_id: int, name: str,
                     region_id: int | None = None, address: str | None = None,
                     notes: str | None = None, aliases: list[str] | None = None,
-                    reviewer: str = "admin", force: bool = False) -> dict[str, Any]:
+                    reviewer: str = "admin", force: bool = False,
+                    event_ids: list[int] | None = None,
+                    preview_token: str | None = None) -> dict[str, Any]:
     """Create the venue, alias the raw string to it, and resolve what was waiting.
 
     One transaction. Creating the venue and then failing to link it would leave
@@ -526,6 +605,12 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
             raise DuplicateVenue(matches)
 
     with con.transaction():
+        # v0.96.37: decided once. A second Create on the same entry (a double
+        # click, a second tab, a stale page) made a second venue for it.
+        entry = _lock_open_entry(con, unresolved_venue_id)
+        conflict = _region_refusal(con, {"region_id": region_id}, entry, address)
+        if conflict:
+            raise DecisionRefused([conflict])
         venue = master_data.create_venue(
             con, name=name, region_id=region_id,
             address=(address or "").strip() or None,
@@ -536,7 +621,7 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
         master_data.add_venue_alias(con, venue["venue_id"], raw_venue, ignore_conflict=True)
         linked = normalization.link_unresolved_venue(
             con, unresolved_venue_id, venue["venue_id"], reviewer=reviewer,
-            add_alias=False,
+            add_alias=False, event_ids=event_ids,
         )
         recorded = record_action(
             con, action=CREATE_AND_LINK, raw_venue=raw_venue, reviewer=reviewer,
@@ -544,7 +629,9 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
             venue_name=venue["name"], events_updated=linked["events_updated"],
             before={"venue_text": raw_venue, "venue_id": None, "state": entry["state"]},
             after={"venue_id": venue["venue_id"], "name": venue["name"],
-                   "address": venue.get("address"), "region_id": region_id},
+                   "address": venue.get("address"), "region_id": region_id,
+                   "event_ids": linked["event_ids"],
+                   **({"preview_token": preview_token[:16]} if preview_token else {})},
         )
 
     return {
@@ -555,14 +642,21 @@ def create_and_link(con, *, unresolved_venue_id: int, name: str,
 
 
 def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
-                  reviewer: str = "admin", add_alias: bool = True) -> dict[str, Any]:
+                  reviewer: str = "admin", add_alias: bool = True,
+                  event_ids: list[int] | None = None,
+                  preview_token: str | None = None) -> dict[str, Any]:
     """A person says this string is that venue. Same transaction discipline.
 
     ``add_alias`` (v0.83.0): the raw string is registered as an alias by
     default, exactly as before -- an operator who already knows this reading
     is ambiguous (it also matches a different venue closely enough to worry
-    about) can say no instead, linking these events without teaching the
-    reading to future collections.
+    about) can say no instead, and the spelling is not added to the venue.
+
+    v0.96.37: either way the decision itself is kept - normalization reads a
+    LINKED queue entry as well as the aliases (normalization.resolve_venue), so
+    a link without an alias no longer comes undone the next time every
+    candidate is re-read. ``event_ids`` limits the write to the events a
+    preview showed (see confirm_link()).
     """
     entry = normalization.unresolved_venue(con, unresolved_venue_id)
     if entry is None:
@@ -572,8 +666,18 @@ def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
         raise LookupError(f"no venue {venue_id}")
 
     with con.transaction():
+        # v0.96.37: only an OPEN entry is decided, and only onto a venue the
+        # post's own words do not exclude. A second link overwrote the first
+        # one's resolved_venue_id without a trace; a link into the wrong city
+        # was applied here and then silently undone by the next normalization,
+        # whose resolve_venue() refuses exactly that match.
+        entry = _lock_open_entry(con, unresolved_venue_id)
+        conflict = _region_refusal(con, venue, entry)
+        if conflict:
+            raise DecisionRefused([conflict])
         linked = normalization.link_unresolved_venue(
             con, unresolved_venue_id, venue_id, reviewer=reviewer, add_alias=add_alias,
+            event_ids=event_ids,
         )
         recorded = record_action(
             con, action=LINK_EXISTING, raw_venue=entry["venue_text"], reviewer=reviewer,
@@ -581,7 +685,10 @@ def link_existing(con, *, unresolved_venue_id: int, venue_id: int,
             venue_name=venue["name"], events_updated=linked["events_updated"],
             before={"venue_text": entry["venue_text"], "venue_id": None,
                     "state": entry["state"]},
-            after={"venue_id": venue_id, "name": venue["name"]},
+            after={"venue_id": venue_id, "name": venue["name"],
+                   "alias_registered": add_alias,
+                   "event_ids": linked["event_ids"],
+                   **({"preview_token": preview_token[:16]} if preview_token else {})},
         )
 
     return {"venue": venue, "events_updated": linked["events_updated"], "action": recorded}
@@ -599,6 +706,7 @@ def dismiss(con, *, unresolved_venue_id: int, reviewer: str = "admin",
     if entry is None:
         raise LookupError(f"no unresolved venue {unresolved_venue_id}")
     with con.transaction():
+        entry = _lock_open_entry(con, unresolved_venue_id)
         normalization.dismiss_unresolved_venue(con, unresolved_venue_id, reviewer=reviewer)
         recorded = record_action(
             con, action=NOT_A_VENUE, raw_venue=entry["venue_text"], reviewer=reviewer,
@@ -617,6 +725,10 @@ def dismiss(con, *, unresolved_venue_id: int, reviewer: str = "admin",
 _ADDRESS_STOP_RE = re.compile(
     r"(?:예약|문의|주차|전화|연락|입장료|참가비|밀롱가|쁘락|시간|일시|DJ|디제이|"
     r"오거나이저|주최|계좌|링크|http)"
+    # v0.96.37: a bank and its account follow the address with nothing in
+    # between - `제주시 노연로 110, 3층 카카오뱅크 3333-33-...` - and the whole
+    # bank word goes, not just its tail.
+    r"|\S*(?:은행|뱅크)|예금주"
     r"|[\[\](){}【】]"
     r"|\d[\d,]{2,}\s*원"
     r"|[^\w\s가-힣.,\-()]"          # an emoji or ornament ends it
@@ -921,31 +1033,690 @@ def group_unresolved(pending: list[dict[str, Any]],
 
 
 def group_link_existing(con, *, unresolved_venue_ids: list[int], venue_id: int,
-                        reviewer: str = "admin", add_alias: bool = True) -> dict[str, Any]:
+                        reviewer: str = "admin", add_alias: bool = True,
+                        event_ids: dict[int, list[int]] | None = None,
+                        preview_token: str | None = None) -> dict[str, Any]:
     """Apply one Link Existing decision to every row in a group.
 
     Each row still goes through link_existing() individually -- same audit
     row per string, same per-string alias registration -- Group Apply changes
-    how many clicks this takes, never what gets recorded. Not wrapped in a
-    single all-or-nothing transaction: one row already resolved by someone
-    else since the page loaded should not sour the rest of the group.
+    how many clicks this takes, never what gets recorded.
+
+    v0.96.37: all or nothing. Until now a row that failed (already resolved
+    by somebody else, or a venue in another city) was skipped and the rest
+    applied, so the group that was written was not the group that was
+    previewed. Now any failure rolls the whole group back and raises
+    DecisionRefused with every row's reason; the operator previews again.
     """
     results = []
     errors = []
-    for unresolved_venue_id in unresolved_venue_ids:
-        try:
-            results.append(link_existing(
-                con, unresolved_venue_id=unresolved_venue_id, venue_id=venue_id,
-                reviewer=reviewer, add_alias=add_alias,
-            ))
-        except Exception as exc:
-            errors.append({"unresolved_venue_id": unresolved_venue_id, "error": str(exc)})
+    with con.transaction():
+        for unresolved_venue_id in sorted(set(unresolved_venue_ids)):
+            try:
+                results.append(link_existing(
+                    con, unresolved_venue_id=unresolved_venue_id, venue_id=venue_id,
+                    reviewer=reviewer, add_alias=add_alias,
+                    event_ids=(None if event_ids is None
+                               else event_ids.get(unresolved_venue_id, [])),
+                    preview_token=preview_token,
+                ))
+            except (LookupError, DecisionRefused) as exc:
+                errors.append({"unresolved_venue_id": unresolved_venue_id, "error": str(exc)})
+        if errors:
+            raise DecisionRefused(
+                [f"#{e['unresolved_venue_id']}: {e['error']}" for e in errors])
     return {
         "venue": results[0]["venue"] if results else None,
         "events_updated": sum(r["events_updated"] for r in results),
         "linked_count": len(results),
         "errors": errors,
     }
+
+
+# --- preview before any decision (v0.96.37) ---------------------------------
+#
+# Every decision above changes the Venue Master, the events waiting on a
+# string, their region (and so the region filter) and their identity keys
+# (and so what the next duplicates scan folds). Until v0.96.37 the operator
+# saw none of that before pressing the button: Link Existing and New Venue
+# applied on the click, and only Group Apply had a preview - a list of strings,
+# not of what would change.
+#
+# So each decision now has a preview that reads exactly what the decision
+# would write and writes nothing, and the decision is accepted only with that
+# preview's token. The token is an HMAC over the preview's own facts - the
+# entry's state, the venue, the aliases, every affected event as it stands -
+# keyed with the admin credential, so it is also something another site
+# cannot forge into a cross-site form post. Confirm recomputes the preview
+# under a row lock; if anything moved in between (somebody else decided the
+# entry, a new post started waiting on the string, an event was re-read), the
+# tokens differ and nothing is written.
+
+def _lock_open_entry(con, unresolved_venue_id: int) -> dict[str, Any]:
+    """The queue entry, locked for this transaction, if it is still OPEN.
+
+    LookupError when there is no such entry; DecisionRefused when somebody has
+    already decided it. Two confirms racing on one entry serialise here, and
+    the second finds it decided.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM unresolved_venues WHERE unresolved_venue_id = %s FOR UPDATE",
+            (unresolved_venue_id,),
+        )
+        names = [c.name for c in cur.description]
+        row = cur.fetchone()
+    if row is None:
+        raise LookupError(f"no unresolved venue {unresolved_venue_id}")
+    entry = dict(zip(names, row))
+    if entry["state"] != "OPEN":
+        raise DecisionRefused([
+            f"#{unresolved_venue_id} is already {entry['state']} "
+            f"(by {entry.get('resolved_by') or 'someone'}) - nothing changed"
+        ])
+    return entry
+
+
+def _region_refusal(con, venue: dict[str, Any], entry: dict[str, Any],
+                    *addresses: str | None) -> str | None:
+    """Why this venue cannot be the place this string names, if it cannot.
+
+    The same narrow rule normalization applies to every alias match
+    (venue_identity.region_conflict): a venue in a metropolitan city the
+    string's own words, or the address its posts agree on, exclude. A link
+    normalization would refuse is a link that would be undone by the next
+    re-read, so it is refused here, before it is written.
+    """
+    from_posts = address_from_context(con, entry["venue_text"])
+    texts = [entry["venue_text"], *addresses,
+             from_posts["address"] if from_posts else None]
+    if not venue_identity.region_conflict(con, venue, *texts):
+        return None
+    region = master_data.get_region(con, venue["region_id"]) if venue.get("region_id") else None
+    said = sorted(set().union(*(venue_identity.stated_metros(t) for t in texts if t)))
+    return (
+        f"'{entry['venue_text']}' names {', '.join(said)}, but the venue is in "
+        f"{region['code'] if region else venue.get('region_id')} - "
+        "a different city cannot be the same place"
+    )
+
+
+def _token_key() -> bytes:
+    secret = os.environ.get("ADMIN_PASSWORD", "")
+    return hashlib.sha256(("dancemate-venue-decision:" + secret).encode()).digest()
+
+
+def preview_token(facts: dict[str, Any]) -> str:
+    body = json.dumps(facts, sort_keys=True, ensure_ascii=False, default=str)
+    return hmac.new(_token_key(), body.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _token_matches(given: str | None, expected: str) -> bool:
+    return bool(given) and hmac.compare_digest(given, expected)
+
+
+def _waiting_events(con, venue_text: str) -> list[dict[str, Any]]:
+    """The events a decision on this string would change, as they stand."""
+    from . import events_api  # local: events_api imports this module
+
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT e.event_id, e.event_date, e.event_name, e.event_type, "
+            "       e.start_time, e.end_time, e.end_day_offset, e.venue_id, "
+            "       e.venue_text, e.venue_status, e.region_id, r.code AS region_code, "
+            "       e.identity_key, e.series_key, e.canonical_event_id, "
+            "       e.duplicate_decided_by, e.review_state, e.listing_state, "
+            "       e.provenance, e.source_url, e.source_item_id, "
+            "       (" + events_api._VISIBLE + ") AS publicly_visible "
+            "FROM events e LEFT JOIN regions r ON r.region_id = e.region_id "
+            "WHERE e.venue_status = 'UNRESOLVED' AND lower(e.venue_text) = lower(%s) "
+            "ORDER BY e.event_date, e.event_id",
+            (venue_text,),
+        )
+        names = [c.name for c in cur.description]
+        return [dict(zip(names, row)) for row in cur.fetchall()]
+
+
+def _canonical_outlook(con, moved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the next duplicates scan would do with these events once moved.
+
+    Asks duplicates.classify() itself - the rule the scan applies - of each
+    moved event against every other event on its date that would then share
+    its place, so the preview cannot disagree with the scan about which nights
+    fold. A pair either side of which a person has already decided is skipped,
+    as the scan skips it.
+    """
+    from . import duplicates  # local: duplicates is a heavier module
+
+    if not moved:
+        return []
+    by_id = {e["event_id"]: e for e in moved}
+    places = {e["venue_id"] for e in moved if e.get("venue_id") is not None}
+    dates = sorted({e["event_date"] for e in moved})
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM events WHERE event_date = ANY(%s) "
+            "AND review_state <> 'REJECTED' "
+            "AND (venue_id = ANY(%s::bigint[]) OR event_id = ANY(%s::bigint[]))",
+            (dates, list(places), list(by_id)),
+        )
+        names = [c.name for c in cur.description]
+        peers = [dict(zip(names, row)) for row in cur.fetchall()]
+    rows = [{**p, **by_id[p["event_id"]]} if p["event_id"] in by_id else p for p in peers]
+
+    outlook = []
+    seen: set[tuple[int, int]] = set()
+    for event in moved:
+        for other in rows:
+            pair = tuple(sorted((event["event_id"], other["event_id"])))
+            if other["event_id"] == event["event_id"] or pair in seen:
+                continue
+            seen.add(pair)
+            finding = duplicates.classify(event, other)
+            if finding is None:
+                continue
+            human = any(r.get("duplicate_decided_by") not in (None, duplicates.AUTO)
+                        for r in (event, other))
+            outlook.append({
+                "event_id": event["event_id"], "other_event_id": other["event_id"],
+                "other_event_name": other.get("event_name"),
+                "rule": finding["rule"],
+                "outcome": ("UNCHANGED (decided by a person)" if human
+                            else "AUTO_FOLD" if finding["auto"] else "REVIEW_PAIR"),
+            })
+    return outlook
+
+
+def _moved(events: list[dict[str, Any]], venue: dict[str, Any] | None,
+           region_code: str | None) -> list[dict[str, Any]]:
+    """The events as the decision would leave them, with what changed."""
+    out = []
+    for event in events:
+        venue_id = venue["venue_id"] if venue and venue.get("venue_id") else None
+        key = normalization.venue_key(venue_id, event["venue_text"]) if venue_id else None
+        after_identity = (normalization.identity_key(event["event_date"], key,
+                                                     event["start_time"])
+                          if key else event["identity_key"])
+        after_series = (normalization.series_key(key, event["event_date"], event["event_name"])
+                        if key else event["series_key"])
+        out.append({
+            **event,
+            "proposed_venue_id": venue_id,
+            "proposed_region_id": venue.get("region_id") if venue else None,
+            "proposed_region_code": region_code,
+            "identity_key_after": after_identity,
+            "series_key_after": after_series,
+            "identity_changes": after_identity != event["identity_key"],
+            "region_changes": (venue.get("region_id") if venue else None) != event["region_id"],
+        })
+    return out
+
+
+def _alias_plan(con, texts: list[str], venue_id: int | None) -> list[dict[str, Any]]:
+    """Each spelling a decision would register, and who owns it today."""
+    plan = []
+    seen: set[str] = set()
+    for text in texts:
+        normalized = master_data.normalize_alias(text or "")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        owner = master_data.resolve_venue(con, text)
+        if owner is None:
+            status = "NEW"
+        elif venue_id is not None and owner["venue_id"] == venue_id:
+            status = "ALREADY_THIS_VENUE"
+        else:
+            status = "OWNED_BY_OTHER_VENUE"
+        plan.append({"alias": text.strip(), "normalized": normalized, "status": status,
+                     "owner_venue_id": owner["venue_id"] if owner else None,
+                     "owner_name": owner["name"] if owner else None})
+    return plan
+
+
+def _evidence(con, entry: dict[str, Any]) -> dict[str, Any]:
+    from_posts = address_from_context(con, entry["venue_text"])
+    return {
+        "posts": context(con, entry["venue_text"], limit=5),
+        "post_address": from_posts["address"] if from_posts else None,
+        "suggestion": suggest(entry["venue_text"], list(entry.get("alias_candidates") or [])),
+    }
+
+
+def _summary(moved: list[dict[str, Any]], outlook: list[dict[str, Any]], today) -> dict[str, int]:
+    return {
+        "events": len(moved),
+        "publicly_visible": sum(1 for e in moved if e["publicly_visible"]),
+        "upcoming_visible": sum(1 for e in moved
+                                if e["publicly_visible"] and e["event_date"] >= today),
+        "region_changes": sum(1 for e in moved if e["region_changes"]),
+        "identity_changes": sum(1 for e in moved if e["identity_changes"]),
+        "predicted_auto_folds": sum(1 for o in outlook if o["outcome"] == "AUTO_FOLD"),
+        "predicted_review_pairs": sum(1 for o in outlook if o["outcome"] == "REVIEW_PAIR"),
+    }
+
+
+def _event_facts(moved: list[dict[str, Any]]) -> list[list[Any]]:
+    return [[e["event_id"], e["venue_id"], e["region_id"], e["identity_key"],
+             e["canonical_event_id"], str(e["event_date"]), str(e["start_time"])]
+            for e in moved]
+
+
+def _region_code(con, region_id: int | None) -> str | None:
+    region = master_data.get_region(con, region_id) if region_id else None
+    return region["code"] if region else None
+
+
+def preview_link(con, *, unresolved_venue_id: int, venue_id: int,
+                 add_alias: bool = True) -> dict[str, Any]:
+    """Everything Link Existing would change, and why it may not. Writes nothing."""
+    from . import events_api
+
+    entry = normalization.unresolved_venue(con, unresolved_venue_id)
+    if entry is None:
+        raise LookupError(f"no unresolved venue {unresolved_venue_id}")
+    venue = master_data.get_venue(con, venue_id)
+    if venue is None:
+        raise LookupError(f"no venue {venue_id}")
+    region_code = _region_code(con, venue.get("region_id"))
+
+    blockers, warnings = [], []
+    if entry["state"] != "OPEN":
+        blockers.append(f"#{unresolved_venue_id} is already {entry['state']} - "
+                        "a decided entry is corrected with Revert, not decided again")
+    conflict = _region_refusal(con, venue, entry)
+    if conflict:
+        blockers.append(conflict)
+    plan = _alias_plan(con, [entry["venue_text"]], venue_id) if add_alias else []
+    for alias in plan:
+        if alias["status"] == "OWNED_BY_OTHER_VENUE":
+            blockers.append(f"the spelling '{alias['alias']}' already belongs to "
+                            f"#{alias['owner_venue_id']} {alias['owner_name']}")
+    if not venue.get("enabled", True):
+        warnings.append(f"{venue['name']} is deactivated")
+    evidence = _evidence(con, entry)
+    address = evidence["post_address"] or evidence["suggestion"]["address"]
+    if _address_conflict(address, venue.get("address")):
+        warnings.append(f"the posts give '{address}', the venue's address is "
+                        f"'{venue.get('address')}' - check they are the same place")
+
+    events = [] if entry["state"] != "OPEN" else _waiting_events(con, entry["venue_text"])
+    moved = _moved(events, venue, region_code)
+    outlook = _canonical_outlook(con, [{**e, "venue_id": venue_id,
+                                        "region_id": venue.get("region_id")} for e in moved])
+    facts = {
+        "action": LINK_EXISTING, "entry": [entry["unresolved_venue_id"], entry["state"],
+                                           entry["venue_text"]],
+        "venue": [venue["venue_id"], venue.get("region_id"), venue.get("enabled")],
+        "add_alias": bool(add_alias), "aliases": plan, "events": _event_facts(moved),
+    }
+    return {
+        "action": LINK_EXISTING, "entry": entry, "venue": {**venue, "region_code": region_code},
+        "add_alias": bool(add_alias), "alias_plan": plan, "evidence": evidence,
+        "events": moved, "canonical": outlook,
+        "summary": _summary(moved, outlook, events_api.today()),
+        "blockers": blockers, "warnings": warnings, "token": preview_token(facts),
+    }
+
+
+def preview_create(con, *, unresolved_venue_id: int, name: str,
+                   region_id: int | None = None, address: str | None = None,
+                   aliases: list[str] | None = None, notes: str | None = None,
+                   force: bool = False) -> dict[str, Any]:
+    """Everything New Venue would change, and why it may not. Writes nothing.
+
+    A possible duplicate is a blocker until the operator says these are
+    different places (``force``) - the same question create_and_link() asks -
+    and the answer is part of the token, so it cannot be skipped by replaying
+    a confirm.
+    """
+    from . import events_api, master_edit
+
+    entry = normalization.unresolved_venue(con, unresolved_venue_id)
+    if entry is None:
+        raise LookupError(f"no unresolved venue {unresolved_venue_id}")
+    name = (name or "").strip()
+    address = (address or "").strip() or None
+    alias_list = [a.strip() for a in (aliases or []) if a and a.strip()]
+    region_code = _region_code(con, region_id)
+    if region_id is not None and region_code is None:
+        raise LookupError(f"no region {region_id}")
+
+    blockers, warnings = [], []
+    if not name:
+        blockers.append("a venue name is required")
+    if entry["state"] != "OPEN":
+        blockers.append(f"#{unresolved_venue_id} is already {entry['state']} - "
+                        "a decided entry is corrected with Revert, not decided again")
+    if region_id is None:
+        warnings.append("no region: these events will stay out of every region filter")
+    conflict = _region_refusal(con, {"region_id": region_id}, entry, address)
+    if conflict:
+        blockers.append(conflict)
+    mismatch = master_edit.region_conflict(con, address, region_id)
+    if mismatch:
+        warnings.append(mismatch)
+    if not address:
+        warnings.append("no address: nothing but the name will identify this place")
+    matches = similar_venues(con, name=name, address=address, raw_venue=entry["venue_text"])
+    if matches and not force:
+        blockers.append("a similar venue is already registered - link it, or confirm "
+                        "these are different places")
+    elif matches:
+        warnings.append("registered although similar venues exist (confirmed different)")
+    plan = _alias_plan(con, [*alias_list, entry["venue_text"], name], None)
+    for alias in plan:
+        if alias["status"] == "OWNED_BY_OTHER_VENUE":
+            blockers.append(f"the spelling '{alias['alias']}' already belongs to "
+                            f"#{alias['owner_venue_id']} {alias['owner_name']}")
+
+    proposed = {"venue_id": None, "name": name, "region_id": region_id,
+                "region_code": region_code, "address": address,
+                "notes": (notes or "").strip() or None}
+    events = [] if entry["state"] != "OPEN" else _waiting_events(con, entry["venue_text"])
+    # A new venue has no id yet; its events can only fold with each other.
+    placeholder = {"venue_id": -1, "region_id": region_id}
+    moved = _moved(events, placeholder, region_code)
+    for event in moved:
+        event["proposed_venue_id"] = None
+    outlook = _canonical_outlook(con, [{**e, "venue_id": -1, "region_id": region_id}
+                                       for e in moved])
+    facts = {
+        "action": CREATE_AND_LINK, "entry": [entry["unresolved_venue_id"], entry["state"],
+                                             entry["venue_text"]],
+        "venue": [name, region_id, address, proposed["notes"]], "force": bool(force),
+        "aliases": plan, "matches": sorted(m["venue_id"] for m in matches),
+        "events": _event_facts(moved),
+    }
+    return {
+        "action": CREATE_AND_LINK, "entry": entry, "venue": proposed,
+        "aliases": alias_list, "alias_plan": plan, "duplicates": matches,
+        "force": bool(force), "evidence": _evidence(con, entry),
+        "events": moved, "canonical": outlook,
+        "summary": _summary(moved, outlook, events_api.today()),
+        "blockers": blockers, "warnings": warnings, "token": preview_token(facts),
+    }
+
+
+def preview_group(con, *, unresolved_venue_ids: list[int], venue_id: int,
+                  add_alias: bool = True) -> dict[str, Any]:
+    """Group Apply's preview: each row's own preview, and one token for all."""
+    rows = [preview_link(con, unresolved_venue_id=uid, venue_id=venue_id, add_alias=add_alias)
+            for uid in sorted(set(unresolved_venue_ids))]
+    blockers = [f"#{r['entry']['unresolved_venue_id']}: {b}" for r in rows for b in r["blockers"]]
+    keys = {"events", "publicly_visible", "upcoming_visible", "region_changes",
+            "identity_changes", "predicted_auto_folds", "predicted_review_pairs"}
+    summary = {k: sum(r["summary"][k] for r in rows) for k in keys}
+    return {
+        "action": "GROUP_LINK", "venue": rows[0]["venue"] if rows else None,
+        "rows": rows, "summary": summary, "blockers": blockers,
+        "warnings": [w for r in rows for w in r["warnings"]],
+        "token": preview_token({"action": "GROUP_LINK",
+                                "rows": [r["token"] for r in rows]}),
+    }
+
+
+def confirm_link(con, *, unresolved_venue_id: int, venue_id: int, token: str | None,
+                 add_alias: bool = True, reviewer: str = "admin") -> dict[str, Any]:
+    """Link Existing, accepted only with the token its preview carried."""
+    with con.transaction():
+        _lock_entries(con, [unresolved_venue_id])
+        preview = preview_link(con, unresolved_venue_id=unresolved_venue_id,
+                               venue_id=venue_id, add_alias=add_alias)
+        if preview["blockers"]:
+            raise DecisionRefused(preview["blockers"])
+        if not _token_matches(token, preview["token"]):
+            raise StalePreview(["the preview is out of date - nothing changed; preview again"])
+        return link_existing(
+            con, unresolved_venue_id=unresolved_venue_id, venue_id=venue_id,
+            reviewer=reviewer, add_alias=add_alias, preview_token=token,
+            event_ids=[e["event_id"] for e in preview["events"]],
+        )
+
+
+def confirm_create(con, *, unresolved_venue_id: int, name: str, token: str | None,
+                   region_id: int | None = None, address: str | None = None,
+                   aliases: list[str] | None = None, notes: str | None = None,
+                   force: bool = False, reviewer: str = "admin") -> dict[str, Any]:
+    """New Venue, accepted only with the token its preview carried."""
+    with con.transaction():
+        _lock_entries(con, [unresolved_venue_id])
+        preview = preview_create(con, unresolved_venue_id=unresolved_venue_id, name=name,
+                                 region_id=region_id, address=address, aliases=aliases,
+                                 notes=notes, force=force)
+        if preview["blockers"]:
+            raise DecisionRefused(preview["blockers"])
+        if not _token_matches(token, preview["token"]):
+            raise StalePreview(["the preview is out of date - nothing changed; preview again"])
+        return create_and_link(
+            con, unresolved_venue_id=unresolved_venue_id, name=name, region_id=region_id,
+            address=address, notes=notes, aliases=aliases, reviewer=reviewer,
+            force=True, preview_token=token,
+            event_ids=[e["event_id"] for e in preview["events"]],
+        )
+
+
+def confirm_group(con, *, unresolved_venue_ids: list[int], venue_id: int,
+                  token: str | None, add_alias: bool = True,
+                  reviewer: str = "admin") -> dict[str, Any]:
+    """Group Apply, all or nothing, accepted only with its preview's token."""
+    with con.transaction():
+        _lock_entries(con, unresolved_venue_ids)
+        preview = preview_group(con, unresolved_venue_ids=unresolved_venue_ids,
+                                venue_id=venue_id, add_alias=add_alias)
+        if not preview["rows"]:
+            raise DecisionRefused(["nothing to link"])
+        if preview["blockers"]:
+            raise DecisionRefused(preview["blockers"])
+        if not _token_matches(token, preview["token"]):
+            raise StalePreview(["the preview is out of date - nothing changed; preview again"])
+        return group_link_existing(
+            con, unresolved_venue_ids=unresolved_venue_ids, venue_id=venue_id,
+            reviewer=reviewer, add_alias=add_alias, preview_token=token,
+            event_ids={r["entry"]["unresolved_venue_id"]: [e["event_id"] for e in r["events"]]
+                       for r in preview["rows"]},
+        )
+
+
+def _lock_entries(con, unresolved_venue_ids: list[int]) -> None:
+    """Row locks on the entries a confirm is about to decide, in id order, so
+    two confirms over overlapping groups cannot deadlock."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT unresolved_venue_id FROM unresolved_venues "
+            "WHERE unresolved_venue_id = ANY(%s::bigint[]) "
+            "ORDER BY unresolved_venue_id FOR UPDATE",
+            (sorted(set(unresolved_venue_ids)),),
+        )
+        cur.fetchall()
+
+
+# --- taking a decision back (v0.96.37) ---------------------------------------
+#
+# Before this, the only way to undo a wrong link was to delete the venue it
+# went to - which, for a link onto the right venue's wrong neighbour, deletes
+# a real place. A revert undoes one decision and nothing else: the string's
+# own alias on that venue (and no other spelling), the events that decision
+# moved back to the words their post used, the automatic folds those events
+# were in, and the queue entry back to OPEN. Folds and verdicts a person made
+# are left exactly as they are - automation releases what automation decided.
+# The original decision's audit row stays; the revert adds its own.
+
+def preview_revert(con, *, unresolved_venue_id: int) -> dict[str, Any]:
+    """What reverting this decision would change, and why it may not."""
+    from . import duplicates, events_api
+
+    entry = normalization.unresolved_venue(con, unresolved_venue_id)
+    if entry is None:
+        raise LookupError(f"no unresolved venue {unresolved_venue_id}")
+    blockers, warnings = [], []
+    venue = None
+    alias = None
+    events: list[dict[str, Any]] = []
+    if entry["state"] == "OPEN":
+        blockers.append(f"#{unresolved_venue_id} is OPEN - there is no decision to revert")
+    elif entry["state"] == "LINKED":
+        venue = master_data.get_venue(con, entry["resolved_venue_id"]) \
+            if entry.get("resolved_venue_id") else None
+        if venue is None:
+            blockers.append("the venue this entry was linked to no longer exists")
+        else:
+            alias = next((a for a in master_data.venue_aliases(con, venue["venue_id"])
+                          if a["normalized_alias"] == entry["normalized_text"]), None)
+            if master_data.normalize_alias(venue["name"]) == entry["normalized_text"]:
+                blockers.append(
+                    f"'{entry['venue_text']}' is {venue['name']}'s own name - edit or "
+                    "delete the venue instead of reverting the link")
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT e.event_id, e.event_date, e.event_name, e.event_type, "
+                    "       e.start_time, e.end_time, e.end_day_offset, e.venue_id, "
+                    "       e.venue_text, e.region_id, r.code AS region_code, "
+                    "       e.identity_key, e.series_key, e.canonical_event_id, "
+                    "       e.duplicate_decided_by, e.listing_state, e.provenance, "
+                    "       (" + events_api._VISIBLE + ") AS publicly_visible "
+                    "FROM events e LEFT JOIN regions r ON r.region_id = e.region_id "
+                    "WHERE e.venue_id = %s AND e.venue_text IS NOT NULL "
+                    "ORDER BY e.event_date, e.event_id",
+                    (venue["venue_id"],),
+                )
+                names = [c.name for c in cur.description]
+                events = [dict(zip(names, row)) for row in cur.fetchall()
+                          if master_data.normalize_alias(row[8]) == entry["normalized_text"]]
+            # The other spellings this string was read beside. If one of them
+            # still resolves to the venue once this alias is gone, the next
+            # re-normalization links the events straight back - the revert
+            # would be undone the way a link into the wrong city used to be.
+            # So it is refused, saying which spelling to take off first (or,
+            # for a venue that should not exist, Unlink & Delete).
+            for other in entry.get("alias_candidates") or []:
+                if master_data.normalize_alias(other) == entry["normalized_text"]:
+                    continue
+                found = master_data.resolve_venue(con, other)
+                if (found and found["venue_id"] == venue["venue_id"]
+                        and not venue_identity.region_conflict(con, found, entry["venue_text"],
+                                                               other)):
+                    blockers.append(
+                        f"'{other}' is also a spelling of {venue['name']}, so the next "
+                        "normalization would link these events again - remove that alias "
+                        "first, or Unlink & Delete the venue if it should not exist")
+    moved = []
+    for event in events:
+        key = normalization.venue_key(None, event["venue_text"])
+        after = normalization.identity_key(event["event_date"], key, event["start_time"])
+        moved.append({
+            **event, "proposed_venue_id": None, "proposed_region_id": None,
+            "proposed_region_code": None, "identity_key_after": after,
+            "series_key_after": normalization.series_key(key, event["event_date"],
+                                                         event["event_name"]),
+            "identity_changes": after != event["identity_key"],
+            "region_changes": event["region_id"] is not None,
+        })
+    ids = [e["event_id"] for e in moved]
+    folds = []
+    if ids:
+        with con.cursor() as cur:
+            cur.execute(
+                "SELECT event_id, canonical_event_id, duplicate_decided_by FROM events "
+                "WHERE canonical_event_id IS NOT NULL "
+                "  AND (event_id = ANY(%s) OR canonical_event_id = ANY(%s)) "
+                "ORDER BY event_id",
+                (ids, ids),
+            )
+            for event_id, canonical, decided_by in cur.fetchall():
+                folds.append({"event_id": event_id, "other_event_id": canonical,
+                              "rule": decided_by,
+                              "outcome": ("RELEASED" if decided_by == duplicates.AUTO
+                                          else "UNCHANGED (decided by a person)")})
+    today = events_api.today()
+    summary = {
+        "events": len(moved),
+        "publicly_visible": sum(1 for e in moved if e["publicly_visible"]),
+        "upcoming_visible": sum(1 for e in moved
+                                if e["publicly_visible"] and e["event_date"] >= today),
+        "region_changes": sum(1 for e in moved if e["region_changes"]),
+        "identity_changes": sum(1 for e in moved if e["identity_changes"]),
+        "released_folds": sum(1 for f in folds if f["outcome"] == "RELEASED"),
+    }
+    facts = {
+        "action": DECISION_REVERT,
+        "entry": [entry["unresolved_venue_id"], entry["state"], entry.get("resolved_venue_id")],
+        "alias": alias["venue_alias_id"] if alias else None,
+        "events": _event_facts(moved), "folds": folds,
+    }
+    return {
+        "action": DECISION_REVERT, "entry": entry, "venue": venue, "alias": alias,
+        "events": moved, "canonical": folds, "summary": summary,
+        "blockers": blockers, "warnings": warnings, "token": preview_token(facts),
+    }
+
+
+def revert_decision(con, *, unresolved_venue_id: int, token: str | None,
+                    reviewer: str = "admin") -> dict[str, Any]:
+    """Undo one queue decision, exactly as its preview showed. One transaction."""
+    with con.transaction():
+        _lock_entries(con, [unresolved_venue_id])
+        preview = preview_revert(con, unresolved_venue_id=unresolved_venue_id)
+        if preview["blockers"]:
+            raise DecisionRefused(preview["blockers"])
+        if not _token_matches(token, preview["token"]):
+            raise StalePreview(["the preview is out of date - nothing changed; preview again"])
+        entry, venue, alias = preview["entry"], preview["venue"], preview["alias"]
+        ids = [e["event_id"] for e in preview["events"]]
+        released = 0
+        if ids:
+            with con.cursor() as cur:
+                cur.execute(
+                    "UPDATE events SET venue_id = NULL, region_id = NULL, "
+                    "  venue_status = 'UNRESOLVED', updated_at = now() "
+                    "WHERE event_id = ANY(%s)",
+                    (ids,),
+                )
+            released = _release_automatic_duplicates(con, ids)
+            for event_id in ids:
+                normalization._refresh_keys(con, event_id)
+        if alias is not None:
+            master_data.remove_venue_alias(con, alias["venue_alias_id"])
+        with con.cursor() as cur:
+            cur.execute(
+                "UPDATE unresolved_venues SET state = 'OPEN', resolved_venue_id = NULL, "
+                "  resolved_by = NULL, resolved_at = NULL WHERE unresolved_venue_id = %s",
+                (unresolved_venue_id,),
+            )
+        recorded = record_action(
+            con, action=DECISION_REVERT, raw_venue=entry["venue_text"], reviewer=reviewer,
+            unresolved_venue_id=unresolved_venue_id,
+            venue_id=venue["venue_id"] if venue else None,
+            venue_name=venue["name"] if venue else None, events_updated=len(ids),
+            before={"state": entry["state"], "venue_id": entry.get("resolved_venue_id"),
+                    "resolved_by": entry.get("resolved_by"),
+                    "resolved_at": entry.get("resolved_at"),
+                    "alias": alias["alias"] if alias else None, "event_ids": ids},
+            after={"state": "OPEN", "venue_id": None, "alias_removed": bool(alias),
+                   "automatic_merges_released": released,
+                   "preview_token": (token or "")[:16]},
+        )
+    return {"events_updated": len(ids), "automatic_merges_released": released,
+            "alias_removed": alias["alias"] if alias else None, "action": recorded}
+
+
+def recent_decisions(con, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Decisions still standing on their queue entry - the ones Revert applies to."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT ON (a.unresolved_venue_id) a.*, u.state AS entry_state, "
+            "       coalesce(v.name, a.venue_name) AS resolved_venue_name "
+            "FROM venue_resolution_actions a "
+            "JOIN unresolved_venues u ON u.unresolved_venue_id = a.unresolved_venue_id "
+            "LEFT JOIN venues v ON v.venue_id = a.venue_id "
+            "WHERE a.action = ANY(%s) AND u.state <> 'OPEN' "
+            "ORDER BY a.unresolved_venue_id, a.venue_action_id DESC",
+            (list(RESOLUTION_ACTIONS),),
+        )
+        names = [c.name for c in cur.description]
+        rows = [dict(zip(names, row)) for row in cur.fetchall()]
+    rows.sort(key=lambda r: r["venue_action_id"], reverse=True)
+    return rows[:limit]
 
 
 # --- removing a venue -------------------------------------------------------

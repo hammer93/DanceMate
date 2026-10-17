@@ -1,5 +1,132 @@
 # DanceMate Release Notes
 
+## v0.96.37 Venue Human Verification & Safe Regional Coverage Recovery
+
+Product Runtime 0.96.37; Information Engine 1.14 (unchanged); migration **047**
+(two audit-table constraints widened, no row written).
+
+The Unresolved Venues queue has had Link Existing, New Venue, Group Apply and
+Not-a-venue since v0.77-v0.83. This release does not add a way to create
+venues. It makes the existing decisions safe to take on the 99 queue entries
+that real events wait on, and it registers nothing: Production's Venue Master
+is exactly as it was, and every entry is still OPEN until a person approves it.
+
+### What an operator could not see, and what could go wrong
+
+Measured on Production at 2026-10-17 (OPEN 157; 99 with an event waiting on
+them, 61 upcoming listed events behind 38 of them; 21 with an address the
+string or its posts agree on):
+
+* **No preview.** Link Existing and New Venue applied on the click. The
+  operator never saw which events moved, their new region, their new identity
+  keys, or that the next duplicates scan would fold some of them - approving
+  `Tango Pasion` folds two `평일 낮쁘락` nights that today are listed twice.
+* **A decided entry could be decided again.** Nothing checked the entry was
+  still OPEN: a second link overwrote `resolved_venue_id` without a trace, and
+  a second New Venue (a double click, a second tab) made a second venue.
+* **A link into the wrong city was applied and then silently undone.**
+  `link_existing()` accepted `대전 땅고 오나다 (대전시 유성구 …)` onto Seoul's
+  Tango O Nada - the v0.96.32 mistake, by hand. The next re-normalization's
+  `resolve_venue()` refuses exactly that match, so the events went back to
+  UNRESOLVED while the queue went on saying LINKED.
+* **A link without an alias did not last.** Link Existing can be told not to
+  register the string as an alias. The events were linked, and the next time
+  every candidate was re-read (any Venue Master change re-reads all of them)
+  they resolved through the aliases alone, found nothing, and went back.
+* **Group Apply was not the group previewed.** A failing row was skipped and
+  the rest applied.
+* **A wrong decision could only be undone by deleting the venue.**
+* **The queue was ordered by past posts**, so a string 16 old posts used came
+  before one with three nights next week; and the New Venue form split
+  `Name (다른 이름) (주소)` - the shape of every TangoNOW venue - not at all:
+  `Tango Pasion (탱고 빠시온) (서울 마포구 월드컵북로6길 69 B1)` was offered as
+  the venue's *name*, with no address and no region.
+
+None of these had happened in Production: all 46 LINKED entries resolve
+through their alias today, and no decision has been taken twice.
+
+### What changed
+
+`venue_resolution.preview_link()`, `preview_create()`, `preview_group()` and
+`preview_revert()` read exactly what a decision would write and write nothing:
+every affected event (date, title, type, clock with +1, current and proposed
+venue and region, identity key before and after, folded or public now), the
+aliases and who owns each spelling today, the posts it came from and the
+address they agree on, and the next duplicates scan's verdict on every pair -
+asked of `duplicates.classify()` itself, so the preview cannot disagree with
+the scan. Blockers and warnings are listed; a blocked preview offers no
+confirm button.
+
+`confirm_link()`, `confirm_create()`, `confirm_group()` and
+`revert_decision()` accept a decision only with its preview's token: an HMAC,
+keyed with the admin credential, over the preview's own facts. The confirm
+locks the queue rows, recomputes the preview and compares; if anything moved
+(somebody decided the entry, a new post started waiting on the string, an
+event was re-read) nothing is written and the operator previews again. The
+write is limited to the events the preview listed. Because the token cannot
+be computed off the console, these confirms are also protected against a
+cross-site form post. The audit row records the reviewer, the event ids and
+the token's prefix.
+
+Refused outright, by the library as well as the console: deciding an entry
+that is not OPEN; linking, or creating, a venue in a metropolitan city the
+string's own words or its posts' address exclude (`venue_identity`'s rule,
+the one normalization applies); registering a spelling another venue owns. A
+possible duplicate is a question - answered "different places" before the
+preview that is confirmed, and part of its token.
+
+`normalization.resolve_venue()` also reads a LINKED queue decision for its
+exact string, under the same region rule as an alias, so a link without an
+alias is kept. Every change to a decision writes its effect on the events in
+the transaction that records it, so this needs no master_revision entry -
+over all 195 distinct venue strings on Production's events the old and new
+resolution agree on every one.
+
+Group Apply is all or nothing. A **Revert** (new `DECISION_REVERT` audit
+action, migration 047) takes one decision back: that string's own alias on
+that venue, the events it moved back to their post's words, the automatic
+folds they were in, the entry back to OPEN. A person's duplicate verdict, the
+venue itself and the original audit row stay. It refuses to strip a venue's
+own name.
+
+The queue is ordered by upcoming listed events (counted once each, folded
+rows excluded), then live posts; it shows each entry's address and where it
+came from, region evidence, genres and an evidence badge, filters by
+`?show=upcoming|address|all` and `?genre=`, and lists recent decisions with
+their Revert. `suggest()` reads every trailing bracket (nested ones kept
+whole): exactly one address-shaped bracket is the address, the others are
+other names. A province's full name selects its region (`경상남도` was cut to
+`경상` and selected nothing), and an address stops before a bank account.
+
+### Not done here, on purpose
+
+No venue was registered or linked in Production. Verification-ready is not
+approved: of the 21 address-bearing entries, every New Venue preview is free
+of blockers, and a person still has to confirm each one.
+
+`time_evidence` (read-only audit): 33 events carry a poster image URL instead
+of a verdict, because `candidates._time_evidence_value()` returns the engine
+row's `inference` verbatim and an IMAGE_OCR row keeps the image there. All 33
+evidence rows say `ambiguous: false` (21 with an explicit 오후/PM marker), so
+`time_confirmed: true` is right for every one - an internal inconsistency
+with no public effect. Left for a later release.
+
+### Tests
+
+`tests/test_v09637_venue_verification.py` (51): the queue's counts and order,
+the bracket and province parsing, every preview read-only, every refusal
+writing nothing (wrong city, stale or forged token, a decided entry, a
+possible duplicate unanswered, a spelling another venue owns, unknown ids, a
+failure inside the confirm), an approved 대전 땅고 오나다 reaching the 대전
+filter and not the 서울 one, the predicted fold being the fold the scan makes,
+Group Apply whole or not at all, a link without an alias and an allowed
+revert both surviving re-normalization, a revert that would not, and the
+console's preview -> confirm round trip. `tests/test_migrations.py` lists 047.
+
+Runtime suite in the container against its own disposable database
+(`scripts/run-container-tests.sh`): 3,258 passed, 16 skipped, 0 failed. Engine
+suite: 1,976 passed, 1 skipped, 0 failed (the engine is unchanged).
+
 ## v0.96.36 Regional Search Consistency & Overnight Event Integrity
 
 Product Runtime 0.96.36; Information Engine 1.14 (unchanged); no migration.

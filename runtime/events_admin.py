@@ -337,7 +337,7 @@ def _new_venue_form(entry: dict[str, Any], suggestion: dict[str, Any],
     return f"""
 <details class="newvenue"{' open' if open_form else ''}>
   <summary>New Venue</summary>
-  <form method="post" action="/admin/venues/unresolved/{entry['unresolved_venue_id']}/create">
+  <form method="post" action="/admin/venues/unresolved/{entry['unresolved_venue_id']}/create/preview">
     <div class="grid">
       <div><label>Name</label>
         <input name="name" value="{E(suggestion['name'])}" required></div>
@@ -354,8 +354,10 @@ def _new_venue_form(entry: dict[str, Any], suggestion: dict[str, Any],
     alias에 포함됩니다 — 다음 수집부터 이 표현이 바로 인식됩니다.</p>
     <div class="actions">
       <input type="hidden" name="force" value="{'1' if force else '0'}">
-      <button class="primary">Create &amp; Link</button>
+      <button class="primary">Preview &middot; Create &amp; Link</button>
     </div>
+    <p class="note">아직 저장되지 않습니다. 다음 화면에서 바뀌는 Event와 지역을 확인한 뒤
+    승인해야 반영됩니다.</p>
   </form>
 </details>"""
 
@@ -384,9 +386,10 @@ def _link_suggestions_block(key: int, ranked: list[dict[str, Any]]) -> str:
             + (f' &middot; {E(candidate["address"])}' if candidate.get("address") else "")
             + f' <span class="muted">{E(reasons)}</span> '
             f'<form class="inline" method="post" '
-            f'action="/admin/venues/unresolved/{key}/link">'
+            f'action="/admin/venues/unresolved/{key}/link/preview">'
             f'<input type="hidden" name="venue_id" value="{candidate["venue_id"]}">'
-            '<button class="primary">Link Existing</button></form></li>'
+            '<input type="hidden" name="add_alias" value="1">'
+            '<button class="primary">Preview Link</button></form></li>'
         )
     return (
         '<div class="suggestions"><p class="note">추천 (자동 연결 아님, 확인 후 클릭):</p>'
@@ -420,19 +423,101 @@ def _group_apply_block(key: int, group_ids: list[int], ranked: list[dict[str, An
 </details>"""
 
 
+#: v0.96.37: which part of the queue to show. The default leaves out strings no
+#: event is waiting on any more - deciding them changes nothing a dancer sees -
+#: and says how many it left out.
+QUEUE_VIEWS = {
+    "waiting": "대기 Event 있음",
+    "upcoming": "예정 Event 있음",
+    "address": "주소 확인됨",
+    "all": "전체",
+}
+
+
+def _evidence_quality(entry: dict[str, Any], suggestion: dict[str, Any]) -> str:
+    """How much the post says about where this is - not a verdict on it."""
+    if not entry.get("event_count"):
+        return admin._badge("NO EVENTS", "muted")
+    if suggestion.get("address"):
+        return admin._badge("ADDRESS", "ok")
+    return admin._badge("NAME ONLY", "warn")
+
+
+def _genres_by_text(con) -> dict[str, list[str]]:
+    """Genre codes of the events waiting on each string, in one query."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT lower(e.venue_text), coalesce(g.code, '-'), count(*) "
+            "FROM events e LEFT JOIN genres g ON g.genre_id = e.genre_id "
+            "WHERE e.venue_status = 'UNRESOLVED' AND e.venue_text IS NOT NULL "
+            "GROUP BY 1, 2 ORDER BY 1, 3 DESC"
+        )
+        found: dict[str, list[str]] = {}
+        for text, code, count in cur.fetchall():
+            found.setdefault(text, []).append(f"{code} {count}")
+    return found
+
+
+def _recent_decisions_block(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    items = "".join(
+        f'<li><code>{E(r["raw_venue"])}</code> &middot; {E(r["action"])}'
+        + (f' &rarr; {E(r["resolved_venue_name"])}' if r.get("resolved_venue_name") else "")
+        + f' &middot; {E(r["reviewer"])} {E(str(r["created_at"])[:16])} '
+        f'<form class="inline" method="post" '
+        f'action="/admin/venues/unresolved/{r["unresolved_venue_id"]}/revert/preview">'
+        '<button>Preview Revert</button></form></li>'
+        for r in rows
+    )
+    return (
+        "<details><summary>최근 결정 (정정하려면 Revert)</summary>"
+        '<p class="note">Revert는 그 결정 하나만 되돌립니다: 그 문자열의 alias, 그 결정이 옮긴 '
+        "Event의 장소·지역, 그 Event들의 자동 병합. 사람이 내린 병합 판정과 원래 결정의 감사 "
+        "기록은 그대로 남습니다. 먼저 미리보기가 열립니다.</p>"
+        f'<ul class="sources">{items}</ul></details>'
+    )
+
+
 @router.get("/admin/venues/unresolved", response_class=HTMLResponse)
 def admin_unresolved_venues(request: Request,
                             _: str = Depends(require_admin)) -> HTMLResponse:
+    view = request.query_params.get("show") or "waiting"
+    if view not in QUEUE_VIEWS:
+        view = "waiting"
+    genre = (request.query_params.get("genre") or "").upper()
     with _connection() as con:
-        pending = normalization.unresolved_venues(con)
+        everything = normalization.unresolved_venues(con, limit=5000)
         venues = master_data.list_venues(con, enabled_only=True)
         regions = master_data.list_regions(con, enabled_only=True)
-        contexts = {
-            entry["unresolved_venue_id"]: venue_resolution.context(con, entry["venue_text"])
-            for entry in pending
-        }
+        region_names = {r["region_id"]: r["name"] for r in regions}
+        genres = _genres_by_text(con)
         suggestions = {
             entry["unresolved_venue_id"]: venue_resolution.prefill(con, entry)
+            for entry in everything if entry.get("event_count")
+        }
+
+        def keep(entry: dict[str, Any]) -> bool:
+            key = entry["unresolved_venue_id"]
+            if genre and not any(g.startswith(genre + " ")
+                                 for g in genres.get(entry["venue_text"].lower(), [])):
+                return False
+            if view == "all":
+                return True
+            if not entry.get("event_count"):
+                return False
+            if view == "upcoming":
+                return bool(entry.get("upcoming_event_count"))
+            if view == "address":
+                return bool(suggestions[key].get("address"))
+            return True
+
+        pending = [e for e in everything if keep(e)]
+        for entry in pending:
+            suggestions.setdefault(entry["unresolved_venue_id"],
+                                   venue_resolution.prefill(con, entry))
+        contexts = {
+            entry["unresolved_venue_id"]: venue_resolution.context(con, entry["venue_text"])
             for entry in pending
         }
         region_ids = {key: s["region_id"] for key, s in suggestions.items()}
@@ -446,6 +531,7 @@ def admin_unresolved_venues(request: Request,
         }
         groups = venue_resolution.group_unresolved(pending, link_suggestions)
         group_of = {uid: group for group in groups for uid in group}
+        decisions = venue_resolution.recent_decisions(con)
 
     options = "".join(
         f'<option value="{v["venue_id"]}">{E(v["name"])}'
@@ -461,39 +547,24 @@ def admin_unresolved_venues(request: Request,
         "Event가 정리됩니다. Venues 화면으로 옮겨갈 필요가 없습니다.</p></div>"
     )
 
-    # Review order (spec item 15): upcoming events first, then how many are
-    # waiting, then whether any of them are live at all - the existing SQL
-    # ordering already covers most of this (live_event_count, event_count,
-    # last_seen_at); "has an upcoming date" is the one signal only the fetched
-    # context rows can answer, so it is layered on here rather than adding a
-    # second query per entry.
-    from datetime import date as _date
-
-    today = _date.today()
-
-    def _has_upcoming(key: int) -> bool:
-        return any(
-            (row.get("event_date") or today) >= today for row in contexts.get(key) or []
-        )
-
-    pending = sorted(
-        pending, key=lambda e: _has_upcoming(e["unresolved_venue_id"]), reverse=True,
-    )
-
+    # Review order (v0.96.37): the SQL already sorts by what a dancer would see
+    # change - upcoming listed events first, then live posts, then everything
+    # waiting - so the page keeps that order instead of re-sorting it.
     items = []
     for entry in pending:
         key = entry["unresolved_venue_id"]
+        suggestion = suggestions[key]
         also = ", ".join(E(str(a)) for a in (entry.get("alias_candidates") or [])
                          if str(a) != entry["venue_text"])
         if venues:
             link_form = (
                 f'<form class="inline" method="post" '
-                f'action="/admin/venues/unresolved/{key}/link">'
+                f'action="/admin/venues/unresolved/{key}/link/preview">'
                 f'<select name="venue_id" required>'
                 f'<option value="">기존 장소 선택…</option>{options}</select> '
                 f'<label class="muted"><input type="checkbox" name="add_alias" '
                 'value="1" checked> alias로 등록</label> '
-                '<button class="primary">Link Existing</button></form>'
+                '<button class="primary">Preview Link</button></form>'
             )
         else:
             link_form = ('<span class="badge muted">No venues registered yet</span>')
@@ -505,6 +576,15 @@ def admin_unresolved_venues(request: Request,
         live_note = (f" (live {live}건)" if live and live != (entry.get("event_count") or 0)
                      else "" if live else
                      ' <span class="badge muted">live 게시글 없음</span>')
+        address = suggestion.get("address")
+        address_note = (
+            f'<span>주소: {E(address)} <span class="muted">({E(suggestion.get("address_source") or "")})</span></span>'
+            if address else '<span class="muted">주소 근거 없음</span>'
+        )
+        region_note = (
+            f'<span>지역 근거: {E(region_names.get(region_ids[key], str(region_ids[key])))}</span>'
+            if region_ids.get(key) else '<span class="muted">지역 근거 없음</span>'
+        )
 
         dismiss_form = f"""
 <details>
@@ -520,29 +600,54 @@ def admin_unresolved_venues(request: Request,
 
         items.append(f"""
 <section class="item">
-  <div class="raw">{E(entry['venue_text'])}</div>
+  <div class="raw">{E(entry['venue_text'])} {_evidence_quality(entry, suggestion)}</div>
   <div class="facts">
+    <span>예정 노출 Event {entry.get('upcoming_event_count') or 0}건</span>
     <span>대기 중 Event {entry.get('event_count') or 0}건{live_note}</span>
-    <span>처음 발견 {E(str(entry['first_seen_at'])[:16])}</span>
+    {address_note}
+    {region_note}
+    <span>장르: {E(', '.join(genres.get(entry['venue_text'].lower(), [])) or '-')}</span>
+    <span>처음 발견 {E(str(entry['first_seen_at'])[:16])} &middot; 마지막 {E(str(entry['last_seen_at'])[:16])}</span>
     {f'<span>Also tried: {also}</span>' if also else ''}
   </div>
   {_source_context(entry, contexts[key])}
   {_link_suggestions_block(key, link_suggestions[key])}
   <div class="actionbar">
     {link_form}
-    {_new_venue_form(entry, suggestions[key], regions, region_ids[key])}
+    {_new_venue_form(entry, suggestion, regions, region_ids[key])}
     {dismiss_form}
   </div>
   {_group_apply_block(key, group_of[key], link_suggestions[key])}
 </section>""")
 
+    waiting = [e for e in everything if e.get("event_count")]
+    cards = admin._cards([
+        ("OPEN", len(everything), "queue entries not yet decided"),
+        ("Events waiting", len(waiting), "entries with an event waiting on them"),
+        ("Address known", sum(1 for e in waiting if suggestions[e["unresolved_venue_id"]].get("address")),
+         "an address the string or its posts agree on"),
+        ("Upcoming listed", sum(e.get("upcoming_event_count") or 0 for e in everything),
+         "events still to come that a decision would place"),
+    ])
+    tabs = " &middot; ".join(
+        (f"<strong>{E(label)}</strong>" if name == view else
+         f'<a href="/admin/venues/unresolved?show={name}'
+         + (f"&genre={E(genre)}" if genre else "") + f'">{E(label)}</a>')
+        for name, label in QUEUE_VIEWS.items()
+    )
+    hidden = len(everything) - len(pending)
     note = (
         '<p class="note">이 문자열들은 추출기가 게시글에서 읽었지만 Venue Master가 '
-        "알지 못하는 것입니다. 연결하면 alias로 기록되어 대기 중 Event가 즉시 "
-        "정리되고, 다음 수집부터 자동으로 인식됩니다. 자동 등록은 하지 않습니다 — "
+        "알지 못하는 것입니다. 어느 결정이든 먼저 미리보기를 열어 바뀌는 Event, 지역, "
+        "병합 가능성을 보여 주고, 승인해야만 반영됩니다. 자동 등록은 하지 않습니다 — "
         "잘못 읽은 한 줄이 영구 마스터 레코드가 되면 안 됩니다.</p>"
+        f'<p class="note">보기: {tabs}'
+        + (f" &middot; 장르 {E(genre)}" if genre else "")
+        + (f" &middot; 이 보기에서 제외된 항목 {hidden}건" if hidden else "")
+        + "</p>"
     )
-    body = ("<h2>Unresolved Venues</h2>" + banner + note
+    body = ("<h2>Unresolved Venues</h2>" + banner + cards + note
+            + _recent_decisions_block(decisions)
             + (f'<div class="queue">{"".join(items)}</div>' if items
                else '<div class="tablewrap"><table><tbody><tr><td>'
                     "every venue we have read is recognised</td></tr></tbody></table></div>"))
@@ -550,82 +655,178 @@ def admin_unresolved_venues(request: Request,
                                     flash=admin._flash(request)))
 
 
-def _duplicate_warning_page(entry: dict[str, Any], matches: list[dict[str, Any]],
-                            form: dict[str, Any], regions: list[dict[str, Any]],
-                            region_id: int | None) -> HTMLResponse:
-    """Ask before creating a second row for a place we may already have.
+# --- previews and confirms (v0.96.37) ----------------------------------------
+#
+# Every decision is two requests. The preview is a POST only because it takes
+# a form; it opens an autocommit connection and calls nothing that writes. The
+# confirm carries the token the preview computed and is refused - with nothing
+# written - when the token no longer matches what it would do.
 
-    Not a refusal: the operator may well know these are different places. It
-    stops here so that is a decision rather than an accident.
-    """
-    key = entry["unresolved_venue_id"]
-    rows = "".join(
-        f'<li><strong>{E(m["name"])}</strong>'
-        + (f' &middot; {E(m["region_name"])}' if m.get("region_name") else "")
-        + (f' &middot; {E(m["address"])}' if m.get("address") else "")
-        + f' &middot; <span class="muted">{E(", ".join(m["match_reasons"]))}</span> '
-        + f'<form class="inline" method="post" '
-        f'action="/admin/venues/unresolved/{key}/link">'
-        f'<input type="hidden" name="venue_id" value="{m["venue_id"]}">'
-        f'<button class="primary">Link Existing</button></form></li>'
-        for m in matches
-    )
-    suggestion = {
-        "name": form["name"], "address": form["address"] or None,
-        "aliases": form["aliases"], "split_inferred": False,
-    }
+_QUEUE = "/admin/venues/unresolved"
+
+
+def _clock_range(event: dict[str, Any]) -> str:
+    start, end = _clock(event.get("start_time")), event.get("end_time")
+    if end is None:
+        return start
+    return f"{start}~{_clock(end)}" + ("(+1)" if event.get("end_day_offset") else "")
+
+
+def _hidden(fields: dict[str, Any]) -> str:
+    out = []
+    for name, value in fields.items():
+        for one in (value if isinstance(value, list) else [value]):
+            out.append(f'<input type="hidden" name="{E(name)}" value="{E(str(one))}">')
+    return "".join(out)
+
+
+def _events_table(events: list[dict[str, Any]], venue_label: str) -> str:
+    rows = [[
+        f'#{e["event_id"]}',
+        E(str(e["event_date"])),
+        E((e.get("event_name") or "")[:50]),
+        E(e.get("event_type") or "-"),
+        E(_clock_range(e)),
+        E(f'{e.get("venue_text") or "-"}') + (" (resolved)" if e.get("venue_id") else ""),
+        E(venue_label),
+        E(e.get("region_code") or "-") + " &rarr; " + E(e.get("proposed_region_code") or "-"),
+        ("바뀜" if e["identity_changes"] else "유지"),
+        (f'folded into #{e["canonical_event_id"]}' if e.get("canonical_event_id")
+         else "공개" if e.get("publicly_visible") else "비공개"),
+    ] for e in events]
+    return admin._table(
+        ["Event", "Date", "Title", "Type", "Start/End", "Current venue", "Proposed venue",
+         "Region", "Identity key", "Now"],
+        rows, empty="이 결정으로 바뀌는 Event가 없습니다")
+
+
+def _canonical_table(outlook: list[dict[str, Any]]) -> str:
+    rows = [[f'#{o["event_id"]}', f'#{o["other_event_id"]}',
+             E((o.get("other_event_name") or "")[:40]), E(o.get("rule") or ""),
+             E(o["outcome"])] for o in outlook]
+    return admin._table(["Event", "Other", "Other title", "Rule", "Next duplicates scan"],
+                        rows, empty="다른 Event와 병합될 가능성이 없습니다")
+
+
+def _preview_page(title: str, preview: dict[str, Any], *, venue_label: str,
+                  facts: str, confirm_action: str, fields: dict[str, Any],
+                  confirm_label: str, extra: str = "") -> HTMLResponse:
+    summary = preview["summary"]
+    cards = admin._cards([
+        ("Events", summary["events"], "this decision changes"),
+        ("Public now", summary["publicly_visible"], "of them shown to dancers"),
+        ("Upcoming public", summary["upcoming_visible"], "still to come"),
+        ("Region changes", summary["region_changes"], "what the region filter sees"),
+        ("Identity keys", summary["identity_changes"], "recomputed from the venue"),
+        ("Folds", summary.get("predicted_auto_folds", summary.get("released_folds", 0)),
+         "automatic merges this makes or releases"),
+    ])
+    blockers = "".join(f"<li>{E(b)}</li>" for b in preview["blockers"])
+    warnings = "".join(f"<li>{E(w)}</li>" for w in preview["warnings"])
+    if preview["blockers"]:
+        decision = (
+            '<div class="callout"><h3>승인할 수 없습니다</h3>'
+            f'<ul class="sources">{blockers}</ul>'
+            "<p class=\"note\">아무것도 저장되지 않았습니다.</p></div>"
+        )
+    else:
+        decision = (
+            f'<form method="post" action="{E(confirm_action)}">'
+            + _hidden({**fields, "token": preview["token"]})
+            + f'<div class="actions"><button class="primary">{confirm_label}</button> '
+            f'<a href="{_QUEUE}"><button type="button">Cancel</button></a></div></form>'
+            '<p class="note">승인 시점에 이 미리보기를 다시 계산해 위 내용과 같을 때만 '
+            "반영합니다. 그 사이 대기열이나 Event가 바뀌었으면 아무것도 저장하지 않고 "
+            "미리보기를 다시 요청합니다.</p>"
+        )
     body = (
-        "<h2>Unresolved Venues</h2>"
-        '<div class="callout"><h3>비슷한 장소가 이미 등록되어 있습니다</h3>'
-        f'<p>원문 문자열: <code>{E(entry["venue_text"])}</code></p>'
-        f'<ul class="sources">{rows}</ul>'
-        "<p class=\"note\">같은 장소라면 위에서 연결하세요. 정말 다른 장소라면 "
-        "아래 양식에서 그대로 저장하면 됩니다.</p></div>"
-        + _new_venue_form(entry, suggestion, regions, region_id,
-                          open_form=True, force=True)
-        + '<p class="note"><a href="/admin/venues/unresolved">← 대기열로 돌아가기</a></p>'
+        f"<h2>Unresolved Venues</h2><div class=\"callout\"><h3>{E(title)}</h3>{facts}</div>"
+        + cards
+        + (f'<div class="callout"><h3>확인할 점</h3><ul class="sources">{warnings}</ul></div>'
+           if warnings else "")
+        + extra
+        + "<h3>바뀌는 Event</h3>" + _events_table(preview["events"], venue_label)
+        + "<h3>병합(canonical) 영향</h3>" + _canonical_table(preview["canonical"])
+        + decision
+        + f'<p class="note"><a href="{_QUEUE}">← 대기열로 돌아가기</a></p>'
     )
     return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body),
-                        status_code=409)
+                        status_code=409 if preview["blockers"] else 200)
 
 
-@router.post("/admin/venues/unresolved/{unresolved_venue_id}/create")
-def admin_create_and_link_venue(
-    unresolved_venue_id: int,
-    name: str = Form(...),
-    region_id: str = Form(""),
-    address: str = Form(""),
-    aliases: str = Form(""),
-    notes: str = Form(""),
-    force: str = Form("0"),
-    reviewer: str = Depends(require_admin),
-) -> Any:
-    target = "/admin/venues/unresolved"
-    alias_list = [a.strip() for a in aliases.split(",") if a.strip()]
-    # Not autocommit: create-venue, alias and link commit together or not at all.
+def _alias_rows(plan: list[dict[str, Any]]) -> str:
+    rows = [[E(a["alias"]), E(a["status"]),
+             E(f'#{a["owner_venue_id"]} {a["owner_name"]}' if a.get("owner_venue_id") else "-")]
+            for a in plan]
+    return "<h3>Alias</h3>" + admin._table(["Spelling", "Status", "Owner today"], rows,
+                                           empty="alias를 등록하지 않습니다")
+
+
+def _evidence_block(entry: dict[str, Any], evidence: dict[str, Any]) -> str:
+    return ("<h3>원문 근거</h3>"
+            + (f'<p class="note">게시글들이 동의하는 주소: {E(evidence["post_address"])}</p>'
+               if evidence.get("post_address") else "")
+            + _source_context(entry, evidence["posts"]))
+
+
+def _refused(message: str, reasons: list[str], status: int = 409) -> HTMLResponse:
+    items = "".join(f"<li>{E(r)}</li>" for r in reasons)
+    body = ("<h2>Unresolved Venues</h2>"
+            f'<div class="callout"><h3>{E(message)}</h3><ul class="sources">{items}</ul>'
+            "<p class=\"note\">아무것도 저장되지 않았습니다.</p></div>"
+            f'<p class="note"><a href="{_QUEUE}">← 대기열로 돌아가기</a></p>')
+    return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body),
+                        status_code=status)
+
+
+def _confirm(run) -> Any:
+    """Run one confirm on its own transaction; a refusal writes nothing."""
     with db.connect(admin._settings()) as con:
         try:
-            result = venue_resolution.create_and_link(
-                con, unresolved_venue_id=unresolved_venue_id, name=name,
-                region_id=int(region_id) if region_id else None,
-                address=address, notes=notes, aliases=alias_list,
-                reviewer=reviewer, force=(force == "1"),
-            )
+            result = run(con)
             con.commit()
-        except venue_resolution.DuplicateVenue as duplicate:
-            entry = normalization.unresolved_venue(con, unresolved_venue_id)
-            regions = master_data.list_regions(con, enabled_only=True)
-            return _duplicate_warning_page(
-                entry, duplicate.matches,
-                {"name": name, "address": address, "aliases": alias_list},
-                regions, int(region_id) if region_id else None,
-            )
+            return result
+        except venue_resolution.StalePreview as exc:
+            con.rollback()
+            return _refused("미리보기 이후 내용이 바뀌었습니다", exc.reasons)
+        except venue_resolution.DecisionRefused as exc:
+            con.rollback()
+            return _refused("승인할 수 없습니다", exc.reasons)
+        except LookupError as exc:
+            con.rollback()
+            return _refused("찾을 수 없습니다", [str(exc)], status=404)
         except Exception as exc:
-            return admin._back(target, f"could not create venue: {exc}", "bad")
-    return admin._back(
-        target,
-        f"created {result['venue']['name']} and resolved "
-        f"{result['events_updated']} event(s)",
+            con.rollback()
+            return admin._back(_QUEUE, f"could not apply: {exc}", "bad")
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/link/preview",
+             response_class=HTMLResponse)
+def admin_link_preview(
+    unresolved_venue_id: int,
+    venue_id: str = Form(""),
+    add_alias: str = Form(""),
+    _: str = Depends(require_admin),
+) -> Any:
+    if not venue_id.isdigit():
+        return admin._back(_QUEUE, "연결할 장소를 선택하세요", "bad")
+    try:
+        with _connection() as con:
+            preview = venue_resolution.preview_link(
+                con, unresolved_venue_id=unresolved_venue_id, venue_id=int(venue_id),
+                add_alias=(add_alias == "1"))
+    except LookupError as exc:
+        return _refused("찾을 수 없습니다", [str(exc)], status=404)
+    venue, entry = preview["venue"], preview["entry"]
+    label = f'#{venue["venue_id"]} {venue["name"]} ({venue.get("region_code") or "-"})'
+    facts = (f'<p><code>{E(entry["venue_text"])}</code> &rarr; <strong>{E(label)}</strong>'
+             + (f' &middot; {E(venue["address"])}' if venue.get("address") else "") + "</p>")
+    return _preview_page(
+        "Link Existing 미리보기", preview, venue_label=label, facts=facts,
+        confirm_action=f"{_QUEUE}/{unresolved_venue_id}/link",
+        fields={"venue_id": venue["venue_id"], "add_alias": "1" if preview["add_alias"] else "0"},
+        confirm_label="Confirm &amp; Link",
+        extra=_alias_rows(preview["alias_plan"]) + _evidence_block(entry, preview["evidence"]),
     )
 
 
@@ -634,25 +835,117 @@ def admin_link_existing_venue(
     unresolved_venue_id: int,
     venue_id: str = Form(""),
     add_alias: str = Form(""),
+    token: str = Form(""),
     reviewer: str = Depends(require_admin),
-) -> RedirectResponse:
-    target = "/admin/venues/unresolved"
-    if not venue_id:
-        return admin._back(target, "연결할 장소를 선택하세요", "bad")
-    with db.connect(admin._settings()) as con:
-        try:
-            result = venue_resolution.link_existing(
-                con, unresolved_venue_id=unresolved_venue_id,
-                venue_id=int(venue_id), reviewer=reviewer,
-                add_alias=(add_alias == "1"),
-            )
-            con.commit()
-        except Exception as exc:
-            return admin._back(target, f"could not link: {exc}", "bad")
+) -> Any:
+    if not venue_id.isdigit():
+        return admin._back(_QUEUE, "연결할 장소를 선택하세요", "bad")
+    result = _confirm(lambda con: venue_resolution.confirm_link(
+        con, unresolved_venue_id=unresolved_venue_id, venue_id=int(venue_id),
+        add_alias=(add_alias == "1"), token=token, reviewer=reviewer))
+    if not isinstance(result, dict):
+        return result
     return admin._back(
-        target,
+        _QUEUE,
         f"linked to {result['venue']['name']}; "
         f"{result['events_updated']} event(s) resolved",
+    )
+
+
+def _create_fields(name: str, region_id: str, address: str, aliases: str, notes: str,
+                   force: str) -> dict[str, Any]:
+    return {"name": name, "region_id": region_id, "address": address,
+            "aliases": aliases, "notes": notes, "force": "1" if force == "1" else "0"}
+
+
+def _create_args(fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": fields["name"],
+        "region_id": int(fields["region_id"]) if str(fields["region_id"]).isdigit() else None,
+        "address": fields["address"],
+        "aliases": [a.strip() for a in fields["aliases"].split(",") if a.strip()],
+        "notes": fields["notes"], "force": fields["force"] == "1",
+    }
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/create/preview",
+             response_class=HTMLResponse)
+def admin_create_preview(
+    unresolved_venue_id: int,
+    name: str = Form(""),
+    region_id: str = Form(""),
+    address: str = Form(""),
+    aliases: str = Form(""),
+    notes: str = Form(""),
+    force: str = Form("0"),
+    _: str = Depends(require_admin),
+) -> Any:
+    fields = _create_fields(name, region_id, address, aliases, notes, force)
+    try:
+        with _connection() as con:
+            preview = venue_resolution.preview_create(
+                con, unresolved_venue_id=unresolved_venue_id, **_create_args(fields))
+            regions = master_data.list_regions(con, enabled_only=True)
+    except LookupError as exc:
+        return _refused("찾을 수 없습니다", [str(exc)], status=404)
+    venue, entry = preview["venue"], preview["entry"]
+    label = f'NEW {venue["name"]} ({venue.get("region_code") or "-"})'
+    facts = (f'<p><code>{E(entry["venue_text"])}</code> &rarr; 새 장소 <strong>'
+             f'{E(venue["name"])}</strong> &middot; 지역 {E(venue.get("region_code") or "없음")}'
+             f' &middot; 주소 {E(venue.get("address") or "없음")}</p>')
+    extra = _alias_rows(preview["alias_plan"])
+    if preview["duplicates"]:
+        rows = "".join(
+            f'<li><strong>#{m["venue_id"]} {E(m["name"])}</strong>'
+            + (f' &middot; {E(m["region_name"])}' if m.get("region_name") else "")
+            + (f' &middot; {E(m["address"])}' if m.get("address") else "")
+            + f' &middot; <span class="muted">{E(", ".join(m["match_reasons"]))}</span> '
+            f'<form class="inline" method="post" action="{_QUEUE}/{unresolved_venue_id}/link/preview">'
+            f'<input type="hidden" name="venue_id" value="{m["venue_id"]}">'
+            '<input type="hidden" name="add_alias" value="1">'
+            '<button class="primary">Preview Link</button></form></li>'
+            for m in preview["duplicates"])
+        extra = (
+            '<div class="callout"><h3>비슷한 장소가 이미 등록되어 있습니다</h3>'
+            f'<ul class="sources">{rows}</ul>'
+            "<p class=\"note\">같은 장소라면 위에서 연결하세요. 정말 다른 장소(다른 주소, "
+            "다른 층의 별도 공간)라면 아래에서 그렇다고 표시하고 다시 미리 보세요.</p>"
+            + _new_venue_form(entry, {"name": fields["name"], "address": fields["address"] or None,
+                                      "aliases": fields["aliases"].split(", ") if fields["aliases"] else [],
+                                      "split_inferred": False},
+                              regions, _create_args(fields)["region_id"], open_form=True,
+                              force=True)
+            + "</div>" + extra)
+    return _preview_page(
+        "New Venue 미리보기", preview, venue_label=label, facts=facts,
+        confirm_action=f"{_QUEUE}/{unresolved_venue_id}/create", fields=fields,
+        confirm_label="Confirm &amp; Create",
+        extra=extra + _evidence_block(entry, preview["evidence"]),
+    )
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/create")
+def admin_create_and_link_venue(
+    unresolved_venue_id: int,
+    name: str = Form(""),
+    region_id: str = Form(""),
+    address: str = Form(""),
+    aliases: str = Form(""),
+    notes: str = Form(""),
+    force: str = Form("0"),
+    token: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> Any:
+    fields = _create_fields(name, region_id, address, aliases, notes, force)
+    result = _confirm(lambda con: venue_resolution.confirm_create(
+        con, unresolved_venue_id=unresolved_venue_id, token=token, reviewer=reviewer,
+        **_create_args(fields)))
+    if not isinstance(result, dict):
+        return result
+    return admin._back(
+        _QUEUE,
+        f"created {result['venue']['name']} and resolved "
+        f"{result['events_updated']} event(s)",
     )
 
 
@@ -660,54 +953,42 @@ def admin_link_existing_venue(
 def admin_group_link_preview(
     unresolved_venue_id: list[int] = Form(...),
     venue_id: str = Form(...),
+    add_alias: str = Form("1"),
     _: str = Depends(require_admin),
-) -> HTMLResponse:
-    """Show exactly what Group Apply is about to do before it does it (spec
-    item 10) - every string, its own pending-event count, and the one target
-    venue - nothing is written here."""
-    with _connection() as con:
-        venue = master_data.get_venue(con, int(venue_id)) if venue_id.isdigit() else None
-        if venue is None:
-            return HTMLResponse(
-                admin._page("Unresolved Venues", "/admin/venues",
-                            f'<p class="note">venue id {E(venue_id)} 를 찾을 수 없습니다.</p>'
-                            '<p><a href="/admin/venues/unresolved">← 대기열로 돌아가기</a></p>'),
-                status_code=404,
-            )
-        rows = []
-        for uid in unresolved_venue_id:
-            entry = normalization.unresolved_venue(con, uid)
-            if entry is None or entry["state"] != "OPEN":
-                continue
-            rows.append(entry)
-
-    if not rows:
-        return admin._back("/admin/venues/unresolved", "미리 볼 대기열 항목이 없습니다", "bad")
-
-    hidden = "".join(
-        f'<input type="hidden" name="unresolved_venue_id" value="{r["unresolved_venue_id"]}">'
-        for r in rows
+) -> Any:
+    """Show exactly what Group Apply is about to do before it does it - every
+    string, every event it moves, and what the next scan would fold - and
+    nothing is written here."""
+    if not venue_id.isdigit():
+        return _refused("찾을 수 없습니다", [f"venue id {venue_id}"], status=404)
+    try:
+        with _connection() as con:
+            preview = venue_resolution.preview_group(
+                con, unresolved_venue_ids=unresolved_venue_id, venue_id=int(venue_id),
+                add_alias=(add_alias == "1"))
+    except LookupError as exc:
+        return _refused("찾을 수 없습니다", [str(exc)], status=404)
+    if not preview["rows"]:
+        return admin._back(_QUEUE, "미리 볼 대기열 항목이 없습니다", "bad")
+    venue = preview["venue"]
+    label = f'#{venue["venue_id"]} {venue["name"]} ({venue.get("region_code") or "-"})'
+    strings = "".join(
+        f'<li><code>{E(r["entry"]["venue_text"])}</code> &middot; Event {r["summary"]["events"]}건'
+        + "".join(f' <span class="badge bad">{E(b)}</span>' for b in r["blockers"]) + "</li>"
+        for r in preview["rows"])
+    facts = (f'<p>아래 {len(preview["rows"])}건을 <strong>{E(label)}</strong>에 함께 연결합니다. '
+             "하나라도 승인할 수 없으면 전부 반영하지 않습니다.</p>"
+             f'<ul class="sources">{strings}</ul>')
+    merged = {**preview, "events": [e for r in preview["rows"] for e in r["events"]],
+              "canonical": [o for r in preview["rows"] for o in r["canonical"]]}
+    return _preview_page(
+        "Group Apply 미리보기", merged, venue_label=label, facts=facts,
+        confirm_action=f"{_QUEUE}/group-link/confirm",
+        fields={"unresolved_venue_id": [r["entry"]["unresolved_venue_id"] for r in preview["rows"]],
+                "venue_id": venue["venue_id"], "add_alias": "1" if add_alias == "1" else "0"},
+        confirm_label="Confirm &amp; Apply",
+        extra=_alias_rows([a for r in preview["rows"] for a in r["alias_plan"]]),
     )
-    items = "".join(
-        f'<li><code>{E(r["venue_text"])}</code> &middot; '
-        f'대기 중 Event {r.get("event_count") or 0}건</li>'
-        for r in rows
-    )
-    body = (
-        "<h2>Unresolved Venues</h2>"
-        '<div class="callout"><h3>Group Apply 미리보기</h3>'
-        f'<p>아래 {len(rows)}건을 <strong>{E(venue["name"])}</strong>'
-        + (f' &middot; {E(venue["region_name"])}' if venue.get("region_name") else "")
-        + f'에 연결합니다.</p><ul class="sources">{items}</ul>'
-        '<form method="post" action="/admin/venues/unresolved/group-link/confirm">'
-        f'{hidden}<input type="hidden" name="venue_id" value="{venue["venue_id"]}">'
-        '<label><input type="checkbox" name="add_alias" value="1" checked> '
-        '각 원문 문자열을 alias로 등록</label>'
-        '<div class="actions"><button class="primary">Confirm &amp; Apply</button> '
-        '<a href="/admin/venues/unresolved"><button type="button">Cancel</button></a></div>'
-        "</form></div>"
-    )
-    return HTMLResponse(admin._page("Unresolved Venues", "/admin/venues", body))
 
 
 @router.post("/admin/venues/unresolved/group-link/confirm")
@@ -715,29 +996,61 @@ def admin_group_link_confirm(
     unresolved_venue_id: list[int] = Form(...),
     venue_id: str = Form(...),
     add_alias: str = Form(""),
+    token: str = Form(""),
     reviewer: str = Depends(require_admin),
-) -> RedirectResponse:
-    target = "/admin/venues/unresolved"
-    with db.connect(admin._settings()) as con:
-        try:
-            result = venue_resolution.group_link_existing(
-                con, unresolved_venue_ids=unresolved_venue_id, venue_id=int(venue_id),
-                reviewer=reviewer, add_alias=(add_alias == "1"),
-            )
-            con.commit()
-        except Exception as exc:
-            return admin._back(target, f"could not apply: {exc}", "bad")
-    if result["errors"]:
-        return admin._back(
-            target,
-            f"linked {result['linked_count']}, {len(result['errors'])} failed "
-            f"(already resolved by someone else?)", "bad",
-        )
+) -> Any:
+    if not venue_id.isdigit():
+        return _refused("찾을 수 없습니다", [f"venue id {venue_id}"], status=404)
+    result = _confirm(lambda con: venue_resolution.confirm_group(
+        con, unresolved_venue_ids=unresolved_venue_id, venue_id=int(venue_id),
+        add_alias=(add_alias == "1"), token=token, reviewer=reviewer))
+    if not isinstance(result, dict):
+        return result
     return admin._back(
-        target,
+        _QUEUE,
         f"linked {result['linked_count']} string(s) to "
         f"{result['venue']['name'] if result['venue'] else venue_id}; "
         f"{result['events_updated']} event(s) resolved",
+    )
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/revert/preview",
+             response_class=HTMLResponse)
+def admin_revert_preview(unresolved_venue_id: int,
+                         _: str = Depends(require_admin)) -> Any:
+    try:
+        with _connection() as con:
+            preview = venue_resolution.preview_revert(
+                con, unresolved_venue_id=unresolved_venue_id)
+    except LookupError as exc:
+        return _refused("찾을 수 없습니다", [str(exc)], status=404)
+    entry, venue, alias = preview["entry"], preview["venue"], preview["alias"]
+    facts = (f'<p><code>{E(entry["venue_text"])}</code> &middot; 현재 {E(entry["state"])}'
+             + (f' &rarr; #{venue["venue_id"]} {E(venue["name"])}' if venue else "")
+             + "</p><p>되돌리면 이 항목은 다시 OPEN이 되고"
+             + (f', alias <code>{E(alias["alias"])}</code>가 제거되며' if alias else "")
+             + " 아래 Event는 원문 장소 문자열로 돌아갑니다. 장소 자체는 지워지지 않습니다.</p>")
+    return _preview_page(
+        "Revert 미리보기", preview, venue_label="(원문 문자열, 미확정)", facts=facts,
+        confirm_action=f"{_QUEUE}/{unresolved_venue_id}/revert", fields={},
+        confirm_label="Confirm Revert",
+    )
+
+
+@router.post("/admin/venues/unresolved/{unresolved_venue_id}/revert")
+def admin_revert_decision(
+    unresolved_venue_id: int,
+    token: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> Any:
+    result = _confirm(lambda con: venue_resolution.revert_decision(
+        con, unresolved_venue_id=unresolved_venue_id, token=token, reviewer=reviewer))
+    if not isinstance(result, dict):
+        return result
+    return admin._back(
+        _QUEUE,
+        f"reverted; {result['events_updated']} event(s) back to their raw string, "
+        f"{result['automatic_merges_released']} automatic merge(s) released",
     )
 
 
@@ -756,6 +1069,7 @@ def admin_dismiss_venue(
             )
             con.commit()
         except Exception as exc:
+            con.rollback()
             return admin._back(target, f"could not dismiss: {exc}", "bad")
     return admin._back(target, "장소가 아닌 것으로 기록했습니다")
 
