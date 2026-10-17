@@ -1618,6 +1618,13 @@ def extract_with_image_fallback(title: str, body: str, source_role="SECONDARY",
         image_time_ambiguous = (sub.start_time is not None and
                                 (not isinstance(time_details, dict) or
                                  bool(time_details.get("ambiguous", True))))
+        # v0.96.40: a lone start that was only one of several clocks the
+        # poster names for this kind of night is not placed either - see
+        # extraction_rules.start_is_contested().
+        if (sub.start_time is not None and sub.end_time is None
+                and extraction_rules.start_is_contested(f"{title} {image_text}",
+                                                        ev.event_type)):
+            image_time_ambiguous = True
         if image_time_ambiguous and "time" in missing:
             # The OCR may have read 9:10 correctly, but without a meridiem
             # it cannot decide 09:10 versus 21:10. Keep the raw observation

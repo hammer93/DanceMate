@@ -48,10 +48,27 @@ _MERIDIEM_WORDS = {
 _MARKER = r"(?:[ap]\.?m\.?|오전|오후|저녁|밤|낮|새벽)"
 
 # 7:30 | 07:30 | 7시30분 | 8시 | 5시30
+#
+# v0.96.40: a Korean clock's minutes are on the same line as its hour. Poster
+# OCR text keeps the poster's layout, one line per printed row, and a digit on
+# the next row is something else that row prints. 오아시스's poster (item 5601)
+# prints "오후 9시 - 12시" with a stray "9" two lines below it, and the reading
+# "12시 9" advertised the social as ending at 00:09; 피루나's (item 5859) prints
+# "저녁 9시~ 3시" and a "5" from the row under it made the end 03:05. Both
+# posters were checked by eye. "8시 30" on one line is still 08:30 (item 3090
+# writes exactly that); only the line break stops the minutes being joined.
+#
+# The bare-hour form "7pm" is read the same way, and its marker must be its own:
+# the same poster table (item 643) prints "VIP 밀롱가1   PM 23:30 -", and the
+# milonga's number "1" in one column took the "PM" that opens the next column's
+# clock, a 13:00 nobody wrote. A marker followed by a clock of its own belongs
+# to that clock.
+_SAME_LINE = r"[^\S\n]*"
 _CLOCK = (
     r"(?:\d{1,2}\s*:\s*\d{2}"          # 19:00, 07:30
-    r"|\d{1,2}\s*시(?:\s*\d{1,2}\s*분?)?"  # 8시, 7시30분, 5시30
-    r"|\d{1,2}(?=\s*[ap]\.?m\.?))"      # 7pm -- bare hour, marker attached
+    rf"|\d{{1,2}}\s*시(?:{_SAME_LINE}\d{{1,2}}{_SAME_LINE}분?)?"  # 8시, 7시30분, 5시30
+    rf"|\d{{1,2}}(?={_SAME_LINE}[ap]\.?m\.?)"  # 7pm -- bare hour, marker attached
+    rf"(?!{_SAME_LINE}[ap]\.?m\.?\s*\d))"
 )
 # ~ - – — to 부터 에서 . An en dash is what "PM 8시 – 12시" actually uses.
 _SEP = r"\s*(?:~+|-+|–|—|to|부터|에서)\s*"
@@ -98,7 +115,8 @@ _RANGE_RE = re.compile(
 )
 
 _HHMM_RE = re.compile(r"(?P<h>\d{1,2})\s*:\s*(?P<m>\d{2})")
-_KOREAN_CLOCK_RE = re.compile(r"(?P<h>\d{1,2})\s*시(?:\s*(?P<m>\d{1,2})\s*분?)?")
+_KOREAN_CLOCK_RE = re.compile(
+    rf"(?P<h>\d{{1,2}})\s*시(?:{_SAME_LINE}(?P<m>\d{{1,2}}){_SAME_LINE}분?)?")
 
 
 def _meridiem(token: str | None, hour: int | None = None) -> str | None:
@@ -693,7 +711,24 @@ def _belongs_to_other_programme(body: str, match: "re.Match", words: str | None)
     return event is None or other <= event
 
 
-def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | None:
+def start_is_contested(text: str, event_type: str | None = None) -> bool:
+    """Whether the lone start read here was one of several the text names.
+
+    v0.96.40, for poster OCR only. A post's own body is allowed to rank the
+    clocks its event's word names by position (v0.96.18) - "PM9:20~
+    금요소셜파티 Showtime : PM 10:30~" (item 6189) does open at 21:20. A poster
+    whose OCR has lost its table rows is a different thing: K-TANGO CF (item
+    643) lists four days of milongas, every clock sits beside a 밀롱가, and
+    the first one is another day's night. `extract_with_image_fallback()`
+    already refuses an image time it cannot place; this is one more way not to
+    be able to place it.
+    """
+    return (parse_start_time(text, event_type) is not None
+            and parse_start_time(text, event_type, unique=True) is None)
+
+
+def parse_start_time(text: str, event_type: str | None = None, *,
+                     unique: bool = False) -> TimeReading | None:
     """The night's start when the text names one clock and no range of its own.
 
     v0.96.18: a class word near a lone clock is weighed against the event's own
@@ -729,6 +764,14 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
     for match in _SINGLE_CLOCK_RE.finditer(body):
         parts = _clock_parts(match.group("t"))
         if parts is None:
+            continue
+        # v0.96.40: "24:00" is the moment a day ends, so it closes a night and
+        # never opens one. K-TANGO CF's timetable poster (item 643) prints
+        # "PM 20:00 - PM 24:00" in a table cell, the OCR splits the cell across
+        # rows, and the lone "PM 24:00" left over was stored as the night's
+        # start - 00:00 on the date it ends, four hours before the night began
+        # and a day out. Checked by eye against the poster.
+        if parts[0] == 24:
             continue
         if any(lo <= match.start("t") and match.end("t") <= hi for lo, hi in ranges):
             continue
@@ -776,7 +819,10 @@ def parse_start_time(text: str, event_type: str | None = None) -> TimeReading | 
                 # position advertised the workshop. Position still breaks a tie
                 # between two openings.
                 opening = [f for f in named if f[3]]
-                return (opening or named)[0][0]
+                pool = opening or named
+                if unique and len({f[0].start for f in pool}) > 1:
+                    return None
+                return pool[0][0]
         # Two different lone clocks for two different things ("클럽 오픈 오후
         # 8시 ... 오후 7시 핸슨") and neither beside the event's word: which one
         # is the start is anyone's guess, and this rule does not guess.

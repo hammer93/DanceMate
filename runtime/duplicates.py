@@ -49,7 +49,10 @@ evidence. A HUMAN choice of representative outlasts every later scan.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import time
 from datetime import date
 from typing import Any
 
@@ -75,6 +78,11 @@ RULE_UNRESOLVED_VENUE_TIME = "SAME_DATE_UNRESOLVED_VENUE_TIME"
 RULE_REGION_CONFLICT = "SAME_DATE_VENUE_TIME_REGION_CONFLICT"
 # v0.96.23: an automatic merge the rules would no longer make, released.
 RULE_STALE_AUTO_MERGE = "STALE_AUTO_MERGE"
+# A person's answer on the Duplicates page, and (v0.96.40) a person taking
+# one back.
+RULE_HUMAN_REVIEW = "HUMAN_REVIEW"
+RULE_HUMAN_REVERT = "HUMAN_REVERT"
+REVERT = "REVERT"
 
 OPEN = "OPEN"
 MERGED = "MERGED"
@@ -266,14 +274,20 @@ def _decided_by_human(event: dict[str, Any]) -> bool:
 
 def record_decision(con, *, event_id: int, canonical_event_id: int | None,
                     decision: str, decided_by: str, rule: str,
-                    reason: str | None = None, reviewer: str | None = None) -> dict[str, Any]:
-    """Write one duplicate verdict and update the event to match it."""
+                    reason: str | None = None, reviewer: str | None = None,
+                    pair_id: int | None = None) -> dict[str, Any]:
+    """Write one duplicate verdict and update the event to match it.
+
+    ``pair_id`` (v0.96.40) is the Duplicates-page question a person's verdict
+    answers, so a revert can put that question back.
+    """
     with con.cursor() as cur:
         cur.execute(
             "INSERT INTO event_duplicate_decisions (event_id, canonical_event_id, "
-            "  decision, decided_by, rule, reason, reviewer) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *",
-            (event_id, canonical_event_id, decision, decided_by, rule, reason, reviewer),
+            "  decision, decided_by, rule, reason, reviewer, pair_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *",
+            (event_id, canonical_event_id, decision, decided_by, rule, reason, reviewer,
+             pair_id),
         )
         recorded = _row(cur)
         if decision == DUPLICATE:
@@ -336,7 +350,18 @@ def _record_pair(con, left_id: int, right_id: int, finding: dict[str, Any]) -> b
         return cur.fetchone() is not None
 
 
-def _release_stale_auto_merges(con, events: list[dict[str, Any]]) -> list[int]:
+def _pair_is_new(con, left_id: int, right_id: int) -> bool:
+    """Whether `_record_pair()` would record this pair (a dry run asks)."""
+    low, high = sorted((left_id, right_id))
+    with con.cursor() as cur:
+        cur.execute("SELECT 1 FROM event_duplicate_pairs WHERE event_id = %s "
+                    "AND other_event_id = %s", (low, high))
+        return cur.fetchone() is None
+
+
+def _release_stale_auto_merges(con, events: list[dict[str, Any]], *,
+                               actions: list[list[Any]] | None = None,
+                               apply: bool = True) -> list[int]:
     """Undo automatic merges the rules would no longer make.
 
     The fold graph is meant to be what the rules say about the rows as they
@@ -353,6 +378,9 @@ def _release_stale_auto_merges(con, events: list[dict[str, Any]]) -> list[int]:
     A person's verdict is never re-asked. A canonical row outside this scan's
     own window is not judged either, because the pair cannot be compared
     without it; the next unwindowed scan reaches it.
+
+    ``apply=False`` (v0.96.40) decides exactly the same way and writes
+    nothing; each release is appended to ``actions`` either way.
     """
     by_id = {e["event_id"]: e for e in events}
     released: list[int] = []
@@ -366,16 +394,19 @@ def _release_stale_auto_merges(con, events: list[dict[str, Any]]) -> list[int]:
         finding = classify(canonical, event)
         if finding is not None and finding["auto"]:
             continue
-        record_decision(
-            con,
-            event_id=event["event_id"],
-            canonical_event_id=None,
-            decision=DISTINCT,
-            decided_by=AUTO,
-            rule=RULE_STALE_AUTO_MERGE,
-            reason=("the rules no longer merge this pair: "
-                    + (finding["rule"] if finding else "nothing matches")),
-        )
+        if apply:
+            record_decision(
+                con,
+                event_id=event["event_id"],
+                canonical_event_id=None,
+                decision=DISTINCT,
+                decided_by=AUTO,
+                rule=RULE_STALE_AUTO_MERGE,
+                reason=("the rules no longer merge this pair: "
+                        + (finding["rule"] if finding else "nothing matches")),
+            )
+        if actions is not None:
+            actions.append(["RELEASE", event["event_id"], canonical_id, RULE_STALE_AUTO_MERGE])
         event["canonical_event_id"] = None
         event["duplicate_decided_by"] = AUTO
         event["listing_state"] = (
@@ -386,12 +417,15 @@ def _release_stale_auto_merges(con, events: list[dict[str, Any]]) -> list[int]:
         # re-elected, and _canonical_of() must not still believe it heads a
         # group it no longer does.
         canonical["folded_count"] = max(0, int(canonical.get("folded_count") or 0) - 1)
-        reconcile_primary_source(con, canonical_id)
+        if apply:
+            reconcile_primary_source(con, canonical_id)
         released.append(event["event_id"])
     return released
 
 
-def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[str, Any]:
+def scan(con, *, on: date | None = None, limit_days: int | None = None,
+         dry_run: bool = False,
+         overrides: dict[int, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Compare events sharing a date and act on what the rules can settle.
 
     Only events on the same day are ever compared, so the scan stays cheap and
@@ -400,6 +434,12 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
     v0.96.23: the pass begins by releasing automatic merges the rules would no
     longer make (``_release_stale_auto_merges``), so a corrected rule reaches
     rows that were folded under the old one instead of only new arrivals.
+
+    v0.96.40: every merge, release and new pair is also returned as
+    ``actions``. ``dry_run=True`` makes the same decisions and writes nothing,
+    and ``overrides`` replaces columns of the rows it reads - which is how a
+    duplicate-verdict revert previews what the scan does once the verdict is
+    gone, and then checks that the real scan did exactly that.
     """
     where = ["e.review_state <> 'REJECTED'"]
     params: list[Any] = []
@@ -429,13 +469,17 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
         )
         events = _rows(cur)
 
+    for event in events:
+        event.update((overrides or {}).get(event["event_id"]) or {})
+
     by_date: dict[Any, list[dict[str, Any]]] = {}
     for event in events:
         by_date.setdefault(event["event_date"], []).append(event)
 
+    actions: list[list[Any]] = []
     # Before anything is compared: a merge the rules would not make today is
     # released, so what follows decides on the rows as they actually are.
-    released = _release_stale_auto_merges(con, events)
+    released = _release_stale_auto_merges(con, events, actions=actions, apply=not dry_run)
 
     merged = 0
     flagged = 0
@@ -463,25 +507,31 @@ def scan(con, *, on: date | None = None, limit_days: int | None = None) -> dict[
                     continue
                 if finding["auto"]:
                     canonical, duplicate = _canonical_of(left, right)
-                    record_decision(
-                        con,
-                        event_id=duplicate["event_id"],
-                        canonical_event_id=canonical["event_id"],
-                        decision=DUPLICATE,
-                        decided_by=AUTO,
-                        rule=finding["rule"],
-                        reason="same date, same venue and same start time",
-                    )
+                    if not dry_run:
+                        record_decision(
+                            con,
+                            event_id=duplicate["event_id"],
+                            canonical_event_id=canonical["event_id"],
+                            decision=DUPLICATE,
+                            decided_by=AUTO,
+                            rule=finding["rule"],
+                            reason="same date, same venue and same start time",
+                        )
+                    actions.append(["MERGE", duplicate["event_id"], canonical["event_id"],
+                                    finding["rule"]])
                     resolved.add(duplicate["event_id"])
                     merged += 1
                     if duplicate["event_id"] == left["event_id"]:
                         break
-                elif _record_pair(con, left["event_id"], right["event_id"], finding):
+                elif (_pair_is_new(con, left["event_id"], right["event_id"]) if dry_run
+                      else _record_pair(con, left["event_id"], right["event_id"], finding)):
+                    actions.append(["PAIR", *sorted((left["event_id"], right["event_id"])),
+                                    finding["rule"]])
                     flagged += 1
 
     return {"events": len(events), "compared": compared,
             "auto_merged": merged, "flagged_for_review": flagged,
-            "released": len(released)}
+            "released": len(released), "actions": actions}
 
 
 def open_pairs(con, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
@@ -541,15 +591,16 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
         duplicate_id = members[0] if members[1] == canonical_event_id else members[1]
         record_decision(
             con, event_id=duplicate_id, canonical_event_id=canonical_event_id,
-            decision=DUPLICATE, decided_by=HUMAN, rule="HUMAN_REVIEW",
-            reason=reason, reviewer=reviewer,
+            decision=DUPLICATE, decided_by=HUMAN, rule=RULE_HUMAN_REVIEW,
+            reason=reason, reviewer=reviewer, pair_id=pair_id,
         )
         new_state = MERGED
     else:
         for event_id in members:
             record_decision(
                 con, event_id=event_id, canonical_event_id=None, decision=DISTINCT,
-                decided_by=HUMAN, rule="HUMAN_REVIEW", reason=reason, reviewer=reviewer,
+                decided_by=HUMAN, rule=RULE_HUMAN_REVIEW, reason=reason, reviewer=reviewer,
+                pair_id=pair_id,
             )
         new_state = DISTINCT
 
@@ -562,6 +613,496 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
     return {"pair_id": pair_id, "state": new_state,
             "canonical_event_id": canonical_event_id}
 
+
+# --- taking a person's verdict back (v0.96.40) --------------------------------
+#
+# A Same event / Different events answer was final: nothing undid it, and the
+# scan never re-asks a pair a person settled. A revert withdraws one such
+# verdict and nothing else. It does not split two posts of one night by force:
+# with the verdict gone the duplicate rules decide again, in the same
+# transaction, exactly as the scheduler's next scan would - so a pair the rules
+# merge by themselves is merged again, by the rules, and says so. The verdict's
+# own rows stay in event_duplicate_decisions; the revert adds a REVERT row per
+# verdict row, naming it. A verdict something later depends on is not undone
+# around: a later verdict a person gave on either event, or a representative
+# post a person chose for the group, blocks the revert until that is undone.
+
+MERGE_VERDICT = "MERGE"
+KEEP_SEPARATE_VERDICT = "KEEP_SEPARATE"
+REVERT_ACTION = "DUPLICATE_DECISION_REVERT"
+REVERT_BLOCKED_DEPENDENCY = "REVERT_BLOCKED_DEPENDENCY"
+REVERT_TOKEN_TTL_SECONDS = 2 * 3600
+
+_MEMBER_COLUMNS = (
+    "e.event_id, e.event_date, e.event_name, e.start_time, e.venue_id, e.venue_text, "
+    "e.region_id, e.identity_key, e.series_key, e.canonical_event_id, "
+    "e.duplicate_decided_by, e.listing_state, e.review_state, e.provenance, "
+    "e.source_item_id, e.primary_source_item_id, e.primary_source_decided_by"
+)
+
+
+class RevertRefused(Exception):
+    """This verdict cannot be taken back as things stand. Nothing was written."""
+
+    def __init__(self, reasons: list[str], code: str = "REVERT_REFUSED"):
+        super().__init__("; ".join(reasons))
+        self.reasons = reasons
+        self.code = code
+
+
+class StaleRevertPreview(RevertRefused):
+    """What the revert would do is no longer what the operator was shown."""
+
+    def __init__(self, reasons: list[str]):
+        super().__init__(reasons, code="REVERT_STALE_PREVIEW")
+
+
+def _listing_for(event: dict[str, Any]) -> str:
+    """listing_state as every writer derives it (v0.96.39's invariant)."""
+    if event.get("canonical_event_id") is not None:
+        return "HIDDEN"
+    if (event.get("review_state") or "").upper() in ("REJECTED", "DUPLICATE"):
+        return "HIDDEN"
+    return "LISTED"
+
+
+def _visible(event: dict[str, Any]) -> bool:
+    """events_api._VISIBLE, for a row held in memory."""
+    return (event.get("provenance") == "LIVE" and event.get("listing_state") == "LISTED"
+            and event.get("canonical_event_id") is None)
+
+
+def _revert_signature(facts: dict[str, Any], reviewer: str, issued: int) -> str:
+    from . import admin_csrf  # noqa: PLC0415 - keeps the scheduler import graph as it was
+
+    body = json.dumps({"facts": facts, "reviewer": reviewer, "issued": issued},
+                      sort_keys=True, ensure_ascii=False, default=str)
+    return hmac.new(admin_csrf.signing_key("duplicate-decision"), body.encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def revert_token(facts: dict[str, Any], *, reviewer: str = "admin",
+                 now: float | None = None) -> str:
+    """Binds a confirm to the preview a reviewer was shown (v0.96.38's contract,
+    under a key of its own so no other preview's token is accepted)."""
+    issued = int(time.time() if now is None else now)
+    return f"{issued}.{_revert_signature(facts, reviewer, issued)}"
+
+
+def _revert_token_matches(given: str | None, facts: dict[str, Any], reviewer: str,
+                          now: float | None = None) -> bool:
+    issued, _, signature = (given or "").partition(".")
+    if not issued.isdigit() or not signature:
+        return False
+    age = (time.time() if now is None else now) - int(issued)
+    if age > REVERT_TOKEN_TTL_SECONDS or age < -300:
+        return False
+    return hmac.compare_digest(signature, _revert_signature(facts, reviewer, int(issued)))
+
+
+def _decision_row(con, decision_id: int, *, lock: bool = False) -> dict[str, Any] | None:
+    with con.cursor() as cur:
+        cur.execute("SELECT * FROM event_duplicate_decisions WHERE decision_id = %s"
+                    + (" FOR UPDATE" if lock else ""), (decision_id,))
+        return _row(cur)
+
+
+def _verdict(con, original: dict[str, Any]) -> tuple[list[dict[str, Any]], dict | None]:
+    """The rows one person's answer wrote, and the Duplicates-page pair it answered.
+
+    A Same-event answer writes one row (on the post folded away), a
+    Different-events answer one per post. Rows written since v0.96.40 carry
+    their pair_id; an older answer is found through its pair's two event ids.
+    """
+    with con.cursor() as cur:
+        pair = None
+        if original.get("pair_id") is not None:
+            cur.execute("SELECT * FROM event_duplicate_pairs WHERE pair_id = %s",
+                        (original["pair_id"],))
+            pair = _row(cur)
+        elif original["decision"] == DUPLICATE and original.get("canonical_event_id"):
+            low, high = sorted((original["event_id"], original["canonical_event_id"]))
+            cur.execute("SELECT * FROM event_duplicate_pairs WHERE event_id = %s "
+                        "AND other_event_id = %s", (low, high))
+            pair = _row(cur)
+        else:
+            cur.execute("SELECT * FROM event_duplicate_pairs WHERE state = %s "
+                        "AND %s IN (event_id, other_event_id) ORDER BY pair_id",
+                        (DISTINCT, original["event_id"]))
+            found = _rows(cur)
+            pair = found[0] if len(found) == 1 else None
+        rows = [original]
+        if original["decision"] == DISTINCT and pair is not None:
+            other = (pair["other_event_id"] if pair["event_id"] == original["event_id"]
+                     else pair["event_id"])
+            cur.execute(
+                "SELECT * FROM event_duplicate_decisions WHERE event_id = %s "
+                "  AND decision = %s AND decided_by = %s AND rule = %s "
+                "  AND pair_id IS NOT DISTINCT FROM %s::bigint "
+                "ORDER BY abs(decision_id - %s) LIMIT 1",
+                (other, DISTINCT, HUMAN, RULE_HUMAN_REVIEW, original.get("pair_id"),
+                 original["decision_id"]),
+            )
+            sibling = _row(cur)
+            if sibling is not None:
+                rows.append(sibling)
+        return sorted(rows, key=lambda r: r["decision_id"]), pair
+
+
+def _reverted_ids(con, ids: list[int]) -> set[int]:
+    with con.cursor() as cur:
+        cur.execute("SELECT reverts_decision_id FROM event_duplicate_decisions "
+                    "WHERE reverts_decision_id = ANY(%s)", (ids,))
+        return {r[0] for r in cur.fetchall()}
+
+
+def _standing_human_verdicts(con, event_id: int, excluding: list[int]) -> list[int]:
+    """A person's other verdicts on this event that have not been taken back."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT d.decision_id FROM event_duplicate_decisions d "
+            "WHERE d.event_id = %s AND d.decided_by = %s AND d.decision IN (%s, %s) "
+            "  AND NOT (d.decision_id = ANY(%s)) "
+            "  AND NOT EXISTS (SELECT 1 FROM event_duplicate_decisions r "
+            "                  WHERE r.reverts_decision_id = d.decision_id) "
+            "ORDER BY d.decision_id",
+            (event_id, HUMAN, DUPLICATE, DISTINCT, excluding),
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
+def _members(con, ids: list[int], *, lock: bool = False) -> dict[int, dict[str, Any]]:
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT " + _MEMBER_COLUMNS + ", "
+            "  (SELECT count(*) FROM events d WHERE d.canonical_event_id = e.event_id) "
+            "    AS folded_count "
+            "FROM events e WHERE e.event_id = ANY(%s) ORDER BY e.event_id"
+            + (" FOR UPDATE OF e" if lock else ""), (ids,))
+        return {r["event_id"]: r for r in _rows(cur)}
+
+
+def _later_dependencies(con, rows: list[dict[str, Any]], member_ids: list[int],
+                        members: dict[int, dict[str, Any]]) -> list[str]:
+    """Later decisions a person took that rest on this verdict standing."""
+    reasons = []
+    last = max(r["decision_id"] for r in rows)
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT d.decision_id, d.event_id, d.canonical_event_id, d.decision, d.reviewer, "
+            "       d.created_at FROM event_duplicate_decisions d "
+            "WHERE d.decision_id > %s AND d.decided_by = %s AND d.decision <> %s "
+            "  AND (d.event_id = ANY(%s) OR d.canonical_event_id = ANY(%s)) "
+            "  AND NOT EXISTS (SELECT 1 FROM event_duplicate_decisions r "
+            "                  WHERE r.reverts_decision_id = d.decision_id) "
+            "ORDER BY d.decision_id",
+            (last, HUMAN, REVERT, member_ids, member_ids),
+        )
+        for later in _rows(cur):
+            reasons.append(
+                f"decision #{later['decision_id']} ({later['decision']}, "
+                f"{later['reviewer'] or '-'}, {str(later['created_at'])[:16]}) on event "
+                f"#{later['event_id']} came after this one - revert it first")
+    for event in members.values():
+        if event.get("primary_source_decided_by") != HUMAN:
+            continue
+        chosen = event.get("primary_source_item_id")
+        owners = [m["event_id"] for m in members.values()
+                  if m["source_item_id"] == chosen and m["event_id"] != event["event_id"]]
+        if owners:
+            reasons.append(
+                f"a person chose event #{owners[0]}'s post as #{event['event_id']}'s "
+                "representative source, which rests on this merge - reset it on the "
+                "event's Sources page first")
+    return reasons
+
+
+def preview_revert(con, *, decision_id: int, reviewer: str = "admin") -> dict[str, Any]:
+    """What taking this verdict back would change, and why it may not. Writes nothing.
+
+    The expected outcome is the duplicate scan's own: the verdict's events with
+    the verdict removed are handed to ``scan(dry_run=True)`` for their date, and
+    its actions - a merge the rules make by themselves, a pair back on the
+    Duplicates page, or nothing - are what the confirm will do and check.
+    """
+    original = _decision_row(con, decision_id)
+    if original is None:
+        raise LookupError(f"no duplicate decision {decision_id}")
+    blockers: list[str] = []
+    warnings: list[str] = []
+    code = None
+    if original["decision"] == REVERT:
+        blockers.append(f"#{decision_id} is itself a revert - there is no verdict to take back")
+    elif original["decided_by"] != HUMAN or original["rule"] != RULE_HUMAN_REVIEW:
+        blockers.append(f"#{decision_id} was decided by the rules ({original['rule']}), not by "
+                        "a person - the next scan already re-asks it")
+    rows, pair = _verdict(con, original) if not blockers else ([original], None)
+    kind = MERGE_VERDICT if original["decision"] == DUPLICATE else KEEP_SEPARATE_VERDICT
+    ids = [r["decision_id"] for r in rows]
+    if not blockers and _reverted_ids(con, ids):
+        blockers.append(f"#{decision_id} has already been reverted")
+        code = "REVERT_ALREADY_APPLIED"
+    if not blockers and kind == KEEP_SEPARATE_VERDICT and len(rows) != 2:
+        blockers.append(f"the other half of Different-events verdict #{decision_id} is not "
+                        "in the trail, so it cannot be taken back as one answer")
+    member_ids = sorted({r["event_id"] for r in rows}
+                        | ({original["canonical_event_id"]}
+                           if kind == MERGE_VERDICT and original["canonical_event_id"] else set()))
+    members = _members(con, member_ids)
+    for missing in sorted(set(member_ids) - set(members)):
+        blockers.append(f"event #{missing} no longer exists (re-extracted or pruned) - "
+                        "the verdict's subject is gone")
+    duplicate_id = original["event_id"]
+    canonical_id = original["canonical_event_id"] if kind == MERGE_VERDICT else None
+    if not blockers:
+        if kind == MERGE_VERDICT:
+            current = members[duplicate_id]
+            if (current["canonical_event_id"] != canonical_id
+                    or current["duplicate_decided_by"] != HUMAN):
+                blockers.append(
+                    f"event #{duplicate_id} is no longer merged into #{canonical_id} by this "
+                    f"verdict (now: {current['canonical_event_id'] or 'not merged'}, "
+                    f"{current['duplicate_decided_by'] or 'no verdict'}) - the merge no longer stands")
+            if members[canonical_id]["canonical_event_id"] is not None:
+                blockers.append(f"event #{canonical_id} has itself been merged into "
+                                f"#{members[canonical_id]['canonical_event_id']} since")
+        else:
+            for event_id in member_ids:
+                current = members[event_id]
+                if (current["canonical_event_id"] is not None
+                        or current["duplicate_decided_by"] != HUMAN):
+                    blockers.append(f"event #{event_id} is no longer kept separate by this "
+                                    "verdict - the verdict no longer stands")
+    if not blockers:
+        dependencies = _later_dependencies(con, rows, member_ids, members)
+        if dependencies:
+            blockers.extend(dependencies)
+            code = REVERT_BLOCKED_DEPENDENCY
+    code = code or ("REVERT_REFUSED" if blockers else "REVERT_SAFE")
+
+    # The events with the verdict removed: unfolded, and no longer marked as a
+    # person's unless another standing verdict of a person's still covers them.
+    overrides: dict[int, dict[str, Any]] = {}
+    changes = []
+    if not blockers:
+        for event_id in member_ids:
+            event = members[event_id]
+            if kind == MERGE_VERDICT and event_id != duplicate_id:
+                overrides[event_id] = {
+                    "folded_count": max(0, int(event["folded_count"] or 0) - 1)}
+                continue
+            keep = _standing_human_verdicts(con, event_id, ids)
+            if keep:
+                warnings.append(f"event #{event_id} keeps a person's earlier verdict "
+                                + ", ".join(f"#{k}" for k in keep)
+                                + ", so the rules still leave it alone")
+            after = {**event, "canonical_event_id": None,
+                     "duplicate_decided_by": HUMAN if keep else None}
+            after["listing_state"] = _listing_for(after)
+            overrides[event_id] = {"canonical_event_id": None,
+                                   "duplicate_decided_by": after["duplicate_decided_by"],
+                                   "listing_state": after["listing_state"]}
+            changes.append(event_id)
+    dates = sorted({m["event_date"] for m in members.values()})
+    planned: list[list[Any]] = []
+    if not blockers:
+        for day in dates:
+            planned.extend(scan(con, on=day, dry_run=True, overrides=overrides)["actions"])
+    # Each touched event's state before and after: the reversal, then the scan.
+    touched = sorted(set(member_ids) | {a[1] for a in planned} | {a[2] for a in planned})
+    now_rows = _members(con, touched)
+    outlook = []
+    for event_id in touched:
+        before = now_rows.get(event_id)
+        if before is None:
+            continue
+        after = {**before, **{k: v for k, v in (overrides.get(event_id) or {}).items()
+                              if k != "folded_count"}}
+        for action in planned:
+            if action[0] == "MERGE" and action[1] == event_id:
+                after.update(canonical_event_id=action[2], duplicate_decided_by=AUTO)
+            elif action[0] == "RELEASE" and action[1] == event_id:
+                after.update(canonical_event_id=None, duplicate_decided_by=AUTO)
+        after["listing_state"] = _listing_for(after)
+        outlook.append({
+            "event_id": event_id, "event_date": before["event_date"],
+            "event_name": before["event_name"], "start_time": before["start_time"],
+            "venue_text": before["venue_text"], "identity_key": before["identity_key"],
+            "canonical_before": before["canonical_event_id"],
+            "canonical_after": after["canonical_event_id"],
+            "decided_by_before": before["duplicate_decided_by"],
+            "decided_by_after": after["duplicate_decided_by"],
+            "listing_before": before["listing_state"], "listing_after": after["listing_state"],
+            "public_before": _visible(before), "public_after": _visible(after),
+        })
+    remerged = [a for a in planned if a[0] == "MERGE" and set(a[1:3]) <= set(member_ids)]
+    if remerged:
+        warnings.append("the duplicate rules merge these posts by themselves once the verdict "
+                        "is gone (" + remerged[0][3] + ") - the revert withdraws the person's "
+                        "verdict, it does not split one night into two")
+    unrelated = [a for a in planned if not ({a[1], a[2]} & set(member_ids))]
+    if unrelated:
+        warnings.append(f"the scan for this date also makes {len(unrelated)} change(s) it would "
+                        "make anyway on its next run - they are listed below")
+    summary = {
+        "events": len(changes),
+        "publicly_visible": sum(1 for o in outlook if o["public_before"]),
+        "public_after": sum(1 for o in outlook if o["public_after"]),
+        "public_changes": sum(1 for o in outlook if o["public_before"] != o["public_after"]),
+        "identity_changes": 0,
+        "canonical_changes": sum(1 for o in outlook
+                                 if o["canonical_before"] != o["canonical_after"]),
+        "scan_actions": len(planned),
+    }
+    facts = {
+        "action": REVERT_ACTION,
+        "decisions": ids,
+        "kind": kind,
+        "pair": [pair["pair_id"], pair["state"]] if pair else None,
+        "members": [[m["event_id"], m["canonical_event_id"], m["duplicate_decided_by"],
+                     m["listing_state"], m["identity_key"], m["venue_id"], m["region_id"],
+                     str(m["event_date"]), str(m["start_time"])]
+                    for m in members.values()],
+        "overrides": {str(k): v for k, v in sorted(overrides.items())},
+        "planned": planned,
+    }
+    return {
+        "action": REVERT_ACTION, "decision": original, "verdict_rows": rows, "kind": kind,
+        "pair": pair, "members": list(members.values()), "outlook": outlook,
+        "planned": planned, "summary": summary, "blockers": blockers,
+        "warnings": warnings, "status": code, "facts": facts,
+        "token": revert_token(facts, reviewer=reviewer),
+    }
+
+
+def revert_decision(con, *, decision_id: int, token: str | None,
+                    reviewer: str = "admin", reason: str | None = None) -> dict[str, Any]:
+    """Take one person's verdict back, exactly as its preview showed. One transaction.
+
+    The verdict's rows, its pair and its events are locked; the preview is
+    recomputed under the lock and must match the token. The events are put
+    back as they read without the verdict, the pair goes back to the
+    Duplicates page, the date is scanned as the scheduler would scan it, and
+    the scan has to have done what the preview said - otherwise everything is
+    rolled back. The REVERT rows are written last, with both states in them.
+    """
+    with con.transaction():
+        original = _decision_row(con, decision_id, lock=True)
+        if original is None:
+            raise LookupError(f"no duplicate decision {decision_id}")
+        rows, pair = _verdict(con, original)
+        ids = [r["decision_id"] for r in rows]
+        with con.cursor() as cur:
+            cur.execute("SELECT decision_id FROM event_duplicate_decisions "
+                        "WHERE decision_id = ANY(%s) ORDER BY decision_id FOR UPDATE", (ids,))
+            if pair is not None:
+                cur.execute("SELECT pair_id FROM event_duplicate_pairs WHERE pair_id = %s "
+                            "FOR UPDATE", (pair["pair_id"],))
+        member_ids = sorted({r["event_id"] for r in rows}
+                            | ({original["canonical_event_id"]}
+                               if original["decision"] == DUPLICATE
+                               and original["canonical_event_id"] else set()))
+        _members(con, member_ids, lock=True)
+        preview = preview_revert(con, decision_id=decision_id, reviewer=reviewer)
+        if preview["blockers"]:
+            raise RevertRefused(preview["blockers"], code=preview["status"])
+        if not _revert_token_matches(token, preview["facts"], reviewer):
+            raise StaleRevertPreview(["the preview is out of date or was not issued for this "
+                                      "revert - nothing changed; preview again"])
+        before = {m["event_id"]: m for m in preview["members"]}
+        with con.cursor() as cur:
+            for key, change in preview["facts"]["overrides"].items():
+                if "canonical_event_id" not in change:
+                    continue
+                cur.execute(
+                    "UPDATE events SET canonical_event_id = NULL, duplicate_decided_by = %s, "
+                    "  listing_state = %s, updated_at = now() WHERE event_id = %s",
+                    (change["duplicate_decided_by"], change["listing_state"], int(key)),
+                )
+            if pair is not None:
+                cur.execute("UPDATE event_duplicate_pairs SET state = %s, resolved_by = NULL, "
+                            "  resolved_at = NULL WHERE pair_id = %s",
+                            (OPEN, pair["pair_id"]))
+        for event_id in member_ids:
+            reconcile_primary_source(con, event_id)
+        done = []
+        for day in sorted({m["event_date"] for m in preview["members"]}):
+            done.extend(scan(con, on=day)["actions"])
+        if done != preview["planned"]:
+            raise StaleRevertPreview([
+                "the duplicate scan did not do what the preview showed "
+                f"(expected {preview['planned']}, got {done}) - nothing changed; preview again"])
+        after = _members(con, member_ids)
+        recorded = []
+        with con.cursor() as cur:
+            for row in rows:
+                cur.execute(
+                    "INSERT INTO event_duplicate_decisions (event_id, canonical_event_id, "
+                    "  decision, decided_by, rule, reason, reviewer, pair_id, "
+                    "  reverts_decision_id, before_json, after_json) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb) "
+                    "RETURNING *",
+                    (row["event_id"], row["canonical_event_id"], REVERT, HUMAN,
+                     RULE_HUMAN_REVERT, (reason or "").strip() or None, reviewer,
+                     pair["pair_id"] if pair else row.get("pair_id"), row["decision_id"],
+                     json.dumps({
+                         "verdict": preview["kind"],
+                         "original_decision": {
+                             "decision_id": row["decision_id"], "decision": row["decision"],
+                             "reviewer": row["reviewer"], "created_at": row["created_at"],
+                             "reason": row["reason"]},
+                         "pair": ([pair["pair_id"], pair["state"]] if pair else None),
+                         "events": [{k: before[i][k] for k in (
+                             "event_id", "canonical_event_id", "duplicate_decided_by",
+                             "listing_state", "identity_key", "series_key")}
+                             for i in member_ids],
+                     }, default=str),
+                     json.dumps({
+                         "pair": ([pair["pair_id"], OPEN] if pair else None),
+                         "events": [{k: after[i][k] for k in (
+                             "event_id", "canonical_event_id", "duplicate_decided_by",
+                             "listing_state", "identity_key", "series_key")}
+                             for i in member_ids],
+                         "dependent_decisions": [],
+                         "reconciliation": done,
+                         "derived_by": "duplicates.scan for the verdict's date",
+                         "preview_token": (token or "")[:16],
+                     }, default=str)),
+                )
+                recorded.append(_row(cur))
+    return {"reverted": ids, "kind": preview["kind"], "revert_decisions": recorded,
+            "reconciliation": done, "pair_id": pair["pair_id"] if pair else None,
+            "events": member_ids}
+
+
+def recent_human_verdicts(con, *, limit: int = 20) -> list[dict[str, Any]]:
+    """A person's verdicts that still stand - the ones Revert applies to.
+
+    One line per answer: a Different-events answer wrote a row per post, and
+    only the first is listed.
+    """
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT d.*, a.event_name, a.event_date, c.event_name AS canonical_event_name "
+            "FROM event_duplicate_decisions d "
+            "LEFT JOIN events a ON a.event_id = d.event_id "
+            "LEFT JOIN events c ON c.event_id = d.canonical_event_id "
+            "WHERE d.decided_by = %s AND d.rule = %s AND d.decision IN (%s, %s) "
+            "  AND NOT EXISTS (SELECT 1 FROM event_duplicate_decisions r "
+            "                  WHERE r.reverts_decision_id = d.decision_id) "
+            "ORDER BY d.decision_id DESC LIMIT %s",
+            (HUMAN, RULE_HUMAN_REVIEW, DUPLICATE, DISTINCT, limit * 2),
+        )
+        rows = _rows(cur)
+    seen: set[Any] = set()
+    out = []
+    for row in sorted(rows, key=lambda r: r["decision_id"]):
+        key = (row["pair_id"], row["decision"]) if row["pair_id"] else row["decision_id"]
+        if row["decision"] == DISTINCT and key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return sorted(out, key=lambda r: r["decision_id"], reverse=True)[:limit]
 
 # --- source evidence (v0.94.0) ----------------------------------------------
 

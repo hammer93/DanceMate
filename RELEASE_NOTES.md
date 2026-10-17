@@ -1,5 +1,129 @@
 # DanceMate Release Notes
 
+## v0.96.40 Poster OCR Time Accuracy & Human Duplicate Decision Recovery
+
+Product Runtime 0.96.40; Information Engine 1.14 -> 1.15; migration 048. The
+engine bump re-reads every stored item through the scheduler's ordinary
+`engine-reprocess` batches. Over all 4,443 stored items, with the old and new
+engine trees side by side on the runtime's own route, four readings change
+and nothing else does: no candidate, classification, date, venue or fee.
+Production holds no person's duplicate verdict, and none is created there.
+
+### A poster's clock is read off the poster's own rows
+
+Poster OCR text keeps the poster's layout, one line per printed row. Three
+cases the v0.96.39 audit flagged were checked against their poster images by
+eye, and the full-corpus run found a fourth:
+
+| Event | Item | Poster prints | Stored | Now |
+|---|---|---|---|---|
+| 1613200 | 5601 | 오후 9시 – 12시 | 21:00-00:09 | 21:00-00:00 |
+| 1613300 | 5859 | 저녁 9시~ 3시 | 21:00-03:05 | 21:00-03:00 |
+| (3809's) | 3809 | 오후 9시~1시, 입장료 10,000원 on the next row | 21:00-01:10 | 21:00-01:00 |
+| 1597462 | 643 | 05.08 PM 20:00 - PM 24:00 (a four-day timetable) | 00:00 | 00:00 (not re-read, below) |
+
+None of these was a character the OCR misread. The parser was at fault:
+
+* **A Korean clock's minutes were joined across a line break.** "12시" took
+  a stray "9" printed two rows below, "3시" took a "5" from the next row,
+  and "1시" took the "10" of the next row's fee. The minutes now have to sit
+  on the hour's own line. "8시 30" on one line is still 08:30, and
+  "12시 9분" is still 12:09. Post bodies are stored on one line, so only
+  poster text can change.
+* **A lone "24:00" was read as a start.** 24:00 is the moment a day ends.
+  K-TANGO CF's table cell "PM 20:00 - PM 24:00" was split by the OCR, and
+  the leftover was stored as the night's start: 00:00 on the date it ends.
+* **"7pm"'s marker was borrowed.** "VIP 밀롱가1   PM 23:30 -" would have been
+  read as 13:00, because the milonga's number took the next column's PM.
+  A marker that is followed by a clock of its own belongs to that clock.
+
+With those fixed, the timetable still has no single right answer: four days
+of milongas, and every clock sits beside a 밀롱가. A poster time the engine
+cannot place is not taken. It is recorded as `IMAGE_TIME_AMBIGUOUS`, as an
+hour without a meridiem already is. The engine now reads item 643 with no
+time, and keeps its date and its candidate. Production's event 1597462 does
+not change, however. Item 643 is FETCH_BLOCKED, and it was once served a
+728-character body, so v0.96.9's guard stamps it without re-reading it: a
+blocked item's lost body must never be replaced by a reading of less
+evidence. The 2025 event keeps its 00:00 until the page is served again or a
+person corrects it on Review. No manual write is made around that guard. The same refusal applied to post bodies was measured and lost
+three right hours (items 6181, 6189 and 6434, e.g. "PM9:20~ 금요소셜파티
+Showtime : PM 10:30~"), so a body keeps v0.96.18's ranking.
+
+### A person's duplicate verdict can be taken back
+
+A Same event / Different events answer on the Duplicates page was final.
+**Revert** withdraws one answer, at the venue Revert's level of safety:
+
+* a read-only preview;
+* a confirm bound to that preview's token, under a key of its own and tied to
+  the reviewer, for 2 hours;
+* the console's request token, and the login before either;
+* one transaction that locks the verdict, its pair and its events and
+  recomputes the preview under the lock.
+
+A revert does not split two posts of one night. Once the verdict is gone, the
+duplicate rules judge that date again in the same transaction, exactly as the
+next scan would. If the rules merge the pair by themselves, it is merged
+again, by the rules, and the preview says so first. The preview runs that
+scan as a dry run (`scan(dry_run=True, overrides=...)`). If the real scan does
+anything else, everything is rolled back.
+
+The revert refuses, and the refusal names the decision that blocks it, when:
+
+* a person gave a later verdict on either event;
+* a person chose a representative post that rests on the merge;
+* the verdict no longer stands (it was re-extracted, pruned or re-folded);
+* the decision is automatic, is itself a revert, or has already been
+  reverted (`REVERT_BLOCKED_DEPENDENCY`, `REVERT_ALREADY_APPLIED`).
+
+Migration 048 records a revert as its own kind of decision in
+`event_duplicate_decisions`, `REVERT`, naming the verdict it takes back. It is
+not `venue_resolution_actions`' `DECISION_REVERT`, which is a different
+subject. Each REVERT row holds:
+
+* its reviewer and reason;
+* every event's canonical, listing state and identity before and after;
+* what the scan did.
+
+A verdict can be reverted once (unique index), and only by a person (check
+constraint). The original rows are never rewritten. The answer's pair goes
+back to the Duplicates page. `resolve_pair` now records the pair it answers
+and the console's reviewer.
+
+### Measured
+
+Both engine trees were run over all 4,443 stored items through the runtime's
+own route, with Postgres read-only and a copy of the engine store. Four
+readings change (the table above) and nothing else.
+
+On a disposable clone of Production, migrated to 048, ENGINE 1.15 was
+converged by the scheduler's own jobs: 178 `engine-reprocess` ticks with no
+failure, then `event_normalization` until nothing was pending.
+
+* Events: 1,417 before and 1,417 after. No (item, date, name) was lost.
+  86 multi-date posts were rebuilt under new ids with every field equal.
+  Exactly three fields changed, the three end times above.
+* Public API: 1,260 events served before and after. The five windows had the
+  same counts. Folds 142, invariant violations 0, folded public 0.
+* Venue Master, aliases, queue, duplicate decisions and pairs: unchanged.
+* Further ticks changed 0 rows.
+
+On the same clone (and only there), a person's MERGE and a person's
+KEEP_SEPARATE were made on two real open pairs and then reverted through
+preview and token. In both cases:
+
+* a forged token was refused;
+* repeating the revert was refused (`REVERT_ALREADY_APPLIED`);
+* three normalization and scan passes afterwards changed nothing;
+* every event, the public API (1,260) and all five windows came back
+  identical to the state before the verdicts;
+* both pairs returned to OPEN, and the trail holds the three verdict rows and
+  three REVERT rows naming them.
+
+Tests: runtime 3,530 passed / 16 skipped / 0 failed (disposable PostgreSQL;
+skips unchanged); engine 2,006 passed / 1 skipped.
+
 ## v0.96.39 Event Evidence Semantics & Canonical Listing State Integrity
 
 Product Runtime 0.96.39; Information Engine 1.14 (unchanged - no engine code

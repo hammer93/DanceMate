@@ -1117,6 +1117,7 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
             con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
         )
         summary = duplicates.metrics(con)
+        verdicts = duplicates.recent_human_verdicts(con)
 
     rows = []
     for pair in pairs:
@@ -1159,7 +1160,8 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
     body = ("<h2>Duplicates</h2>" + cards + note + admin._table(
         ["Date", "Event", "Other", "Matched", "Differs", "Decide"], rows,
         empty="nothing ambiguous - the rules settled everything they found",
-    ) + pagination.nav("/admin/duplicates", {}, page, total))
+    ) + pagination.nav("/admin/duplicates", {}, page, total)
+        + _human_verdicts_block(verdicts))
     return HTMLResponse(admin._page("Duplicates", "/admin/duplicates", body,
                                     flash=admin._flash(request)))
 
@@ -1168,24 +1170,181 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
 def admin_resolve_duplicate(
     pair_id: int,
     action: str = Form(...),
-    _: str = Depends(require_admin),
+    reviewer: str = Depends(require_admin),
 ) -> RedirectResponse:
     target = "/admin/duplicates"
     try:
         with _connection() as con:
             if action == "distinct":
-                duplicates.resolve_pair(con, pair_id, decision=duplicates.DISTINCT)
+                duplicates.resolve_pair(con, pair_id, decision=duplicates.DISTINCT,
+                                        reviewer=reviewer)
                 return admin._back(target, "recorded as different events")
             if not action.startswith("keep_"):
                 return admin._back(target, f"unknown action {action}", "bad")
             canonical = int(action.removeprefix("keep_"))
             result = duplicates.resolve_pair(
                 con, pair_id, decision=duplicates.DUPLICATE,
-                canonical_event_id=canonical,
+                canonical_event_id=canonical, reviewer=reviewer,
             )
     except Exception as exc:
         return admin._back(target, f"could not resolve: {exc}", "bad")
     return admin._back(target, f"merged into #{result['canonical_event_id']}")
+
+
+# v0.96.40: a person's duplicate verdict can be taken back - preview first,
+# then a confirm bound to that preview, the console's request token and the
+# reviewer. The verdict's own audit rows stay; the revert adds its own.
+
+_DUPLICATES = "/admin/duplicates"
+
+
+def _verdict_label(kind_or_decision: str) -> str:
+    return ("Same event (MERGE)" if kind_or_decision in (duplicates.DUPLICATE,
+                                                          duplicates.MERGE_VERDICT)
+            else "Different events (KEEP_SEPARATE)")
+
+
+def _human_verdicts_block(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    items = "".join(
+        f'<li>#{r["decision_id"]} {E(_verdict_label(r["decision"]))} &middot; '
+        f'event #{r["event_id"]} {E((r.get("event_name") or "")[:40])}'
+        + (f' &rarr; #{r["canonical_event_id"]}' if r.get("canonical_event_id") else "")
+        + f' &middot; {E(r.get("reviewer") or "-")} {E(str(r["created_at"])[:16])} '
+        f'<form class="inline" method="post" '
+        f'action="{_DUPLICATES}/decisions/{r["decision_id"]}/revert/preview">'
+        '<button>Preview Revert</button></form></li>'
+        for r in rows)
+    return (
+        "<details><summary>사람이 내린 중복 판정 (정정하려면 Revert)</summary>"
+        '<p class="note">Revert는 판정 하나만 철회합니다. 판정이 사라지면 중복 규칙이 그 날짜를 '
+        "다시 판단하므로, 규칙만으로 같은 행사라고 볼 수 있는 두 게시글은 다시 자동 병합됩니다. "
+        "원래 판정의 감사 기록은 그대로 남습니다. 먼저 미리보기가 열립니다.</p>"
+        f'<ul class="sources">{items}</ul></details>')
+
+
+def _duplicate_refused(message: str, reasons: list[str], code: str | None = None,
+                       status: int = 409) -> HTMLResponse:
+    items = "".join(f"<li>{E(r)}</li>" for r in reasons)
+    body = ("<h2>Duplicates</h2>"
+            f'<div class="callout"><h3>{E(message)}</h3>'
+            + (f'<p><span class="badge bad">{E(code)}</span></p>' if code else "")
+            + f'<ul class="sources">{items}</ul>'
+            "<p class=\"note\">아무것도 저장되지 않았습니다.</p></div>"
+            f'<p class="note"><a href="{_DUPLICATES}">← 중복 판정으로 돌아가기</a></p>')
+    return HTMLResponse(admin._page("Duplicates", _DUPLICATES, body), status_code=status)
+
+
+def _state(canonical: Any, listing: str | None, public: bool) -> str:
+    return ((f"folded into #{canonical}" if canonical else "독립")
+            + f" · {listing or '-'} · " + ("공개" if public else "비공개"))
+
+
+@router.post("/admin/duplicates/decisions/{decision_id}/revert/preview",
+             response_class=HTMLResponse)
+def admin_duplicate_revert_preview(decision_id: int,
+                                   reviewer: str = Depends(require_admin)) -> Any:
+    try:
+        with _connection() as con:
+            preview = duplicates.preview_revert(con, decision_id=decision_id, reviewer=reviewer)
+    except LookupError as exc:
+        return _duplicate_refused("찾을 수 없습니다", [str(exc)], status=404)
+    decision, summary = preview["decision"], preview["summary"]
+    pair = preview["pair"]
+    facts = (
+        f'<p>되돌릴 판정: <strong>#{decision["decision_id"]} '
+        f'{E(_verdict_label(preview["kind"]))}</strong> &middot; '
+        f'{E(decision.get("reviewer") or "-")} &middot; {E(str(decision["created_at"])[:16])}'
+        + (f' &middot; 사유 {E(decision["reason"])}' if decision.get("reason") else "")
+        + "</p><p>판정 기록: "
+        + ", ".join(f'#{r["decision_id"]} (event #{r["event_id"]})'
+                    for r in preview["verdict_rows"])
+        + (f' &middot; 질문(pair) #{pair["pair_id"]} 현재 {E(pair["state"])} &rarr; OPEN'
+           if pair else " &middot; 연결된 질문(pair) 없음")
+        + f' &middot; 안전 상태 <span class="badge '
+        + ("ok" if preview["status"] == "REVERT_SAFE" else "bad")
+        + f'">{E(preview["status"])}</span></p>')
+    cards = admin._cards([
+        ("Events", summary["events"], "the verdict is withdrawn from"),
+        ("Public now", summary["publicly_visible"], "of the events below"),
+        ("Public after", summary["public_after"], "once the scan has run"),
+        ("Public changes", summary["public_changes"], "shown or hidden by this"),
+        ("Canonical changes", summary["canonical_changes"], "folds made or undone"),
+        ("Scan actions", summary["scan_actions"], "the duplicate rules then take"),
+    ])
+    rows = [[f'#{o["event_id"]}', E(str(o["event_date"])), E((o["event_name"] or "")[:40]),
+             E(_clock(o["start_time"])), E(o.get("venue_text") or "-"),
+             E(_state(o["canonical_before"], o["listing_before"], o["public_before"])),
+             E(_state(o["canonical_after"], o["listing_after"], o["public_after"])),
+             E(f'{o["decided_by_before"] or "-"} → {o["decided_by_after"] or "-"}')]
+            for o in preview["outlook"]]
+    planned = [[E(a[0]), f"#{a[1]}", f"#{a[2]}", E(a[3])] for a in preview["planned"]]
+    blockers = "".join(f"<li>{E(b)}</li>" for b in preview["blockers"])
+    warnings = "".join(f"<li>{E(w)}</li>" for w in preview["warnings"])
+    if preview["blockers"]:
+        decision_html = (
+            '<div class="callout"><h3>되돌릴 수 없습니다</h3>'
+            f'<p><span class="badge bad">{E(preview["status"])}</span></p>'
+            f'<ul class="sources">{blockers}</ul>'
+            "<p class=\"note\">아무것도 저장되지 않았습니다.</p></div>")
+    else:
+        decision_html = (
+            f'<form method="post" action="{_DUPLICATES}/decisions/{decision_id}/revert">'
+            + _hidden({"token": preview["token"]})
+            + '<p><label>사유 <input name="reason" maxlength="500" '
+              'placeholder="왜 되돌리는지 (감사 기록에 남습니다)"></label></p>'
+            + '<div class="actions"><button class="primary">Confirm Revert</button> '
+            f'<a href="{_DUPLICATES}"><button type="button">Cancel</button></a></div></form>'
+            '<p class="note">승인 시점에 이 미리보기를 다시 계산해 위 내용과 같을 때만 반영하고, '
+            "그 날짜의 중복 스캔이 위 표와 다르게 동작하면 전부 되돌립니다.</p>")
+    body = (
+        f'<h2>Duplicates</h2><div class="callout"><h3>중복 판정 Revert 미리보기</h3>{facts}</div>'
+        + cards
+        + (f'<div class="callout"><h3>확인할 점</h3><ul class="sources">{warnings}</ul></div>'
+           if warnings else "")
+        + "<h3>현재 → 예상 Canonical / Listing / 공개 상태</h3>"
+        + admin._table(["Event", "Date", "Title", "Start", "Venue", "Now", "After revert",
+                        "Verdict by"], rows, empty="바뀌는 Event가 없습니다")
+        + "<h3>자동 중복 재판정 (duplicates.scan, 같은 날짜)</h3>"
+        + admin._table(["Action", "Event", "Other", "Rule"], planned,
+                       empty="규칙이 새로 병합·해제·질문하는 것이 없습니다")
+        + decision_html
+        + f'<p class="note"><a href="{_DUPLICATES}">← 중복 판정으로 돌아가기</a></p>')
+    return HTMLResponse(admin._page("Duplicates", _DUPLICATES, body),
+                        status_code=409 if preview["blockers"] else 200)
+
+
+@router.post("/admin/duplicates/decisions/{decision_id}/revert")
+def admin_duplicate_revert(
+    decision_id: int,
+    token: str = Form(""),
+    reason: str = Form(""),
+    reviewer: str = Depends(require_admin),
+) -> Any:
+    with db.connect(admin._settings()) as con:
+        try:
+            result = duplicates.revert_decision(con, decision_id=decision_id, token=token,
+                                                reviewer=reviewer, reason=reason[:500])
+            con.commit()
+        except duplicates.StaleRevertPreview as exc:
+            con.rollback()
+            return _duplicate_refused("미리보기 이후 내용이 바뀌었습니다", exc.reasons, exc.code)
+        except duplicates.RevertRefused as exc:
+            con.rollback()
+            return _duplicate_refused("되돌릴 수 없습니다", exc.reasons, exc.code)
+        except LookupError as exc:
+            con.rollback()
+            return _duplicate_refused("찾을 수 없습니다", [str(exc)], status=404)
+        except Exception as exc:
+            con.rollback()
+            return admin._back(_DUPLICATES, f"could not revert: {exc}", "bad")
+    merged_again = sum(1 for a in result["reconciliation"] if a[0] == "MERGE")
+    return admin._back(
+        _DUPLICATES,
+        f"verdict #{decision_id} reverted ({result['kind']}); the duplicate rules then "
+        f"made {len(result['reconciliation'])} change(s), {merged_again} merge(s)",
+    )
 
 
 # --- JSON -------------------------------------------------------------------

@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.39"
+PRODUCT_VERSION = "0.96.40"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -433,7 +433,17 @@ PRODUCT_VERSION = "0.96.39"
 # writes. Ten of the fifteen gain a venue they did not have and all fifteen
 # gain their hour's provenance, so a row still stamped 1.12 would be missing
 # both. Nothing a 1.12 row says changes: no date, no hour, no candidate.
-DEFAULT_ENGINE_VERSION = "1.14"
+#
+# v0.96.40 bumps it again, 1.14 -> 1.15. A poster's OCR text keeps the
+# poster's rows, and three readings joined a digit from the next row onto a
+# clock ("12시" + a stray "9" -> 00:09, "3시" + "5" -> 03:05, "1시" + the
+# fee's "10" -> 01:10); a lone "24:00" was taken as a night's start; and a
+# timetable poster's milonga number took the next column's PM. Over all 4,443
+# stored items four readings change, each checked against its poster by eye,
+# and nothing else - no candidate, no classification, no date. Three Events
+# change: the fourth (item 643) is a blocked item whose lost body v0.96.9
+# protects, so the sweep stamps it without re-reading it.
+DEFAULT_ENGINE_VERSION = "1.15"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
