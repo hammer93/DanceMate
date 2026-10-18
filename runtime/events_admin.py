@@ -99,7 +99,9 @@ def admin_events(request: Request, _: str = Depends(require_admin)) -> HTMLRespo
          "대표 출처", "Listing"],
         [
             [
-                E(str(row["event_date"])),
+                # v0.96.41: a festival's stated period, first day to last.
+                E(str(row["event_date"])
+                  + (f" ~ {row['end_date']}" if row.get("end_date") else "")),
                 E(_clock(row["start_time"]) + " - " + _clock(row["end_time"])
                   + ("+1" if row["end_day_offset"] else "")),
                 E(row["event_name"] or "-"),

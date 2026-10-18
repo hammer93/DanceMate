@@ -84,6 +84,11 @@ JUDGEMENT_KEYS = (
     # sentence saying why, kept so the reason stays readable afterwards.
     "source_night_fallback",
     "night_evidence",
+    # v0.96.41 - that a structured calendar's record is a festival, the period
+    # the record itself states, and why.
+    "source_event_format",
+    "event_period",
+    "festival_evidence",
 )
 
 

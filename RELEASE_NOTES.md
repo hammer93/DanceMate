@@ -1,5 +1,112 @@
 # DanceMate Release Notes
 
+## v0.96.41 Multi-Day Event Discovery, Date-Only Coverage & Programme-Aware Extraction
+
+Product Runtime 0.96.41; Information Engine 1.15 -> 1.16; normalization 2 -> 3;
+migration 049. Festivals, marathons and tango weeks published by the two
+structured tango calendars (TangoNOW, Miltang) now reach the calendar, as a
+date or a stated period and never with an invented time, together with the
+nights their own text dates and clocks.
+
+### What was missing, measured
+
+A date-only event was never the gap: about 330 events already have a date and
+no time, and are shown as "시간 미확인" and sorted after timed events. What
+DanceMate could not show was a **festival**. Both calendars publish one as the
+same schema.org `Event` record as a milonga, with no night word and no clock,
+so the classifier answered OTHER and no candidate was made.
+
+* TangoNOW: 12 of the 40 live share pages state a date and no clock. None
+  states an `endDate`.
+* Miltang: all 16 live notices state a `startDate` and an `endDate` (and a
+  DATE row `2026. 10. 21(수) ~ 2026. 10. 29(목)`). The collector kept the first
+  day only.
+* The notices mix festivals with a teacher couple's workshop tour, a seminar
+  and show, and similar; the TangoNOW date-only pages mix them with milongas
+  that state no clock.
+
+### A festival is said by the record, and read as a period
+
+The collector decides, from the record's own structure and name
+(`runtime/festival_evidence.py`): a date and no clock of its own, a name
+announcing a festival, marathon, tango week, weekend or encuentro, and a name
+announcing no other format (workshop, seminar, show, class, screening,
+competition, cancellation). The judgement travels beside the page's text, as
+v0.96.35's did, with the period only when the record states its end. 7 of the
+12 TangoNOW pages and 5 of the 16 Miltang notices qualify.
+
+The engine classifies such a record FESTIVAL (below the recap guard, beside
+`known_event_type`; no word in a text promotes anything to it) and reads it as:
+
+* its first day, only when the record's own text writes that date (in the
+  Korean, ISO or dotted form);
+* its last day only when the record states one, as `end_date` evidence;
+* its labelled place, read as for any post;
+* **no time, fee or DJ.** A festival is a period. The KOREA SPECIAL TANGO WEEK
+  notice would otherwise have been given 20:00~01:00, its welcome milonga's
+  hours.
+
+### The nights a festival dates itself
+
+A festival's own rows `NAME [@Place] — m/d(요일) HH:MM~HH:MM` become their own
+events, each owning its date, clock and place (the v0.96.33/34 principles):
+
+* the name must name a night (milonga, practica, social, party) and not a
+  workshop, a class level or a cancellation;
+* the clock must have one reading;
+* the yearless day is placed inside the record's own stated period, and a row
+  outside it is not the record's (the 홍대 notice repeats the 포항 week's 11/20
+  milonga);
+* the place is `@Place` on the row, else the record's own place only when the
+  row's block header names a city that place's text names.
+
+The Masan marathon's poster rows (`M1: 10. 31. 16:00 -18:00 (DJ ..)`) name no
+night and are not split; the marathon is one event.
+
+### On the calendar
+
+`events.end_date` (migration 049) holds the stated last day: NULL for every
+one-day event and for a festival whose record states no end, checked to be
+after `event_date` and within 31 days. Every public date question - the lists,
+the date and date-range searches, the windows, the weekly counts and the
+filter chips - asks whether the event is on that day across its period
+(`events_api.LAST_DAY`), using a folded record's period when the canonical has
+none. For an event without a period the answer is exactly what it was. Cards
+show the period (`10/21(수)–10/29(목)`) and "시간 미확인", never 00:00. The kind
+reads 페스티벌.
+
+Duplicates: a festival is never folded into a night. Two calendars' records of
+one festival fold when they start the same day at the same resolved place
+(`SAME_DATE_VENUE_FESTIVAL`); when their places do not settle it, the pair goes
+to a person (`SAME_DATE_FESTIVAL_PLACE_DIFFERS`).
+
+### Measured on a Production clone
+
+On a disposable clone migrated to 049, through the scheduler's own jobs:
+
+* ENGINE 1.16 over the stored records (none carries the judgement yet): 180
+  `engine-reprocess` ticks, 1,444 = 1,444 events, no field changed, 88
+  multi-date posts rebuilt under new ids. One event read a new name the stored
+  record already carried - item 6234's page was re-collected under a new title
+  before the snapshot and Production's own 1.15 engine reads the same name -
+  and then folded onto the same night's other listing.
+* The two calendars' real collections: 12 records revised by the judgement
+  alone (7 TangoNOW, 5 Miltang), 13 newly collected milongas. 26 events added,
+  one changed (event 1615842, KOREA SPECIAL TANGO WEEK, SOCIAL -> FESTIVAL),
+  none removed; 3 automatic folds (two festival pairs, one milonga pair) and
+  one pair for a person.
+* Public: 9 festivals (5 with their stated period), 2 festival milongas, plus
+  the newly collected nights. No FESTIVAL event carries a time; fold
+  invariant, folded-public, chains, cross-region folds all 0.
+* Collecting again: 0 revised; further ticks changed 0 rows.
+
+Tests: runtime 3,601 passed / 16 skipped / 0 failed (disposable PostgreSQL);
+engine 2,043 passed / 1 skipped.
+
+Not done here: an operator signal for a blocked item an engine improvement
+cannot reach (item 643), and splitting a poster's session rows that name no
+night.
+
 ## v0.96.40 Poster OCR Time Accuracy & Human Duplicate Decision Recovery
 
 Product Runtime 0.96.40; Information Engine 1.14 -> 1.15; migration 048. The

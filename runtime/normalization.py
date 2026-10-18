@@ -498,6 +498,24 @@ def _end_day_offset(candidate: dict[str, Any], end: time | None,
     return _as_int(candidate.get("end_day_offset")) or 0
 
 
+def _end_date(candidate: dict[str, Any], event_date: date) -> date | None:
+    """A festival's last day, when its own record stated one (v0.96.41).
+
+    Carried from the engine's `end_date` evidence, never derived: no other
+    event has one. Dropped when it does not make a period after the event's
+    own date - a date a person corrected past it, say - because a last day
+    before the first is not a fact about anything.
+    """
+    last = _as_date(candidate.get("end_date"))
+    if last is None or not 0 < (last - event_date).days <= MAX_PERIOD_DAYS:
+        return None
+    return last
+
+
+#: Mirrors migration 049's check and festival_evidence.MAX_PERIOD_DAYS.
+MAX_PERIOD_DAYS = 31
+
+
 def normalize_candidate(con, candidate: dict[str, Any], *,
                         review_state: dict[str, Any] | None = None,
                         alias_candidates: list[str] | None = None,
@@ -556,6 +574,7 @@ def normalize_candidate(con, candidate: dict[str, Any], *,
         "start_time": start,
         "end_time": end,
         "end_day_offset": _end_day_offset(candidate, end, corrected_fields),
+        "end_date": _end_date(candidate, event_date),
         "venue_text": venue_text,
         "venue_id": venue_id,
         "venue_status": resolution["venue_status"],
@@ -859,7 +878,11 @@ def source_of(con, source_url: str | None) -> dict[str, Any]:
 # the image pointer beside it, and a re-normalized fold keeps HIDDEN - both
 # change rows whose inputs have not moved, so nothing short of this reaches
 # them.
-NORMALIZATION_VERSION = "2"
+#
+# "3" (v0.96.41): an event carries its last day (events.end_date) when its
+# record stated one. Every candidate's evidence moves with the ENGINE 1.16
+# re-read anyway; the version says that the row's shape changed.
+NORMALIZATION_VERSION = "3"
 
 # A candidate whose normalization raises steps aside after this many tries,
 # with its error still on the row. Without a cap it would be selected first on
@@ -1185,6 +1208,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
         ids = [int(r["candidate_id"]) for r in rows if r.get("candidate_id") is not None]
         aliases = candidate_store.venue_alias_candidates(settings, ids)
         time_evidence = candidate_store.time_evidence(settings, ids)
+        end_dates = candidate_store.end_dates(settings, ids)
         ambiguous_times = candidate_store.ambiguous_time_ids(settings, ids)
         genre_hint_map = candidate_store.genre_hints(settings, ids)
 
@@ -1203,6 +1227,7 @@ def normalize_all(settings, *, limit: int = 500) -> dict[str, Any]:
                 enriched["source_item_id"] = origin["source_item_id"]
                 enriched["provenance"] = origin["provenance"]
                 enriched["time_evidence"] = time_evidence.get(candidate_id)
+                enriched["end_date"] = end_dates.get(candidate_id)
                 stored = normalize_candidate(
                     con, enriched,
                     review_state=review_states.get(candidate_id),

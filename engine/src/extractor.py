@@ -1858,3 +1858,257 @@ def extract_programmes(title: str, body: str, source_role="SECONDARY",
                 out.append(ev)
                 break
     return out or None
+
+
+# --- a festival (v0.96.41) ---------------------------------------------------
+
+FESTIVAL = classifier.FESTIVAL
+#: The festival's own period, as the record states it.
+FESTIVAL_PERIOD = "FESTIVAL_PERIOD"
+#: Why a festival candidate carries no time: a period has no one clock.
+FESTIVAL_NO_SINGLE_CLOCK = "FESTIVAL_NO_SINGLE_CLOCK"
+#: A night a festival's own text dates and clocks itself.
+FESTIVAL_PROGRAMME = "FESTIVAL_PROGRAMME"
+#: How far a festival may run (mirrors runtime/festival_evidence.py).
+FESTIVAL_MAX_DAYS = 31
+
+
+def _period_dates(period):
+    """(start, end) as date objects from a record's own period; end None
+    unless stated, after the start and within FESTIVAL_MAX_DAYS."""
+    from datetime import date as _date
+
+    if not isinstance(period, dict):
+        return None, None
+    try:
+        start = _date.fromisoformat(str(period.get("start") or "")[:10])
+    except ValueError:
+        return None, None
+    try:
+        end = _date.fromisoformat(str(period.get("end") or "")[:10])
+    except ValueError:
+        end = None
+    if end is not None and not 0 < (end - start).days <= FESTIVAL_MAX_DAYS:
+        end = None
+    return start, end
+
+
+def _states_the_date(text: str, day) -> bool:
+    """Whether the record's own text writes this date.
+
+    Both collectors write the record's start as `2026년 10월 21일` at the head
+    of the body they synthesize. A page whose own text was acquired instead
+    states it the way the page does - TangoNOW renders `2027-05-21(금)`
+    (source item 6250) - so the ISO and dotted forms of the same date count
+    too. Any other date is not this one.
+    """
+    y, m, d = day.year, day.month, day.day
+    patterns = (rf"{y}\s*년\s*0?{m}\s*월\s*0?{d}\s*일",
+                rf"(?<!\d){y}-{m:02d}-{d:02d}(?!\d)",
+                rf"(?<!\d){y}\s*\.\s*0?{m}\s*\.\s*0?{d}(?!\d)")
+    return any(re.search(p, text or "") for p in patterns)
+
+
+def extract_festival(title: str, body: str, period, source_role="SECONDARY",
+                     published=None):
+    """A festival, marathon or tango week: one candidate for the period, then
+    one per night its own text dates and clocks. None when the record's own
+    period cannot be read or its text does not state the date it starts.
+
+    What the festival candidate claims is what the record states and no more:
+
+    * **its first day**, from the record's own structured start - and only when
+      the body writes that same date, so a judgement and a text that disagree
+      produce nothing rather than a choice between them;
+    * **its last day** only when the record states one (Miltang's notices do;
+      TangoNOW's share pages never have) - recorded as `end_date` evidence;
+    * **no time.** A festival is a period. `extract_single()` would hand KOREA
+      SPECIAL TANGO WEEK 20:00~01:00, which is when one of its milongas runs;
+    * **no fee and no DJ**, for the same reason: a festival's text prices
+      passes and workshops and names DJs per night;
+    * **the place its own text labels**, read exactly as for any post.
+    """
+    start, end = _period_dates(period)
+    if start is None or not _states_the_date(body, start):
+        return None
+    base = extract_single(title, body, source_role=source_role,
+                          event_type=FESTIVAL, published=published)
+    festival = EventCandidate(
+        name=re.sub(r"\s+", " ", title or "").strip(),
+        event_type=FESTIVAL,
+        date=start.isoformat(),
+        venue=base.venue,
+    )
+    festival.evidences.append(Evidence(
+        "date", start.isoformat(), start.isoformat(), source_role=source_role,
+        inference=FESTIVAL_PERIOD))
+    if end is not None:
+        festival.evidences.append(Evidence(
+            "end_date", end.isoformat(), f"{start.isoformat()}~{end.isoformat()}",
+            source_role=source_role, inference=FESTIVAL_PERIOD))
+    festival.evidences.append(Evidence(
+        "context", FESTIVAL_NO_SINGLE_CLOCK,
+        f"{start.isoformat()}~{end.isoformat()}" if end else start.isoformat(),
+        source_role=source_role))
+    festival.evidences.extend(e for e in base.evidences if e.field == "venue")
+    events = [festival]
+    events.extend(extract_festival_programmes(
+        title, body, start, end, festival, source_role=source_role) or [])
+    return events
+
+
+# One programme row: its name, an optional `@Place`, a dash, its own day and
+# its own clock range. `POHANG WELCOME MILONGA — 11/20(금) 20:00~01:00`.
+_FESTIVAL_ROW_RE = re.compile(
+    r"(?P<lead>[^\n\d\[\]|—–]{2,80}?)\s*[—–]\s*"
+    r"(?P<m>\d{1,2})\s*/\s*(?P<d>\d{1,2})\s*(?:\([^)\n]{1,4}\))?\s*"
+    r"(?P<clock>\d{1,2}\s*:\s*\d{2}\s*[~\-–]\s*\d{1,2}\s*:\s*\d{2})")
+_ROW_STOP_TOKEN = re.compile(r"^[&·,:;/|+]+$")
+_HANGUL = re.compile(r"[가-힣]")
+_LATIN = re.compile(r"[A-Za-z]")
+# A block header that names the city its rows belong to: `[포항] 11/18~11/20`.
+_BLOCK_CITY_RE = re.compile(r"\[(?P<city>[^\[\]\n]{1,12})\]")
+
+
+def _script(token: str):
+    if _HANGUL.search(token):
+        return "HANGUL"
+    if _LATIN.search(token):
+        return "LATIN"
+    return None
+
+
+def _row_head(lead: str):
+    """The programme name right before a row's dash, and the `@Place` after it.
+
+    A notice flattened onto one line runs its block header straight into the
+    name - `11/18~11/20 워크숍 & 이벤트 POHANG WELCOME MILONGA` - so the name
+    is read backwards from the programme word: the tokens in that word's own
+    script, up to a separator.
+    """
+    tokens = (lead or "").split()
+    tail = []
+    while tokens and tokens[-1].startswith("@"):
+        tail.insert(0, tokens.pop())
+    word_at = None
+    for index in range(len(tokens) - 1, -1, -1):
+        if extraction_rules.programme_type(tokens[index]):
+            word_at = index
+            break
+    if word_at is None:
+        return "", " ".join(tail)
+    script = _script(tokens[word_at])
+    first = word_at
+    while first > 0:
+        token = tokens[first - 1]
+        if _ROW_STOP_TOKEN.match(token) or _script(token) != script:
+            break
+        first -= 1
+    return " ".join(tokens[first:]), " ".join(tail)
+
+
+def _row_date(month: int, day: int, start, end):
+    """The row's own day inside the record's own period, or None."""
+    from datetime import date as _date
+
+    for year in sorted({start.year, end.year}):
+        try:
+            candidate = _date(year, month, day)
+        except ValueError:
+            continue
+        if start <= candidate <= end:
+            return candidate
+    return None
+
+
+def _for_programme(evidence, context_id):
+    """A copy of ``evidence`` attributed to one programme."""
+    from dataclasses import replace as _replace
+
+    return _replace(evidence, context_id=context_id)
+
+
+def extract_festival_programmes(title: str, body: str, start, end, festival,
+                                source_role="SECONDARY"):
+    """The nights a festival's own text dates and clocks, or None.
+
+    Only for a record that states its own period: a row's day is written
+    without a year (`11/20(금)`), and the period is what places it. A row
+    outside the period is not this record's - KOREA SPECIAL TANGO WEEK's
+    홍대 notice (11/21~11/24) repeats the 포항 week's welcome milonga on
+    11/20, and that night is the 포항 notice's to announce.
+
+    Each row owns its date, its clock and its place (v0.96.33/34):
+
+    * **a name that names a night** - `extraction_rules.head_names_a_programme()`,
+      which refuses a workshop, a class level, a cancellation and a field list.
+      The Masan marathon's rows are `M1: 10. 31. 16:00 -18:00 (DJ ..)`, which
+      name no night, and are not read;
+    * **an hour with one reading** - a 24-hour clock or a marked one; a bare
+      `8:00-11:00` could be morning;
+    * **its own place**: `@Place` on the row itself, else the record's own
+      labelled place - and that only when the row's block header names a city
+      the place's own text names too (`[포항]` beside `PosTango (포항시 ...)`),
+      so a Seoul night under a Pohang notice is never handed the Pohang room.
+    """
+    if end is None:
+        return None
+    text = f"{title} {body}"
+    out = []
+    seen = set()
+    for match in _FESTIVAL_ROW_RE.finditer(text):
+        head, tail = _row_head(match.group("lead"))
+        if not extraction_rules.head_names_a_programme(head):
+            continue
+        day = _row_date(int(match.group("m")), int(match.group("d")), start, end)
+        if day is None:
+            continue
+        readings = extraction_rules.readings_in(match.group("clock"))
+        if not readings:
+            continue
+        reading = readings[0][0]
+        if (reading.meridiem_evidence == extraction_rules.EVIDENCE_ABSENT
+                and reading.ambiguous):
+            continue
+        key = (day, reading.start)
+        if key in seen:
+            continue
+        seen.add(key)
+        context_id = f"fest{len(out) + 1}"
+        ev = EventCandidate(
+            name=f"{re.sub(r'\s+', ' ', title).strip()} {head}".strip(),
+            event_type=extraction_rules.programme_type(head),
+            date=day.isoformat(),
+            start_time=reading.start,
+            end_time=reading.end,
+            end_day_offset=reading.end_day_offset,
+        )
+        raw_row = re.sub(r"\s+", " ", match.group(0)).strip()[:160]
+        ev.evidences.append(Evidence(
+            "date", day.isoformat(), raw_row, source_role=source_role,
+            inference=FESTIVAL_PERIOD, context_id=context_id))
+        ev.evidences.append(Evidence(
+            "time", reading.as_dict(), reading.raw, source_role=source_role,
+            inference=reading.meridiem_evidence, context_id=context_id))
+        ev.evidences.append(Evidence(
+            "context", FESTIVAL_PROGRAMME, raw_row, source_role=source_role,
+            context_id=context_id))
+        place = extraction_rules.programme_at_place(tail)
+        if place is not None:
+            ev.venue = place.name
+            ev.evidences.append(Evidence(
+                "venue", {"name": place.name, "alias_candidates": place.alias_candidates},
+                place.raw, source_role=source_role,
+                inference=f"{_LABEL_INFERENCE}{place.label}", context_id=context_id))
+        elif festival.venue:
+            header = None
+            for found in _BLOCK_CITY_RE.finditer(text, 0, match.start()):
+                header = found.group("city").strip()
+            venue_text = " ".join(str(e.raw_text or "") for e in festival.evidences
+                                  if e.field == "venue") or festival.venue
+            if header is None or header in venue_text:
+                ev.venue = festival.venue
+                ev.evidences.extend(_for_programme(e, context_id)
+                                    for e in festival.evidences if e.field == "venue")
+        out.append(ev)
+    return out or None

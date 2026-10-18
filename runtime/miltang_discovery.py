@@ -52,7 +52,7 @@ import urllib.request
 from datetime import date, timedelta
 from typing import Any
 
-from . import acquisition
+from . import acquisition, festival_evidence
 
 USER_AGENT = acquisition.USER_AGENT
 DEFAULT_TIMEOUT = acquisition.DEFAULT_TIMEOUT
@@ -205,6 +205,11 @@ def _parse_clock(text: str) -> tuple[int, int] | None:
         return int(h), int(m)
     except ValueError:
         return None
+
+
+#: Any clock at all in a TIME row (v0.96.41): `20:00`, `오후 4시`. A row that
+#: says `상세 정보 참고` or `매일 다름` states none.
+_TIME_ROW_CLOCK_RE = re.compile(r"\d{1,2}\s*(?::\s*\d{2}|시)")
 
 
 def format_time_range(raw_time: str | None) -> str | None:
@@ -461,13 +466,31 @@ def parse_detail(
     if links:
         parts.append("원문 링크: " + ", ".join(links))
 
-    return {
+    record = {
         "source_url": detail_url,
         "title": title,
         "body": " ".join(parts),
         "published_at": None,
         "acquisition_quality": "FETCHED_FULL",
     }
+    # v0.96.41: a notice is where Miltang files its festivals, marathons and
+    # tango weeks, and every one states its own period - JSON-LD `startDate`
+    # and `endDate`, and the DATE row `2026. 10. 21(수) ~ 2026. 10. 29(목)` -
+    # which the body above reduced to its first day. The judgement carries the
+    # period beside the body rather than in it: the page's text has not
+    # changed. Only a notice is asked (`/milongas` is a board of nights), and
+    # only its own TIME row decides whether it states a clock; the description
+    # is free text, and the clocks in a festival's description belong to its
+    # programmes (`POHANG WELCOME MILONGA - 11/20(금) 20:00~01:00`).
+    if "/notices/" in detail_url:
+        festival = festival_evidence.judgement(
+            title, raw_date, ld.get("endDate"),
+            states_a_clock=bool(time_expr or _TIME_ROW_CLOCK_RE.search(
+                _visible(time_segment) if time_segment else "")),
+            source="Miltang notice")
+        if festival:
+            record.update(festival)
+    return record
 
 
 # --- list pages: detail-URL discovery only ------------------------------------

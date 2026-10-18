@@ -162,8 +162,11 @@ def week_counts(con, *, start: date, end: date, genre: str | None = None,
     event (Section 47) - a duplicate merged into it was hidden, not counted,
     by ``duplicates.record_decision()`` long before this query runs.
     """
-    where = [_VISIBLE, "e.engine_status <> %s", "e.event_date BETWEEN %s AND %s"]
-    params: list[Any] = [CANCELLED, start, end]
+    # v0.96.41: an event is counted on every day it is on, which for a festival
+    # with a stated period is each day of it inside the week - the same day a
+    # search for that date returns it. A one-day event's period is its own date.
+    where = [_VISIBLE, "e.engine_status <> %s", "e.event_date <= %s", on_or_after()]
+    params: list[Any] = [CANCELLED, end, start]
     # Same primary-or-secondary-relation match as search() (PHASE 6) - a
     # multi-genre event's day still counts once under each genre it is
     # filtered by, never duplicated by the GROUP BY below since this is an
@@ -195,11 +198,14 @@ def week_counts(con, *, start: date, end: date, genre: str | None = None,
 
     with con.cursor() as cur:
         cur.execute(
-            "SELECT e.event_date, count(*) FROM events e "
+            "SELECT d.day::date, count(*) FROM events e "
             "LEFT JOIN genres g ON g.genre_id = e.genre_id "
             "LEFT JOIN regions r ON r.region_id = e.region_id "
+            "CROSS JOIN LATERAL generate_series("
+            f"  GREATEST(e.event_date, %s::date), LEAST({LAST_DAY}, %s::date), "
+            "  interval '1 day') AS d(day) "
             f"WHERE {clause} GROUP BY 1",
-            tuple(params),
+            (start, end, *params),
         )
         found = {row[0].isoformat(): row[1] for row in cur.fetchall()}
 
@@ -362,6 +368,13 @@ def build_naver_map_search_url(address: str | None) -> str | None:
     return _NAVER_MAP_SEARCH.format(query=urllib.parse.quote(address.strip()))
 
 
+def _last_day(row: dict[str, Any]) -> str | None:
+    first, last = row.get("event_date"), row.get("last_day")
+    if first is None or last is None or last <= first:
+        return None
+    return last.isoformat()
+
+
 def present(row: dict[str, Any]) -> dict[str, Any]:
     """One event as the API returns it.
 
@@ -376,6 +389,10 @@ def present(row: dict[str, Any]) -> dict[str, Any]:
         "start_time": _clock(row.get("start_time")),
         "end_time": _clock(row.get("end_time")),
         "ends_next_day": bool(row.get("end_day_offset")),
+        # v0.96.41: the last day of an event that runs over several - only when
+        # its record stated one. None for every one-day event, and for a
+        # festival whose record says when it starts and not when it ends.
+        "end_date": _last_day(row),
         # False when the post wrote a bare clock and nothing said which half of
         # the day it meant. The value is what the post says; this says how much
         # that is worth. v0.96.34: ABSENT is now only that case - an hour
@@ -481,8 +498,28 @@ def _source_evidence_of(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: v0.96.41: the last day an event is on. Its own `end_date` when its record
+#: stated a period (a festival), else the latest one among the rows folded into
+#: it - a festival TangoNOW dates by its start and Miltang by its whole period is
+#: one event, and the period is Miltang's to give - else the event's own date.
+#: Every public date question asks this instead of `event_date`, so for every
+#: event without a period (all of them before this release) the answer is the
+#: same as it was: a fold always shares its canonical's date, and NULL falls
+#: through to `event_date`.
+LAST_DAY = (
+    "COALESCE(e.end_date, (SELECT max(f.end_date) FROM events f "
+    "WHERE f.canonical_event_id = e.event_id), e.event_date)"
+)
+
+
+def on_or_after(day_sql: str = "%s") -> str:
+    """The event is still on at or after this day (its last day is not before it)."""
+    return f"{LAST_DAY} >= {day_sql}"
+
+
 _SELECT = (
     "SELECT e.*, v.name AS venue_name, v.address AS venue_address, "
+    f"       {LAST_DAY} AS last_day, "
     # v0.86.2: the venue's own official aliases, one row's worth per event
     # in the same query - never a per-event follow-up lookup (Section 31).
     # Mirrors master_data.list_venues()'s identical LATERAL shape.
@@ -602,6 +639,8 @@ EVENT_TYPE_LABELS = {
     "SOCIAL": "소셜",
     "SOCIAL_WITH_CLASS": "소셜 (강습 포함)",
     "PARTY": "파티",
+    # v0.96.41: a festival, marathon or tango week - a period, not one night.
+    "FESTIVAL": "페스티벌",
 }
 
 # The four simplified "Event Format" categories the Admin chip selector and
@@ -709,7 +748,7 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
         start, end = keyword
 
     if not include_past and start is None:
-        where.append("e.event_date >= %s")
+        where.append(on_or_after())
         params.append(today(now))
     if not include_cancelled:
         where.append("e.engine_status <> %s")
@@ -718,7 +757,7 @@ def search(con, *, when: str | None = None, on: Any = None, date_from: Any = Non
         where.append("e.engine_status <> %s")
         params.append(COMPLETED)
     if start is not None:
-        where.append("e.event_date >= %s")
+        where.append(on_or_after())
         params.append(start)
     if end is not None:
         where.append("e.event_date <= %s")

@@ -2315,3 +2315,23 @@ def programme_place(scope: str, start: int, end: int, head: str,
                 _strip_decoration(match.group("value")).strip(),
                 match.group(0), VENUE_LABEL_DAY_HEADER)
     return None
+
+
+# --- a festival programme's own place (v0.96.41) ----------------------------
+#
+# A festival notice names a programme's place with `@` right after its name:
+# `SEOUL GRAND MILONGA @Ocho — 11/21(토) 21:00~02:00`. `extract_venue()` does
+# not read a bare `@Ocho` - on a whole post the `@` shape is a handle as often
+# as a place (v0.96.25) - so it is read here, only in that one position: the
+# token straight after a programme's own name and before its date.
+_PROGRAMME_AT_RE = re.compile(r"@\s?(?P<name>[^\s@—–\-|,()\[\]]{2,30})\s*$")
+
+
+def programme_at_place(head_tail: str) -> "VenueReading | None":
+    """The place in `<programme name> @Place`, or None."""
+    match = _PROGRAMME_AT_RE.search(head_tail or "")
+    if not match or not _is_place_value(match.group("name")):
+        return None
+    name = _strip_decoration(match.group("name")).strip()
+    return VenueReading(name=name, raw=match.group(0).strip(), label=VENUE_LABEL_AT,
+                        alias_candidates=_alias_candidates(name))

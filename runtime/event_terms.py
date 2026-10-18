@@ -163,6 +163,8 @@ CONFIRMED = "CONFIRMED"      # the title's matched terms agree
 AMBIGUOUS = "AMBIGUOUS"      # they disagree, or contradict the engine's type
 STORED = "STORED"            # no term matches now; the formats normalization stored
 ENGINE = "ENGINE"            # no term; the engine's own type stands
+#: v0.96.41: the engine type a festival's record carries (events_api label 페스티벌).
+FESTIVAL = "FESTIVAL"
 UNRESOLVED = "UNRESOLVED"    # no term and no usable type at all
 
 
@@ -210,6 +212,14 @@ def classify_kind(title: str | None, terms: Iterable[dict[str, Any]] | None, *,
     """
     engine_type = (event_type or "").strip().upper() or None
     engine_format = events_api.format_of(engine_type)
+    if engine_type == FESTIVAL:
+        # v0.96.41: a festival is a period, not a format. A marathon's title
+        # names the nights it is made of, and showing it as one of them would
+        # say it is one night. Settled by the record it came from, never by a
+        # word in its title.
+        return {"display": events_api.EVENT_TYPE_LABELS[FESTIVAL], "formats": (),
+                "certainty": ENGINE, "uncertain": False, "matched": [],
+                "reasons": [{"code": "ENGINE_TYPE", "event_type": engine_type}]}
     hit = resolve_event_terms(title, terms or ())
     if hit:
         matches = hit["matches"]

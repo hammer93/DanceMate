@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.40"
+PRODUCT_VERSION = "0.96.41"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -443,7 +443,15 @@ PRODUCT_VERSION = "0.96.40"
 # and nothing else - no candidate, no classification, no date. Three Events
 # change: the fourth (item 643) is a blocked item whose lost body v0.96.9
 # protects, so the sweep stamps it without re-reading it.
-DEFAULT_ENGINE_VERSION = "1.15"
+#
+# v0.96.41 bumps it again, 1.15 -> 1.16. A structured calendar's record of a
+# festival (runtime/festival_evidence.py) is classified FESTIVAL and read as a
+# period: its first day, its last day when the record states one, no time -
+# then one candidate per night its own text dates and clocks. The route needs
+# the collector's judgement, which no item stored before this release carries:
+# over all stored items the re-read changes no reading. The judgement reaches
+# the twelve festival records on their next ordinary collection.
+DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

@@ -1,5 +1,6 @@
 from .classifier import classify_with_image_evidence
-from .extractor import (DATE_PATTERNS, extract_day_list, extract_programmes,
+from .extractor import (DATE_PATTERNS, FESTIVAL, extract_day_list,
+                        extract_festival, extract_programmes,
                         extract_schedule, extract_single,
                         extract_with_image_fallback)
 from .verifier import verify
@@ -91,7 +92,26 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         event_terms=getattr(post, "event_terms", None),
         source_category=getattr(post, "source_category", None),
         source_night_fallback=getattr(post, "source_night_fallback", None),
+        source_event_format=getattr(post, "source_event_format", None),
     )
+    if classification == FESTIVAL:
+        # v0.96.41: a festival, marathon or tango week a structured calendar
+        # filed as such. Its own route, before every other one: a festival is
+        # a period, and the readings below would find a night in it - the
+        # first clock of its programme as the festival's own start time.
+        # `extract_festival()` reads the period and the place and claims no
+        # time, then the nights its own text dates and clocks, each one with
+        # its own date, clock and place.
+        festival_events = extract_festival(
+            post.title, post.body, getattr(post, "event_period", None),
+            source_role=source_role,
+            published=getattr(post, "published_at", None),
+        ) or []
+        for ev in festival_events:
+            verify(ev, source_role=source_role)
+            if post.acquisition_quality == "METADATA_ONLY" and ev.status == "VERIFIED":
+                ev.status = "POSSIBLE"
+        return {"classification": classification, "events": festival_events}
     class_instance = (classification == "CLASS"
                       and getattr(post, "class_event_opt_in", False)
                       and _dated_class_instance(post))

@@ -76,6 +76,14 @@ RULE_UNRESOLVED_VENUE_TIME = "SAME_DATE_UNRESOLVED_VENUE_TIME"
 # metropolitan cities that exclude each other - so the id is answering for two
 # places and a person has to say which.
 RULE_REGION_CONFLICT = "SAME_DATE_VENUE_TIME_REGION_CONFLICT"
+# v0.96.41: two calendars' records of one festival - the same first day at the
+# same resolved place, neither stating a clock because a festival has none.
+RULE_SAME_DATE_VENUE_FESTIVAL = "SAME_DATE_VENUE_FESTIVAL"
+# ... and two festivals starting the same day whose places do not settle it -
+# a question for a person, never a merge.
+RULE_SAME_DATE_FESTIVAL_PLACE_DIFFERS = "SAME_DATE_FESTIVAL_PLACE_DIFFERS"
+#: The engine type of a festival, marathon or tango week (v0.96.41).
+FESTIVAL = "FESTIVAL"
 # v0.96.23: an automatic merge the rules would no longer make, released.
 RULE_STALE_AUTO_MERGE = "STALE_AUTO_MERGE"
 # A person's answer on the Duplicates page, and (v0.96.40) a person taking
@@ -199,6 +207,9 @@ def classify(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any] | No
     """
     if left["event_date"] != right["event_date"]:
         return None
+    festivals = [_is_festival(left), _is_festival(right)]
+    if any(festivals):
+        return _classify_festivals(left, right) if all(festivals) else None
 
     left_place, right_place = _place(left), _place(right)
     left_clock, right_clock = _clock(left), _clock(right)
@@ -266,6 +277,39 @@ def classify(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any] | No
             "differs": ["venue"],
         }
     return None
+
+
+def _is_festival(event: dict[str, Any]) -> bool:
+    return (event.get("event_type") or "").upper() == FESTIVAL
+
+
+def _classify_festivals(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any] | None:
+    """Two festivals on the same first day (v0.96.41).
+
+    A festival is never a duplicate of a night: the welcome milonga of a tango
+    week shares its first day and its room, and is one of the things the
+    festival is made of. Two festivals are the same one when they start the
+    same day at the same *resolved* place - the clock the night rules need is
+    exactly what a festival never has, so it is not asked. Everything else the
+    night rules hold to is: an unresolved name is a question for a person, and
+    so are two records naming cities that exclude each other - and so are two
+    festivals starting the same day whose places do not match or are not
+    known: TangoNOW names KOREA SPECIAL TANGO WEEK's place `포항 posTango ·
+    서울 OCHO`, which resolves to nothing, and Miltang's notice names PosTango.
+    """
+    left_place, right_place = _place(left), _place(right)
+    if not left_place or left_place != right_place:
+        return {"rule": RULE_SAME_DATE_FESTIVAL_PLACE_DIFFERS, "auto": False,
+                "matched": ["event_date", "event_type"], "differs": ["venue"]}
+    if venue_identity.texts_contradict(left.get("venue_text"), right.get("venue_text")):
+        return {"rule": RULE_REGION_CONFLICT, "auto": False,
+                "matched": ["event_date", "venue"], "differs": ["stated_region"]}
+    if _place_is_known(left) and _place_is_known(right):
+        return {"rule": RULE_SAME_DATE_VENUE_FESTIVAL, "auto": True,
+                "matched": ["event_date", "venue", "event_type"], "differs": []}
+    return {"rule": RULE_UNRESOLVED_VENUE_TIME, "auto": False,
+            "matched": ["event_date", "venue_text", "event_type"],
+            "differs": ["venue_status"]}
 
 
 def _decided_by_human(event: dict[str, Any]) -> bool:

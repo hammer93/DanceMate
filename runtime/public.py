@@ -626,11 +626,15 @@ def _facets_window(con, window: tuple | None,
                    ) -> dict[str, list[dict[str, Any]]]:
     where = [events_api._VISIBLE, "e.engine_status <> 'CANCELLED'"]
     params: list[Any] = []
+    # v0.96.41: the same "is it on in this window" question search() asks, so
+    # a chip still counts exactly what its page lists - a festival whose stated
+    # period overlaps the window included.
     if window:
-        where.append("e.event_date BETWEEN %s AND %s")
-        params.extend(window)
+        where.append("e.event_date <= %s")
+        where.append(events_api.on_or_after())
+        params.extend([window[1], window[0]])
     else:
-        where.append("e.event_date >= %s")
+        where.append(events_api.on_or_after())
         params.append(events_api.today())
     clause = " AND ".join(where)
 
@@ -843,6 +847,10 @@ def _when_line(event: dict[str, Any]) -> str:
     if day:
         parsed = date_type.fromisoformat(day)
         label = f"{parsed.month}/{parsed.day}({WEEKDAYS[parsed.weekday()]})"
+        # v0.96.41: a festival whose record states its period shows all of it.
+        if event.get("end_date"):
+            last = date_type.fromisoformat(event["end_date"])
+            label += f"–{last.month}/{last.day}({WEEKDAYS[last.weekday()]})"
     start, end = event.get("start_time"), event.get("end_time")
     if start and end:
         clock = f"{start}–{end}" + ("<sup>+1</sup>" if event.get("ends_next_day") else "")
@@ -1040,7 +1048,8 @@ def _is_past(event: dict[str, Any], *, now: "datetime | None" = None) -> bool:
     already says, compared against the same Asia/Seoul "today" every other
     date computation on this page already uses.
     """
-    day = event.get("date")
+    # v0.96.41: a festival with a stated period is past once its last day is.
+    day = event.get("end_date") or event.get("date")
     if not day:
         return False
     from datetime import date as date_type
@@ -1254,6 +1263,9 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None,
         kind = _event_kind(event, terms)
     day = event.get("date")
     date_label = _human_date(day, now=now) if day else ""
+    # v0.96.41: the whole stated period of a festival, first day to last.
+    if day and event.get("end_date"):
+        date_label += "–" + _human_date(event["end_date"], now=now)
     venue_name = _timeline_line1_venue_name(event)
     venue_html = ""
     if venue_name:

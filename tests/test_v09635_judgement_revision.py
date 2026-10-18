@@ -66,7 +66,9 @@ def test_the_judgement_keys_are_the_named_ones_only():
     post. So this is a declared list, not "did raw change at all"."""
     assert intake.JUDGEMENT_KEYS == (
         "known_event_type", "class_event_opt_in", "source_category",
-        "source_night_fallback", "night_evidence")
+        "source_night_fallback", "night_evidence",
+        # v0.96.41: a structured calendar's festival judgement and period.
+        "source_event_format", "event_period", "festival_evidence")
 
 
 def test_absent_and_null_are_different_answers():

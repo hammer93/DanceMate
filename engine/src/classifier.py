@@ -638,7 +638,8 @@ def night_event_bundle(title: str, body: str, *, source_category=None) -> bool:
 
 
 def classify(title: str, body: str, known_event_type=None, event_terms=None,
-             source_category=None, source_night_fallback=None) -> str:
+             source_category=None, source_night_fallback=None,
+             source_event_format=None) -> str:
     # v0.96.8: the recap/administrative guard is asked *before* the collector's
     # own answer, and it is the only thing that may overrule it.
     #
@@ -673,6 +674,19 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None,
     if known_event_type:
         # Source Registry / known series context is admissible evidence for type classification.
         return known_event_type
+    # v0.96.41: a structured tango calendar's own record of a festival - a
+    # dated record with no clock of its own whose name announces a festival,
+    # a marathon or a tango week (runtime/festival_evidence.py has the three
+    # tests). Same kind of evidence as `known_event_type` above - what the
+    # record's own structure says it is - and the same precedence, below the
+    # one guard above it. Asked before the words because the words answer a
+    # different question: KOREA SPECIAL TANGO WEEK's page reads SOCIAL off
+    # the word SPECIAL beside a date and a place, and its Miltang notice reads
+    # CLASS off the 워크숍 in its programme, and the record is neither - it
+    # is a week of workshops and milongas across two cities. Only FESTIVAL
+    # is read; a collector cannot inject any other type through this door.
+    if isinstance(source_event_format, str) and source_event_format == FESTIVAL:
+        return FESTIVAL
     text = f"{title} {body}".lower()
     class_words = ["lesson", "강습", "개강", "모집", "안무반", "공연반", "초중급",
                    "전문가반", "워크샵", "워크숍", "workshop"]
@@ -873,6 +887,12 @@ def classify(title: str, body: str, known_event_type=None, event_terms=None,
     return "OTHER"
 
 
+#: v0.96.41: a festival, marathon or tango week - a period, not a night. Only
+#: ever answered from a structured calendar's own record (see classify()); no
+#: word in a post's text promotes anything to it.
+FESTIVAL = "FESTIVAL"
+
+
 # Posts a keyword alone is trusted to promote from OTHER. Never CLASS: a
 # lesson/workshop advert with no social evidence anywhere (body or poster)
 # must never become a milonga/social event just because its poster also
@@ -891,7 +911,8 @@ MIN_TEXT_FOR_IMAGE_TRUST = 20
 def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None,
                                  known_event_type=None, published=None,
                                  event_terms=None, source_category=None,
-                                 source_night_fallback=None):
+                                 source_night_fallback=None,
+                                 source_event_format=None):
     """classify(), then - only when the body itself was too thin to decide -
     a second, stricter look at each trusted poster OCR text (v0.84.4).
 
@@ -927,7 +948,8 @@ def classify_with_image_evidence(title: str, body: str, trusted_image_texts=None
     classification = classify(title, body, known_event_type=known_event_type,
                               event_terms=event_terms,
                               source_category=source_category,
-                              source_night_fallback=source_night_fallback)
+                              source_night_fallback=source_night_fallback,
+                              source_event_format=source_event_format)
     if classification != "OTHER":
         return classification, None
     if known_event_type:

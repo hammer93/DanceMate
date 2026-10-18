@@ -47,6 +47,14 @@ class RawPostRecord:
     # or overrule a classification. None (the default) leaves classification
     # exactly as it was for every existing collector.
     source_night_fallback: Optional[str] = None
+    # v0.96.41: a structured tango calendar's own judgement that this record is
+    # a festival - a dated record with no clock of its own whose name announces
+    # a festival, marathon or tango week (runtime/festival_evidence.py). Only
+    # "FESTIVAL" is read. ``event_period`` is the record's own structured
+    # {"start": ISO date, "end": ISO date (only when the record states it)}.
+    # None (the default) leaves classification exactly as it was.
+    source_event_format: Optional[str] = None
+    event_period: Optional[dict] = None
 
     def to_dict(self):
         return asdict(self)

@@ -45,7 +45,7 @@ import urllib.request
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from . import acquisition
+from . import acquisition, festival_evidence
 
 USER_AGENT = acquisition.USER_AGENT
 DEFAULT_TIMEOUT = acquisition.DEFAULT_TIMEOUT
@@ -694,6 +694,8 @@ _LD_JSON_RE = re.compile(
 # venue again.
 _SHARE_DJ_RE = re.compile(r"^DJ\s+(.{1,40})$")
 _SHARE_CLOCK_RE = re.compile(r"\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})")
+#: A clock written in a share page's own description (`2026-11-08(일) · 13:00 · ...`).
+_DESCRIPTION_CLOCK_RE = re.compile(r"(?<!\d)\d{1,2}:\d{2}(?!\d)")
 #: The share-page form TangoNOW gives an occurrence of a *registered,
 #: recurring* night: `dov_brand_<brand id>_<n>_<date>`, the operator's own
 #: identifier for instance n of a brand they maintain. A one-off occurrence is
@@ -963,6 +965,20 @@ def parse_share_page(raw_html: str, share_url: str) -> dict[str, Any] | None:
     if evidence:
         record["source_night_fallback"] = SHARE_NIGHT_FALLBACK
         record["night_evidence"] = evidence
+    # v0.96.41: the other thing this sitemap publishes beside its nights - a
+    # festival, marathon or tango week, dated and with no clock. Every one of
+    # the twelve live date-only pages states a `startDate` and no `endDate`, so
+    # the judgement says when it starts and nothing about when it ends. A page
+    # whose description restates a clock is describing a time, not a festival.
+    festival = festival_evidence.judgement(
+        title, event.get("startDate"), event.get("endDate"),
+        states_a_clock=bool(_share_clock(event.get("startDate"))
+                            or _share_clock(event.get("endDate"))
+                            or _DESCRIPTION_CLOCK_RE.search(
+                                str(event.get("description") or ""))),
+        source="TangoNOW share page")
+    if festival:
+        record.update(festival)
     return record
 
 

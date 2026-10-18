@@ -587,6 +587,9 @@ ENGINE_MERIDIEM_VERDICTS = frozenset({"EXPLICIT", "PROPAGATED", ENGINE_EVIDENCE_
 #: nobody had confirmed - 659 of the 711 ABSENT Events were of this kind, and
 #: none of them started before noon.
 EVIDENCE_UNAMBIGUOUS = "UNAMBIGUOUS"
+#: The inference `extractor.extract_festival()` writes beside a period the
+#: record itself stated (v0.96.41).
+FESTIVAL_PERIOD = "FESTIVAL_PERIOD"
 
 
 def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str]:
@@ -621,6 +624,42 @@ def time_evidence(settings: Settings, candidate_ids: list[int]) -> dict[int, str
         verdict = _time_evidence_value(row)
         if verdict:
             found[row["candidate_id"]] = verdict
+    return found
+
+
+def end_dates(settings: Settings, candidate_ids: list[int]) -> dict[int, str]:
+    """The last day of each festival whose own record states one (v0.96.41).
+
+    `extractor.extract_festival()` writes it as an `end_date` evidence row, so
+    no engine column had to change. Only that one inference is read - a period
+    the record itself stated - and nothing here derives a span from a date
+    range found in prose (that stays MULTI_DAY_EVENT context, as since v0.91).
+    """
+    if not candidate_ids:
+        return {}
+    try:
+        con = _connect(settings)
+    except EngineStoreUnavailable:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        rows = con.execute(
+            "SELECT candidate_id, value FROM evidences "
+            f"WHERE field = 'end_date' AND inference = ? AND candidate_id IN ({placeholders})",
+            (FESTIVAL_PERIOD, *candidate_ids),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        con.close()
+    found = {}
+    for row in rows:
+        try:
+            value = json.loads(row["value"]) if row["value"] else None
+        except (TypeError, ValueError):
+            value = row["value"]
+        if isinstance(value, str) and value:
+            found[row["candidate_id"]] = value
     return found
 
 

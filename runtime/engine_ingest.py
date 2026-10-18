@@ -175,6 +175,12 @@ def _to_raw_post(RawPostRecord, item: dict[str, Any], content: dict[str, Any] | 
         # collected before v0.96.35 has no such key and classifies by text
         # alone, which is what every other source does anyway.
         source_night_fallback=raw.get("source_night_fallback"),
+        # v0.96.41: a structured calendar's own "this record is a festival",
+        # and the period the record states (festival_evidence.judgement()).
+        # Read off the stored raw like the two above, so an item stored before
+        # its collector learned to say so classifies by its text, as before.
+        source_event_format=raw.get("source_event_format"),
+        event_period=raw.get("event_period"),
         # v0.86.9: the Settings terminology for this source's genre -
         # see _detection_terms_by_source().
         event_terms=event_terms,

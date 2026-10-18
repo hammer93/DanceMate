@@ -582,7 +582,8 @@ def test_rows_built_by_the_previous_version_are_rebuilt_once(pg, store, run_norm
                     venue=f"홀 큐 {unique}",
                     times=[("IMAGE_OCR", POSTER, _reading("21:00", None, "EXPLICIT", False))])
     run_normalization()
-    assert normalization.NORMALIZATION_VERSION == "2"
+    # "2" when v0.96.39 shipped; "3" since v0.96.41 (events.end_date).
+    assert normalization.NORMALIZATION_VERSION == "3"
     with pg.cursor() as cur:
         cur.execute("UPDATE candidate_normalization SET normalization_version = '1' "
                     "WHERE candidate_id = %s", (cid,))
