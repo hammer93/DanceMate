@@ -1,5 +1,93 @@
 # DanceMate Release Notes
 
+## v0.96.43 Full-Article Revision Freshness & Protected Source Review
+
+Product Runtime 0.96.43; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051. When a publisher edits the body of an article
+DanceMate already fetched, the edit is now found - within a bounded,
+robots-respecting re-check budget - and read by the same per-item revision
+queue v0.96.42 built. The FETCH_BLOCKED items an operator should look at are
+connected to the existing Review screens instead of being guessed at.
+
+### What was wrong, measured
+
+A fetched article body was settled for good: `acquisition.SETTLED` holds
+FETCHED_FULL/FETCHED_PARTIAL, `next_attempt_at()` answers None for them and
+`due_for_acquisition()` only selects `RETRYABLE` statuses. The discovery
+record could move (Daum re-collects about 120 old posts a day as REVISED,
+mostly snippet churn), and v0.96.42 re-read *that*, but always with the body
+first fetched. Production (2026-10-20, read-only): 358 Daum and 505
+danceinfo.net bodies, 41 of them feeding an Event that has not ended.
+
+On a Production clone the first real re-checks found six publisher edits that
+had never been read: 6503 (an access notice added - the body behind v0.96.42's
+"솔땅인만 출입가능" title), 4473 ("무료 입장 취소", fee lines, a schedule
+caveat), 6176 (a DJ removed), 6516 (special-class time and fee rewritten),
+6159 and 6160 (class roster and signature block).
+
+### Re-checking an article (`runtime/article_refresh.py`)
+
+* **What:** a body this runtime fetched and still holds (FETCHED_FULL/
+  PARTIAL), read through an adapter's own scope (template board, Daum
+  article region, danceinfo payload/region, og:description), from an enabled
+  source, that feeds an Event not yet ended or was first fetched within 7
+  days. Never a FETCH_BLOCKED item (the acquisition retry schedule owns
+  those), never a discovery-synthesized body (its collector re-reads it), never
+  whole-page `visible_text` (no scope; includes every Naver blog body, whose
+  robots.txt also prohibits automated retrieval for AI training/RAG).
+  Production: 116 eligible (danceinfo.net 87, m.cafe.daum.net 29).
+* **When:** every 24 h while the Event is within 14 days or running, every
+  72 h otherwise; sooner (not under 12 h) when the discovery record was stored
+  again after the last check; an explicit backoff after a failure.
+* **How much:** 2 per scheduler tick inside the existing `content-acquisition`
+  job (no new job), 40 per host per 24 h from `content_fetch_log`, the
+  acquisition politeness delay, a host paused an hour after a 429.
+* **How:** `acquisition.fetch()` with a guarded opener - every hop a public
+  address on the article's own host, never down to http, robots-allowed,
+  at most 5 redirects, at most 3 MB (refused, never truncated). Validators
+  are sent when a server gave them and a 304 is honoured; measured,
+  danceinfo.net sends an ETag and answers 200 anyway, Daum and tistory send
+  none, so the content hash decides.
+* **Outcomes:** UNCHANGED / NOT_MODIFIED move only `refresh_checked_at` - not
+  `fetched_at`, the body or the input signature, so nothing is re-extracted.
+  REVISED replaces the body and calls `mark_needs_reextract()` in one
+  transaction, compare-and-set on the body it compared against (otherwise
+  SUPERSEDED, response dropped). Failures (FAILED, RATE_LIMITED, NOT_FOUND,
+  FORBIDDEN, ROBOTS_DISALLOWED, REFUSED, BODY_UNAVAILABLE, ADAPTER_MISMATCH)
+  never touch the body, its status or its Event and never read as current;
+  403 and robots stop re-checks for good, 404 after two.
+
+Migration 051: `source_item_content.refresh_*` (attempted, checked, outcome,
+failures, next, error, revised, etag, last_modified) and
+`content_fetch_log.purpose` / `refresh_result`. No backfill.
+
+### Protected source review
+
+`/admin/intake/{id}` gains *Article freshness* and *Protected source review*:
+the skip reason and last applied extraction (or UNKNOWN), each related
+candidate linked to `/admin/review/{candidate_id}`, each Event with its
+fields and upcoming/past, the evidence still held (the longest body ever
+served and whether it is kept, snippet, poster URLs, OCR'd images, human
+actions) and the required action - review against the evidence through the
+existing EDIT / CONFIRM / REJECT (auth, request token, audit trail), or keep
+the data. Read-only; nothing is fetched or corrected automatically. The
+intake list gains a *review* filter (blocked, body lost per the fetch log,
+feeding an Event) - on Production exactly 643, 646 and 647 - and two cards;
+`GET /api/admin/articles/refresh-summary` returns the operator counts.
+
+### Production clone
+
+Migration and a full scheduler tick with no network change nothing (Events,
+decisions, public search identical). 41 real re-checks: 35 UNCHANGED, 6
+REVISED (all publisher edits, above), 0 failures; 6 re-extractions, 0 failed;
+Event fields unchanged (the edits do not touch what engine 1.16 extracts).
+Three synthetic body revisions on real items: the two whose clock moved
+changed start time under the same event_id; nothing else in the corpus moved.
+
+Runtime 3,709 passed / 16 skipped / 0 failed (disposable DB, local and the
+board's `scripts/run-container-tests.sh`); engine 2,043 passed / 1 skipped.
+61 new tests (`tests/test_v09643_article_refresh.py`).
+
 ## v0.96.42 Source Revision Invalidation & Extraction Freshness Integrity
 
 Product Runtime 0.96.42; Information Engine 1.16 (unchanged); normalization 3

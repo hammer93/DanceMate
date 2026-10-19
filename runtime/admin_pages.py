@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
     acquisition,
+    article_refresh,
     events_api,
     admin,
     candidates,
@@ -59,6 +60,19 @@ FRESHNESS_TONE = {
     content_store.HUMAN_DECISION_KEPT: "muted",
     content_store.REEXTRACTION_NOT_VERIFIED: "muted",
     content_store.NOT_EXTRACTED: "muted",
+}
+
+# v0.96.43: article freshness -> badge tone. "Due" is a schedule, not a
+# defect, so it never warns; only a failed re-check or a revision the engine
+# has not read yet does.
+ARTICLE_TONE = {
+    article_refresh.ARTICLE_CURRENT: "ok",
+    article_refresh.ARTICLE_REFRESH_DUE: "muted",
+    article_refresh.ARTICLE_REFRESH_PENDING: "muted",
+    article_refresh.ARTICLE_REFRESH_FAILED: "warn",
+    article_refresh.ARTICLE_CHANGED_REEXTRACTION_PENDING: "warn",
+    article_refresh.NOT_ELIGIBLE: "muted",
+    article_refresh.SOURCE_FETCH_BLOCKED: "bad",
 }
 
 REVIEW_TONE = {
@@ -121,6 +135,9 @@ def admin_intake(
         backlog = content_store.reprocess_backlog(con, engine_version)
         not_applied = content_store.count_listing(
             con, extraction="NOT_APPLIED", engine_version=engine_version)
+        to_review = content_store.count_listing(
+            con, extraction="REVIEW", engine_version=engine_version)
+        refresh = article_refresh.summary(con)
         all_sources = source_master.list_sources(con)
 
     cards = admin._cards([
@@ -135,6 +152,12 @@ def admin_intake(
          f"source changed after engine {engine_version} read it"),
         ("Engine update not applied", not_applied,
          "kept by the FETCH_BLOCKED protection; see the Extraction filter"),
+        ("Protected, review recommended", to_review,
+         "blocked, body lost, feeding an Event; Extraction filter: review"),
+        ("Article re-checks (24h)", refresh["refresh_attempted_24h"],
+         f"{refresh['eligible_full_articles']} eligible, {refresh['refresh_due']} due, "
+         f"{refresh['relevant_content_revised_24h']} revised, "
+         f"{refresh['refresh_failed_24h']} failed"),
     ])
 
     table_rows = []
@@ -174,7 +197,8 @@ def admin_intake(
                          ("FAILED", "re-read failed"),
                          ("NOT_APPLIED", "engine update not applied"),
                          ("HUMAN_KEPT", "kept by a human review"),
-                         ("UNRECORDED_BLOCKED", "blocked, not yet recorded"))
+                         ("UNRECORDED_BLOCKED", "blocked, not yet recorded"),
+                         ("REVIEW", "review: blocked, body lost, has events"))
     )
     source_options = "".join(
         f'<option value="{s["source_id"]}"{" selected" if source_id == str(s["source_id"]) else ""}>'
@@ -222,6 +246,10 @@ def admin_intake_detail(
         item = content_store.detail(con, source_item_id)
         fresh = (engine_ingest.freshness(_settings(), con, source_item_id)
                  if item is not None else None)
+        article = (article_refresh.state(article_refresh.inspect(con, source_item_id))
+                   if item is not None and item.get("content") else None)
+        protected = (content_store.protected_review(con, source_item_id, fresh)
+                     if fresh else None)
     if item is None:
         raise HTTPException(status_code=404, detail="source item not found")
 
@@ -292,6 +320,81 @@ def admin_intake_detail(
               'itself is never bypassed automatically.</p>'
               if content_store.FLAG_REVIEW_RECOMMENDED in fresh["flags"] else "")
 
+    # v0.96.43: whether the article this body came from has been re-checked.
+    article_html = '<p class="note">no content row yet</p>'
+    if article:
+        article_html = field_rows([
+            ("State", admin._badge(article["state"],
+                                   ARTICLE_TONE.get(article["state"], "muted"))),
+            ("Why", E(article["reason"])),
+            ("Eligible for re-check", "yes" if article["eligible"] else "no"),
+            ("Event not ended", E(str(article["next_event_date"] or "-"))),
+            ("Body fetched at", E(str(article["fetched_at"] or "-"))[:19]),
+            ("Last re-check", E(str(article["refresh_attempted_at"] or "never"))[:19]
+             + (f' <span class="note">{E(str(article["refresh_outcome"]))}</span>'
+                if article["refresh_outcome"] else "")),
+            ("Last successful check", E(str(article["refresh_checked_at"] or "-"))[:19]),
+            ("Next re-check", E(str(article["refresh_next_at"] or article["next_due_at"]
+                                    or "-"))[:19]),
+            ("Consecutive failures", E(str(article["refresh_failures"]))),
+            ("Last revision stored", E(str(article["refresh_revised_at"] or "-"))[:19]),
+            ("Host budget (24h)", E(f'{article["host_used_24h"] or 0} / '
+                                    f'{article["host_daily_budget"]} on {article["host"] or "-"}')),
+        ])
+
+    # v0.96.43: the protected-source review, read-only. Corrections are made
+    # through the candidate's own Review page, never here.
+    review_html = ""
+    if protected and (protected["review_recommended"]
+                      or (protected["events"] and status_value == acquisition.FETCH_BLOCKED)):
+        evidence = protected["evidence"]
+        candidates_html = " ".join(
+            f'<a href="/admin/review/{cid}">candidate {cid}</a>'
+            for cid in protected["candidate_ids"]) or "-"
+        event_rows = [
+            [f'<a href="/admin/events/{e["event_id"]}/sources">{e["event_id"]}</a>',
+             E(str(e["candidate_id"])), E(str(e["event_name"] or "")[:48]),
+             E(str(e["event_date"])) + (f' ~ {E(str(e["end_date"]))}' if e["end_date"] else ""),
+             E(str(e["start_time"] or "-"))[:5] + "-" + E(str(e["end_time"] or "-"))[:5],
+             E(str(e["venue_text"] or "-")), E(str(e["listing_state"] or "-")),
+             E(str(e["time_evidence"] or "-")),
+             "upcoming" if e["not_ended"] else "past"]
+            for e in protected["events"]
+        ]
+        if evidence["best_fetched_chars"]:
+            best = (f'{evidence["best_fetched_chars"]} chars served '
+                    f'{str(evidence["best_fetched_at"])[:10]}; '
+                    + ("still held" if evidence["article_text_held"]
+                       else "not retained (a later refusal erased the text)"))
+        else:
+            best = "never served"
+        review_html = (
+            "<h2>Protected source review</h2>"
+            + field_rows([
+                ("Review recommended", admin._badge(
+                    "REVIEW_RECOMMENDED" if protected["review_recommended"] else "no",
+                    "warn" if protected["review_recommended"] else "muted")),
+                ("Reason for skip", E(fresh["reason"])),
+                ("Last applied extraction", E(str(fresh["last_applied_engine_version"]))),
+                ("Related candidates", candidates_html),
+                ("Article body", E(best)),
+                ("Discovery snippet", E(f'{evidence["discovery_snippet_chars"]} chars')),
+                ("Poster images", " ".join(
+                    f'<a href="{E(u)}" target="_blank" rel="noreferrer noopener">poster</a>'
+                    for u in evidence["poster_urls"]) or "-"),
+                ("Images read by OCR", E(f'{evidence["images_with_ocr_text"]} of '
+                                         f'{evidence["images_fetched"]} fetched')),
+                ("Human review actions", E(str(evidence["human_review_actions"]))),
+                ("Required human action",
+                 admin._badge(protected["required_action"],
+                              "warn" if protected["review_recommended"] else "muted")
+                 + f'<div class="note">{E(protected["required_action_text"])}</div>'),
+            ])
+            + admin._table(["Event", "Candidate", "Name", "Date", "Clock", "Venue",
+                            "Listing", "Time evidence", ""], event_rows,
+                           empty="no event built from this item")
+        )
+
     def block(title: str, text: str | None, note: str) -> str:
         content_html = (
             f'<pre style="white-space:pre-wrap;word-break:break-word;margin:0;'
@@ -306,6 +409,8 @@ def admin_intake_detail(
         f"<h2>Discovery</h2>{discovery}"
         f"<h2>Acquisition</h2>{acquired}"
         f"<h2>Extraction freshness</h2>{freshness_html}"
+        f"<h2>Article freshness</h2>{article_html}"
+        + review_html
         + block("Search snippet (discovery)", snippet,
                 "What the provider's search API returned. Incomplete by definition.")
         + block("Acquired article text", content.get("extracted_text"),
@@ -670,6 +775,11 @@ def admin_review_detail(
         ["Field", "Value"],
         [
             ["Source", E(str(found.get("source_id") or "-"))],
+            # v0.96.43: back to the item's freshness and protected-source review.
+            ["Source item",
+             f'<a href="/admin/intake/{item["source_item_id"]}">intake '
+             f'{item["source_item_id"]}</a> (extraction and article freshness)'
+             if item else "-"],
             ["Original URL",
              f'<a href="{E(found["source_url"])}" target="_blank" rel="noreferrer noopener">'
              f'Open Source</a>' if found.get("source_url") else "-"],
@@ -1149,9 +1259,23 @@ def api_intake_detail(source_item_id: int, _: str = Depends(require_admin)) -> J
         if found is not None:
             # v0.96.42: the same freshness the intake page shows.
             found["freshness"] = engine_ingest.freshness(_settings(), con, source_item_id)
+            # v0.96.43: and the article re-check and protected-source review.
+            if found.get("content"):
+                found["article_refresh"] = article_refresh.state(
+                    article_refresh.inspect(con, source_item_id))
+            if found["freshness"]:
+                found["protected_review"] = content_store.protected_review(
+                    con, source_item_id, found["freshness"])
     if found is None:
         raise HTTPException(status_code=404, detail="source item not found")
     return admin._dump(found)
+
+
+@api.get("/articles/refresh-summary")
+def api_article_refresh_summary(_: str = Depends(require_admin)) -> JSONResponse:
+    """v0.96.43: the article re-check counts the intake page summarises."""
+    with _connection() as con:
+        return admin._dump(article_refresh.summary(con))
 
 
 @api.get("/review")

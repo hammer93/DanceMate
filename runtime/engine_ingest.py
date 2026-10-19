@@ -537,6 +537,8 @@ def freshness(settings: Settings, pg, source_item_id: int) -> dict[str, Any] | N
         body_lost=body_lost, used_image_ocr=used_ocr, has_events=facts["has_events"])
     result["source_item_id"] = source_item_id
     result["candidates"] = len(candidate_ids)
+    # v0.96.43: which ones, so the intake page can link each to Review.
+    result["candidate_ids"] = list(candidate_ids)
     return result
 
 

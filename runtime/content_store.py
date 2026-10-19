@@ -218,6 +218,10 @@ def record_outcome(
     *, now: datetime | None = None,
 ) -> dict[str, Any]:
     """Store what a fetch produced and schedule any retry."""
+    if outcome.status == acquisition.NOT_MODIFIED:
+        # A 304 carries no body; written here it would erase the one it
+        # confirms. Only `runtime.article_refresh` asks conditionally.
+        raise ValueError("a 304 is article_refresh's to record, not record_outcome()'s")
     now = now or datetime.now(timezone.utc)
     existing = ensure_row(con, source_item_id)
     attempt_count = int(existing.get("attempt_count") or 0) + 1
@@ -929,7 +933,31 @@ EXTRACTION_FILTERS = {
     "NOT_APPLIED": "c.extraction_outcome = ANY(%(preserved)s)",
     "HUMAN_KEPT": "c.extraction_outcome = %(kept)s",
     "UNRECORDED_BLOCKED": "c.acquisition_status = %(blocked)s AND c.extraction_outcome IS NULL",
+    # v0.96.43: the protected items an operator should look at - blocked,
+    # served a body once that the fetch log remembers and the row no longer
+    # holds (`engine_ingest._blocked_body_lost()`'s own test, asked of the
+    # log in SQL), not re-read since, feeding an Event, and not yet looked
+    # at by a person (a Review action on one of its Events' candidates).
+    # Production, 2026-10-20: exactly 643, 646 and 647, the three the
+    # per-item derivation flags REVIEW_RECOMMENDED.
+    "REVIEW": "c.acquisition_status = %(blocked)s "
+              "AND COALESCE(c.extraction_outcome, '') <> %(extracted)s "
+              "AND EXISTS (SELECT 1 FROM events e WHERE e.source_item_id = c.source_item_id) "
+              "AND NOT EXISTS (SELECT 1 FROM human_review_actions h "
+              "  WHERE h.source_item_id = c.source_item_id OR h.candidate_id IN "
+              "    (SELECT e.candidate_id FROM events e WHERE e.source_item_id = c.source_item_id)) "
+              "AND EXISTS (SELECT 1 FROM content_fetch_log l "
+              "  WHERE l.source_item_id = c.source_item_id AND l.outcome = ANY(%(full)s) "
+              "    AND l.text_length >= %(min_text)s "
+              "    AND l.text_length > length(COALESCE(NULLIF(i.raw->>'body', ''), i.body, '')))",
 }
+
+
+def review_filter_params() -> dict[str, Any]:
+    """The parameters `EXTRACTION_FILTERS["REVIEW"]` binds."""
+    return {"blocked": acquisition.FETCH_BLOCKED, "extracted": OUTCOME_EXTRACTED,
+            "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
+            "min_text": acquisition.MINIMUM_USEFUL_TEXT}
 
 
 def summary(con) -> dict[str, Any]:
@@ -1003,6 +1031,7 @@ def _listing_where(
             "engine": engine_version, "max_attempts": MAX_REPROCESS_ATTEMPTS,
             "preserved": list(PRESERVED_OUTCOMES), "kept": OUTCOME_KEPT_HUMAN_REVIEWED,
             "blocked": acquisition.FETCH_BLOCKED, **_signature_params(),
+            **review_filter_params(),
         })
     return where, params
 
@@ -1100,3 +1129,112 @@ def detail(con, source_item_id: int) -> dict[str, Any] | None:
         )
         item["fetch_log"] = _rows(cur)
     return item
+
+
+# --- protected source review (v0.96.43) ----------------------------------------
+#
+# v0.96.42 could say *that* an item's stored Event was not re-read by the
+# running engine (ENGINE_UPDATE_NOT_APPLIED, REVIEW_RECOMMENDED). This puts
+# what an operator needs to act on it beside that verdict: the candidates and
+# Events it concerns, what original evidence is still held, and which of the
+# existing Review actions applies. Read-only, like the page it feeds; every
+# correction goes through `/admin/review/{candidate_id}`, which already has
+# authentication, the request token and the audit trail.
+
+ACTION_REVIEW = "REVIEW_AGAINST_EVIDENCE"
+ACTION_REQUEST_EVIDENCE = "REQUEST_ADDITIONAL_EVIDENCE"
+ACTION_NONE = "NONE"
+
+#: The event fields an operator compares against the evidence.
+REVIEW_EVENT_FIELDS = (
+    "event_id", "candidate_id", "event_name", "event_type", "event_date", "end_date",
+    "start_time", "end_time", "end_day_offset", "venue_text", "venue_id", "fee", "dj",
+    "listing_state", "canonical_event_id", "review_state", "time_evidence",
+)
+
+
+def protected_review(con, source_item_id: int, freshness: dict[str, Any] | None
+                     ) -> dict[str, Any]:
+    """What a protected (or otherwise not-re-read) item needs reviewed."""
+    freshness = freshness or {}
+    candidate_ids = list(freshness.get("candidate_ids") or [])
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT " + ", ".join(REVIEW_EVENT_FIELDS) + ", "
+            "  (COALESCE(end_date, event_date) >= (now() AT TIME ZONE 'Asia/Seoul')::date) "
+            "    AS not_ended "
+            "FROM events WHERE source_item_id = %s OR primary_source_item_id = %s "
+            "  OR candidate_id = ANY(%s) ORDER BY event_date, event_id",
+            (source_item_id, source_item_id, candidate_ids),
+        )
+        events = _rows(cur)
+        cur.execute(
+            "SELECT text_length, fetched_at, http_status FROM content_fetch_log "
+            "WHERE source_item_id = %s AND outcome = ANY(%s) AND text_length > 0 "
+            "ORDER BY text_length DESC, fetched_at DESC LIMIT 1",
+            (source_item_id, [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL]),
+        )
+        best = cur.fetchone()
+        cur.execute(
+            "SELECT c.poster_candidates, length(COALESCE(i.raw->>'body', i.body, '')), "
+            "  c.extracted_text IS NOT NULL "
+            "FROM source_items i LEFT JOIN source_item_content c USING (source_item_id) "
+            "WHERE i.source_item_id = %s", (source_item_id,))
+        posters, snippet_chars, holds_text = cur.fetchone() or (None, 0, False)
+        cur.execute(
+            "SELECT count(*), count(*) FILTER (WHERE ocr_text IS NOT NULL AND ocr_text <> '') "
+            "FROM source_item_image WHERE source_item_id = %s", (source_item_id,))
+        images_fetched, images_read = cur.fetchone()
+        cur.execute(
+            "SELECT count(*), max(created_at) FROM human_review_actions "
+            "WHERE candidate_id = ANY(%s) OR source_item_id = %s",
+            (candidate_ids + [e["candidate_id"] for e in events if e.get("candidate_id")],
+             source_item_id))
+        human_actions, last_human_action = cur.fetchone()
+
+    evidence = {
+        "article_text_held": bool(holds_text),
+        "best_fetched_chars": int(best[0]) if best else 0,
+        "best_fetched_at": best[1] if best else None,
+        "discovery_snippet_chars": int(snippet_chars or 0),
+        "poster_urls": list(posters or []),
+        "images_fetched": int(images_fetched),
+        "images_with_ocr_text": int(images_read),
+        "human_review_actions": int(human_actions),
+        "last_human_action_at": last_human_action,
+    }
+    flagged = FLAG_REVIEW_RECOMMENDED in (freshness.get("flags") or [])
+    # A person has looked already: their decision stands, nothing is asked twice.
+    recommended = flagged and not evidence["human_review_actions"]
+    original = evidence["poster_urls"] or evidence["images_with_ocr_text"] \
+        or evidence["article_text_held"] or evidence["discovery_snippet_chars"]
+    reviewed = evidence["human_review_actions"] and (
+        flagged or freshness.get("state") == HUMAN_DECISION_KEPT)
+    if reviewed:
+        action, what = ACTION_NONE, (
+            f"reviewed by a person ({evidence['human_review_actions']} action(s), last "
+            f"{str(evidence['last_human_action_at'])[:19]}); their decision stands and the "
+            "FETCH_BLOCKED protection stays")
+    elif not recommended:
+        action, what = ACTION_NONE, "no review recommended for this item"
+    elif original:
+        action, what = ACTION_REVIEW, (
+            "Open each candidate in Review and compare its Event fields with the original "
+            "evidence below. EDIT corrects a field the evidence settles, CONFIRM records "
+            "that the stored values stand, REJECT removes a non-event. If the evidence does "
+            "not settle a field, keep the existing data. Nothing changes until you act: "
+            "the FETCH_BLOCKED protection stays and this page fetches nothing.")
+    else:
+        action, what = ACTION_REQUEST_EVIDENCE, (
+            "No original evidence is held here: check the Original URL by hand before "
+            "changing anything, and keep the existing data until something settles it.")
+    return {
+        "source_item_id": source_item_id,
+        "review_recommended": recommended,
+        "candidate_ids": candidate_ids,
+        "events": events,
+        "events_not_ended": sum(1 for e in events if e.get("not_ended")),
+        "evidence": evidence,
+        "required_action": action,
+        "required_action_text": what,
+    }

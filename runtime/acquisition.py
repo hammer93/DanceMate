@@ -50,6 +50,11 @@ UNSUPPORTED = "UNSUPPORTED"
 
 SETTLED = frozenset({FETCHED_FULL, FETCHED_PARTIAL, LOGIN_REQUIRED, UNSUPPORTED})
 
+# v0.96.43: a conditional re-fetch answered 304. Only `runtime.article_refresh`
+# sends validators, so only it ever sees this; `content_store.record_outcome()`
+# refuses it rather than store "no body" over a body that is still current.
+NOT_MODIFIED = "NOT_MODIFIED"
+
 # FETCH_BLOCKED belongs here. It used to be in neither set, which read as
 # caution and behaved as amnesia: 47 items on the board had been asked for
 # once, refused once, and were never going to be asked again. A community that
@@ -683,6 +688,11 @@ class AcquisitionOutcome:
     error_code: str | None = None
     error: str | None = None
     duration_ms: int = 0
+    # v0.96.43: the validators the server sent, and how long a 429/503 asked
+    # us to wait - read by `runtime.article_refresh`, ignored by everything else.
+    etag: str | None = None
+    last_modified: str | None = None
+    retry_after: str | None = None
 
     @property
     def content_length(self) -> int:
@@ -712,12 +722,30 @@ def _classify_http_error(code: int) -> tuple[str, str]:
     return FETCH_FAILED, "NETWORK"
 
 
-def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> AcquisitionOutcome:
+class FetchRefused(Exception):
+    """An opener declined to complete a request on policy grounds (v0.96.43):
+    an unsafe address, a redirect off the article's own host, an oversized
+    response, a redirect robots.txt disallows. ``code`` becomes the outcome's
+    error_code; the request is reported FETCH_BLOCKED, never retried as if it
+    had been a network blip."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None,
+          headers: dict[str, str] | None = None) -> AcquisitionOutcome:
     """Fetch one post and extract its article body. Never raises.
 
     Tries each public representation in turn. A representation that fails or
     yields no article is not the post failing - the next form gets a go - but
     the last one's outcome is what gets reported.
+
+    v0.96.43: ``headers`` are added to every request (the conditional-GET
+    validators `runtime.article_refresh` sends). A 304 is reported as
+    `NOT_MODIFIED` - only a caller that sent validators can receive one - and
+    an opener's `FetchRefused` as FETCH_BLOCKED with its own code.
     """
     started = time.monotonic()
     options = representations(url)
@@ -745,6 +773,7 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
                 "User-Agent": USER_AGENT,
                 "Accept": "text/html,application/xhtml+xml",
                 "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5",
+                **(headers or {}),
             },
             method="GET",
         )
@@ -753,13 +782,30 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
                 status_code = getattr(response, "status", 200)
                 content_type = response.headers.get("Content-Type", "")
                 charset = response.headers.get_content_charset() or "utf-8"
+                etag = response.headers.get("ETag") or None
+                last_modified = response.headers.get("Last-Modified") or None
                 body = response.read()
                 final_url = response.geturl()
+        except FetchRefused as exc:
+            return AcquisitionOutcome(
+                status=FETCH_BLOCKED, fetched_url=target, error_code=exc.code,
+                error=str(exc), duration_ms=int((time.monotonic() - started) * 1000),
+            )
         except urllib.error.HTTPError as exc:
+            if exc.code == 304:
+                outcome = AcquisitionOutcome(
+                    status=NOT_MODIFIED, fetched_url=target, http_status=304,
+                    etag=exc.headers.get("ETag") if exc.headers else None,
+                    last_modified=exc.headers.get("Last-Modified") if exc.headers else None,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                exc.close()
+                return outcome
             status, retry = _classify_http_error(exc.code)
             last = AcquisitionOutcome(
                 status=status, fetched_url=target, http_status=exc.code,
                 error_code=retry, error=f"HTTP {exc.code}: {exc.reason}",
+                retry_after=exc.headers.get("Retry-After") if exc.headers else None,
                 duration_ms=int((time.monotonic() - started) * 1000),
             )
             continue
@@ -801,7 +847,7 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
                 canonical_url=final_url, http_status=status_code,
                 content_type=content_type, title=extract_title(raw), text=text,
                 images=images, redacted_spans=redacted,
-                duration_ms=duration,
+                duration_ms=duration, etag=etag, last_modified=last_modified,
             )
 
         if len(text) >= MINIMUM_USEFUL_TEXT:
@@ -812,7 +858,7 @@ def fetch(url: str, *, timeout: int = DEFAULT_TIMEOUT, opener=None) -> Acquisiti
                 images=images, redacted_spans=redacted,
                 error_code="THIN_BODY",
                 error=f"only {len(text)} characters of text",
-                duration_ms=duration,
+                duration_ms=duration, etag=etag, last_modified=last_modified,
             )
         else:
             # A page that served no article - Daum's desktop shell looks like

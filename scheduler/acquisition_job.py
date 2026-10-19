@@ -19,7 +19,7 @@ import logging
 import time
 from typing import Any
 
-from runtime import acquisition, content_store, db
+from runtime import acquisition, article_refresh, content_store, db
 from runtime.config import Settings
 
 log = logging.getLogger("dancemate.scheduler.acquisition")
@@ -30,6 +30,7 @@ MAX_FETCHES_PER_TICK = 5
 
 
 def run(settings: Settings, *, max_fetches: int = MAX_FETCHES_PER_TICK,
+        max_refreshes: int = article_refresh.MAX_REFRESHES_PER_TICK,
         sleep=time.sleep) -> str:
     """Fetch due items. Returns a one-line summary for job_runs.detail."""
     counts: dict[str, int] = {}
@@ -46,8 +47,6 @@ def run(settings: Settings, *, max_fetches: int = MAX_FETCHES_PER_TICK,
         queued = content_store.mark_pending(con, newly)
 
         due = content_store.due_for_acquisition(con, limit=max_fetches)
-        if not due:
-            return f"nothing due (queued {queued})"
 
         for index, item in enumerate(due):
             if index:
@@ -65,6 +64,21 @@ def run(settings: Settings, *, max_fetches: int = MAX_FETCHES_PER_TICK,
                 outcome.content_length, changed, outcome.error or "",
             )
 
+        # v0.96.43: then re-check a few articles fetched before, within their
+        # own per-tick and per-host budgets (runtime/article_refresh.py). A
+        # failure here is recorded on the item and never fails the tick.
+        try:
+            if due:
+                sleep(acquisition.MIN_DELAY_SECONDS)
+            refreshed = article_refresh.run(con, max_refreshes=max_refreshes, sleep=sleep)
+            refresh_detail = article_refresh.describe(refreshed)
+        except Exception as exc:                                  # noqa: BLE001
+            log.exception("article refresh failed")
+            refresh_detail = f"refresh error {type(exc).__name__}: {exc}"[:200]
+
+    if not due:
+        return f"nothing due (queued {queued}); {refresh_detail}"
+
     fetched = counts.get(acquisition.FETCHED_FULL, 0)
     partial = counts.get(acquisition.FETCHED_PARTIAL, 0)
     average = total_chars // max(1, sum(counts.values()))
@@ -78,7 +92,7 @@ def run(settings: Settings, *, max_fetches: int = MAX_FETCHES_PER_TICK,
         summary += f", {other}"
     if queued:
         summary += f", queued {queued}"
-    return summary
+    return f"{summary}; {refresh_detail}"
 
 
 def reacquire(settings: Settings, source_item_ids: list[int]) -> dict[str, Any]:
