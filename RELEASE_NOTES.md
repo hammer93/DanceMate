@@ -1,5 +1,109 @@
 # DanceMate Release Notes
 
+## v0.96.42 Source Revision Invalidation & Extraction Freshness Integrity
+
+Product Runtime 0.96.42; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 050. When an organizer edits a page DanceMate has
+already read, the event now follows the edit - re-read by the running engine,
+that page only - and an operator can see which items the running engine's
+reading is *not* in force for.
+
+### What was wrong, measured
+
+`intake.store_item()` noticed an edited page, stored it and set
+`ingest_state = PENDING`, and nothing read it again:
+
+* `ingest_pending()` re-ingests through `database.persist_raw_post()`, which
+  keys a post on its URL and returns `is_new = False`: nothing is extracted.
+* `needing_reprocess()`'s body-arrived branch never fires - for TangoNOW,
+  Tango Calendar Korea and Miltang `settle_full_body()` stamps
+  `reprocessed_at` on the revision itself; a fetched article is not fetched
+  again.
+* The row still reads the running engine version, so the engine-version
+  branch is false too.
+
+Item 6234's re-collected title waited for the 1.16 bump. On Production
+(2026-10-19, read-only), comparing the engine's own raw store with the input a
+re-read builds today: 4,523 items consistent; 44 whose engine copy of the
+title was old but whose Event was current (re-read by the bump after their
+revision); and stale Events or candidates for 6388 (TangoNOW, DJ 민트 added),
+6503 (Daum, longer title), 6325 (Tango Calendar Korea, fee 13,000 -> 14,000)
+and 6510 (DJ 찬루카 -> 잔루카). By the clone three more Naver snippets
+(5198, 5287, 6458) had been revised the same evening.
+
+The re-read itself was never the problem: it builds its post from
+PostgreSQL (the revised title and body). The engine's stored post kept its
+first-ingest title, read only as the admin candidate list's display fallback.
+
+### An item says what the engine last read
+
+Migration 050 adds to `source_item_content`:
+
+* `extracted_input_signature` - `content_store.INPUT_SIGNATURE`, an md5 over
+  exactly what `_to_raw_post()` reads: `source_items.content_hash` (external
+  id, url, title, body, published date), the content row's status, hash and
+  parsed title, and the collector's judgement keys (present-and-null distinct
+  from absent). Not collected_at, attempt counts, run ids, fetch timing or
+  poster URLs: an unchanged page collected again never moves it.
+* `extraction_outcome` (EXTRACTED, PRESERVED_BODY_LOST,
+  PRESERVED_IMAGE_EVIDENCE_LOST, KEPT_HUMAN_REVIEWED),
+  `applied_engine_version` (moved only by EXTRACTED) and
+  `extraction_outcome_at`.
+
+No backfill: NULL means "recorded before v0.96.42", reported as unknown.
+
+### Re-reading exactly the revised items
+
+* `needing_reprocess()` branch (4): a recorded signature that differs from
+  the current one. Every finishing path stamps the signature *read at
+  selection*, so a revision stored while a pass runs leaves the row revised and
+  it is read again - no lost revision, and the later pass replaces the earlier
+  reading. `reprocess_backlog()` counts it as outdated (`revised_since_read`).
+* The content-revision branch of `store_item()` now also calls
+  `mark_needs_reextract()`, in one transaction with the revision write (the
+  collector's connection is autocommit).
+* A re-read writes the title, date and collector record into the engine's raw
+  store with the body it already wrote.
+* `engine_ingest.reconcile_unsigned()` signs pre-050 rows a batch per
+  `engine-reprocess` tick, against the engine's raw store: same title and
+  body -> signed; same body, different title, last pass after the revision ->
+  raw title corrected, signed; anything else -> back in the queue, under every
+  existing protection.
+* The 1->1 shape keeps its candidate id and Event id; human-reviewed
+  candidates are kept (KEPT_HUMAN_REVIEWED); FETCH_BLOCKED items whose body is
+  gone are kept (PRESERVED_*), as before.
+
+### Which reading is in force
+
+`/admin/intake/{id}` and `/api/admin/intake/{id}` show one freshness state
+(`content_store.extraction_freshness()`): EXTRACTION_CURRENT,
+REEXTRACTION_PENDING, REEXTRACTION_FAILED, ENGINE_UPDATE_NOT_APPLIED,
+HUMAN_DECISION_KEPT, REEXTRACTION_NOT_VERIFIED, NOT_EXTRACTED; flags
+SOURCE_FETCH_BLOCKED and REVIEW_RECOMMENDED; basis RECORDED or DERIVED; the
+last applied engine version, or UNKNOWN. A pre-050 row's state is derived
+from the reprocess policy's own tests (`_blocked_body_lost()`,
+`_candidates_used_image_ocr()`), never guessed; an ordinary blocked item is
+current and is never given a warning. The intake list gains an Extraction
+column and filter and two cards.
+
+### Production clone (pg_dump + engine store backup, scheduler jobs only)
+
+* Before collecting anything: 10 items re-read - the seven above, 644 and
+  2698 (both FETCH_BLOCKED; kept), 2245 (human-reviewed; kept), and the three
+  Naver snippets - all with changed input; 0 re-read with an unchanged input.
+  77 rows signed, 44 raw-store titles corrected.
+* Two Events change: 1622231 gains DJ 민트; 1626661 takes 6503's revised
+  title (its series key follows the name; same Event id). No Event lost or
+  created, no decision added, human decisions and the Venue Master identical.
+* ENGINE_UPDATE_NOT_APPLIED: exactly the six K-TANGO items whose fetched body
+  v0.96.9 protects (643, 644, 646-649); review recommended for the three that
+  carry an Event. No other warning.
+* The three settled calendars collected twice: 0 revised, 0 re-read, 0 rows
+  changed.
+
+Runtime 3,648 passed / 16 skipped / 0 failed (disposable DB); engine 2,043
+passed / 1 skipped. The revision tests fail against the v0.96.41 path.
+
 ## v0.96.41 Multi-Day Event Discovery, Date-Only Coverage & Programme-Aware Extraction
 
 Product Runtime 0.96.41; Information Engine 1.15 -> 1.16; normalization 2 -> 3;

@@ -317,6 +317,73 @@ _READABLE_PARAMS = {
     "min_text": acquisition.MINIMUM_USEFUL_TEXT,
 }
 
+# v0.96.42: what an item's engine input *is*, as one value the database can
+# compare - so "this page was revised after the engine read it" is a fact in
+# the row rather than something a call site has to remember to say.
+#
+# Exactly the inputs `engine_ingest._to_raw_post()` builds a post from:
+#
+#   * `source_items.content_hash` - `intake.RawItem.content_hash()`, over
+#     external_id, url, title, body and published_at, the collector's record
+#     of the page (a title-only edit moves it);
+#   * the content row's acquisition status, its own content_hash (the fetched
+#     or settled article text) and the page title acquisition parsed - the
+#     body a re-extraction reads, and its title fallback;
+#   * the collector's judgement keys (`intake.JUDGEMENT_KEYS`, v0.96.35),
+#     present-and-null distinct from absent, as `intake._judgement()` reads
+#     them.
+#
+# And nothing else: not collected_at, attempt counts, run ids, fetch
+# timestamps or poster URLs (signed, so volatile). Collecting an unchanged
+# page again moves none of these, so it never moves the signature. A
+# blocked refusal repeated stores the same status, a NULL hash and the same
+# title, so neither does that.
+INPUT_SIGNATURE = (
+    "md5(concat_ws(chr(31), coalesce(i.content_hash, ''), "
+    "  coalesce(c.acquisition_status, ''), coalesce(c.content_hash, ''), "
+    "  coalesce(c.title, ''), "
+    "  coalesce((SELECT jsonb_object_agg(k, i.raw -> k) "
+    "              FROM unnest(%(judgement_keys)s::text[]) AS k "
+    "             WHERE jsonb_typeof(i.raw) = 'object' AND i.raw ? k)::text, '')))"
+)
+
+#: How the pass that finished an item finished it (migration 050).
+OUTCOME_EXTRACTED = "EXTRACTED"
+OUTCOME_PRESERVED_BODY_LOST = "PRESERVED_BODY_LOST"
+OUTCOME_PRESERVED_IMAGE_EVIDENCE_LOST = "PRESERVED_IMAGE_EVIDENCE_LOST"
+OUTCOME_KEPT_HUMAN_REVIEWED = "KEPT_HUMAN_REVIEWED"
+OUTCOMES = (OUTCOME_EXTRACTED, OUTCOME_PRESERVED_BODY_LOST,
+            OUTCOME_PRESERVED_IMAGE_EVIDENCE_LOST, OUTCOME_KEPT_HUMAN_REVIEWED)
+PRESERVED_OUTCOMES = (OUTCOME_PRESERVED_BODY_LOST, OUTCOME_PRESERVED_IMAGE_EVIDENCE_LOST)
+
+
+def _signature_params() -> dict[str, Any]:
+    from . import intake  # local: intake imports this module lazily too
+
+    return {"judgement_keys": list(intake.JUDGEMENT_KEYS)}
+
+
+# A recorded signature that no longer matches the input: revised since the
+# engine read it. NULL ("recorded before v0.96.42") is not a revision - those
+# rows are signed by `engine_ingest.reconcile_unsigned()`, never assumed stale.
+_REVISED_SINCE_READ = (
+    "(c.extracted_input_signature IS NOT NULL "
+    " AND c.extracted_input_signature <> " + INPUT_SIGNATURE + ")"
+)
+
+
+def input_signature(con, source_item_id: int) -> str | None:
+    """The item's current input signature; None when it has no content row."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT " + INPUT_SIGNATURE + " FROM source_item_content c "
+            "JOIN source_items i ON i.source_item_id = c.source_item_id "
+            "WHERE c.source_item_id = %(id)s",
+            {**_signature_params(), "id": source_item_id},
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
 
 def needing_reprocess(con, *, limit: int = 50, force: bool = False,
                       engine_version: str | None = None,
@@ -404,6 +471,10 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False,
                 "(" + _HAS_READABLE_CONTENT + " AND (c.extracted_engine_version IS NULL "
                 " OR c.extracted_engine_version <> %(engine)s))"
             )
+        # v0.96.42: (4) the input was revised after the pass that finished
+        # this item read it. Not tied to an engine version: a revised page is
+        # re-read by the engine that is running, and only that page is.
+        reasons.append("(" + _HAS_READABLE_CONTENT + " AND " + _REVISED_SINCE_READ + ")")
         where = "(" + " OR ".join(reasons) + ")"
         # The failure cap applies to every operational reason, not only the
         # engine-version one: an item that raises on re-extract wedges the
@@ -427,20 +498,29 @@ def needing_reprocess(con, *, limit: int = 50, force: bool = False,
             # dict-building with no error or warning. v0.84.4: found because
             # classify_with_image_evidence() needs a real title to work
             # with, not a silently-empty one.
+            #
+            # v0.96.42: input_signature is the signature of exactly what this
+            # selection hands the engine. The pass stamps *this* value, not a
+            # fresh one, so a revision stored while the pass runs leaves the
+            # row reading "revised since read" and it is selected again.
             "SELECT c.*, i.url, i.source_id, i.published_at, i.title AS source_item_title, "
-            "       s.source_key, s.source_role, i.raw "
+            "       i.collected_at AS source_collected_at, "
+            "       s.source_key, s.source_role, i.raw, "
+            "       " + INPUT_SIGNATURE + " AS input_signature "
             "FROM source_item_content c "
             "JOIN source_items i ON i.source_item_id = c.source_item_id "
             "JOIN sources s ON s.source_id = i.source_id "
             "WHERE " + where +
             " ORDER BY " + order + " LIMIT %(limit)s",
-            {**params, "limit": limit},
+            {**params, **_signature_params(), "limit": limit},
         )
         return _rows(cur)
 
 
 def mark_reprocessed(con, source_item_id: int, *,
-                     engine_version: str | None = None) -> None:
+                     engine_version: str | None = None,
+                     input_signature: str | None = None,
+                     outcome: str | None = None) -> None:
     """Record that the engine has now read this content.
 
     ``engine_version`` is what takes the row out of the incremental queue
@@ -453,18 +533,37 @@ def mark_reprocessed(con, source_item_id: int, *,
 
     A successful pass also clears any previous failure: the item is healthy
     again, and a stale count would otherwise retire it early next time.
+
+    v0.96.42: finished is not the same as applied, so the pass now says
+    which it was. ``outcome`` is recorded (`OUTCOMES`), and
+    `applied_engine_version` moves only for `OUTCOME_EXTRACTED` - a
+    preserved or human-kept item keeps whatever reading was in force, known or
+    not. ``input_signature`` is the signature the pass *selected* the row
+    with (`needing_reprocess()`'s ``input_signature``), so a revision stored
+    while the pass ran still reads as revised afterwards.
     """
+    if outcome is not None and outcome not in OUTCOMES:
+        raise ValueError(f"unknown extraction outcome {outcome!r}")
     with con.cursor() as cur:
         cur.execute(
             "UPDATE source_item_content SET reprocessed_at = now(), updated_at = now(), "
-            "  extracted_engine_version = COALESCE(%s, extracted_engine_version), "
-            "  reprocess_attempts = 0, reprocess_error = NULL "
-            "WHERE source_item_id = %s",
-            (engine_version, source_item_id),
+            "  extracted_engine_version = COALESCE(%(engine)s, extracted_engine_version), "
+            "  reprocess_attempts = 0, reprocess_error = NULL, "
+            "  extracted_input_signature = COALESCE(%(signature)s, extracted_input_signature), "
+            "  extraction_outcome = COALESCE(%(outcome)s, extraction_outcome), "
+            "  extraction_outcome_at = CASE WHEN %(outcome)s::text IS NULL "
+            "    THEN extraction_outcome_at ELSE now() END, "
+            "  applied_engine_version = CASE WHEN %(outcome)s = %(extracted)s "
+            "    THEN COALESCE(%(engine)s, applied_engine_version) "
+            "    ELSE applied_engine_version END "
+            "WHERE source_item_id = %(id)s",
+            {"engine": engine_version, "signature": input_signature, "outcome": outcome,
+             "extracted": OUTCOME_EXTRACTED, "id": source_item_id},
         )
 
 
-def mark_extracted_engine_version(con, source_item_id: int, engine_version: str) -> None:
+def mark_extracted_engine_version(con, source_item_id: int, engine_version: str, *,
+                                  input_signature: str | None = None) -> None:
     """Stamp the engine version without claiming a re-extract happened.
 
     First ingest already runs the *current* engine over the body it has, so
@@ -472,12 +571,20 @@ def mark_extracted_engine_version(con, source_item_id: int, engine_version: str)
     not been "reprocessed" either, and moving `reprocessed_at` would suppress
     the genuine body-arrived-later pass that `needing_reprocess()` branch (1)
     exists for.
+
+    v0.96.42: first ingest did apply that engine's reading, so it is recorded
+    as `OUTCOME_EXTRACTED`, with the ``input_signature`` read before the
+    ingest built its post (`engine_ingest.ingest_pending()`).
     """
     with con.cursor() as cur:
         cur.execute(
-            "UPDATE source_item_content SET extracted_engine_version = %s, "
-            "  updated_at = now() WHERE source_item_id = %s",
-            (engine_version, source_item_id),
+            "UPDATE source_item_content SET extracted_engine_version = %(engine)s, "
+            "  applied_engine_version = %(engine)s, extraction_outcome = %(extracted)s, "
+            "  extraction_outcome_at = now(), "
+            "  extracted_input_signature = COALESCE(%(signature)s, extracted_input_signature), "
+            "  updated_at = now() WHERE source_item_id = %(id)s",
+            {"engine": engine_version, "extracted": OUTCOME_EXTRACTED,
+             "signature": input_signature, "id": source_item_id},
         )
 
 
@@ -500,12 +607,65 @@ def mark_needs_reextract(con, source_item_id: int) -> None:
     post, so without this the better record would sit in `source_items.raw`
     and never be read. Does not touch `reprocessed_at`: no content arrived,
     so branch (1)'s body-arrived-later pass must stay available.
+
+    v0.96.42: also called for a page whose *text* was revised (the other
+    `store_item()` branch), which needed it just as much - item 6234's
+    re-collected title sat behind `is_new = False` until the next engine
+    bump. It is the explicit request; the input signature it leaves behind
+    is what makes the row read "revised since read" even if a request were
+    ever lost, and does not touch `extracted_input_signature`.
     """
     with con.cursor() as cur:
         cur.execute(
             "UPDATE source_item_content SET extracted_engine_version = NULL, "
             "  updated_at = now() WHERE source_item_id = %s",
             (source_item_id,),
+        )
+
+
+def unsigned_rows(con, engine_version: str, *, limit: int = 500) -> list[dict[str, Any]]:
+    """Readable rows the running engine finished before v0.96.42 recorded
+    what it read - `engine_ingest.reconcile_unsigned()`'s batch, in the same
+    shape `needing_reprocess()` returns. Rows still outdated are left to the
+    queue, which signs them when it re-reads them."""
+    params = {
+        "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
+        "blocked": acquisition.FETCH_BLOCKED,
+        **_READABLE_PARAMS,
+        **_signature_params(),
+        "engine": engine_version,
+        "limit": limit,
+    }
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT c.*, i.url, i.source_id, i.published_at, i.title AS source_item_title, "
+            "       i.collected_at AS source_collected_at, "
+            "       s.source_key, s.source_role, i.raw, "
+            "       " + INPUT_SIGNATURE + " AS input_signature "
+            "FROM source_item_content c "
+            "JOIN source_items i ON i.source_item_id = c.source_item_id "
+            "JOIN sources s ON s.source_id = i.source_id "
+            "WHERE " + _HAS_READABLE_CONTENT +
+            "  AND c.extracted_input_signature IS NULL "
+            "  AND c.extracted_engine_version = %(engine)s "
+            "ORDER BY c.source_item_id LIMIT %(limit)s",
+            params,
+        )
+        return _rows(cur)
+
+
+def sign_input(con, source_item_id: int, input_signature: str) -> None:
+    """Record the signature of an input the engine is shown to have read,
+    without claiming a pass happened now (`reconcile_unsigned()`).
+
+    Leaves `updated_at` alone on purpose: `needing_reprocess()` branch (2)
+    re-reads a blocked item with a poster whenever `updated_at` passes
+    `reprocessed_at`, and signing is not news about its content."""
+    with con.cursor() as cur:
+        cur.execute(
+            "UPDATE source_item_content SET extracted_input_signature = %s "
+            "WHERE source_item_id = %s AND extracted_input_signature IS NULL",
+            (input_signature, source_item_id),
         )
 
 
@@ -576,19 +736,24 @@ def reprocess_backlog(con, engine_version: str, *,
         "engine": engine_version,
         "max_attempts": max_attempts,
         **_READABLE_PARAMS,
+        **_signature_params(),
     }
+    # v0.96.42: an item revised since it was read is not current either -
+    # it is work the queue still has to do, whichever version stamped it.
+    stale = ("(c.extracted_engine_version IS DISTINCT FROM %(engine)s OR "
+             + _REVISED_SINCE_READ + ")")
     with con.cursor() as cur:
         cur.execute(
             "SELECT "
-            "  count(*) FILTER (WHERE c.extracted_engine_version IS NOT DISTINCT FROM "
-            "                         %(engine)s), "
-            "  count(*) FILTER (WHERE c.extracted_engine_version IS DISTINCT FROM "
-            "                         %(engine)s "
+            "  count(*) FILTER (WHERE NOT " + stale + "), "
+            "  count(*) FILTER (WHERE " + stale +
             "                     AND COALESCE(c.reprocess_attempts, 0) < %(max_attempts)s), "
-            "  count(*) FILTER (WHERE c.extracted_engine_version IS DISTINCT FROM "
-            "                         %(engine)s "
+            "  count(*) FILTER (WHERE " + stale +
             "                     AND COALESCE(c.reprocess_attempts, 0) >= %(max_attempts)s), "
-            "  count(*) "
+            "  count(*), "
+            "  count(*) FILTER (WHERE c.extracted_engine_version IS NOT DISTINCT FROM "
+            "                         %(engine)s AND " + _REVISED_SINCE_READ + "), "
+            "  count(*) FILTER (WHERE c.extracted_input_signature IS NULL) "
             # The same join `needing_reprocess()` makes, for the same reason:
             # v0.96.9's readable-content rule asks about the discovery payload
             # a blocked item is actually re-read from.
@@ -597,14 +762,174 @@ def reprocess_backlog(con, engine_version: str, *,
             "WHERE " + _HAS_READABLE_CONTENT,
             params,
         )
-        current, outdated, stalled, total = cur.fetchone()
+        current, outdated, stalled, total, revised, unsigned = cur.fetchone()
     return {
         "engine_version": engine_version,
         "current": int(current),
         "outdated": int(outdated),
         "stalled": int(stalled),
         "with_content": int(total),
+        # Of outdated + stalled: revised since read under the running engine.
+        "revised_since_read": int(revised),
+        # Recorded before v0.96.42 and not yet signed by reconcile_unsigned().
+        "unsigned": int(unsigned),
     }
+
+
+# --- extraction freshness (v0.96.42) ------------------------------------------
+#
+# "The running engine's version is stamped on this row" and "the running
+# engine's reading of this item is the one in force" used to be one value.
+# They are not: a FETCH_BLOCKED item whose input is gone, and an item whose
+# candidate a person reviewed, are both stamped by a pass that applied
+# nothing - item 643 reads 1.16 while its event is still what an older
+# engine read off a poster. These are the states an operator is shown
+# instead, from what the database records, and from what the reprocess
+# policy itself derives where nothing was recorded (rows finished before
+# v0.96.42).
+
+NOT_EXTRACTED = "NOT_EXTRACTED"
+REEXTRACTION_PENDING = "REEXTRACTION_PENDING"
+REEXTRACTION_FAILED = "REEXTRACTION_FAILED"
+EXTRACTION_CURRENT = "EXTRACTION_CURRENT"
+ENGINE_UPDATE_NOT_APPLIED = "ENGINE_UPDATE_NOT_APPLIED"
+HUMAN_DECISION_KEPT = "HUMAN_DECISION_KEPT"
+REEXTRACTION_NOT_VERIFIED = "REEXTRACTION_NOT_VERIFIED"
+FRESHNESS_STATES = (NOT_EXTRACTED, REEXTRACTION_PENDING, REEXTRACTION_FAILED,
+                    EXTRACTION_CURRENT, ENGINE_UPDATE_NOT_APPLIED, HUMAN_DECISION_KEPT,
+                    REEXTRACTION_NOT_VERIFIED)
+FLAG_SOURCE_FETCH_BLOCKED = "SOURCE_FETCH_BLOCKED"
+FLAG_REVIEW_RECOMMENDED = "REVIEW_RECOMMENDED"
+#: Where a state came from: written by the pass, or worked out from the policy.
+BASIS_RECORDED = "RECORDED"
+BASIS_DERIVED = "DERIVED"
+UNKNOWN = "UNKNOWN"
+
+
+def extraction_freshness(content: dict[str, Any] | None, engine_version: str, *,
+                         readable: bool, revised_since_read: bool,
+                         reviewed: bool = False, body_lost: bool | None = None,
+                         used_image_ocr: bool | None = None, has_events: bool = False,
+                         max_attempts: int = MAX_REPROCESS_ATTEMPTS) -> dict[str, Any]:
+    """One item's extraction freshness, for the intake page and its JSON.
+
+    A pure function of the content row and four facts the caller looks up:
+    whether a person reviewed one of its candidates, whether a blocked item's
+    fetched body is gone (`engine_ingest._blocked_body_lost()`, the policy's
+    own test), whether its candidates were read off a poster, and whether it
+    has events. ``body_lost``/``used_image_ocr`` are only consulted for a row
+    whose outcome was never recorded; None means "not known", and an unknown
+    never becomes a warning.
+    """
+    content = content or {}
+    blocked = content.get("acquisition_status") == acquisition.FETCH_BLOCKED
+    stamped = content.get("extracted_engine_version")
+    outcome = content.get("extraction_outcome")
+    applied = content.get("applied_engine_version")
+    attempts = int(content.get("reprocess_attempts") or 0)
+    flags = [FLAG_SOURCE_FETCH_BLOCKED] if blocked else []
+    basis = BASIS_RECORDED
+    if not readable:
+        state, reason = NOT_EXTRACTED, "no content the engine can read is stored"
+    elif stamped != engine_version or revised_since_read:
+        why = ("revised since it was read" if stamped == engine_version
+               else f"read by {stamped or 'no engine version'}, running {engine_version}")
+        if attempts >= max_attempts:
+            state, reason = REEXTRACTION_FAILED, (
+                f"{why}; re-extraction failed {attempts} times: "
+                f"{content.get('reprocess_error') or 'no error recorded'}")
+        else:
+            state, reason = REEXTRACTION_PENDING, why
+    elif outcome == OUTCOME_EXTRACTED:
+        state, reason = EXTRACTION_CURRENT, f"engine {applied} reading applied"
+    elif outcome in PRESERVED_OUTCOMES:
+        state = ENGINE_UPDATE_NOT_APPLIED
+        reason = ("fetch blocked and the body it was read from is gone; the stored "
+                  "candidates were kept" if outcome == OUTCOME_PRESERVED_BODY_LOST else
+                  "its candidates were read off a poster this pass could not read; "
+                  "they were kept")
+    elif outcome == OUTCOME_KEPT_HUMAN_REVIEWED:
+        state, reason = HUMAN_DECISION_KEPT, "a person reviewed its candidate; not re-read"
+    else:
+        # Finished before v0.96.42: nothing recorded how. What the policy
+        # itself says about such a row, and no more.
+        basis = BASIS_DERIVED
+        if reviewed:
+            state, reason = HUMAN_DECISION_KEPT, "a person reviewed its candidate; not re-read"
+        elif not blocked:
+            # An unblocked, unreviewed item is only ever stamped by a pass
+            # that applied its reading (reprocess_acquired / ingest_pending).
+            state, reason = EXTRACTION_CURRENT, f"stamped {stamped}; applied by every path that stamps it"
+        elif body_lost:
+            state, reason = ENGINE_UPDATE_NOT_APPLIED, (
+                "fetch blocked and the body it was read from is gone; every pass "
+                "keeps the stored candidates without asking the engine")
+        elif used_image_ocr:
+            state, reason = REEXTRACTION_NOT_VERIFIED, (
+                "fetch blocked and its candidates came off a poster; whether the "
+                "last pass could read the poster was not recorded")
+        elif body_lost is None or used_image_ocr is None:
+            state, reason = REEXTRACTION_NOT_VERIFIED, "fetch blocked; not enough recorded to say"
+        else:
+            state, reason = EXTRACTION_CURRENT, (
+                f"stamped {stamped}; a blocked item with its input intact is re-read")
+    if state in (ENGINE_UPDATE_NOT_APPLIED, REEXTRACTION_NOT_VERIFIED) and has_events:
+        flags.append(FLAG_REVIEW_RECOMMENDED)
+    return {
+        "state": state,
+        "basis": basis,
+        "reason": reason,
+        "flags": flags,
+        "current_engine_version": engine_version,
+        "stamped_engine_version": stamped,
+        "last_applied_engine_version": applied or UNKNOWN,
+        "extraction_outcome": outcome or UNKNOWN,
+        "extraction_outcome_at": content.get("extraction_outcome_at"),
+        "last_reprocessed_at": content.get("reprocessed_at"),
+        "input_signature_recorded": content.get("extracted_input_signature"),
+        "revised_since_read": revised_since_read,
+        "reprocess_attempts": attempts,
+        "reprocess_error": content.get("reprocess_error"),
+    }
+
+
+def freshness_inputs(con, source_item_id: int) -> dict[str, Any]:
+    """The database facts `extraction_freshness()` needs about one item."""
+    params = {
+        "full": [acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL],
+        "blocked": acquisition.FETCH_BLOCKED,
+        **_READABLE_PARAMS,
+        **_signature_params(),
+        "id": source_item_id,
+    }
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT " + _HAS_READABLE_CONTENT + ", " + _REVISED_SINCE_READ + ", "
+            "  EXISTS (SELECT 1 FROM events e WHERE e.source_item_id = i.source_item_id) "
+            "FROM source_item_content c "
+            "JOIN source_items i ON i.source_item_id = c.source_item_id "
+            "WHERE c.source_item_id = %(id)s",
+            params,
+        )
+        row = cur.fetchone()
+    if row is None:
+        return {"readable": False, "revised_since_read": False, "has_events": False}
+    return {"readable": bool(row[0]), "revised_since_read": bool(row[1]),
+            "has_events": bool(row[2])}
+
+
+# The intake list's extraction filter: recorded facts only, in SQL, so a
+# page of 50 never asks the engine store anything. The detail page refines
+# an UNRECORDED_BLOCKED row with the policy's derivation.
+EXTRACTION_FILTERS = {
+    "PENDING": "(c.extracted_engine_version IS DISTINCT FROM %(engine)s OR "
+               + _REVISED_SINCE_READ + ") AND COALESCE(c.reprocess_attempts, 0) < %(max_attempts)s",
+    "FAILED": "(c.extracted_engine_version IS DISTINCT FROM %(engine)s OR "
+              + _REVISED_SINCE_READ + ") AND COALESCE(c.reprocess_attempts, 0) >= %(max_attempts)s",
+    "NOT_APPLIED": "c.extraction_outcome = ANY(%(preserved)s)",
+    "HUMAN_KEPT": "c.extraction_outcome = %(kept)s",
+    "UNRECORDED_BLOCKED": "c.acquisition_status = %(blocked)s AND c.extraction_outcome IS NULL",
+}
 
 
 def summary(con) -> dict[str, Any]:
@@ -637,54 +962,91 @@ def summary(con) -> dict[str, Any]:
     }
 
 
+def listing_extraction_label(row: dict[str, Any], engine_version: str) -> tuple[str, str]:
+    """The intake list's one-word extraction state and its tone, from what the
+    row records (the detail page adds the policy's derivation)."""
+    outcome = row.get("extraction_outcome")
+    stamped = row.get("extracted_engine_version")
+    if row.get("acquisition_status") in (None, acquisition.METADATA_ONLY) and not stamped:
+        return "NOT READ", "muted"
+    if stamped != engine_version or row.get("revised_since_read"):
+        return "PENDING", "warn"
+    if outcome in PRESERVED_OUTCOMES:
+        return "NOT APPLIED", "warn"
+    if outcome == OUTCOME_KEPT_HUMAN_REVIEWED:
+        return "HUMAN KEPT", "muted"
+    if outcome == OUTCOME_EXTRACTED:
+        return "CURRENT", "ok"
+    if row.get("acquisition_status") == acquisition.FETCH_BLOCKED:
+        return "UNRECORDED", "muted"
+    return "CURRENT", "ok"
+
+
 def _listing_where(
     *, status: str | None, source_id: int | None, today_only: bool,
-) -> tuple[list[str], list[Any]]:
+    extraction: str | None = None, engine_version: str | None = None,
+) -> tuple[list[str], dict[str, Any]]:
     where = ["TRUE"]
-    params: list[Any] = []
+    params: dict[str, Any] = {}
     if status:
-        where.append("c.acquisition_status = %s")
-        params.append(status)
+        where.append("c.acquisition_status = %(status)s")
+        params["status"] = status
     if source_id is not None:
-        where.append("i.source_id = %s")
-        params.append(source_id)
+        where.append("i.source_id = %(source_id)s")
+        params["source_id"] = source_id
     if today_only:
         where.append("i.collected_at::date = current_date")
+    if extraction:
+        # v0.96.42: an unknown filter is refused rather than silently ignored.
+        where.append("(" + EXTRACTION_FILTERS[extraction] + ")")
+        params.update({
+            "engine": engine_version, "max_attempts": MAX_REPROCESS_ATTEMPTS,
+            "preserved": list(PRESERVED_OUTCOMES), "kept": OUTCOME_KEPT_HUMAN_REVIEWED,
+            "blocked": acquisition.FETCH_BLOCKED, **_signature_params(),
+        })
     return where, params
 
 
 def listing(
     con, *, limit: int = 200, offset: int = 0, status: str | None = None,
     source_id: int | None = None, today_only: bool = False,
+    extraction: str | None = None, engine_version: str | None = None,
 ) -> list[dict[str, Any]]:
     """The /admin/intake table: what was collected, and what came of it."""
     where, params = _listing_where(
-        status=status, source_id=source_id, today_only=today_only)
+        status=status, source_id=source_id, today_only=today_only,
+        extraction=extraction, engine_version=engine_version)
 
     with con.cursor() as cur:
         cur.execute(
             "SELECT i.source_item_id, i.collected_at, i.title, i.url, i.ingest_state, "
             "       i.external_id, s.source_key, s.name AS source_name, s.platform, "
             "       r.mode AS discovery_mode, "
-            "       coalesce(c.acquisition_status, %s) AS acquisition_status, "
-            "       c.content_length, c.acquisition_method, c.fetched_at, c.http_status "
+            "       coalesce(c.acquisition_status, %(metadata_only)s) AS acquisition_status, "
+            "       c.content_length, c.acquisition_method, c.fetched_at, c.http_status, "
+            "       c.extracted_engine_version, c.extraction_outcome, "
+            "       COALESCE(" + _REVISED_SINCE_READ + ", false) AS revised_since_read "
             "FROM source_items i "
             "JOIN sources s ON s.source_id = i.source_id "
             "LEFT JOIN source_collection_runs r ON r.collection_run_id = i.collection_run_id "
             "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
             f"WHERE {' AND '.join(where)} "
-            "ORDER BY i.collected_at DESC, i.source_item_id DESC LIMIT %s OFFSET %s",
-            (acquisition.METADATA_ONLY, *params, limit, offset),
+            "ORDER BY i.collected_at DESC, i.source_item_id DESC "
+            "LIMIT %(limit)s OFFSET %(offset)s",
+            {**params, **_signature_params(), "metadata_only": acquisition.METADATA_ONLY,
+             "limit": limit, "offset": offset},
         )
         return _rows(cur)
 
 
 def count_listing(
     con, *, status: str | None = None, source_id: int | None = None,
-    today_only: bool = False,
+    today_only: bool = False, extraction: str | None = None,
+    engine_version: str | None = None,
 ) -> int:
     where, params = _listing_where(
-        status=status, source_id=source_id, today_only=today_only)
+        status=status, source_id=source_id, today_only=today_only,
+        extraction=extraction, engine_version=engine_version)
     with con.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM source_items i "
@@ -692,7 +1054,7 @@ def count_listing(
             "LEFT JOIN source_collection_runs r ON r.collection_run_id = i.collection_run_id "
             "LEFT JOIN source_item_content c ON c.source_item_id = i.source_item_id "
             f"WHERE {' AND '.join(where)}",
-            tuple(params),
+            params,
         )
         return cur.fetchone()[0]
 

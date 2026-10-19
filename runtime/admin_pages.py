@@ -20,6 +20,7 @@ from . import (
     admin,
     candidates,
     content_store,
+    engine_ingest,
     health,
     image_fallback,
     review,
@@ -45,6 +46,19 @@ STATUS_TONE = {
     acquisition.FETCH_FAILED: "bad",
     acquisition.LOGIN_REQUIRED: "bad",
     acquisition.UNSUPPORTED: "bad",
+}
+
+# v0.96.42: extraction freshness -> badge tone. Only a reading known not to
+# be in force warns; "not verified" is a question, not an alarm, so an
+# ordinary FETCH_BLOCKED item never wears a red badge for being blocked.
+FRESHNESS_TONE = {
+    content_store.EXTRACTION_CURRENT: "ok",
+    content_store.REEXTRACTION_PENDING: "warn",
+    content_store.REEXTRACTION_FAILED: "bad",
+    content_store.ENGINE_UPDATE_NOT_APPLIED: "warn",
+    content_store.HUMAN_DECISION_KEPT: "muted",
+    content_store.REEXTRACTION_NOT_VERIFIED: "muted",
+    content_store.NOT_EXTRACTED: "muted",
 }
 
 REVIEW_TONE = {
@@ -73,17 +87,24 @@ def admin_intake(
     status: str = "",
     source_id: str = "",
     today: str = "",
+    extraction: str = "",
     _: str = Depends(require_admin),
 ) -> HTMLResponse:
     from . import pagination
     from . import sources as source_master
 
+    # v0.96.42: which items the running engine's reading is not in force for.
+    # An unknown value is dropped, never passed through to SQL.
+    extraction = extraction if extraction in content_store.EXTRACTION_FILTERS else ""
+    engine_version = _settings().engine_version
     with _connection() as con:
         total = content_store.count_listing(
             con,
             status=status or None,
             source_id=int(source_id) if source_id else None,
             today_only=bool(today),
+            extraction=extraction or None,
+            engine_version=engine_version,
         )
         page = pagination.resolve_page(request.query_params.get("page"), total)
         rows = content_store.listing(
@@ -91,10 +112,15 @@ def admin_intake(
             status=status or None,
             source_id=int(source_id) if source_id else None,
             today_only=bool(today),
+            extraction=extraction or None,
+            engine_version=engine_version,
             limit=pagination.PAGE_SIZE,
             offset=pagination.sql_offset(page),
         )
         summary = content_store.summary(con)
+        backlog = content_store.reprocess_backlog(con, engine_version)
+        not_applied = content_store.count_listing(
+            con, extraction="NOT_APPLIED", engine_version=engine_version)
         all_sources = source_master.list_sources(con)
 
     cards = admin._cards([
@@ -105,6 +131,10 @@ def admin_intake(
          "original-post GETs, not provider API calls"),
         ("Personal data removed", summary["redacted_spans"],
          "phone/account/email spans redacted before storage"),
+        ("Revised, awaiting re-read", backlog["revised_since_read"],
+         f"source changed after engine {engine_version} read it"),
+        ("Engine update not applied", not_applied,
+         "kept by the FETCH_BLOCKED protection; see the Extraction filter"),
     ])
 
     table_rows = []
@@ -127,6 +157,7 @@ def admin_intake(
                if row.get("acquisition_method") else ""),
             f'<span class="num">{row.get("content_length") or 0}</span>',
             admin._badge(row["ingest_state"], "ok" if row["ingest_state"] == "INGESTED" else "muted"),
+            admin._badge(*content_store.listing_extraction_label(row, engine_version)),
             f'<a href="/admin/intake/{row["source_item_id"]}">detail</a>',
         ])
 
@@ -136,6 +167,14 @@ def admin_intake(
                   acquisition.FETCHED_FULL, acquisition.FETCHED_PARTIAL,
                   acquisition.FETCH_BLOCKED, acquisition.FETCH_FAILED,
                   acquisition.LOGIN_REQUIRED, acquisition.UNSUPPORTED)
+    )
+    extraction_options = "".join(
+        f'<option value="{k}"{" selected" if extraction == k else ""}>{E(label)}</option>'
+        for k, label in (("", "all"), ("PENDING", "re-read pending"),
+                         ("FAILED", "re-read failed"),
+                         ("NOT_APPLIED", "engine update not applied"),
+                         ("HUMAN_KEPT", "kept by a human review"),
+                         ("UNRECORDED_BLOCKED", "blocked, not yet recorded"))
     )
     source_options = "".join(
         f'<option value="{s["source_id"]}"{" selected" if source_id == str(s["source_id"]) else ""}>'
@@ -149,6 +188,7 @@ def admin_intake(
   <div><label>When</label><select name="today">
       <option value=""{"" if today else " selected"}>all</option>
       <option value="1"{" selected" if today else ""}>today</option></select></div>
+  <div><label>Extraction</label><select name="extraction">{extraction_options}</select></div>
 </div><div class="actions"><button class="primary">Filter</button>
   <a href="/admin/intake"><button type="button">Reset</button></a></div></form>"""
 
@@ -160,13 +200,14 @@ def admin_intake(
         + filters
         + admin._table(
             ["Collected", "Provider", "Source", "Title", "Original", "Discovery",
-             "Acquisition", "Chars", "Engine", ""],
+             "Acquisition", "Chars", "Engine", "Extraction", ""],
             table_rows,
             empty="nothing collected yet",
         )
         + pagination.nav(
             "/admin/intake",
-            {"status": status, "source_id": source_id, "today": today},
+            {"status": status, "source_id": source_id, "today": today,
+             "extraction": extraction},
             page, total,
         )
     )
@@ -179,6 +220,8 @@ def admin_intake_detail(
 ) -> HTMLResponse:
     with _connection() as con:
         item = content_store.detail(con, source_item_id)
+        fresh = (engine_ingest.freshness(_settings(), con, source_item_id)
+                 if item is not None else None)
     if item is None:
         raise HTTPException(status_code=404, detail="source item not found")
 
@@ -223,6 +266,32 @@ def admin_intake_detail(
         ("Error", E(str(content.get("fetch_error") or "-"))),
     ])
 
+    # v0.96.42: whether the running engine's reading is the one in force.
+    freshness_html = '<p class="note">no content row yet</p>'
+    if fresh:
+        tone = FRESHNESS_TONE.get(fresh["state"], "muted")
+        freshness_html = field_rows([
+            ("State", admin._badge(fresh["state"], tone)
+             + f' <span class="note">{E(fresh["basis"].lower())}</span>'),
+            ("Why", E(fresh["reason"])),
+            ("Flags", " ".join(admin._badge(f, "warn") for f in fresh["flags"]) or "-"),
+            ("Current engine", E(str(fresh["current_engine_version"]))),
+            ("Stamped engine", E(str(fresh["stamped_engine_version"] or "-"))),
+            ("Last applied engine", E(str(fresh["last_applied_engine_version"]))),
+            ("Last outcome", E(str(fresh["extraction_outcome"]))
+             + (f' <span class="note">{E(str(fresh["extraction_outcome_at"])[:19])}</span>'
+                if fresh["extraction_outcome_at"] else "")),
+            ("Last re-extract", E(str(fresh["last_reprocessed_at"] or "-"))[:19]),
+            ("Source revised since read", "yes" if fresh["revised_since_read"] else "no"),
+            ("Re-extract attempts", E(str(fresh["reprocess_attempts"]))
+             + (f' <span class="note">{E(str(fresh["reprocess_error"]))}</span>'
+                if fresh["reprocess_error"] else "")),
+            ("Candidates", E(str(fresh["candidates"]))),
+        ]) + ('<p class="note">Review recommended: the stored event was not re-read by the '
+              'running engine. Correct it through Review if it is wrong; the protection '
+              'itself is never bypassed automatically.</p>'
+              if content_store.FLAG_REVIEW_RECOMMENDED in fresh["flags"] else "")
+
     def block(title: str, text: str | None, note: str) -> str:
         content_html = (
             f'<pre style="white-space:pre-wrap;word-break:break-word;margin:0;'
@@ -236,6 +305,7 @@ def admin_intake_detail(
         f"<h2>Intake item {source_item_id}</h2>"
         f"<h2>Discovery</h2>{discovery}"
         f"<h2>Acquisition</h2>{acquired}"
+        f"<h2>Extraction freshness</h2>{freshness_html}"
         + block("Search snippet (discovery)", snippet,
                 "What the provider's search API returned. Incomplete by definition.")
         + block("Acquired article text", content.get("extracted_text"),
@@ -1076,6 +1146,9 @@ def api_intake_v2(limit: int = 200, _: str = Depends(require_admin)) -> JSONResp
 def api_intake_detail(source_item_id: int, _: str = Depends(require_admin)) -> JSONResponse:
     with _connection() as con:
         found = content_store.detail(con, source_item_id)
+        if found is not None:
+            # v0.96.42: the same freshness the intake page shows.
+            found["freshness"] = engine_ingest.freshness(_settings(), con, source_item_id)
     if found is None:
         raise HTTPException(status_code=404, detail="source item not found")
     return admin._dump(found)

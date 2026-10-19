@@ -85,7 +85,13 @@ def engine_reprocess(settings: Settings) -> str:
     engine bump is every body the runtime holds, and the DB row - not this
     job - is what remembers how far it has got, so the pass survives a
     restart and never re-reads a row it already finished.
+
+    v0.96.42: and items whose source was revised after the engine read them.
+    Before the batch, rows finished before v0.96.42 are signed or sent back
+    (`reconcile_unsigned()`), a bounded batch per tick until none is left, so
+    the revisions they were already missing join the same queue.
     """
+    reconciled = engine_ingest.reconcile_unsigned(settings)
     result = engine_ingest.reprocess_acquired(settings)
     detail = (
         f"pending={result['pending']} reprocessed={result['reprocessed']} "
@@ -107,6 +113,15 @@ def engine_reprocess(settings: Settings) -> str:
     )
     if result.get("stalled"):
         detail += f" stalled={result['stalled']}"
+    if result.get("revised_since_read"):
+        detail += f" revised_since_read={result['revised_since_read']}"
+    if reconciled["selected"]:
+        detail += (
+            f" unsigned {reconciled['selected']} sel/{reconciled['signed']} signed/"
+            f"{reconciled['raw_title_refreshed']} raw_title/"
+            f"{reconciled['requeued']} requeued {reconciled['requeued_ids']}/"
+            f"{reconciled['not_ingested']} not_ingested"
+        )
     if result.get("failures"):
         detail += f" first_failures={result['failures']}"
     return detail

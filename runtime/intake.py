@@ -242,7 +242,22 @@ def store_item(
             _settle_if_fetched_full(con, source_item_id, item)
             return "DUPLICATE"
 
-        # Upstream edited the post: keep the row, refresh it, re-queue for the engine.
+    # Upstream edited the post: keep the row, refresh it, re-queue for the engine.
+    #
+    # v0.96.42: "re-queue for the engine" never reached the engine. Re-ingesting
+    # the revision cannot read it - the same `persist_raw_post()` is_new=False
+    # the judgement branch above documents - and `settle_full_body()` stamps
+    # reprocessed_at on the revision itself, so the body-arrived pass never
+    # fires either: item 6234's re-collected title waited for the next engine
+    # bump, and on 2026-10-19 four more revisions (6388's DJ, 6503's title,
+    # 6325's fee, 6510's DJ) were waiting the same way. So the row goes back in
+    # the re-extract queue, in one transaction with the revision write - the
+    # collector's connection is autocommit, and a revision stored without its
+    # request is exactly the silent loss this release removes. (Were a request
+    # ever lost anyway, the input signature still reads "revised since read".)
+    from . import content_store  # local: avoids a load cycle
+
+    with con.transaction(), con.cursor() as cur:
         cur.execute(
             "UPDATE source_items SET collection_run_id = %s, url = %s, title = %s, "
             "  body = %s, published_at = %s, content_hash = %s, raw = %s::jsonb, "
@@ -253,7 +268,8 @@ def store_item(
              INGEST_PENDING, source_item_id),
         )
         _settle_if_fetched_full(con, source_item_id, item)
-        return "REVISED"
+        content_store.mark_needs_reextract(con, source_item_id)
+    return "REVISED"
 
 
 def store_items(

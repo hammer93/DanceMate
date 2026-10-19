@@ -17,6 +17,7 @@ never processed twice and a failure is visible instead of silent.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from datetime import date
@@ -254,6 +255,12 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
         try:
             for item in items:
                 try:
+                    # v0.96.42: the signature first, then the input - a
+                    # revision stored between the two leaves the stamp below
+                    # older than the input, so the row reads "revised since
+                    # read" and is re-read. The other order could stamp a
+                    # revision this pass never saw.
+                    signature = content_store.input_signature(pg, item["source_item_id"])
                     content = content_store.get(pg, item["source_item_id"])
                     post = _to_raw_post(RawPostRecord, item, content,
                                         event_terms=detection(item.get("source_id")))
@@ -299,7 +306,8 @@ def ingest_pending(settings: Settings, *, limit: int = 50) -> dict[str, Any]:
                         # `mark_reprocessed()`: a body that arrives later
                         # must still trigger the ordinary body-arrived pass.
                         content_store.mark_extracted_engine_version(
-                            pg, item["source_item_id"], settings.engine_version)
+                            pg, item["source_item_id"], settings.engine_version,
+                            input_signature=signature)
                     ingested += 1
                 except Exception as exc:
                     engine_con.rollback()
@@ -370,6 +378,168 @@ def _blocked_body_lost(item: dict[str, Any], post, best_fetched: int) -> bool:
     return len(post.body or "") < best_fetched
 
 
+def _raw_post_key(post) -> str:
+    """The engine raw store's key for a post - `database.persist_raw_post()`'s
+    own formula, which is the one that decides is_new."""
+    ext = post.source_url or hashlib.sha256(
+        f"{post.source_id}|{post.title}|{post.published_at}".encode()).hexdigest()
+    return f"{post.source_id}|{ext}"
+
+
+def _refresh_raw_post(engine_con, post_id: int, post) -> None:
+    """Make the engine's stored post the one it is about to read (v0.96.42).
+
+    `persist_raw_post()` returns early for a key it holds, so title,
+    published_at, raw_json and raw_hash have stayed at their first-ingest
+    values through every revision since. Written in the engine's own shape -
+    raw_hash is `persist_raw_post()`'s formula - and not committed here: the
+    caller's next commit carries it with the body.
+    """
+    raw_hash = hashlib.sha256(
+        f"{post.title}\n{post.body}\n{post.raw_json or ''}".encode("utf-8")).hexdigest()
+    engine_con.execute(
+        "UPDATE raw_posts SET title=?, published_at=?, raw_json=?, raw_hash=? "
+        "WHERE post_id=?",
+        (post.title, post.published_at, post.raw_json, raw_hash, post_id),
+    )
+
+
+def reconcile_unsigned(settings: Settings, *, limit: int = 500) -> dict[str, Any]:
+    """Sign rows the engine finished before v0.96.42, or send them back.
+
+    Migration 050 records no signature for an existing row - the pass that
+    read it never said what it read - and `needing_reprocess()` never treats
+    "unknown" as "revised". This decides each one from the only record of
+    what the engine actually read, its own raw store, against the input the
+    reprocess path builds now (the same `_to_raw_post()`):
+
+    * the same title and body -> signed with today's signature, current;
+    * the same body, a different title, and the last pass ran after the
+      revision -> that pass read the new title from PostgreSQL (the raw store
+      simply never stored it), so the raw store is corrected and the row
+      signed. 44 Production rows on 2026-10-19;
+    * anything else - the body differs, or the title differs and nothing read
+      the item after its revision - went unread: back in the queue
+      (`mark_needs_reextract()`), where the ordinary pass re-reads it under
+      every protection it has and signs it when it finishes.
+
+    Rows with no raw store entry are left alone: never ingested, nothing to
+    compare, and ingest signs them itself. Restart-safe and finite: a signed
+    or re-queued row stops matching, so each tick takes new rows, and once
+    every row is signed this is one empty query.
+    """
+    engine_db, RawPostRecord, *_ = _engine(settings)
+    counts = {"selected": 0, "signed": 0, "raw_title_refreshed": 0,
+              "requeued": 0, "not_ingested": 0, "requeued_ids": []}
+    with db.connect(settings, autocommit=True) as pg:
+        rows = content_store.unsigned_rows(pg, settings.engine_version, limit=limit)
+        counts["selected"] = len(rows)
+        if not rows:
+            return counts
+        detection = _detection_terms_by_source(pg)
+        engine_con = _open_engine_store(settings, engine_db)
+        try:
+            for item in rows:
+                source_item_id = item["source_item_id"]
+                post = _to_raw_post(RawPostRecord, item, item,
+                                    event_terms=detection(item.get("source_id")))
+                stored = engine_con.execute(
+                    "SELECT post_id, title, body FROM raw_posts WHERE external_key=?",
+                    (_raw_post_key(post),),
+                ).fetchone()
+                if stored is None:
+                    counts["not_ingested"] += 1
+                    continue
+                raw = item.get("raw") or {}
+                # ingest_pending() and reprocess_acquired() resolve a missing
+                # raw title differently (the item's own title, or the fetched
+                # page's), so either is a title the engine was given.
+                ingest_title = (raw.get("title") if isinstance(raw, dict) else None) \
+                    or item.get("source_item_title") or ""
+                same_title = stored["title"] in (post.title, ingest_title)
+                same_body = (stored["body"] or "") == (post.body or "")
+                read_after = (item.get("reprocessed_at") is not None
+                              and item.get("source_collected_at") is not None
+                              and item["reprocessed_at"] > item["source_collected_at"])
+                if same_body and (same_title or read_after):
+                    if not same_title:
+                        engine_con.execute("UPDATE raw_posts SET title=? WHERE post_id=?",
+                                           (post.title, stored["post_id"]))
+                        counts["raw_title_refreshed"] += 1
+                    content_store.sign_input(pg, source_item_id, item["input_signature"])
+                    counts["signed"] += 1
+                else:
+                    content_store.mark_needs_reextract(pg, source_item_id)
+                    counts["requeued"] += 1
+                    counts["requeued_ids"].append(source_item_id)
+            engine_con.commit()
+        finally:
+            engine_con.close()
+    counts["requeued_ids"] = counts["requeued_ids"][:20]
+    return counts
+
+
+def freshness(settings: Settings, pg, source_item_id: int) -> dict[str, Any] | None:
+    """`content_store.extraction_freshness()` for one item, with the facts the
+    reprocess policy itself would consult (v0.96.42).
+
+    Read-only on both stores: `_blocked_body_lost()` and
+    `_candidates_used_image_ocr()` are the policy's own tests, asked of the
+    same inputs a pass would build, and nothing is written. The engine store
+    being unreadable leaves those two facts unknown, never guessed.
+    """
+    content = content_store.get(pg, source_item_id)
+    if content is None:
+        return None
+    facts = content_store.freshness_inputs(pg, source_item_id)
+    body_lost = used_ocr = None
+    candidate_ids: list[int] = []
+    try:
+        _engine_db, RawPostRecord, *_ = _engine(settings)
+        with pg.cursor() as cur:
+            cur.execute(
+                "SELECT i.url, i.source_id, i.published_at, i.title AS source_item_title, "
+                "       s.source_key, i.raw FROM source_items i "
+                "JOIN sources s ON s.source_id = i.source_id WHERE i.source_item_id = %s",
+                (source_item_id,))
+            names = [c.name for c in cur.description]
+            found = cur.fetchone()
+        item = {**content, **dict(zip(names, found))} if found else dict(content)
+        post = _to_raw_post(RawPostRecord, item, item)
+        body_lost = _blocked_body_lost(
+            item, post,
+            content_store.best_fetched_text_length(pg, [source_item_id]).get(source_item_id, 0))
+        from . import candidates  # local: the console's read-only engine reader
+
+        engine_con = candidates._connect(settings)
+        try:
+            stored = engine_con.execute(
+                "SELECT post_id FROM raw_posts WHERE external_key=?",
+                (_raw_post_key(post),)).fetchone()
+            if stored is not None:
+                candidate_ids = [r[0] for r in engine_con.execute(
+                    "SELECT candidate_id FROM event_candidates WHERE post_id=?",
+                    (stored["post_id"],)).fetchall()]
+            used_ocr = _candidates_used_image_ocr(engine_con, candidate_ids)
+        finally:
+            engine_con.close()
+    except Exception:  # noqa: BLE001 - a diagnostic never fails the page
+        log.exception("freshness facts unavailable for source item %s", source_item_id)
+    reviewed = False
+    if candidate_ids:
+        with pg.cursor() as cur:
+            cur.execute("SELECT 1 FROM human_review_actions WHERE candidate_id = ANY(%s) "
+                        "LIMIT 1", (candidate_ids,))
+            reviewed = cur.fetchone() is not None
+    result = content_store.extraction_freshness(
+        content, settings.engine_version, readable=facts["readable"],
+        revised_since_read=facts["revised_since_read"], reviewed=reviewed,
+        body_lost=body_lost, used_image_ocr=used_ocr, has_events=facts["has_events"])
+    result["source_item_id"] = source_item_id
+    result["candidates"] = len(candidate_ids)
+    return result
+
+
 def _candidates_used_image_ocr(engine_con, candidate_ids: list[int]) -> bool:
     """Did a poster, rather than the post's own text, give these candidates a
     field? Then the post's text alone never explained them."""
@@ -416,6 +586,7 @@ def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dic
         "next_after_item_id": None,
         "remaining": backlog["outdated"],
         "stalled": backlog["stalled"],
+        "revised_since_read": backlog.get("revised_since_read", 0),
         "failures": [],
     }
 
@@ -502,6 +673,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
             for item in items:
                 source_item_id = item["source_item_id"]
                 blocked = item.get("acquisition_status") == acquisition.FETCH_BLOCKED
+                # v0.96.42: the signature of what this selection read, stamped
+                # by whichever way the item finishes (see needing_reprocess()).
+                signature = item.get("input_signature")
                 try:
                     post = _to_raw_post(RawPostRecord, item, item,
                                         event_terms=detection(item.get("source_id")))
@@ -518,7 +692,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         # be re-selected first on every following tick and
                         # the rows behind it would never be reached.
                         content_store.mark_reprocessed(
-                            pg, source_item_id, engine_version=engine_version)
+                            pg, source_item_id, engine_version=engine_version,
+                            input_signature=signature,
+                            outcome=content_store.OUTCOME_KEPT_HUMAN_REVIEWED)
                         skipped += 1
                         if blocked:
                             blocked_reviewed += 1
@@ -534,7 +710,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     if blocked and _blocked_body_lost(
                             item, post, best_fetched.get(source_item_id, 0)):
                         content_store.mark_reprocessed(
-                            pg, source_item_id, engine_version=engine_version)
+                            pg, source_item_id, engine_version=engine_version,
+                            input_signature=signature,
+                            outcome=content_store.OUTCOME_PRESERVED_BODY_LOST)
                         events_preserved += len(_events_of(pg, existing_ids))
                         skipped_blocked += 1
                         preserved_body_lost += 1
@@ -545,6 +723,13 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     item_events = _events_of(pg, existing_ids)
                     events_before += len(item_events)
 
+                    # v0.96.42: and the title, date and collector record it is
+                    # re-read with. persist_raw_post() returns early for a URL
+                    # it already holds and update_raw_post_acquisition() moves
+                    # only the body, so the raw store kept its first-ingest
+                    # title through every revision. Before the body update,
+                    # whose commit then carries both.
+                    _refresh_raw_post(engine_con, post_id, post)
                     # Give the engine the article text in place of the snippet.
                     engine_db.update_raw_post_acquisition(
                         engine_con, post_id,
@@ -609,7 +794,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                             and not trusted_classification_texts \
                             and _candidates_used_image_ocr(engine_con, existing_ids):
                         content_store.mark_reprocessed(
-                            pg, source_item_id, engine_version=engine_version)
+                            pg, source_item_id, engine_version=engine_version,
+                            input_signature=signature,
+                            outcome=content_store.OUTCOME_PRESERVED_IMAGE_EVIDENCE_LOST)
                         events_preserved += len(item_events)
                         skipped_blocked += 1
                         preserved_image_lost += 1
@@ -646,7 +833,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         events_preserved += len(item_events)
                         engine_con.commit()
                         content_store.mark_reprocessed(
-                            pg, source_item_id, engine_version=engine_version)
+                            pg, source_item_id, engine_version=engine_version,
+                            input_signature=signature,
+                            outcome=content_store.OUTCOME_EXTRACTED)
                         reprocessed += 1
                         if blocked:
                             blocked_reconciled += 1
@@ -697,7 +886,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         stale_event_removed += len(item_events)
                     engine_con.commit()
                     content_store.mark_reprocessed(
-                        pg, source_item_id, engine_version=engine_version)
+                        pg, source_item_id, engine_version=engine_version,
+                        input_signature=signature,
+                        outcome=content_store.OUTCOME_EXTRACTED)
                     reprocessed += 1
                     if blocked:
                         blocked_reconciled += 1
@@ -761,5 +952,6 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         "next_after_item_id": max(int(i["source_item_id"]) for i in items),
         "remaining": backlog["outdated"],
         "stalled": backlog["stalled"],
+        "revised_since_read": backlog.get("revised_since_read", 0),
         "failures": failures[:3],
     }
