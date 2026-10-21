@@ -26,8 +26,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
     admin,
+    content_store,
     db,
     duplicates,
+    engine_ingest,
+    event_conflicts,
     events_api,
     master_data,
     normalization,
@@ -1120,6 +1123,7 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         )
         summary = duplicates.metrics(con)
         verdicts = duplicates.recent_human_verdicts(con)
+        conflicts = len(event_conflicts.find(con))
 
     rows = []
     for pair in pairs:
@@ -1149,6 +1153,8 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         ("Decided by a person", summary["human_decided"], "final; never revisited"),
         ("Waiting on you", summary["open_pairs"], "the rules could not settle these"),
         ("Listed", summary["listed"], "shown on the user surface"),
+        ("Cross-source conflicts", conflicts,
+         "festivals whose sources disagree on dates - see Conflicts"),
     ])
 
     note = (
@@ -1157,7 +1163,9 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         "matched on some of that and not the rest - including two posts that "
         "write the same venue words for a place nothing has resolved, which is "
         "as likely to be two parties as one. Your answer is final - the scan "
-        "will not revisit a pair you have decided.</p>"
+        "will not revisit a pair you have decided. Events of different dates are "
+        'never compared here: <a href="/admin/conflicts">Conflicts</a> lists festivals '
+        "whose sources disagree on their dates.</p>"
     )
     body = ("<h2>Duplicates</h2>" + cards + note + admin._table(
         ["Date", "Event", "Other", "Matched", "Differs", "Decide"], rows,
@@ -1521,3 +1529,234 @@ def api_venue_usage(venue_id: int, _: str = Depends(require_admin)) -> JSONRespo
 def api_venue_history(limit: int = 50, _: str = Depends(require_admin)) -> JSONResponse:
     with _connection() as con:
         return admin._dump({"actions": venue_resolution.history(con, limit=limit)})
+
+
+# --- cross-source conflicts (v0.96.44) -----------------------------------------
+#
+# One festival recorded by two sources under two different dates: the
+# duplicate rules never compare two dates, so such a pair reaches nobody.
+# These pages lay it out for a person and stop there - they write nothing,
+# offer no merge (event_conflicts.MERGE_NOT_OFFERED) and record no verdict.
+# The same page lists the protected source items v0.96.43 recommends for
+# review, each linked to its intake diagnostics and its Review page.
+
+_CONFLICTS = "/admin/conflicts"
+_CONFLICT_TONE = {
+    event_conflicts.PRIORITY_HIGH: "bad",
+    event_conflicts.PRIORITY_MEDIUM: "warn",
+    event_conflicts.PRIORITY_LOW: "muted",
+}
+
+
+def _protected_items(con) -> list[dict[str, Any]]:
+    """The intake REVIEW filter (v0.96.43), each with its review summary."""
+    settings = admin._settings()
+    rows = content_store.listing(con, extraction="REVIEW",
+                                 engine_version=settings.engine_version)
+    found = []
+    for row in rows:
+        fresh = engine_ingest.freshness(settings, con, row["source_item_id"])
+        found.append({"item": row, "freshness": fresh,
+                      "review": content_store.protected_review(con, row["source_item_id"],
+                                                               fresh)})
+    return found
+
+
+def _period_text(event: dict[str, Any]) -> str:
+    return str(event["event_date"]) + (f" ~ {event['end_date']}" if event.get("end_date")
+                                       else " (no end stated)")
+
+
+@router.get("/admin/conflicts", response_class=HTMLResponse)
+def admin_conflicts(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    with _connection() as con:
+        pairs = event_conflicts.find(con)
+        protected = _protected_items(con)
+
+    rows = []
+    for pair in pairs:
+        left, right = pair["left"], pair["right"]
+        rows.append([
+            admin._badge(pair["priority"], _CONFLICT_TONE[pair["priority"]]),
+            (f'<strong>#{left["event_id"]}</strong> {E(left["event_name"] or "")}'
+             f'<div class="note">{E(left.get("source_name") or "-")} · '
+             f'{E(_period_text(left))}</div>'),
+            (f'<strong>#{right["event_id"]}</strong> {E(right["event_name"] or "")}'
+             f'<div class="note">{E(right.get("source_name") or "-")} · '
+             f'{E(_period_text(right))}</div>'),
+            " ".join(admin._badge(c, "warn") for c in pair["conflicts"]),
+            admin._badge(pair["assessment"], "muted")
+            + (' <span class="note">already folded</span>' if pair["already_folded"] else ""),
+            f'<a href="{_CONFLICTS}/{left["event_id"]}/{right["event_id"]}">Compare</a>',
+        ])
+    protected_rows = []
+    for entry in protected:
+        review = entry["review"]
+        item_id = entry["item"]["source_item_id"]
+        protected_rows.append([
+            f'<a href="/admin/intake/{item_id}">{item_id}</a>',
+            E(str(entry["item"].get("title") or "")[:60]),
+            E((entry["freshness"] or {}).get("state") or "-"),
+            " ".join(f'<a href="/admin/events/{e["event_id"]}/sources">#{e["event_id"]}</a> '
+                     f'{E(str(e["event_date"]))} {E(str(e["start_time"] or "-"))[:5]}'
+                     for e in review["events"]) or "-",
+            E(f'{review["events_public_now"]} of {len(review["events"])}'),
+            " ".join(f'<a href="/admin/review/{cid}">{cid}</a>'
+                     for cid in review["candidate_ids"]) or "-",
+            admin._badge(review["required_action"],
+                         "warn" if review["review_recommended"] else "muted"),
+        ])
+
+    cards = admin._cards([
+        ("Cross-source conflicts", len(pairs), "one festival, dates that disagree"),
+        ("Shown twice now", sum(1 for p in pairs
+                                if p["priority"] == event_conflicts.PRIORITY_HIGH),
+         "both rows listed to readers"),
+        ("Protected items", len(protected), "fetch blocked, review recommended"),
+    ])
+    note = (
+        '<p class="note">These pages only read. A pair here is a question, not a finding: '
+        "the Duplicates rules compare events of one date, so two records of a festival "
+        "whose sources give different dates never reach them. Nothing is merged, moved "
+        "or recorded from here; MERGE is not offered for a pair whose dates disagree.</p>")
+    body = (
+        "<h2>Event Conflict Review</h2>" + cards + note
+        + "<h3>Cross-source conflicts</h3>"
+        + admin._table(["Priority", "Event", "Other", "Differs", "Evidence", ""], rows,
+                       empty="no festival is recorded under two disagreeing dates")
+        + "<h3>Protected source review</h3>"
+        + '<p class="note">Fetch is blocked for these items and the engine update was not '
+          "applied; each needs a person to compare its event with the stored evidence. "
+          "Corrections go through the candidate's Review page; nothing is re-fetched.</p>"
+        + admin._table(["Item", "Title", "State", "Events", "Shown now", "Candidates",
+                        "Action"], protected_rows,
+                       empty="no protected item is waiting for review")
+        + f'<p class="note"><a href="{_DUPLICATES}">Duplicates</a> · '
+          '<a href="/admin/intake?extraction=REVIEW">Intake: REVIEW</a></p>'
+    )
+    return HTMLResponse(admin._page("Conflicts", _CONFLICTS, body,
+                                    flash=admin._flash(request)))
+
+
+@router.get("/admin/conflicts/{left_id}/{right_id}", response_class=HTMLResponse)
+def admin_conflict_detail(left_id: int, right_id: int, request: Request,
+                          _: str = Depends(require_admin)) -> HTMLResponse:
+    with _connection() as con:
+        found = event_conflicts.compare(con, left_id, right_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="not a conflict pair")
+    left, right = found["left"], found["right"]
+
+    field_rows = [
+        [E(f["label"]),
+         (f'<strong>{E(f["left"])}</strong>' if f["differs"] else E(f["left"])),
+         (f'<strong>{E(f["right"])}</strong>' if f["differs"] else E(f["right"])),
+         admin._badge("differs", "warn") if f["differs"] else ""]
+        for f in found["fields"]
+    ]
+
+    def evidence_rows(event_id: int) -> list[tuple[str, str]]:
+        ev = found["evidence"][event_id]
+        url = ev["source_url"]
+        link = (f'<a href="{E(url)}" target="_blank" rel="noopener noreferrer">{E(url)}</a>'
+                if url != event_conflicts.UNKNOWN else url)
+        return [
+            ("Source item", (f'<a href="/admin/intake/{ev["source_item_id"]}">'
+                             f'{ev["source_item_id"]}</a>' if ev["source_item_id"]
+                             else event_conflicts.UNKNOWN)),
+            ("Source", E(f'{ev["source_name"]} ({ev["source_key"]})')),
+            ("Source URL", f'<div class="clip">{link}</div>'),
+            ("Original title", E(ev["original_title"])),
+            ("Stated period", E(f'{ev["date_evidence"]["stated_start"]} ~ '
+                                f'{ev["date_evidence"]["stated_end"]}')),
+            ("Date evidence", E(ev["date_evidence"]["note"])),
+            ("Venue evidence", E(ev["venue_evidence"])),
+            ("Last collected", E(str(ev["last_collected_at"] or event_conflicts.UNKNOWN)[:19])),
+            ("Last extracted", E(str(ev["last_extracted_at"] or event_conflicts.UNKNOWN)[:19])),
+            ("Shown to readers now", "yes" if found["public_now"][event_id] else "no"),
+        ]
+
+    def evidence_table(event: dict[str, Any]) -> str:
+        return (f'<h3>#{event["event_id"]} - {E(event.get("source_name") or "-")}</h3>'
+                + admin._table(["Field", "Value"],
+                               [[E(k), v] for k, v in evidence_rows(event["event_id"])],
+                               empty="-"))
+
+    related_rows = [
+        [f'<a href="/admin/events/{r["event_id"]}/sources">#{r["event_id"]}</a>',
+         E(r.get("event_type") or "-"), E(r.get("event_name") or "")[:60],
+         E(str(r["event_date"])), E(_clock(r.get("start_time"))),
+         E(f'folded into #{r["canonical_event_id"]}' if r.get("canonical_event_id")
+           else r.get("listing_state") or "-")]
+        for r in found["related"]
+    ]
+
+    def shown(event_id: int) -> str:
+        return "shown" if found["public_now"][event_id] else "not shown"
+
+    impact = (
+        '<ul class="sources">'
+        f'<li><strong>Current:</strong> #{left["event_id"]} {shown(left["event_id"])}, '
+        f'#{right["event_id"]} {shown(right["event_id"])}.</li>'
+        f'<li><strong>If they were merged:</strong> {E(found["if_merged"])}</li>'
+        f'<li><strong>If they stay separate:</strong> {E(found["if_separate"])}</li>'
+        f'<li><strong>Unresolved:</strong> {E(", ".join(found["unresolved"]))}</li>'
+        "</ul>")
+    guidance = (
+        '<div class="callout">'
+        f'<p>{admin._badge(found["review"], "warn")} '
+        f'{admin._badge(found["assessment"], "muted")}</p>'
+        f'<p>{E(found["merge_note"])}</p>'
+        f'<p>{E(found["keep_separate_note"])}</p>'
+        f'<p>{E(found["follow_up"])}</p>'
+        '<p class="note">Possible readings to rule out: one festival with conflicting first '
+        "days; an opening day vs the first public programme; a registration day vs the "
+        "first milonga; two editions; two organisers using similar names. A venue name "
+        "that resembles another is not the same place until the Venue Master says so.</p>"
+        "</div>")
+    body = (
+        f'<h2>Conflict #{left["event_id"]} / #{right["event_id"]}</h2>'
+        + admin._table(["Field", f'#{left["event_id"]}', f'#{right["event_id"]}', ""],
+                       field_rows, empty="-")
+        + "<h3>Canonical / public impact (preview, nothing is applied)</h3>" + impact
+        + "<h3>Related programme events</h3>"
+        + admin._table(["Event", "Type", "Name", "Date", "Time", "State"], related_rows,
+                       empty="no programme row or folded post is attached to either event")
+        + evidence_table(left) + evidence_table(right)
+        + "<h3>Review guidance</h3>" + guidance
+        + f'<p class="note"><a href="{_CONFLICTS}">&larr; Conflicts</a></p>'
+    )
+    return HTMLResponse(admin._page("Conflict", _CONFLICTS, body,
+                                    flash=admin._flash(request)))
+
+
+@api.get("/conflicts")
+def api_conflicts(_: str = Depends(require_admin)) -> JSONResponse:
+    with _connection() as con:
+        pairs = event_conflicts.find(con)
+        protected = _protected_items(con)
+    return admin._dump({
+        "candidates": len(pairs),
+        "pairs": [{k: p[k] for k in ("key", "priority", "conflicts", "venue", "assessment",
+                                     "review", "gap_days", "already_folded")}
+                  | {"left_event_id": p["left"]["event_id"],
+                     "right_event_id": p["right"]["event_id"]}
+                  for p in pairs],
+        "protected_review_items": [
+            {"source_item_id": e["item"]["source_item_id"],
+             "state": (e["freshness"] or {}).get("state"),
+             "event_ids": [ev["event_id"] for ev in e["review"]["events"]],
+             "candidate_ids": e["review"]["candidate_ids"],
+             "required_action": e["review"]["required_action"]}
+            for e in protected],
+    })
+
+
+@api.get("/conflicts/{left_id}/{right_id}")
+def api_conflict_detail(left_id: int, right_id: int,
+                        _: str = Depends(require_admin)) -> JSONResponse:
+    with _connection() as con:
+        found = event_conflicts.compare(con, left_id, right_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="not a conflict pair")
+    return admin._dump(found)

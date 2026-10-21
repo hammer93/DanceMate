@@ -358,7 +358,8 @@ def admin_intake_detail(
              E(str(e["start_time"] or "-"))[:5] + "-" + E(str(e["end_time"] or "-"))[:5],
              E(str(e["venue_text"] or "-")), E(str(e["listing_state"] or "-")),
              E(str(e["time_evidence"] or "-")),
-             "upcoming" if e["not_ended"] else "past"]
+             ("upcoming" if e["not_ended"] else "past")
+             + (" · public" if e["public_now"] else " · not shown")]
             for e in protected["events"]
         ]
         if evidence["best_fetched_chars"]:
@@ -385,6 +386,12 @@ def admin_intake_detail(
                 ("Images read by OCR", E(f'{evidence["images_with_ocr_text"]} of '
                                          f'{evidence["images_fetched"]} fetched')),
                 ("Human review actions", E(str(evidence["human_review_actions"]))),
+                ("Shown to readers now", E(f'{protected["events_public_now"]} of '
+                                           f'{len(protected["events"])} event(s)')),
+                ("Cannot be verified", "<br>".join(E(u) for u in protected["unverifiable"])
+                 or "-"),
+                ("Correction supported", E(protected["correction_supported"])),
+                ("Evidence needed first", E(protected["evidence_needed"])),
                 ("Required human action",
                  admin._badge(protected["required_action"],
                               "warn" if protected["review_recommended"] else "muted")

@@ -1149,7 +1149,7 @@ ACTION_NONE = "NONE"
 REVIEW_EVENT_FIELDS = (
     "event_id", "candidate_id", "event_name", "event_type", "event_date", "end_date",
     "start_time", "end_time", "end_day_offset", "venue_text", "venue_id", "fee", "dj",
-    "listing_state", "canonical_event_id", "review_state", "time_evidence",
+    "listing_state", "canonical_event_id", "review_state", "time_evidence", "provenance",
 )
 
 
@@ -1228,13 +1228,49 @@ def protected_review(con, source_item_id: int, freshness: dict[str, Any] | None
         action, what = ACTION_REQUEST_EVIDENCE, (
             "No original evidence is held here: check the Original URL by hand before "
             "changing anything, and keep the existing data until something settles it.")
+    # v0.96.44: what a person needs before acting - whether a reader sees the
+    # event now, what nothing stored can confirm, and the one correction route
+    # that exists (Review EDIT/CONFIRM on the candidate, audited). Nothing here
+    # is applied or offered as a button.
+    for event in events:
+        event["public_now"] = bool(
+            event.get("provenance") == "LIVE" and event.get("listing_state") == "LISTED"
+            and event.get("canonical_event_id") is None and event.get("not_ended"))
+    unverifiable = []
+    if not evidence["article_text_held"]:
+        unverifiable.append(
+            "anything only the article body stated: "
+            + (f'{evidence["best_fetched_chars"]} chars were served on '
+               f'{str(evidence["best_fetched_at"])[:10]} and not retained'
+               if evidence["best_fetched_chars"] else "no body was ever served"))
+    if not evidence["images_with_ocr_text"]:
+        unverifiable.append("the poster contents (no image was read)")
+    elif evidence["images_with_ocr_text"] < evidence["images_fetched"]:
+        unverifiable.append(
+            f'{evidence["images_fetched"] - evidence["images_with_ocr_text"]} of '
+            f'{evidence["images_fetched"]} fetched images (no text was read from them)')
+    review_ids = sorted({*candidate_ids, *(e["candidate_id"] for e in events
+                                           if e.get("candidate_id"))})
+    correction = (
+        "Review EDIT or CONFIRM on candidate " + ", ".join(str(c) for c in review_ids)
+        + " (recorded in human_review_actions); the source is not re-fetched"
+        if review_ids else "none - no candidate to review")
+    needed = (
+        "a statement that settles the field for this event's own date: the stored "
+        "poster reading or the organiser's page; the Original URL is not fetched by "
+        "this page" if action == ACTION_REVIEW else
+        "the original post, checked by hand" if action == ACTION_REQUEST_EVIDENCE else "-")
     return {
         "source_item_id": source_item_id,
         "review_recommended": recommended,
         "candidate_ids": candidate_ids,
         "events": events,
         "events_not_ended": sum(1 for e in events if e.get("not_ended")),
+        "events_public_now": sum(1 for e in events if e["public_now"]),
         "evidence": evidence,
+        "unverifiable": unverifiable,
+        "correction_supported": correction,
+        "evidence_needed": needed,
         "required_action": action,
         "required_action_text": what,
     }

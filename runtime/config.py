@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.43"
+PRODUCT_VERSION = "0.96.44"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -460,6 +460,9 @@ PRODUCT_VERSION = "0.96.43"
 #
 # v0.96.43 leaves it at 1.16 too: a re-checked article whose text changed is
 # re-read through that same per-item queue (runtime/article_refresh.py).
+#
+# v0.96.44 leaves it at 1.16 as well: the conflict review reads events and
+# stored evidence only (runtime/event_conflicts.py) and changes no extraction.
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

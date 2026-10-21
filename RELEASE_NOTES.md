@@ -1,5 +1,103 @@
 # DanceMate Release Notes
 
+## v0.96.44 Cross-Source Event Conflict Review & Human Evidence Resolution
+
+Product Runtime 0.96.44; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051 (no new migration). A festival that two sources
+record under two different dates is now put in front of a person, side by
+side with what each source said, instead of being listed twice and compared
+by nothing. The protected items v0.96.43 connected to Review now also say
+whether a reader sees their event, what nothing stored can confirm and which
+correction route exists. Everything added reads; nothing is merged, moved,
+fetched or recorded.
+
+### What was wrong, measured
+
+The duplicate rules compare only events that share a date
+(`duplicates.scan()` buckets by `event_date`, `classify()` returns None for
+two dates) - the reason a weekly milonga never collapses into one row. For
+festivals it is a blind spot: Production (2026-10-20, read-only) lists
+Miltang's `2026 Seoul Tango Week` (1628795, 2026-11-11 ~ 11-16, El Tango,
+venue 4223) and TangoNOW's `SEOUL TANGO WEEK 2026` (1629292, from 11-12,
+`ELTANGO · Seoul Tango Academy`, unresolved) as two public events, and no
+queue had ever asked about them. Both sources' current pages say exactly what
+is stored; nothing independent says whether 11-11 is an opening or
+registration day, a moved date or another event, or whether `ELTANGO · Seoul
+Tango Academy` is El Tango.
+
+### Conflict detection (`runtime/event_conflicts.py`, read-only)
+
+* Only FESTIVAL rows, two different sources, neither rejected. A night is
+  never a candidate and a festival is never paired with a night.
+* The same name once case, punctuation, word order and year are set aside;
+  every other word, including a qualifier such as `(포항)` / `(홍대)`, must
+  match. Years must agree when both state one and fit the other's dates.
+* Periods at most 3 days apart; no regions or place statements naming cities
+  that exclude each other; the same genre when both carry one.
+* An actual disagreement: different first days (DATE_CONFLICT) or two stated
+  last days (DATE_RANGE_CONFLICT). Two records agreeing on the first day stay
+  the duplicate rules' to settle. Also reported: SOURCE_EVIDENCE_CONFLICT
+  (the sources' own structured periods disagree), VENUE_UNRESOLVED /
+  VENUE_CONFLICT. Assessment is POSSIBLE_SAME_EVENT at most (overlapping
+  periods, no venue conflict), else INSUFFICIENT_EVIDENCE; every pair is
+  HUMAN_REVIEW_REQUIRED.
+* A row folded into another is compared through its canonical row, except a
+  fold whose stated last day disagrees with its canonical's.
+* Linear in festival rows: bucketed by name before any pair is formed.
+
+Production: 13 festival rows, 1 candidate - SEOUL TANGO WEEK (HIGH: both
+shown to readers). The KOREA SPECIAL TANGO WEEK series row, its (포항) and
+(홍대) programmes and their milongas are not candidates; the existing
+same-date pair 1615842 / 1629120 stays on the Duplicates page.
+
+### Admin
+
+`/admin/conflicts` (nav: Conflicts) lists the pairs and the protected review
+items (643, 646, 647) with links to intake diagnostics, Review and event
+sources. `/admin/conflicts/{a}/{b}` compares the two events field by field
+(differences marked, missing values UNKNOWN), each source's stored evidence
+(item, URL, title, stated period, date and venue evidence, last collected and
+extracted), related programme rows, and a preview of the canonical / public
+impact of merging or keeping them apart - with no form. MERGE is not offered:
+the Duplicates merge keeps the canonical row's dates and hides the other, so
+for dates that disagree it would choose a date by row age. Keeping them apart
+needs no record; a date only a person can settle is corrected through Review
+EDIT (audited). `GET /api/admin/conflicts` and
+`/api/admin/conflicts/{a}/{b}` return the same. The Duplicates page counts
+and links the conflicts. GET only; no new mutation route.
+
+The intake protected review adds: events shown to readers now, what cannot be
+verified (an article body served once and not retained; images never read),
+the supported correction (Review EDIT/CONFIRM on the named candidates, no
+re-fetch) and the evidence needed first.
+
+### K-TANGO 643 / 646 / 647
+
+Unchanged and not corrected. Each still reads ENGINE_UPDATE_NOT_APPLIED (fetch
+blocked, the body served once - 728 / 720 / 722 chars on 2026-09-05 - was
+not retained), feeds one past event that no reader is shown, and has one
+OCR'd poster image of five fetched. What the stored evidence says, for the
+person who decides: 643's event reads 2025-05-08 00:00 while its poster lists
+`05.08 목요일 라이브밀롱가 PM 20:00 - PM 24:00` among several programmes of
+other days; 646's reads 2024-09-27 14:00-18:00 while its poster lists that
+day's participating milongas at 19:00-23:00 / 19:00-23:30 / 20:00-01:00 and
+no 14:00-18:00; 647's reads 2024-09-29 16:00, matching its poster's
+`16:00 탱고 야외밀롱가 ... 2024.09.29`. 644 / 648 / 649 feed no event.
+
+### Production clone
+
+Every new read path - detection, comparison, the protected reviews, the four
+new routes and the intake / Duplicates pages through the real app - leaves
+events, decisions, pairs, human actions, venues, aliases, content rows and the
+fetch log byte-identical; a scheduler-equivalent tick afterwards (normalization
+and duplicate scan) changes none of them either (0 merges, 0 pairs, 0
+releases). 1 candidate among 13 festival rows; the seven KOREA SPECIAL TANGO
+WEEK / folded-festival pairs are refused.
+
+Runtime 3,746 passed / 16 skipped / 0 failed (disposable DB, local and the
+board's `scripts/run-container-tests.sh`); engine 2,043 passed / 1 skipped.
+37 new tests (`tests/test_v09644_event_conflicts.py`).
+
 ## v0.96.43 Full-Article Revision Freshness & Protected Source Review
 
 Product Runtime 0.96.43; Information Engine 1.16 (unchanged); normalization 3
