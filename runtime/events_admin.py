@@ -28,6 +28,7 @@ from . import (
     admin,
     content_store,
     db,
+    decision_contract,
     duplicates,
     engine_ingest,
     event_conflicts,
@@ -1133,7 +1134,8 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         right = (f'<strong>#{pair["other_event_id"]}</strong> {E(pair["other_event_name"] or "")}<br>'
                  f'{E(_clock(pair["other_start_time"]))} · {E(pair["other_venue_text"] or "-")}')
         form = (
-            f'<form method="post" action="/admin/duplicates/{pair["pair_id"]}" class="inline">'
+            f'<form method="post" action="/admin/duplicates/{pair["pair_id"]}/preview" '
+            'class="inline">'
             f'<button class="primary" name="action" value="keep_{pair["event_id"]}">'
             f'Same event, keep #{pair["event_id"]}</button> '
             f'<button class="primary" name="action" value="keep_{pair["other_event_id"]}">'
@@ -1163,8 +1165,9 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         "same date, same <em>resolved</em> venue, same start time. These pairs "
         "matched on some of that and not the rest - including two posts that "
         "write the same venue words for a place nothing has resolved, which is "
-        "as likely to be two parties as one. Your answer is final - the scan "
-        "will not revisit a pair you have decided. Events of different dates are "
+        "as likely to be two parties as one. Each answer opens a preview of what it "
+        "changes first; your confirmed answer is final - the scan will not revisit "
+        "a pair you have decided. Events of different dates are "
         'never compared here: <a href="/admin/conflicts">Conflicts</a> lists festivals '
         "whose sources disagree on their dates.</p>"
     )
@@ -1177,29 +1180,105 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
                                     flash=admin._flash(request)))
 
 
+def _resolve_choice(action: str) -> tuple[str, int | None]:
+    """The Duplicates page's button value -> (decision, event kept)."""
+    if action == "distinct":
+        return duplicates.DISTINCT, None
+    if action.startswith("keep_") and action.removeprefix("keep_").isdigit():
+        return duplicates.DUPLICATE, int(action.removeprefix("keep_"))
+    raise ValueError(f"unknown action {action}")
+
+
+@router.post("/admin/duplicates/{pair_id}/preview", response_class=HTMLResponse)
+def admin_resolve_duplicate_preview(
+    pair_id: int,
+    action: str = Form(...),
+    reviewer: str = Depends(require_admin),
+) -> Any:
+    """v0.96.46: what a Same event / Different events answer would change,
+    with the signed confirm. Writes nothing."""
+    try:
+        decision, keep = _resolve_choice(action)
+    except ValueError as exc:
+        return _duplicate_refused("알 수 없는 판정입니다", [str(exc)], status=422)
+    try:
+        with _connection() as con:
+            preview = duplicates.preview_resolve(con, pair_id, decision=decision,
+                                                 canonical_event_id=keep, reviewer=reviewer)
+    except LookupError as exc:
+        return _duplicate_refused("찾을 수 없습니다", [str(exc)], status=404)
+    label = (f"Same event (MERGE) — keep #{preview['canonical_event_id'] or keep}"
+             if decision == duplicates.DUPLICATE else "Different events (KEEP_SEPARATE)")
+    pair = preview["pair"]
+    rows = [[f'#{o["event_id"]}', E(str(o["event_date"])), E((o["event_name"] or "")[:40]),
+             E(_clock(o["start_time"])), E(o.get("venue_text") or "-"),
+             E(_state(o["canonical_before"], o["listing_before"], o["public_before"])),
+             E(_state(o["canonical_after"], o["listing_after"], o["public_after"])),
+             E(f'{o["decided_by_before"] or "-"} → {o["decided_by_after"] or "-"}')]
+            for o in preview["outlook"]]
+    if preview["blockers"]:
+        decision_html = (
+            '<div class="callout"><h3>이 판정은 기록할 수 없습니다</h3>'
+            f'<p><span class="badge bad">{E(preview["status"])}</span></p>'
+            '<ul class="sources">' + "".join(f"<li>{E(b)}</li>" for b in preview["blockers"])
+            + "</ul><p class=\"note\">아무것도 저장되지 않았습니다.</p></div>")
+    else:
+        decision_html = (
+            f'<form method="post" action="{_DUPLICATES}/{pair_id}">'
+            + _hidden({"action": action, "token": preview["token"]})
+            + '<p><label>사유 <input name="reason" maxlength="500" '
+              'placeholder="판단 근거 (감사 기록에 남습니다)"></label></p>'
+            + f'<div class="actions"><button class="primary">Confirm {E(preview["action"])}'
+              '</button> '
+            f'<a href="{_DUPLICATES}"><button type="button">Cancel</button></a></div></form>'
+            '<p class="note">승인 시점에 질문과 두 Event를 잠그고 이 미리보기를 다시 계산합니다. '
+            "그 사이 Event·출처·사람의 판정이 바뀌었거나, 미리보기가 만료됐거나, 다른 판정·질문·"
+            "검토자의 것이면 아무것도 기록하지 않습니다.</p>")
+    body = (
+        '<h2>Duplicates</h2><div class="callout"><h3>중복 판정 미리보기</h3>'
+        f'<p>질문(pair) #{pair["pair_id"]} &middot; {E(pair["rule"])} &middot; 현재 '
+        f'{E(pair["state"])} &middot; 판정 <strong>{E(label)}</strong></p></div>'
+        + "<h3>현재 → 판정 후 Canonical / Listing / 공개 상태</h3>"
+        + admin._table(["Event", "Date", "Title", "Start", "Venue", "Now", "After",
+                        "Verdict by"], rows, empty="바뀌는 Event가 없습니다")
+        + decision_html
+        + f'<p class="note"><a href="{_DUPLICATES}">← 중복 판정으로 돌아가기</a></p>')
+    return HTMLResponse(admin._page("Duplicates", _DUPLICATES, body),
+                        status_code=409 if preview["blockers"] else 200)
+
+
 @router.post("/admin/duplicates/{pair_id}")
 def admin_resolve_duplicate(
     pair_id: int,
     action: str = Form(...),
+    token: str = Form(""),
+    reason: str = Form(""),
     reviewer: str = Depends(require_admin),
-) -> RedirectResponse:
-    target = "/admin/duplicates"
+) -> Any:
+    """v0.96.46: accepted only with the signed token its preview carried."""
     try:
-        with _connection() as con:
-            if action == "distinct":
-                duplicates.resolve_pair(con, pair_id, decision=duplicates.DISTINCT,
-                                        reviewer=reviewer)
-                return admin._back(target, "recorded as different events")
-            if not action.startswith("keep_"):
-                return admin._back(target, f"unknown action {action}", "bad")
-            canonical = int(action.removeprefix("keep_"))
-            result = duplicates.resolve_pair(
-                con, pair_id, decision=duplicates.DUPLICATE,
-                canonical_event_id=canonical, reviewer=reviewer,
-            )
-    except Exception as exc:
-        return admin._back(target, f"could not resolve: {exc}", "bad")
-    return admin._back(target, f"merged into #{result['canonical_event_id']}")
+        decision, keep = _resolve_choice(action)
+    except ValueError as exc:
+        return _duplicate_refused("알 수 없는 판정입니다", [str(exc)], status=422)
+    with db.connect(admin._settings()) as con:
+        try:
+            result = duplicates.confirm_resolve(
+                con, pair_id, decision=decision, canonical_event_id=keep, token=token,
+                reviewer=reviewer, reason=reason.strip()[:500] or None)
+            con.commit()
+        except decision_contract.DecisionRefused as exc:
+            con.rollback()
+            return _duplicate_refused("판정을 기록하지 않았습니다", exc.reasons, exc.code,
+                                      status=exc.status)
+        except LookupError as exc:
+            con.rollback()
+            return _duplicate_refused("찾을 수 없습니다", [str(exc)], status=404)
+        except Exception as exc:
+            con.rollback()
+            return admin._back(_DUPLICATES, f"could not resolve: {exc}", "bad")
+    if decision == duplicates.DISTINCT:
+        return admin._back(_DUPLICATES, "recorded as different events")
+    return admin._back(_DUPLICATES, f"merged into #{result['canonical_event_id']}")
 
 
 # v0.96.40: a person's duplicate verdict can be taken back - preview first,

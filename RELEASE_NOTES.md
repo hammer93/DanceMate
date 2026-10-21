@@ -1,5 +1,125 @@
 # DanceMate Release Notes
 
+## v0.96.46 Mandatory Decision Basis & Signed Human Action Preview
+
+Product Runtime 0.96.46; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051 (no new migration). Every human Review and
+Duplicates decision is now accepted only against the state the operator was
+shown: Review actions need the current decision basis, from a form or from
+JSON alike, and a Same event / Different events answer needs a signed preview
+bound to its action, its pair, its reviewer and a digest of what it rests on.
+Both are checked again under row locks inside one transaction. Nothing is
+optional and nothing has a bypass switch.
+
+### What was missing, measured
+
+Audit of every admin mutation route at v0.96.45 (8952cf9):
+
+* `POST /api/admin/review/{id}` (JSON) had no basis at all, and the Review
+  form's basis was accepted when blank - so the v0.96.45 stale-form guard
+  only held for a page that happened to send one. The JSON route also took
+  the reviewer's name from the payload, and the form route recorded every
+  action as `admin` whoever had authenticated.
+* `POST /admin/duplicates/{pair}` (MERGE / KEEP_SEPARATE) was bound to
+  nothing but the pair being OPEN. Its `SELECT ... FOR UPDATE` ran on the
+  console's autocommit connection, so the lock was released before the
+  verdict was written, and a verdict's several writes were not one
+  transaction: two concurrent answers could both pass the OPEN check.
+* The Review action's basis check and its writes were likewise separate
+  autocommit statements.
+* Venue Link / Create / Group / Revert (v0.96.37) and duplicate Revert
+  (v0.96.40) already had HMAC preview tokens, row locks and one transaction;
+  they are unchanged.
+
+### Mandatory decision basis (`runtime/decision_contract.py`)
+
+* `review_basis()` fingerprints what the Review page shows for one
+  candidate: its id, the engine's values (name, date, times, venue, fee, fee
+  text, type, status, post), its review state (state, last action, action
+  count, corrections, duplicate-of), the Events built from it, and the
+  content of the source items behind them - `source_items.content_hash`, the
+  fetched body's hash, acquisition status and extraction input signature, and
+  each poster's image hash and OCR text hash. Fetch and check times are not
+  in it: a re-check that found nothing new invalidates nothing.
+* `record_review()` is the only way the console records a review action. In
+  one transaction it takes a per-candidate advisory lock, locks the
+  candidate's Events (`FOR UPDATE`), recomputes the basis and refuses
+  `MISSING_BASIS` / `INVALID_BASIS` (422) or `STALE_REVIEW_STATE` (409)
+  before anything is written. An action changes the review state, so the same
+  basis is never accepted twice; a concurrent second submit waits on the lock
+  and then finds the basis changed. A deadlock or serialization failure is
+  reported as `CONCURRENT_DECISION` (409), nothing written.
+* Form and JSON go through the same function. `GET /api/admin/review/{id}`
+  (new, read-only) returns the candidate, its state, history and the basis an
+  API client must send. The reviewer is always the authenticated user; a JSON
+  payload naming someone else is refused (`REVIEWER_MISMATCH`, 422).
+
+### Signed duplicate previews (`duplicates.preview_resolve` / `confirm_resolve`)
+
+* The Duplicates page's buttons now open `POST /admin/duplicates/{pair}/preview`
+  (writes nothing): each event's canonical / listing / public state now and
+  after, and the reasons an answer may not be given - pair not OPEN, an event
+  gone, events on different dates, an event already folded elsewhere, or a
+  MERGE that would fold a group head into a chain. Different events may
+  still split the rules' fold of one member into the other; the preview shows
+  that unfold. An answer about a pair can no longer silently move or undo a
+  fold into a third event, which v0.96.45 did.
+* The preview's token (`p1.<issued>.<action>.<pair>.<digest>.<hmac>`) is signed
+  with its own derived key (`duplicate-resolve`) over the action (MERGE /
+  KEEP_SEPARATE), the pair, the reviewer, the issue time and a digest of the
+  pair, both events' state, the event kept and folded, the latest duplicate
+  decision on either event, both source items' content hashes and the
+  expected outcome. Valid for 2 hours, as the other previews.
+* `confirm_resolve()` locks the pair, then its events in id order (the order
+  the revert takes them), recomputes the preview and refuses, with nothing
+  written: `MISSING_PREVIEW_TOKEN`, `INVALID_PREVIEW_TOKEN` (forged, other
+  reviewer, other key, malformed, future), `WRONG_ACTION_TOKEN`,
+  `WRONG_SUBJECT_TOKEN` (422); `EXPIRED_PREVIEW`, `ALREADY_RESOLVED`,
+  `STALE_PREVIEW` (another event kept, a source revised, a re-extraction, a
+  later verdict or a revert since the preview) (409). The final state is
+  checked against the preview before commit.
+* After a revert the pair is OPEN again but every earlier token is stale (the
+  decision trail changed); a new answer needs a new preview.
+
+### Legacy callers
+
+Found and migrated: the Review page's three form kinds (already carried the
+basis), the Duplicates page buttons (now preview first), two route tests that
+posted without a basis or a token. No admin JavaScript or script posts to
+these routes. A tab opened before the deploy is refused with "reload".
+
+### Known Production cases (unchanged)
+
+SEOUL TANGO WEEK (1628795 / 1629292) stays CONFLICT_UNRESOLVED with MERGE
+NOT_READY; it is not a duplicate pair, and a pair across dates is now
+refused by the preview itself. K-TANGO 643 / 646 / 647 keep their v0.96.45
+review cases; no correction was made. No venue was linked or created.
+
+### Verification
+
+* Tests: focused `tests/test_v09646_decision_contract.py` 49 passed (tokens,
+  bases, all five Review actions by form and by JSON, all wrong-token kinds,
+  stale previews, revert, folds, and six parallel races on independent
+  connections over committed rows of the disposable database). Runtime local
+  3834 passed / 11 skipped; board official runner (`run-container-tests.sh`)
+  3835 passed / 16 skipped, CT_EXIT=0; engine 2043 passed / 1 skipped. Two
+  route tests were migrated to the new contract and one Miltang fixture whose
+  fixed start date (2026-10-21) had aged out was dated from today. The local
+  and board counts differ only by environment: the board collects
+  `test_ocr.py` (Pillow, +7) and runs the POSIX deploy checks (+6) but skips
+  12 git-dependent tests (no git in the image); 4 skips are common.
+* Production-equivalent (one pg_dump, three disposable copies): the v0.96.45
+  and v0.96.46 trees agree byte for byte before and after two scheduler ticks
+  (1628 events, 183 folds, 196 decisions, 216 open pairs, 238 public); the
+  1628 review bases and 432 open-pair previews write nothing. On a separate
+  copy, a signed KEEP_SEPARATE was accepted once, every forged / missing /
+  other-reviewer / other-action / altered-parent / replayed / post-revert
+  token and every missing / invalid / stale basis was refused, and only the
+  four decision rows, one review action and one review state written by the
+  simulation changed.
+* 103 of the 432 previews are refused with a reason (83 a fold elsewhere, 18
+  a merge of two group heads, 2 a pair whose events now have different dates).
+
 ## v0.96.45 Evidence-Based Human Review & Safe Decision Workflow
 
 Product Runtime 0.96.45; Information Engine 1.16 (unchanged); normalization 3

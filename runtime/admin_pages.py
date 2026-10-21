@@ -7,9 +7,7 @@ and settings binding — one console, two files.
 
 from __future__ import annotations
 
-import hashlib
 import html
-import json
 from datetime import date, datetime
 from typing import Any
 
@@ -18,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
     acquisition,
+    decision_contract,
     article_refresh,
     events_api,
     admin,
@@ -977,33 +976,10 @@ def review_basis(con, settings, candidate_id: int,
                  current: dict[str, Any] | None = None) -> str:
     """A fingerprint of what a reviewer is shown for one candidate (v0.96.45).
 
-    The Review page's forms carry it, and an action posted with a basis that
-    no longer matches is refused: the candidate's values, its review state or
-    the Event built from it changed after the page was opened - a source
-    revision re-read it, or another reviewer acted - so the decision would be
-    applied to something the reviewer never saw. Nothing secret is in it; the
-    request token (admin_csrf) still authenticates the post.
+    The Review page's forms carry it; since v0.96.46 every review action -
+    form or JSON - must carry the current one (`decision_contract`).
     """
-    current = current if current is not None else review.state(con, candidate_id)
-    with con.cursor() as cur:
-        cur.execute(
-            "SELECT event_id, event_date, end_date, start_time, end_time, venue_text, "
-            "  venue_id, fee, listing_state, canonical_event_id FROM events "
-            "WHERE candidate_id = %s ORDER BY event_id", (candidate_id,))
-        events = [list(r) for r in cur.fetchall()]
-    facts = {
-        "candidate": _candidate_snapshot(settings, candidate_id),
-        "review": [current.get("review_state"), current.get("action_count"),
-                   current.get("corrected_json") or {}],
-        "events": events,
-    }
-    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str,
-                                     ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
-
-
-STALE_REVIEW = ("This candidate changed after the page was opened (its values, its Event "
-                "or its review state); nothing was recorded. Review the current values "
-                "and act again.")
+    return decision_contract.review_basis(con, settings, candidate_id, current)
 
 
 def _candidate_snapshot(settings, candidate_id: int) -> dict[str, Any]:
@@ -1040,7 +1016,7 @@ def admin_review_action(
     queue_genre: str = Form(""),
     next_after: str = Form(""),
     basis: str = Form(""),
-    _: str = Depends(require_admin),
+    reviewer: str = Depends(require_admin),
 ) -> RedirectResponse:
     action_name = action.upper()
     if action_name not in review.ACTIONS:
@@ -1061,19 +1037,18 @@ def admin_review_action(
 
     try:
         with _connection() as con:
-            # v0.96.45: a form opened before the candidate changed is refused.
-            if basis.strip() and basis.strip() != review_basis(con, settings, candidate_id):
-                return admin._back(_detail_url(candidate_id, queue, page_num, queue_genre),
-                                   STALE_REVIEW, "bad")
-            review.record(
-                con, candidate_id=candidate_id, action=action_name,
-                before=before, after=after, reason=reason.strip() or None,
+            # v0.96.46: recorded only against the basis the page was opened
+            # on - missing, malformed or stale is refused, nothing written.
+            decision_contract.record_review(
+                con, settings, candidate_id=candidate_id, action=action_name, basis=basis,
+                reviewer=reviewer, before=before, after=after, reason=reason.strip() or None,
                 duplicate_of_candidate_id=(
                     int(duplicate_of_candidate_id) if duplicate_of_candidate_id.strip() else None
                 ),
             )
-    except review.ReviewError as exc:
-        return admin._back(_detail_url(candidate_id, queue, page_num, queue_genre), str(exc), "bad")
+    except decision_contract.DecisionRefused as exc:
+        return admin._back(_detail_url(candidate_id, queue, page_num, queue_genre),
+                           exc.message, "bad")
     except Exception as exc:
         return admin._back(
             _detail_url(candidate_id, queue, page_num, queue_genre), f"could not record: {exc}", "bad",
@@ -1356,23 +1331,53 @@ def api_review(
     })
 
 
+@api.get("/review/{candidate_id}")
+def api_review_detail(candidate_id: int, _: str = Depends(require_admin)) -> JSONResponse:
+    """One candidate as a reviewer sees it, with the basis an action must carry."""
+    settings = _settings()
+    candidate = candidates.get(settings, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="unknown candidate")
+    with _connection() as con:
+        current = review.state(con, candidate_id)
+        return admin._dump({
+            "candidate": candidate,
+            "review": current,
+            "history": review.history(con, candidate_id),
+            "basis": review_basis(con, settings, candidate_id, current),
+            "actions": list(review.ACTIONS),
+        })
+
+
 @api.post("/review/{candidate_id}")
 def api_review_action(
-    candidate_id: int, payload: dict[str, Any], _: str = Depends(require_admin)
+    candidate_id: int, payload: dict[str, Any], reviewer: str = Depends(require_admin)
 ) -> JSONResponse:
+    """The JSON twin of the Review forms, under the same contract (v0.96.46):
+    the current basis is required, and the reviewer is whoever authenticated."""
     settings = _settings()
     action = str(payload.get("action", "")).upper()
+    named = payload.get("reviewer")
     try:
+        if named not in (None, "", reviewer):
+            raise decision_contract.DecisionRefused(
+                decision_contract.REVIEWER_MISMATCH,
+                "the reviewer is the authenticated user; a decision cannot be recorded "
+                "in someone else's name - nothing was recorded")
+        duplicate_of = payload.get("duplicate_of_candidate_id")
         with _connection() as con:
-            recorded = review.record(
-                con, candidate_id=candidate_id, action=action,
-                reviewer=str(payload.get("reviewer") or "admin"),
+            recorded = decision_contract.record_review(
+                con, settings, candidate_id=candidate_id, action=action,
+                basis=payload.get("basis") if isinstance(payload.get("basis"), str) else None,
+                reviewer=reviewer,
                 before=_candidate_snapshot(settings, candidate_id),
                 after=payload.get("fields"),
                 reason=payload.get("reason"),
-                duplicate_of_candidate_id=payload.get("duplicate_of_candidate_id"),
+                duplicate_of_candidate_id=int(duplicate_of) if duplicate_of else None,
             )
-    except review.ReviewError as exc:
+    except decision_contract.DecisionRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.as_dict()) from exc
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return admin._dump(recorded)
 

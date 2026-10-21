@@ -665,6 +665,210 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
             "canonical_event_id": canonical_event_id}
 
 
+# --- a person's answer, previewed and signed (v0.96.46) ----------------------------
+#
+# Until v0.96.46 a Same event / Different events answer was applied straight
+# from the Duplicates page's buttons: nothing tied it to the pair, events and
+# verdicts the operator had looked at, and the pair lock it took was released
+# at once (the console's connection autocommits). Now the buttons open a
+# preview of exactly what the answer would change, signed for that action,
+# that pair, that reviewer and a digest of what it rests on; the confirm
+# locks the pair and its events, recomputes the preview and applies it only
+# if the token still holds. A revert, a later verdict, a re-extraction or a
+# source revision changes the digest, so a preview taken before any of them
+# confirms nothing.
+
+RESOLVE_TOKEN_PURPOSE = "duplicate-resolve"
+
+
+def _resolve_action(decision: str) -> str:
+    if decision == DUPLICATE:
+        return MERGE_VERDICT
+    if decision == DISTINCT:
+        return KEEP_SEPARATE_VERDICT
+    raise ValueError(f"decision must be {DUPLICATE} or {DISTINCT}, got {decision!r}")
+
+
+def preview_resolve(con, pair_id: int, *, decision: str, canonical_event_id: int | None = None,
+                    reviewer: str = "admin") -> dict[str, Any]:
+    """What answering this pair would change, and why it may not. Writes nothing."""
+    from . import decision_contract  # noqa: PLC0415
+
+    action = _resolve_action(decision)
+    with con.cursor() as cur:
+        cur.execute("SELECT pair_id, event_id, other_event_id, rule, matched, differs, state, "
+                    "  resolved_by, resolved_at FROM event_duplicate_pairs WHERE pair_id = %s",
+                    (pair_id,))
+        pair = _row(cur)
+    if pair is None:
+        raise LookupError(f"no duplicate pair {pair_id}")
+    member_ids = sorted((pair["event_id"], pair["other_event_id"]))
+    members = _members(con, member_ids)
+    blockers: list[str] = []
+    code = None
+    if pair["state"] != OPEN:
+        blockers.append(f"pair #{pair_id} is already {pair['state']} "
+                        f"({pair.get('resolved_by') or '-'}); revert that verdict first to "
+                        "answer it again")
+        code = decision_contract.ALREADY_RESOLVED
+    for missing in sorted(set(member_ids) - set(members)):
+        blockers.append(f"event #{missing} no longer exists (re-extracted or pruned)")
+    canonical_id = duplicate_id = None
+    if not blockers:
+        if len({m["event_date"] for m in members.values()}) != 1:
+            blockers.append("the two events are on different dates - a merge across dates is "
+                            "never offered here; see Conflicts / Evidence")
+        for event in members.values():
+            # Different events may split the rules' fold of one member into
+            # the other (the preview shows the unfold); any other existing
+            # fold would be moved or undone by an answer about this pair.
+            if event["canonical_event_id"] is None or (
+                    decision == DISTINCT and event["canonical_event_id"] in members
+                    and event["duplicate_decided_by"] != HUMAN):
+                continue
+            blockers.append(f"event #{event['event_id']} is already merged into "
+                            f"#{event['canonical_event_id']} - settle that first")
+    if not blockers and decision == DUPLICATE:
+        if canonical_event_id is None:
+            canonical_event_id = _canonical_of(*members.values())[0]["event_id"]
+        if canonical_event_id not in members:
+            blockers.append(f"the event kept has to be one of the pair (#{member_ids[0]} or "
+                            f"#{member_ids[1]}), not #{canonical_event_id}")
+        else:
+            canonical_id = canonical_event_id
+            duplicate_id = member_ids[0] if member_ids[1] == canonical_id else member_ids[1]
+            if int(members[duplicate_id]["folded_count"] or 0) > 0:
+                blockers.append(f"event #{duplicate_id} already heads "
+                                f"{members[duplicate_id]['folded_count']} folded post(s) - "
+                                "keep it instead, or the group would form a chain")
+    with con.cursor() as cur:
+        cur.execute("SELECT max(decision_id), count(*) FROM event_duplicate_decisions "
+                    "WHERE event_id = ANY(%s) OR canonical_event_id = ANY(%s)",
+                    (member_ids, member_ids))
+        last_decision, decision_count = cur.fetchone()
+        items = sorted({m["source_item_id"] for m in members.values()
+                        if m.get("source_item_id") is not None})
+        cur.execute("SELECT i.source_item_id, i.content_hash, c.content_hash, "
+                    "  c.extracted_input_signature FROM source_items i "
+                    "LEFT JOIN source_item_content c USING (source_item_id) "
+                    "WHERE i.source_item_id = ANY(%s) ORDER BY i.source_item_id", (items,))
+        sources = [list(r) for r in cur.fetchall()]
+    outlook = []
+    for event_id in member_ids:
+        before = members.get(event_id)
+        if before is None:
+            continue
+        after = dict(before)
+        if not blockers:
+            if decision == DUPLICATE and event_id == duplicate_id:
+                after.update(canonical_event_id=canonical_id, duplicate_decided_by=HUMAN)
+            elif decision == DISTINCT:
+                after.update(canonical_event_id=None, duplicate_decided_by=HUMAN)
+            after["listing_state"] = _listing_for(after)
+        outlook.append({
+            "event_id": event_id, "event_date": before["event_date"],
+            "event_name": before["event_name"], "start_time": before["start_time"],
+            "venue_text": before["venue_text"],
+            "canonical_before": before["canonical_event_id"],
+            "canonical_after": after["canonical_event_id"],
+            "decided_by_before": before["duplicate_decided_by"],
+            "decided_by_after": after["duplicate_decided_by"],
+            "listing_before": before["listing_state"], "listing_after": after["listing_state"],
+            "public_before": _visible(before), "public_after": _visible(after),
+        })
+    facts = {
+        "action": action,
+        "pair": [pair["pair_id"], pair["event_id"], pair["other_event_id"], pair["rule"],
+                 pair["state"]],
+        "keep": canonical_id,
+        "fold": duplicate_id,
+        "members": [[m["event_id"], str(m["event_date"]), str(m["start_time"]), m["venue_id"],
+                     m["venue_text"], m["region_id"], m["identity_key"],
+                     m["canonical_event_id"], m["duplicate_decided_by"], m["listing_state"],
+                     m["review_state"], m["source_item_id"], m["primary_source_item_id"],
+                     int(m["folded_count"] or 0)] for m in members.values()],
+        "decisions": [last_decision, decision_count],
+        "sources": sources,
+        "outlook": [[o["event_id"], o["canonical_after"], o["decided_by_after"],
+                     o["listing_after"]] for o in outlook],
+    }
+    return {
+        "action": action, "decision": decision, "pair": pair, "members": list(members.values()),
+        "canonical_event_id": canonical_id, "duplicate_event_id": duplicate_id,
+        "outlook": outlook, "blockers": blockers,
+        "status": code or (decision_contract.DECISION_REFUSED if blockers else "SAFE"),
+        "facts": facts,
+        "token": (None if blockers else decision_contract.preview_token(
+            RESOLVE_TOKEN_PURPOSE, action=action, subject=pair_id, facts=facts,
+            reviewer=reviewer)),
+    }
+
+
+def confirm_resolve(con, pair_id: int, *, decision: str, token: str | None,
+                    canonical_event_id: int | None = None, reviewer: str = "admin",
+                    reason: str | None = None) -> dict[str, Any]:
+    """Answer a pair exactly as its preview showed. One transaction.
+
+    The pair, then its two events (id order, as the revert takes them), are
+    locked; the preview is recomputed under the lock; the token must be for
+    this action, this pair and this reviewer, unexpired, and its digest must
+    match what is there now. Raises decision_contract.DecisionRefused with
+    nothing written otherwise - a second, concurrent answer waits on the
+    pair's lock and then finds it answered.
+    """
+    from . import decision_contract  # noqa: PLC0415
+
+    action = _resolve_action(decision)
+    refused = decision_contract.preview_refusal(token, RESOLVE_TOKEN_PURPOSE, action=action,
+                                                subject=pair_id, facts=None, reviewer=reviewer)
+    if refused is not None:
+        raise refused
+    try:
+        with con.transaction():
+            with con.cursor() as cur:
+                cur.execute("SELECT event_id, other_event_id FROM event_duplicate_pairs "
+                            "WHERE pair_id = %s FOR UPDATE", (pair_id,))
+                found = cur.fetchone()
+                if found is None:
+                    raise LookupError(f"no duplicate pair {pair_id}")
+            _members(con, sorted(found), lock=True)
+            preview = preview_resolve(con, pair_id, decision=decision,
+                                      canonical_event_id=canonical_event_id, reviewer=reviewer)
+            if preview["blockers"]:
+                raise decision_contract.DecisionRefused(
+                    preview["status"], preview["blockers"][0], preview["blockers"])
+            refused = decision_contract.preview_refusal(
+                token, RESOLVE_TOKEN_PURPOSE, action=action, subject=pair_id,
+                facts=preview["facts"], reviewer=reviewer)
+            if refused is not None:
+                raise refused
+            result = resolve_pair(con, pair_id, decision=decision,
+                                  canonical_event_id=preview["canonical_event_id"],
+                                  reviewer=reviewer, reason=reason)
+            after = _members(con, sorted(found))
+            for expected in preview["outlook"]:
+                now = after[expected["event_id"]]
+                if (now["canonical_event_id"], now["duplicate_decided_by"],
+                        now["listing_state"]) != (expected["canonical_after"],
+                                                  expected["decided_by_after"],
+                                                  expected["listing_after"]):
+                    raise decision_contract.DecisionRefused(
+                        decision_contract.STALE_PREVIEW,
+                        f"event #{expected['event_id']} did not end up as the preview showed "
+                        "- nothing was recorded; preview again")
+    except (decision_contract.DecisionRefused, LookupError):
+        raise
+    except Exception as exc:
+        if decision_contract.concurrent(exc):
+            raise decision_contract.DecisionRefused(
+                decision_contract.CONCURRENT_DECISION,
+                "another decision on these events was being recorded at the same time; "
+                "nothing was recorded - preview again") from exc
+        raise
+    return {**result, "action": action, "outlook": preview["outlook"],
+            "duplicate_event_id": preview["duplicate_event_id"]}
+
+
 # --- taking a person's verdict back (v0.96.40) --------------------------------
 #
 # A Same event / Different events answer was final: nothing undid it, and the

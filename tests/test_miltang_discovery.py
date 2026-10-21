@@ -524,12 +524,19 @@ def test_days_ahead_is_clamped_to_a_sane_maximum(monkeypatch):
 def test_notices_list_is_fetched_once_regardless_of_days_ahead(monkeypatch):
     monkeypatch.setattr(md.acquisition, "robots_allows", lambda url, **kw: True)
     calls = []
+    # discover() drops a notice whose start has passed, so the fixture's
+    # fixed 2026-10-21 aged out of this test on 2026-10-22: dated from today.
+    from datetime import timedelta
+
+    start = md._seoul_today() + timedelta(days=7)
+    upcoming = (_NOTICE_LD.replace("2026-10-21", start.isoformat())
+                .replace("2026-10-29", (start + timedelta(days=8)).isoformat()))
 
     def opener(request, timeout=None):
         calls.append(request.full_url)
         if "/notices/" in request.full_url:
             return _Resp(_detail_page(
-                ld_json=_NOTICE_LD, title="BUSAN TANGO FESTIVAL", badge="행사",
+                ld_json=upcoming, title="BUSAN TANGO FESTIVAL", badge="행사",
                 time_row=None, org_row=None,
             ))
         return _Resp("""<html><body>

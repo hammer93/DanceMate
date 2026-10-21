@@ -551,8 +551,13 @@ def console(pg, monkeypatch, run_normalization):
 
 def test_the_console_resolves_previews_and_reverts(console, pg, two_clocks):
     case = two_clocks
+    choice = {"action": f"keep_{case['a']['event_id']}"}
+    # v0.96.46: an answer is confirmed from its signed preview.
+    answer = console.post(f"/admin/duplicates/{case['pair']['pair_id']}/preview", data=choice)
+    assert answer.status_code == 200
+    signed = re.search(r'name="token" value="([^"]+)"', answer.text).group(1)
     done = console.post(f"/admin/duplicates/{case['pair']['pair_id']}",
-                        data={"action": f"keep_{case['a']['event_id']}"},
+                        data={**choice, "token": signed},
                         follow_redirects=False)
     assert done.status_code in (302, 303)
     verdict = _verdict_id(pg, case["b"]["event_id"])

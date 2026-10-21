@@ -1048,8 +1048,11 @@ def test_a_person_s_review_closes_the_item_and_changes_no_event(pipe, ktango, cl
     item_id = ktango[647]
     event = pipe.event(item_id)
     content = pipe.content(item_id)
+    # v0.96.46: the action carries the basis of the page it was taken on.
+    page = client.get(f"/api/admin/review/{event['candidate_id']}").json()
     response = client.post(f"/admin/review/{event['candidate_id']}/confirm",
-                           data={"reason": "poster says 2024.09.29 16:00"},
+                           data={"reason": "poster says 2024.09.29 16:00",
+                                 "basis": page["basis"]},
                            follow_redirects=False)
     assert response.status_code == 303
     with pipe.pg.cursor() as cur:
