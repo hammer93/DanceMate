@@ -1,5 +1,101 @@
 # DanceMate Release Notes
 
+## v0.96.47 Duplicate Review Queue Lifecycle & Decision Eligibility Integrity
+
+Product Runtime 0.96.47; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051 (no new migration). The Duplicates page now says
+what every pair *is* - answerable, superseded by a fold, settled by the
+rules, answered by a person, stale, or gone - and offers only the answers the
+confirm would accept. Nothing about a pair, an event or a verdict is written
+by any of it.
+
+### What the "37 unanswerable pairs" were, measured
+
+v0.96.46's note counted 37 Production pairs on which every answer was
+refused. Re-measured read-only at 2026-10-22 07:31 KST, all 216 stored pairs
+are OPEN (0 person verdicts exist) and they are:
+
+* **143 actionable** - at least one answer previews SAFE.
+* **37 superseded** (the 37) - one member (both, on pair 1731) was folded
+  by the rules into a *third* event after the pair was parked. Any answer would move or undo that fold, so the v0.96.46 guard
+  refused all three; the page still showed their buttons. In every one of the
+  37 the same question exists as the group's own pair, OPEN.
+* **8 settled by the rules** - the scan later folded both members into one
+  group (7 into each other, 1 into a common root). Merging again is
+  meaningless; Different events still splits the rules' fold where v0.96.46
+  allowed it (7 of 8).
+* **28 stale** - no duplicate rule pairs the two events as they read now
+  (re-extraction moved a venue, a type or, on pair 17938, the date). Three of
+  them (46835, 510548, 510641) are Daejeon `대전 땅고 오나다` against Seoul
+  `O Nada` (venue 187) - the v0.96.31/32 alias case. v0.96.46 offered
+  **MERGE** on all three; it is now refused (below).
+
+Root cause: a pair's stored state changes only by a person's answer or its
+revert (correctly - it is never closed or reopened automatically), but the
+page treated "stored OPEN" as "waiting on a person" and drew all three
+buttons on every row.
+
+### Queue lifecycle (`duplicates.queue`, derived, read-only)
+
+* Every pair is assessed from the rows as they are now: `ACTIONABLE`,
+  `STALE`, `SUPERSEDED` (with the group's own pair as successor),
+  `RESOLVED_BY_RULES`, `RESOLVED_BY_PERSON`, `INVALID_TARGET`, `BLOCKED`.
+  Each non-actionable pair carries a primary reason and the full reason list
+  (`PAIR_ALREADY_RESOLVED`, `TARGET_NOT_FOUND`, `CANONICAL_RELATION_CHANGED`,
+  `ALREADY_SAME_GROUP`, `NO_CURRENT_MATCH`, `RULES_WOULD_MERGE`,
+  `DATE_CONFLICT`, `REGION_CONFLICT`, `FESTIVAL_PROGRAMME`, `GROUP_CHAIN`,
+  `KEEP_NOT_IN_PAIR`) and a next step.
+* Per-answer eligibility comes from `resolve_blockers()`, the guard code that
+  `preview_resolve()` - and therefore `confirm_resolve()`, which recomputes
+  the preview under its locks - now calls too. The page cannot offer what
+  the confirm refuses, and the confirm's own token/lock/transaction checks
+  are unchanged. On the Production copy: 648 previews, 0 mismatches.
+* Stored pair states are untouched: nothing closes a superseded pair or
+  reopens a resolved one. A person's verdict is still final until its
+  Revert.
+
+### Two merge guards added (tightening only)
+
+* **REGION_CONFLICT**: two events with different region ids, or whose posts
+  name cities that exclude each other (`venue_identity.texts_contradict`).
+* **FESTIVAL_PROGRAMME**: a festival and a non-festival event.
+
+Both refuse MERGE only; Different events stays available. On the Production
+copy they change eligibility on exactly the three O Nada pairs above.
+
+### Admin
+
+* `/admin/duplicates` defaults to **Actionable**; filters for Needs evidence
+  (stale), Superseded, Settled by the rules, Resolved by a person, Invalid,
+  Blocked and All, each with its count. Each row shows status, reason and
+  next step (a superseded pair links its successor) and only the available
+  answers' buttons. "Waiting on you" counts actionable pairs; the stored
+  OPEN count is shown beside it.
+* `GET /admin/duplicates/{pair}` (new): the pair as it is now - both events
+  (type, region, source item, fold and root), every answer with its
+  eligibility and reasons, and the decision history of the pair and both
+  events. An old bookmark or tab lands here and is told the current state;
+  a resolved pair shows no answer and no token.
+* A refused preview now shows its reason codes and links to that page.
+* `GET /api/admin/duplicates/queue` (new, read-only, no tokens): counts,
+  per-pair status/reasons/eligibility, and the queue's integrity gates
+  (unclassified, duplicate entry, resolved/invalid marked actionable,
+  actionable without a safe preview, missing reason, person-verdict/pair
+  state mismatch).
+
+### Verification
+
+* Production-equivalent simulation on three disposable copies of one
+  pg_dump: v0.96.46 vs v0.96.47 reads wrote nothing, the scheduler's scan
+  made identical (zero) changes on both, events / canonical / public /
+  decisions / pairs / venues / aliases / identity hashes identical. Approve
+  copy: missing, forged, wrong-reviewer, wrong-action and wrong-pair confirms
+  refused; one KEEP_SEPARATE accepted -> RESOLVED_BY_PERSON with no answers;
+  replay and a later MERGE refused; revert REVERT_SAFE -> ACTIONABLE again;
+  revert replay refused; both old tokens STALE_PREVIEW; a superseded pair
+  with a hand-made token refused; the O Nada merges refused REGION_CONFLICT.
+* Production received no decision, no event, canonical or venue change.
+
 ## v0.96.46 Mandatory Decision Basis & Signed Human Action Preview
 
 Product Runtime 0.96.46; Information Engine 1.16 (unchanged); normalization 3

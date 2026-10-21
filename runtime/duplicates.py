@@ -689,6 +689,101 @@ def _resolve_action(decision: str) -> str:
     raise ValueError(f"decision must be {DUPLICATE} or {DISTINCT}, got {decision!r}")
 
 
+# Why an answer cannot be recorded (v0.96.47). Each refusal carries one of
+# these beside its message, so the Duplicates queue, the preview and the
+# confirm all say the same thing for the same reason.
+REASON_ALREADY_RESOLVED = "PAIR_ALREADY_RESOLVED"
+REASON_TARGET_NOT_FOUND = "TARGET_NOT_FOUND"
+REASON_CANONICAL_CHANGED = "CANONICAL_RELATION_CHANGED"
+REASON_SAME_GROUP = "ALREADY_SAME_GROUP"
+REASON_DATE_CONFLICT = "DATE_CONFLICT"
+REASON_REGION_CONFLICT = "REGION_CONFLICT"
+REASON_FESTIVAL_PROGRAMME = "FESTIVAL_PROGRAMME"
+REASON_GROUP_CHAIN = "GROUP_CHAIN"
+REASON_KEEP_NOT_IN_PAIR = "KEEP_NOT_IN_PAIR"
+# Not refusals: what the rules say about the pair's events as they read now.
+REASON_NO_CURRENT_MATCH = "NO_CURRENT_MATCH"
+REASON_RULES_WOULD_MERGE = "RULES_WOULD_MERGE"
+
+
+def resolve_blockers(pair: dict[str, Any], members: dict[int, dict[str, Any]], *,
+                     decision: str, canonical_event_id: int | None = None
+                     ) -> tuple[list[tuple[str, str]], int | None, int | None]:
+    """Why answering ``pair`` with ``decision`` may not be recorded, as
+    ``([(reason, message)], kept, folded)``. Pure: ``members`` are the pair's
+    events as ``_members()`` reads them (a missing one is absent).
+
+    The one place the guards live (v0.96.47): ``preview_resolve`` - and so the
+    confirm, which recomputes the preview under its locks - and the queue's
+    per-action eligibility all call this, so the page never offers an answer
+    the confirm would refuse.
+    """
+    pair_id = pair["pair_id"]
+    member_ids = sorted((pair["event_id"], pair["other_event_id"]))
+    refusals: list[tuple[str, str]] = []
+    if pair["state"] != OPEN:
+        refusals.append((REASON_ALREADY_RESOLVED,
+                         f"pair #{pair_id} is already {pair['state']} "
+                         f"({pair.get('resolved_by') or '-'}); revert that verdict first to "
+                         "answer it again"))
+    for missing in sorted(set(member_ids) - set(members)):
+        refusals.append((REASON_TARGET_NOT_FOUND,
+                         f"event #{missing} no longer exists (re-extracted or pruned)"))
+    canonical_id = duplicate_id = None
+    if not refusals:
+        if len({m["event_date"] for m in members.values()}) != 1:
+            refusals.append((REASON_DATE_CONFLICT,
+                             "the two events are on different dates - a merge across dates is "
+                             "never offered here; see Conflicts / Evidence"))
+        for event in members.values():
+            # Different events may split the rules' fold of one member into
+            # the other (the preview shows the unfold); any other existing
+            # fold would be moved or undone by an answer about this pair.
+            if event["canonical_event_id"] is None or (
+                    decision == DISTINCT and event["canonical_event_id"] in members
+                    and event["duplicate_decided_by"] != HUMAN):
+                continue
+            reason = (REASON_SAME_GROUP if event["canonical_event_id"] in members
+                      and event["duplicate_decided_by"] != HUMAN else REASON_CANONICAL_CHANGED)
+            refusals.append((reason, f"event #{event['event_id']} is already merged into "
+                                     f"#{event['canonical_event_id']} - settle that first"))
+    if not refusals and decision == DUPLICATE:
+        left, right = (members[i] for i in member_ids)
+        # v0.96.47: what no rule would ever call one event is not one a single
+        # click may make one. A festival and one of its nights share a day and
+        # often a room; two regions are two places whatever a venue id says.
+        if _is_festival(left) != _is_festival(right):
+            refusals.append((REASON_FESTIVAL_PROGRAMME,
+                             "one of the two is a festival and the other is not - a festival "
+                             "is never merged with a night of its programme"))
+        regions = {m["region_id"] for m in members.values()}
+        if None not in regions and len(regions) > 1:
+            refusals.append((REASON_REGION_CONFLICT,
+                             "the two events are in different regions (" +
+                             " / ".join(str(r) for r in sorted(regions)) +
+                             ") - a merge across regions is never offered"))
+        elif venue_identity.texts_contradict(left.get("venue_text"), right.get("venue_text")):
+            refusals.append((REASON_REGION_CONFLICT,
+                             "the two posts name cities that exclude each other - a merge "
+                             "across regions is never offered"))
+    if not refusals and decision == DUPLICATE:
+        if canonical_event_id is None:
+            canonical_event_id = _canonical_of(*members.values())[0]["event_id"]
+        if canonical_event_id not in members:
+            refusals.append((REASON_KEEP_NOT_IN_PAIR,
+                             f"the event kept has to be one of the pair (#{member_ids[0]} or "
+                             f"#{member_ids[1]}), not #{canonical_event_id}"))
+        else:
+            canonical_id = canonical_event_id
+            duplicate_id = member_ids[0] if member_ids[1] == canonical_id else member_ids[1]
+            if int(members[duplicate_id]["folded_count"] or 0) > 0:
+                refusals.append((REASON_GROUP_CHAIN,
+                                 f"event #{duplicate_id} already heads "
+                                 f"{members[duplicate_id]['folded_count']} folded post(s) - "
+                                 "keep it instead, or the group would form a chain"))
+    return refusals, canonical_id, duplicate_id
+
+
 def preview_resolve(con, pair_id: int, *, decision: str, canonical_event_id: int | None = None,
                     reviewer: str = "admin") -> dict[str, Any]:
     """What answering this pair would change, and why it may not. Writes nothing."""
@@ -704,43 +799,11 @@ def preview_resolve(con, pair_id: int, *, decision: str, canonical_event_id: int
         raise LookupError(f"no duplicate pair {pair_id}")
     member_ids = sorted((pair["event_id"], pair["other_event_id"]))
     members = _members(con, member_ids)
-    blockers: list[str] = []
-    code = None
-    if pair["state"] != OPEN:
-        blockers.append(f"pair #{pair_id} is already {pair['state']} "
-                        f"({pair.get('resolved_by') or '-'}); revert that verdict first to "
-                        "answer it again")
-        code = decision_contract.ALREADY_RESOLVED
-    for missing in sorted(set(member_ids) - set(members)):
-        blockers.append(f"event #{missing} no longer exists (re-extracted or pruned)")
-    canonical_id = duplicate_id = None
-    if not blockers:
-        if len({m["event_date"] for m in members.values()}) != 1:
-            blockers.append("the two events are on different dates - a merge across dates is "
-                            "never offered here; see Conflicts / Evidence")
-        for event in members.values():
-            # Different events may split the rules' fold of one member into
-            # the other (the preview shows the unfold); any other existing
-            # fold would be moved or undone by an answer about this pair.
-            if event["canonical_event_id"] is None or (
-                    decision == DISTINCT and event["canonical_event_id"] in members
-                    and event["duplicate_decided_by"] != HUMAN):
-                continue
-            blockers.append(f"event #{event['event_id']} is already merged into "
-                            f"#{event['canonical_event_id']} - settle that first")
-    if not blockers and decision == DUPLICATE:
-        if canonical_event_id is None:
-            canonical_event_id = _canonical_of(*members.values())[0]["event_id"]
-        if canonical_event_id not in members:
-            blockers.append(f"the event kept has to be one of the pair (#{member_ids[0]} or "
-                            f"#{member_ids[1]}), not #{canonical_event_id}")
-        else:
-            canonical_id = canonical_event_id
-            duplicate_id = member_ids[0] if member_ids[1] == canonical_id else member_ids[1]
-            if int(members[duplicate_id]["folded_count"] or 0) > 0:
-                blockers.append(f"event #{duplicate_id} already heads "
-                                f"{members[duplicate_id]['folded_count']} folded post(s) - "
-                                "keep it instead, or the group would form a chain")
+    refusals, canonical_id, duplicate_id = resolve_blockers(
+        pair, members, decision=decision, canonical_event_id=canonical_event_id)
+    blockers = [message for _, message in refusals]
+    reasons = [reason for reason, _ in refusals]
+    code = decision_contract.ALREADY_RESOLVED if REASON_ALREADY_RESOLVED in reasons else None
     with con.cursor() as cur:
         cur.execute("SELECT max(decision_id), count(*) FROM event_duplicate_decisions "
                     "WHERE event_id = ANY(%s) OR canonical_event_id = ANY(%s)",
@@ -795,7 +858,7 @@ def preview_resolve(con, pair_id: int, *, decision: str, canonical_event_id: int
     return {
         "action": action, "decision": decision, "pair": pair, "members": list(members.values()),
         "canonical_event_id": canonical_id, "duplicate_event_id": duplicate_id,
-        "outlook": outlook, "blockers": blockers,
+        "outlook": outlook, "blockers": blockers, "reasons": reasons,
         "status": code or (decision_contract.DECISION_REFUSED if blockers else "SAFE"),
         "facts": facts,
         "token": (None if blockers else decision_contract.preview_token(
@@ -890,7 +953,7 @@ REVERT_TOKEN_TTL_SECONDS = 2 * 3600
 
 _MEMBER_COLUMNS = (
     "e.event_id, e.event_date, e.event_name, e.start_time, e.venue_id, e.venue_text, "
-    "e.region_id, e.identity_key, e.series_key, e.canonical_event_id, "
+    "e.region_id, e.identity_key, e.series_key, e.event_type, e.canonical_event_id, "
     "e.duplicate_decided_by, e.listing_state, e.review_state, e.provenance, "
     "e.source_item_id, e.primary_source_item_id, e.primary_source_decided_by"
 )
@@ -1358,6 +1421,229 @@ def recent_human_verdicts(con, *, limit: int = 20) -> list[dict[str, Any]]:
         seen.add(key)
         out.append(row)
     return sorted(out, key=lambda r: r["decision_id"], reverse=True)[:limit]
+
+
+# --- the queue: what each pair is now, and what can be done with it (v0.96.47) ------
+#
+# A pair's stored state (OPEN / MERGED / DISTINCT) only ever changes by a
+# person's answer or its revert, and that stays so: nothing here writes. But
+# an OPEN row is not the same thing as a question waiting on somebody. The
+# scan keeps folding events after it has parked a pair, so one member can end
+# up inside another group (the question has moved to that group's own pair),
+# or both inside one (the rules settled it), and a re-extraction can leave two
+# events no rule would pair any more. Every pair is assessed from the rows as
+# they are now: its lifecycle status, and per answer whether the confirm would
+# take it - by the same `resolve_blockers()` the preview and the confirm use.
+
+QUEUE_ACTIONABLE = "ACTIONABLE"
+QUEUE_STALE = "STALE"
+QUEUE_SUPERSEDED = "SUPERSEDED"
+QUEUE_RULES = "RESOLVED_BY_RULES"
+QUEUE_PERSON = "RESOLVED_BY_PERSON"
+QUEUE_INVALID = "INVALID_TARGET"
+QUEUE_BLOCKED = "BLOCKED"
+QUEUE_STATUSES = (QUEUE_ACTIONABLE, QUEUE_STALE, QUEUE_SUPERSEDED, QUEUE_RULES, QUEUE_PERSON,
+                  QUEUE_INVALID, QUEUE_BLOCKED)
+
+#: What the operator can usefully do next, per status.
+QUEUE_GUIDANCE = {
+    QUEUE_ACTIONABLE: "open a preview of an available answer",
+    QUEUE_STALE: "the rules no longer pair these events as they read now - re-check the "
+                 "current evidence before answering",
+    QUEUE_SUPERSEDED: "a member is folded into another event - answer the group's own pair",
+    QUEUE_RULES: "the rules already fold both into one group - nothing to answer unless that "
+                 "fold is wrong (Different events splits it)",
+    QUEUE_PERSON: "a person answered this - see the decision history (Revert reopens it)",
+    QUEUE_INVALID: "an event of this pair no longer exists - check the data relationship",
+    QUEUE_BLOCKED: "no answer can be recorded as things stand - see the reasons",
+}
+
+
+def _member_rows(con, ids: list[int]) -> dict[int, dict[str, Any]]:
+    """`_members()` for many events, plus every canonical row they fold into."""
+    found = _members(con, ids) if ids else {}
+    pending = {e["canonical_event_id"] for e in found.values()
+               if e["canonical_event_id"] is not None} - set(found)
+    for _ in range(8):      # a fold graph has no chains; this is only a bound
+        if not pending:
+            break
+        found.update(_members(con, sorted(pending)))
+        pending = {e["canonical_event_id"] for e in found.values()
+                   if e["canonical_event_id"] is not None} - set(found)
+    return found
+
+
+def _root_of(event_id: int, rows: dict[int, dict[str, Any]]) -> int:
+    seen: set[int] = set()
+    current = event_id
+    while current not in seen and current in rows:
+        seen.add(current)
+        parent = rows[current]["canonical_event_id"]
+        if parent is None:
+            return current
+        current = parent
+    return current
+
+
+def answer_options(pair: dict[str, Any]) -> list[tuple[str, int | None]]:
+    """Every answer the Duplicates page can give a pair: (decision, kept)."""
+    low, high = sorted((pair["event_id"], pair["other_event_id"]))
+    return [(DUPLICATE, low), (DUPLICATE, high), (DISTINCT, None)]
+
+
+def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
+                pair_index: dict[tuple[int, int], dict[str, Any]]) -> dict[str, Any]:
+    """One pair's queue status, reasons and per-answer eligibility. Pure."""
+    member_ids = sorted((pair["event_id"], pair["other_event_id"]))
+    members = {i: rows[i] for i in member_ids if i in rows}
+    answers = []
+    for decision, keep in answer_options(pair):
+        refusals, _, _ = resolve_blockers(pair, members, decision=decision,
+                                          canonical_event_id=keep)
+        answers.append({"action": _resolve_action(decision), "decision": decision,
+                        "keep": keep, "available": not refusals,
+                        "reasons": [r for r, _ in refusals],
+                        "messages": [m for _, m in refusals]})
+    available = [a for a in answers if a["available"]]
+    refused = sorted({r for a in answers for r in a["reasons"]})
+
+    current = None
+    roots = [_root_of(i, rows) if i in rows else None for i in member_ids]
+    successor = None
+    notes: list[str] = []
+    if pair["state"] != OPEN:
+        status, primary = QUEUE_PERSON, REASON_ALREADY_RESOLVED
+    elif len(members) < 2:
+        status, primary = QUEUE_INVALID, REASON_TARGET_NOT_FOUND
+    else:
+        folded = [m for m in members.values() if m["canonical_event_id"] is not None]
+        human_fold = any(m["duplicate_decided_by"] == HUMAN for m in folded)
+        if folded and roots[0] == roots[1]:
+            status = QUEUE_SUPERSEDED if human_fold else QUEUE_RULES
+            primary = REASON_CANONICAL_CHANGED if human_fold else REASON_SAME_GROUP
+        elif folded:
+            status, primary = QUEUE_SUPERSEDED, REASON_CANONICAL_CHANGED
+            successor = pair_index.get(tuple(sorted(roots)))
+        else:
+            current = classify(*members.values())
+            if current is None:
+                status, primary = QUEUE_STALE, REASON_NO_CURRENT_MATCH
+            elif current["auto"]:
+                status, primary = QUEUE_STALE, REASON_RULES_WOULD_MERGE
+            elif available:
+                status, primary = QUEUE_ACTIONABLE, None
+            else:
+                status, primary = QUEUE_BLOCKED, (refused[0] if refused else None)
+        if current is None and status == QUEUE_STALE:
+            notes.append("no duplicate rule pairs these two events any more")
+    reasons = sorted(set(refused) | ({primary} if primary else set()))
+    if status != QUEUE_ACTIONABLE and primary is None:
+        primary = reasons[0] if reasons else None
+    return {
+        "pair_id": pair["pair_id"], "event_id": member_ids[0], "other_event_id": member_ids[1],
+        "rule": pair["rule"], "state": pair["state"],
+        "resolved_by": pair.get("resolved_by"), "resolved_at": pair.get("resolved_at"),
+        "created_at": pair.get("created_at"),
+        "event_date": next((m["event_date"] for m in members.values()), None),
+        "current_rule": current["rule"] if current else None,
+        "status": status, "primary_reason": primary, "reasons": reasons,
+        "guidance": QUEUE_GUIDANCE[status], "notes": notes,
+        "roots": roots,
+        "successor_pair_id": successor["pair_id"] if successor else None,
+        "successor_state": successor["state"] if successor else None,
+        "answers": answers, "available": [a["action"] + (f":{a['keep']}" if a["keep"] else "")
+                                          for a in available],
+    }
+
+
+def queue(con) -> list[dict[str, Any]]:
+    """Every duplicate pair, assessed (`assess_pair`), date then pair order. Reads only."""
+    with con.cursor() as cur:
+        cur.execute("SELECT pair_id, event_id, other_event_id, rule, matched, differs, state, "
+                    "  resolved_by, resolved_at, created_at FROM event_duplicate_pairs "
+                    "ORDER BY pair_id")
+        pairs = _rows(cur)
+    ids = sorted({p["event_id"] for p in pairs} | {p["other_event_id"] for p in pairs})
+    rows = _member_rows(con, ids)
+    index: dict[tuple[int, int], dict[str, Any]] = {}
+    for p in pairs:
+        index.setdefault(tuple(sorted((p["event_id"], p["other_event_id"]))), p)
+    assessed = [assess_pair(p, rows, index) for p in pairs]
+    for item, pair in zip(assessed, pairs):
+        item["matched"], item["differs"] = pair["matched"], pair["differs"]
+        item["members"] = [rows[i] for i in (item["event_id"], item["other_event_id"])
+                           if i in rows]
+    return sorted(assessed, key=lambda a: (str(a["event_date"] or ""), a["pair_id"]))
+
+
+def _standing_verdicts_by_pair(con) -> tuple[dict[int, list[dict]], set[int]]:
+    """A person's verdicts not taken back, by the pair they answered, and the
+    events carrying such a verdict without a pair (answers older than v0.96.40)."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT d.decision_id, d.event_id, d.decision, d.pair_id "
+            "FROM event_duplicate_decisions d "
+            "WHERE d.decided_by = %s AND d.rule = %s AND d.decision IN (%s, %s) "
+            "  AND NOT EXISTS (SELECT 1 FROM event_duplicate_decisions r "
+            "                  WHERE r.reverts_decision_id = d.decision_id)",
+            (HUMAN, RULE_HUMAN_REVIEW, DUPLICATE, DISTINCT))
+        found = _rows(cur)
+    by_pair: dict[int, list[dict]] = {}
+    unpaired: set[int] = set()
+    for row in found:
+        if row["pair_id"] is None:
+            unpaired.add(row["event_id"])
+        else:
+            by_pair.setdefault(row["pair_id"], []).append(row)
+    return by_pair, unpaired
+
+
+def queue_integrity(con, assessed: list[dict[str, Any]]) -> dict[str, int]:
+    """The queue's hard gates, each a count that must be 0 (v0.96.47)."""
+    seen: dict[tuple[int, int], int] = {}
+    with con.cursor() as cur:
+        cur.execute("SELECT event_id, other_event_id FROM event_duplicate_pairs")
+        stored = cur.fetchall()
+    for low, high in stored:
+        key = tuple(sorted((low, high)))
+        seen[key] = seen.get(key, 0) + 1
+    by_pair, unpaired = _standing_verdicts_by_pair(con)
+    wrong_human = 0
+    for item in assessed:
+        standing = by_pair.get(item["pair_id"], [])
+        decisions = {r["decision"] for r in standing}
+        legacy = bool({item["event_id"], item["other_event_id"]} & unpaired)
+        if item["state"] == OPEN:
+            wrong_human += bool(standing)
+        elif item["state"] == MERGED:
+            wrong_human += not (decisions == {DUPLICATE} or (not standing and legacy))
+        elif item["state"] == DISTINCT:
+            wrong_human += not ((decisions == {DISTINCT} and len(standing) == 2)
+                                or (not standing and legacy))
+        else:
+            wrong_human += 1
+    actionable = [a for a in assessed if a["status"] == QUEUE_ACTIONABLE]
+    return {
+        "UNCLASSIFIED_DUPLICATE_PAIR": sum(1 for a in assessed
+                                           if a["status"] not in QUEUE_STATUSES),
+        "DUPLICATE_QUEUE_ENTRY": (sum(n - 1 for n in seen.values())
+                                  + sum(1 for low, high in stored if low >= high)),
+        "RESOLVED_MARKED_ACTIONABLE": sum(1 for a in actionable if a["state"] != OPEN),
+        "INVALID_TARGET_MARKED_ACTIONABLE": sum(1 for a in actionable if len(a["members"]) < 2),
+        "ACTIONABLE_WITHOUT_SAFE_PREVIEW": sum(1 for a in actionable if not a["available"]),
+        "MISSING_PAIR_REASON": sum(1 for a in assessed
+                                   if a["status"] != QUEUE_ACTIONABLE and not a["primary_reason"]),
+        "INCORRECT_HUMAN_DECISION_STATE": wrong_human,
+    }
+
+
+def queue_counts(assessed: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {status: 0 for status in QUEUE_STATUSES}
+    for item in assessed:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    counts["TOTAL"] = len(assessed)
+    counts["OPEN"] = sum(1 for a in assessed if a["state"] == OPEN)
+    return counts
 
 # --- source evidence (v0.94.0) ----------------------------------------------
 

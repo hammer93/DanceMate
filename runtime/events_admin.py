@@ -1113,52 +1113,115 @@ def admin_dismiss_venue(
 
 # --- duplicates -------------------------------------------------------------
 
+# v0.96.47: the queue is every pair assessed from the rows as they are now
+# (duplicates.queue). The default view is what a person can actually answer;
+# the rest - superseded by a fold, settled by the rules, answered, gone - is
+# one filter away, each with its reason, and nothing is hidden or rewritten.
+_QUEUE_VIEWS = (
+    ("actionable", duplicates.QUEUE_ACTIONABLE, "Actionable"),
+    ("stale", duplicates.QUEUE_STALE, "Needs evidence (rules no longer pair)"),
+    ("superseded", duplicates.QUEUE_SUPERSEDED, "Superseded by a fold"),
+    ("rules", duplicates.QUEUE_RULES, "Settled by the rules"),
+    ("resolved", duplicates.QUEUE_PERSON, "Resolved by a person"),
+    ("invalid", duplicates.QUEUE_INVALID, "Invalid target"),
+    ("blocked", duplicates.QUEUE_BLOCKED, "Blocked"),
+    ("all", None, "All"),
+)
+_QUEUE_TONE = {
+    duplicates.QUEUE_ACTIONABLE: "ok", duplicates.QUEUE_STALE: "warn",
+    duplicates.QUEUE_SUPERSEDED: "muted", duplicates.QUEUE_RULES: "muted",
+    duplicates.QUEUE_PERSON: "ok", duplicates.QUEUE_INVALID: "bad",
+    duplicates.QUEUE_BLOCKED: "bad",
+}
+
+
+def _answer_buttons(item: dict[str, Any]) -> str:
+    """Only the answers the confirm would take; the server still checks each."""
+    buttons = []
+    for answer in item["answers"]:
+        if not answer["available"]:
+            continue
+        if answer["decision"] == duplicates.DUPLICATE:
+            buttons.append(f'<button class="primary" name="action" value="keep_{answer["keep"]}">'
+                           f'Same event, keep #{answer["keep"]}</button>')
+        else:
+            buttons.append('<button name="action" value="distinct">Different events</button>')
+    if not buttons:
+        return f'<a href="{_DUPLICATES}/{item["pair_id"]}">상세 / 사유</a>'
+    return (f'<form method="post" action="{_DUPLICATES}/{item["pair_id"]}/preview" '
+            'class="inline">' + " ".join(buttons) + "</form>")
+
+
+def _queue_status(item: dict[str, Any]) -> str:
+    text = admin._badge(item["status"], _QUEUE_TONE.get(item["status"], "muted"))
+    if item["primary_reason"]:
+        text += f'<br><small>{E(item["primary_reason"])}</small>'
+    return text
+
+
+def _queue_next(item: dict[str, Any]) -> str:
+    text = E(item["guidance"])
+    if item["successor_pair_id"]:
+        text += (f' &rarr; <a href="{_DUPLICATES}/{item["successor_pair_id"]}">pair '
+                 f'#{item["successor_pair_id"]}</a> ({E(item["successor_state"])})')
+    return text
+
+
+def _member_cell(item: dict[str, Any], event_id: int) -> str:
+    member = next((m for m in item["members"] if m["event_id"] == event_id), None)
+    if member is None:
+        return f"<strong>#{event_id}</strong> (없음)"
+    fold = (f'<br><small>folded into #{member["canonical_event_id"]} '
+            f'({E(member["duplicate_decided_by"] or "-")})</small>'
+            if member["canonical_event_id"] else "")
+    return (f'<strong>#{event_id}</strong> {E(member["event_name"] or "")}<br>'
+            f'{E(_clock(member["start_time"]))} · {E(member["venue_text"] or "-")}{fold}')
+
+
 @router.get("/admin/duplicates", response_class=HTMLResponse)
 def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
     from . import pagination
 
+    views = {key: status for key, status, _ in _QUEUE_VIEWS}
+    view = request.query_params.get("view") or "actionable"
+    if view not in views:
+        view = "actionable"
     with _connection() as con:
-        total = duplicates.count_open_pairs(con)
-        page = pagination.resolve_page(request.query_params.get("page"), total)
-        pairs = duplicates.open_pairs(
-            con, limit=pagination.PAGE_SIZE, offset=pagination.sql_offset(page)
-        )
+        assessed = duplicates.queue(con)
         summary = duplicates.metrics(con)
         verdicts = duplicates.recent_human_verdicts(con)
         conflicts = len(event_conflicts.find(con))
+    counts = duplicates.queue_counts(assessed)
+    shown = [a for a in assessed if views[view] is None or a["status"] == views[view]]
+    total = len(shown)
+    page = pagination.resolve_page(request.query_params.get("page"), total)
+    start = pagination.sql_offset(page)
 
-    rows = []
-    for pair in pairs:
-        left = (f'<strong>#{pair["event_id"]}</strong> {E(pair["event_name"] or "")}<br>'
-                f'{E(_clock(pair["start_time"]))} · {E(pair["venue_text"] or "-")}')
-        right = (f'<strong>#{pair["other_event_id"]}</strong> {E(pair["other_event_name"] or "")}<br>'
-                 f'{E(_clock(pair["other_start_time"]))} · {E(pair["other_venue_text"] or "-")}')
-        form = (
-            f'<form method="post" action="/admin/duplicates/{pair["pair_id"]}/preview" '
-            'class="inline">'
-            f'<button class="primary" name="action" value="keep_{pair["event_id"]}">'
-            f'Same event, keep #{pair["event_id"]}</button> '
-            f'<button class="primary" name="action" value="keep_{pair["other_event_id"]}">'
-            f'Same event, keep #{pair["other_event_id"]}</button> '
-            '<button name="action" value="distinct">Different events</button>'
-            "</form>"
-        )
-        rows.append([
-            E(str(pair["event_date"])),
-            left, right,
-            E(", ".join(pair["matched"])),
-            E(", ".join(pair["differs"])),
-            form,
-        ])
+    rows = [[
+        E(str(item["event_date"] or "-")),
+        f'<a href="{_DUPLICATES}/{item["pair_id"]}">#{item["pair_id"]}</a>',
+        _member_cell(item, item["event_id"]), _member_cell(item, item["other_event_id"]),
+        E(", ".join(item["matched"] or [])) + "<br><small>differs: "
+        + E(", ".join(item["differs"] or [])) + "</small>",
+        _queue_status(item), _queue_next(item), _answer_buttons(item),
+    ] for item in shown[start:start + pagination.PAGE_SIZE]]
 
     cards = admin._cards([
+        ("Waiting on you", counts[duplicates.QUEUE_ACTIONABLE],
+         "open pairs a person can answer now"),
+        ("Open pairs (stored)", counts["OPEN"], "every OPEN row, whatever it is now"),
         ("Auto-merged", summary["auto_merged"], "by rule, no judgement call"),
         ("Decided by a person", summary["human_decided"], "final; never revisited"),
-        ("Waiting on you", summary["open_pairs"], "the rules could not settle these"),
         ("Listed", summary["listed"], "shown on the user surface"),
         ("Cross-source conflicts", conflicts,
          "festivals whose sources disagree on dates - see Conflicts"),
     ])
+    tabs = " ".join(
+        (f"<strong>{E(label)} ({counts['TOTAL'] if status is None else counts[status]})"
+         "</strong>" if key == view else
+         f'<a href="{_DUPLICATES}?view={key}">{E(label)} '
+         f"({counts['TOTAL'] if status is None else counts[status]})</a>")
+        for key, status, label in _QUEUE_VIEWS)
 
     note = (
         '<p class="note">The rules merge only what they can settle outright: '
@@ -1169,14 +1232,98 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         "changes first; your confirmed answer is final - the scan will not revisit "
         "a pair you have decided. Events of different dates are "
         'never compared here: <a href="/admin/conflicts">Conflicts</a> lists festivals '
-        "whose sources disagree on their dates.</p>"
+        "whose sources disagree on their dates. Each pair is assessed from the events as "
+        "they read now; only the answers the confirm would accept are offered, and a pair "
+        "that cannot be answered says why.</p>"
     )
-    body = ("<h2>Duplicates</h2>" + cards + note + admin._table(
-        ["Date", "Event", "Other", "Matched", "Differs", "Decide"], rows,
-        empty="nothing ambiguous - the rules settled everything they found",
-    ) + pagination.nav("/admin/duplicates", {}, page, total)
-        + _human_verdicts_block(verdicts))
-    return HTMLResponse(admin._page("Duplicates", "/admin/duplicates", body,
+    body = ("<h2>Duplicates</h2>" + cards + note + f'<p class="tabs">{tabs}</p>'
+            + admin._table(
+                ["Date", "Pair", "Event", "Other", "Matched", "Status", "Next step", "Decide"],
+                rows, empty="nothing in this view")
+            + pagination.nav(_DUPLICATES, {"view": view}, page, total)
+            + _human_verdicts_block(verdicts))
+    return HTMLResponse(admin._page("Duplicates", _DUPLICATES, body,
+                                    flash=admin._flash(request)))
+
+
+def _pair_history(con, item: dict[str, Any]) -> list[dict[str, Any]]:
+    ids = [item["event_id"], item["other_event_id"]]
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT decision_id, event_id, canonical_event_id, decision, decided_by, rule, "
+            "  reviewer, pair_id, reverts_decision_id, created_at FROM event_duplicate_decisions "
+            "WHERE pair_id = %s OR event_id = ANY(%s) ORDER BY decision_id DESC LIMIT 50",
+            (item["pair_id"], ids))
+        names = [c.name for c in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+
+@router.get("/admin/duplicates/{pair_id}", response_class=HTMLResponse)
+def admin_duplicate_pair(pair_id: int, request: Request,
+                         _: str = Depends(require_admin)) -> HTMLResponse:
+    """v0.96.47: one pair as it is now - an old bookmark or tab lands here and
+    is told the current state, never handed a stale answer."""
+    with _connection() as con:
+        item = next((a for a in duplicates.queue(con) if a["pair_id"] == pair_id), None)
+        if item is None:
+            return _duplicate_refused("찾을 수 없습니다", [f"no duplicate pair {pair_id}"],
+                                      status=404)
+        history = _pair_history(con, item)
+        evidence = evidence_review.conflict_case(con, item["event_id"], item["other_event_id"])
+    members = []
+    for event_id, root in zip((item["event_id"], item["other_event_id"]), item["roots"]):
+        member = next((m for m in item["members"] if m["event_id"] == event_id), None)
+        if member is None:
+            members.append([f"#{event_id}", "(없음)", "", "", "", "", "", ""])
+            continue
+        members.append([
+            f'<a href="/admin/events/{event_id}/sources">#{event_id}</a>',
+            E(str(member["event_date"])), E((member["event_name"] or "")[:40]),
+            E(_clock(member["start_time"])), E(member["venue_text"] or "-"),
+            E(f'{member["event_type"] or "-"} · region {member["region_id"] or "-"}'),
+            E(f'source item {member["source_item_id"] or "-"}'),
+            E(_state(member["canonical_event_id"], member["listing_state"],
+                     member["canonical_event_id"] is None
+                     and member["listing_state"] == "LISTED"))
+            + (f' · root <a href="/admin/events/{root}/sources">#{root}</a>'
+               if root not in (None, event_id) else ""),
+        ])
+    answers = [[E(a["action"] + (f" keep #{a['keep']}" if a["keep"] else "")),
+                admin._badge("AVAILABLE" if a["available"] else "REFUSED",
+                             "ok" if a["available"] else "bad"),
+                E(", ".join(a["reasons"]) or "-"),
+                "<br>".join(E(m) for m in a["messages"]) or "-"] for a in item["answers"]]
+    trail = [[f'#{h["decision_id"]}', E(str(h["created_at"])[:16]), f'#{h["event_id"]}',
+              f'#{h["canonical_event_id"]}' if h["canonical_event_id"] else "-",
+              E(h["decision"]), E(h["decided_by"]), E(h["rule"]), E(h["reviewer"] or "-"),
+              f'#{h["pair_id"]}' if h["pair_id"] else "-",
+              f'#{h["reverts_decision_id"]}' if h["reverts_decision_id"] else "-"]
+             for h in history]
+    facts = (
+        f'<p>질문(pair) #{item["pair_id"]} &middot; 저장 상태 {E(item["state"])}'
+        + (f' ({E(item["resolved_by"] or "-")}, {E(str(item["resolved_at"])[:16])})'
+           if item["state"] != duplicates.OPEN else "")
+        + f' &middot; 등록 규칙 {E(item["rule"])} &middot; 현재 규칙 '
+        f'{E(item["current_rule"] or "-")} &middot; 등록 {E(str(item["created_at"])[:16])}</p>'
+        f'<p>{_queue_status(item)} &middot; 사유 {E(", ".join(item["reasons"]) or "-")}</p>'
+        f"<p>다음 단계: {_queue_next(item)}</p>"
+        + "".join(f'<p class="note">{E(n)}</p>' for n in item["notes"])
+        + (f'<p><a href="/admin/evidence-review/conflict-{item["event_id"]}-'
+           f'{item["other_event_id"]}">Evidence review case</a></p>' if evidence else ""))
+    body = (
+        f'<h2>Duplicates</h2><div class="callout"><h3>중복 질문 #{item["pair_id"]}</h3>'
+        + facts + "</div>"
+        + "<h3>두 Event (지금)</h3>"
+        + admin._table(["Event", "Date", "Title", "Start", "Venue", "Type / Region", "Source",
+                        "Canonical / Listing"], members, empty="-")
+        + "<h3>가능한 판정 (서버가 승인 시점에 다시 검사)</h3>"
+        + admin._table(["Answer", "Eligibility", "Reason codes", "Why"], answers, empty="-")
+        + _answer_buttons(item)
+        + "<h3>판정 기록 (이 질문과 두 Event)</h3>"
+        + admin._table(["Decision", "When", "Event", "Into", "Verdict", "By", "Rule",
+                        "Reviewer", "Pair", "Reverts"], trail, empty="기록이 없습니다")
+        + f'<p class="note"><a href="{_DUPLICATES}">← 중복 판정으로 돌아가기</a></p>')
+    return HTMLResponse(admin._page("Duplicates", _DUPLICATES, body,
                                     flash=admin._flash(request)))
 
 
@@ -1219,9 +1366,12 @@ def admin_resolve_duplicate_preview(
     if preview["blockers"]:
         decision_html = (
             '<div class="callout"><h3>이 판정은 기록할 수 없습니다</h3>'
-            f'<p><span class="badge bad">{E(preview["status"])}</span></p>'
+            f'<p><span class="badge bad">{E(preview["status"])}</span> '
+            + " ".join(admin._badge(r, "warn") for r in preview["reasons"]) + "</p>"
             '<ul class="sources">' + "".join(f"<li>{E(b)}</li>" for b in preview["blockers"])
-            + "</ul><p class=\"note\">아무것도 저장되지 않았습니다.</p></div>")
+            + "</ul><p class=\"note\">아무것도 저장되지 않았습니다. "
+            f'<a href="{_DUPLICATES}/{pair_id}">이 질문의 현재 상태와 가능한 판정 보기</a></p>'
+            "</div>")
     else:
         decision_html = (
             f'<form method="post" action="{_DUPLICATES}/{pair_id}">'
@@ -1446,6 +1596,27 @@ def api_event_metrics(_: str = Depends(require_admin)) -> JSONResponse:
             "events": normalization.metrics(con),
             "duplicates": duplicates.metrics(con),
         })
+
+
+@api.get("/duplicates/queue")
+def api_duplicate_queue(request: Request, _: str = Depends(require_admin)) -> JSONResponse:
+    """v0.96.47: every pair's queue status, reasons and per-answer eligibility,
+    with the queue's integrity gates. Reads only; issues no preview token."""
+    status = request.query_params.get("status")
+    with _connection() as con:
+        assessed = duplicates.queue(con)
+        gates = duplicates.queue_integrity(con, assessed)
+    keys = ("pair_id", "event_id", "other_event_id", "event_date", "rule", "current_rule",
+            "state", "resolved_by", "status", "primary_reason", "reasons", "guidance",
+            "roots", "successor_pair_id", "successor_state", "available")
+    return admin._dump({
+        "counts": duplicates.queue_counts(assessed),
+        "integrity": gates,
+        "pairs": [{k: a[k] for k in keys} | {"answers": [
+            {k: x[k] for k in ("action", "keep", "available", "reasons")}
+            for x in a["answers"]]}
+            for a in assessed if not status or a["status"] == status],
+    })
 
 
 @api.get("/venues/unresolved")
