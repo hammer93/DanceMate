@@ -7,7 +7,9 @@ and settings binding — one console, two files.
 
 from __future__ import annotations
 
+import hashlib
 import html
+import json
 from datetime import date, datetime
 from typing import Any
 
@@ -750,6 +752,7 @@ def admin_review_detail(
     with _connection() as con:
         current = review.state(con, candidate_id)
         actions = review.history(con, candidate_id)
+        basis = review_basis(con, settings, candidate_id, current)
         item = None
         image_rows: list[dict[str, Any]] = []
         if found.get("source_url"):
@@ -893,6 +896,7 @@ def admin_review_detail(
 <input type="hidden" name="queue" value="{E(queue_key)}">
 <input type="hidden" name="page" value="{page_num}">
 <input type="hidden" name="queue_genre" value="{E(genre)}">
+<input type="hidden" name="basis" value="{basis}">
 <div class="actions">
   <button class="primary" name="next_after" value="0">Save correction</button>
   <button class="primary" name="next_after" value="1">Save &amp; Next</button>
@@ -906,6 +910,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
         return f"""
 <form method="post" action="/admin/review/{candidate_id}/{action.lower()}" class="inline">
   <input type="hidden" name="reason" value="">
+  <input type="hidden" name="basis" value="{basis}">
   <input type="hidden" name="queue" value="{E(queue_key)}">
   <input type="hidden" name="page" value="{page_num}">
   <input type="hidden" name="queue_genre" value="{E(genre)}">
@@ -916,6 +921,7 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
     duplicate_form = f"""
 <form method="post" action="/admin/review/{candidate_id}/duplicate" class="inline">
   <input name="duplicate_of_candidate_id" placeholder="duplicate of candidate id" style="width:190px">
+  <input type="hidden" name="basis" value="{basis}">
   <input type="hidden" name="queue" value="{E(queue_key)}">
   <input type="hidden" name="page" value="{page_num}">
   <input type="hidden" name="queue_genre" value="{E(genre)}">
@@ -967,6 +973,39 @@ Save &amp; Next moves to the next event in the {E(queue_label)} queue.</p>
                                     flash=admin._flash(request)))
 
 
+def review_basis(con, settings, candidate_id: int,
+                 current: dict[str, Any] | None = None) -> str:
+    """A fingerprint of what a reviewer is shown for one candidate (v0.96.45).
+
+    The Review page's forms carry it, and an action posted with a basis that
+    no longer matches is refused: the candidate's values, its review state or
+    the Event built from it changed after the page was opened - a source
+    revision re-read it, or another reviewer acted - so the decision would be
+    applied to something the reviewer never saw. Nothing secret is in it; the
+    request token (admin_csrf) still authenticates the post.
+    """
+    current = current if current is not None else review.state(con, candidate_id)
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT event_id, event_date, end_date, start_time, end_time, venue_text, "
+            "  venue_id, fee, listing_state, canonical_event_id FROM events "
+            "WHERE candidate_id = %s ORDER BY event_id", (candidate_id,))
+        events = [list(r) for r in cur.fetchall()]
+    facts = {
+        "candidate": _candidate_snapshot(settings, candidate_id),
+        "review": [current.get("review_state"), current.get("action_count"),
+                   current.get("corrected_json") or {}],
+        "events": events,
+    }
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str,
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
+
+
+STALE_REVIEW = ("This candidate changed after the page was opened (its values, its Event "
+                "or its review state); nothing was recorded. Review the current values "
+                "and act again.")
+
+
 def _candidate_snapshot(settings, candidate_id: int) -> dict[str, Any]:
     row = candidates.get(settings, candidate_id)
     if row is None:
@@ -1000,6 +1039,7 @@ def admin_review_action(
     page: str = Form("1"),
     queue_genre: str = Form(""),
     next_after: str = Form(""),
+    basis: str = Form(""),
     _: str = Depends(require_admin),
 ) -> RedirectResponse:
     action_name = action.upper()
@@ -1021,6 +1061,10 @@ def admin_review_action(
 
     try:
         with _connection() as con:
+            # v0.96.45: a form opened before the candidate changed is refused.
+            if basis.strip() and basis.strip() != review_basis(con, settings, candidate_id):
+                return admin._back(_detail_url(candidate_id, queue, page_num, queue_genre),
+                                   STALE_REVIEW, "bad")
             review.record(
                 con, candidate_id=candidate_id, action=action_name,
                 before=before, after=after, reason=reason.strip() or None,

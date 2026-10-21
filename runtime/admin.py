@@ -298,6 +298,7 @@ NAV = (
     ("/admin/events", "Events"),
     ("/admin/duplicates", "Duplicates"),
     ("/admin/conflicts", "Conflicts"),
+    ("/admin/evidence-review", "Evidence"),
     ("/admin/sources", "Sources"),
     ("/admin/venues", "Venues"),
     ("/admin/organizers", "Organizers"),

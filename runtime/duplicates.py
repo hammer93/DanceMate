@@ -611,10 +611,17 @@ def resolve_pair(con, pair_id: int, *, decision: str, reviewer: str = "admin",
     if decision not in (DUPLICATE, DISTINCT):
         raise ValueError(f"decision must be {DUPLICATE} or {DISTINCT}, got {decision!r}")
     with con.cursor() as cur:
-        cur.execute("SELECT * FROM event_duplicate_pairs WHERE pair_id = %s", (pair_id,))
+        cur.execute("SELECT * FROM event_duplicate_pairs WHERE pair_id = %s FOR UPDATE",
+                    (pair_id,))
         pair = _row(cur)
     if pair is None:
         raise LookupError(f"no duplicate pair {pair_id}")
+    # v0.96.45: a pair is answered once. A second answer - a stale page, a
+    # double click - would stack a verdict on one nobody has withdrawn; taking
+    # a verdict back is the revert's job (it reopens the pair).
+    if pair["state"] != OPEN:
+        raise ValueError(f"pair {pair_id} is already {pair['state']}; revert that verdict "
+                         "first to answer it again")
 
     members = (pair["event_id"], pair["other_event_id"])
     if decision == DUPLICATE:

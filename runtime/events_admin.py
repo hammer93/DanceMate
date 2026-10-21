@@ -31,6 +31,7 @@ from . import (
     duplicates,
     engine_ingest,
     event_conflicts,
+    evidence_review,
     events_api,
     master_data,
     normalization,
@@ -1541,6 +1542,7 @@ def api_venue_history(limit: int = 50, _: str = Depends(require_admin)) -> JSONR
 # review, each linked to its intake diagnostics and its Review page.
 
 _CONFLICTS = "/admin/conflicts"
+_EVIDENCE = "/admin/evidence-review"
 _CONFLICT_TONE = {
     event_conflicts.PRIORITY_HIGH: "bad",
     event_conflicts.PRIORITY_MEDIUM: "warn",
@@ -1587,7 +1589,9 @@ def admin_conflicts(request: Request, _: str = Depends(require_admin)) -> HTMLRe
             " ".join(admin._badge(c, "warn") for c in pair["conflicts"]),
             admin._badge(pair["assessment"], "muted")
             + (' <span class="note">already folded</span>' if pair["already_folded"] else ""),
-            f'<a href="{_CONFLICTS}/{left["event_id"]}/{right["event_id"]}">Compare</a>',
+            f'<a href="{_CONFLICTS}/{left["event_id"]}/{right["event_id"]}">Compare</a> · '
+            f'<a href="{_EVIDENCE}/conflict-{left["event_id"]}-{right["event_id"]}">'
+            "Evidence case</a>",
         ])
     protected_rows = []
     for entry in protected:
@@ -1604,7 +1608,8 @@ def admin_conflicts(request: Request, _: str = Depends(require_admin)) -> HTMLRe
             " ".join(f'<a href="/admin/review/{cid}">{cid}</a>'
                      for cid in review["candidate_ids"]) or "-",
             admin._badge(review["required_action"],
-                         "warn" if review["review_recommended"] else "muted"),
+                         "warn" if review["review_recommended"] else "muted")
+            + f' <a href="{_EVIDENCE}/source-{item_id}">Evidence case</a>',
         ])
 
     cards = admin._cards([
@@ -1759,4 +1764,265 @@ def api_conflict_detail(left_id: int, right_id: int,
         found = event_conflicts.compare(con, left_id, right_id)
     if found is None:
         raise HTTPException(status_code=404, detail="not a conflict pair")
+    return admin._dump(found)
+
+
+# --- evidence review cases (v0.96.45) -------------------------------------------
+#
+# One queue for both kinds of question the console cannot settle by itself:
+# a cross-source conflict and a protected source item. Each case shows what
+# is stored, what the sources said (as an evidence state, UNKNOWN when they
+# said nothing) and, kept apart from that, whether the evidence supports any
+# existing action. GET only: these pages record nothing, offer no form and
+# link to the existing pages where an audited decision is made.
+
+_STATUS_TONE = {
+    evidence_review.CONFLICT_UNRESOLVED: "bad",
+    evidence_review.REVIEW_REQUIRED: "warn",
+    evidence_review.NEEDS_MORE_EVIDENCE: "warn",
+    evidence_review.READY_FOR_EXISTING_REVIEW: "ok",
+    evidence_review.NO_CORRECTION_RECOMMENDED: "ok",
+    evidence_review.BLOCKED_BY_SAFETY_POLICY: "muted",
+    evidence_review.HUMAN_DECISION_RECORDED: "muted",
+}
+_EVIDENCE_TONE = {
+    evidence_review.EVIDENCE_CONFIRMED: "ok",
+    evidence_review.EXISTING_VALUE_SUPPORTED: "ok",
+    evidence_review.EVIDENCE_CONFLICTING: "bad",
+    evidence_review.EVIDENCE_MISSING: "warn",
+    evidence_review.SOURCE_UNAVAILABLE: "warn",
+}
+_READINESS_TONE = {
+    evidence_review.AVAILABLE: "ok",
+    evidence_review.NO_ACTION_NEEDED: "ok",
+    evidence_review.NOT_READY: "warn",
+    evidence_review.NOT_RECOMMENDED: "muted",
+    evidence_review.NOT_OFFERED: "muted",
+    evidence_review.BLOCKED: "muted",
+}
+
+
+def _status(case: dict[str, Any]) -> str:
+    return admin._badge(case["status"], _STATUS_TONE.get(case["status"], "muted"))
+
+
+def _links(actions: list[dict[str, str]]) -> str:
+    return '<ul class="sources">' + "".join(
+        f'<li><a href="{E(a["href"])}">{E(a["action"])}</a> '
+        f'<span class="note">{E(a["kind"])}</span></li>' for a in actions) + "</ul>"
+
+
+def _readiness_rows(readiness: dict[str, dict[str, Any]]) -> list[list[str]]:
+    return [[E(name), admin._badge(r["readiness"], _READINESS_TONE.get(r["readiness"], "muted")),
+             E(r["why"])] for name, r in readiness.items()]
+
+
+def _history_rows(history: list[dict[str, Any]]) -> list[list[str]]:
+    return [[E(str(h["created_at"])[:19]), E(str(h["candidate_id"])), admin._badge(h["action"]),
+             E(h.get("reviewer") or "-"), E(str(h.get("reason") or "-"))] for h in history]
+
+
+@router.get("/admin/evidence-review", response_class=HTMLResponse)
+def admin_evidence_review(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    with _connection() as con:
+        found = evidence_review.all_cases(con, admin._settings())
+    counts = evidence_review.metrics(found)
+    rows = [[
+        admin._badge(c["priority"], _CONFLICT_TONE[c["priority"]]),
+        f'<a href="{_EVIDENCE}/{c["case_id"]}">{E(c["case_id"])}</a>',
+        E(str(c["title"])[:60])
+        + f'<div class="note">{E(", ".join(c["priority_reasons"]))}</div>',
+        " ".join(admin._badge(t, "muted") for t in c["types"]),
+        " ".join(f'#{i}' for i in c["event_ids"]) or "-",
+        _status(c),
+    ] for c in found]
+    cards = admin._cards([
+        ("Open cases", counts["open"], "waiting on a person"),
+        ("Cross-source", counts["cross_source"], "festivals whose sources disagree"),
+        ("Protected sources", counts["protected_source"], "fetch blocked, not re-read"),
+        ("No correction recommended", counts["no_correction_recommended"],
+         "stored values the evidence supports"),
+    ])
+    note = (
+        '<p class="note">Read only. A case is a question with its evidence, not a '
+        "decision: nothing here merges, edits, links or confirms. Each case links to the "
+        "existing page where a person decides, and that page keeps its own preview, "
+        "request token and audit trail. READY_FOR_EXISTING_REVIEW means a person can "
+        "decide there, never that anything is approved.</p>")
+    body = ("<h2>Evidence Review</h2>" + cards + note
+            + admin._table(["Priority", "Case", "Subject", "Type", "Events", "Status"], rows,
+                           empty="no case is waiting for evidence review")
+            + f'<p class="note"><a href="{_CONFLICTS}">Conflicts</a> · '
+              f'<a href="{_DUPLICATES}">Duplicates</a> · '
+              '<a href="/admin/intake?extraction=REVIEW">Intake: REVIEW</a></p>')
+    return HTMLResponse(admin._page("Evidence Review", _EVIDENCE, body,
+                                    flash=admin._flash(request)))
+
+
+def _conflict_body(c: dict[str, Any]) -> str:
+    low, high = c["event_ids"]
+    field_rows = [
+        [E(f["label"]),
+         (f'<strong>{E(f["left"])}</strong>' if f["differs"] else E(f["left"])),
+         (f'<strong>{E(f["right"])}</strong>' if f["differs"] else E(f["right"])),
+         admin._badge("differs", "warn") if f["differs"] else ""]
+        for f in c["fields"]]
+    for label, key in (("Source title", "original_title"), ("Source URL", "source_url"),
+                       ("Last collected", "last_collected_at")):
+        values = [str(c["evidence"][i][key] or evidence_review.UNKNOWN)[:120]
+                  for i in (low, high)]
+        field_rows.append([E(label), E(values[0]), E(values[1]), ""])
+    stated = [c["evidence"][i]["date_evidence"] for i in (low, high)]
+    field_rows.append(["Programme / date evidence", E(stated[0]["note"]),
+                       E(stated[1]["note"]), ""])
+    venue_rows = [
+        [E(label), E(str(c["venues"][low][key])), E(str(c["venues"][high][key]))]
+        for label, key in (("Raw venue text", "raw_venue_text"),
+                           ("Resolved venue", "resolved_venue"),
+                           ("Venue evidence source", "evidence_source"),
+                           ("Venue verification status", "verification_status"))]
+
+    def mentioned(event_id: int) -> str:
+        parts = c["venues"][event_id]["other_mentioned"]
+        if not parts:
+            return "-"
+        return "<br>".join(
+            E(p["text"]) + (f' <span class="note">resembles "{E(p["resembles"])}" by '
+                            "spelling only - not a link</span>" if p["resembles"] else "")
+            + f' <span class="note">role {E(p["role"])}</span>' for p in parts)
+    venue_rows.append(["Other mentioned place / organisation", mentioned(low),
+                       mentioned(high)])
+    question_rows = [[E(q["question"]), E(q["evidence"]),
+                      admin._badge(q["answer"], "ok" if q["answer"] == "YES" else "warn")]
+                     for q in c["questions"]]
+    decisions = "".join(
+        f'<li>#{d["decision_id"]} {E(d["decision"])} event #{d["event_id"]}'
+        + (f' &rarr; #{d["canonical_event_id"]}' if d.get("canonical_event_id") else "")
+        + f' · {E(d.get("reviewer") or "-")} {E(str(d["created_at"])[:16])}</li>'
+        for d in c["human_decisions"])
+    return (
+        f'<p>{" ".join(admin._badge(x, "muted") for x in c["evidence_confidence"])} '
+        + " ".join(admin._badge(x, "warn") for x in c["conflicts"]) + "</p>"
+        + "<h3>Side by side</h3>"
+        + admin._table(["Field", f"#{low}", f"#{high}", ""], field_rows, empty="-")
+        + "<h3>Date questions</h3>"
+        + admin._table(["Question", "Stored evidence", "Answer"], question_rows, empty="-")
+        + "<h3>Venue</h3>"
+        + admin._table(["", f"#{low}", f"#{high}"], venue_rows, empty="-")
+        + "<h3>Canonical / public impact (nothing is applied)</h3>"
+        + f'<ul class="sources"><li><strong>If merged:</strong> {E(c["if_merged"])}</li>'
+          f'<li><strong>If kept separate:</strong> {E(c["if_separate"])}</li></ul>'
+        + "<h3>Human duplicate decisions on this pair</h3>"
+        + (f'<ul class="sources">{decisions}</ul>' if decisions
+           else '<p class="note">none recorded</p>'))
+
+
+def _protected_body(c: dict[str, Any]) -> str:
+    src = c["source"]
+    source_rows = [
+        ["Source item", f'<a href="/admin/intake/{src["source_item_id"]}">'
+                        f'{src["source_item_id"]}</a>'],
+        ["Source", E(src["source_name"])],
+        ["Source URL", E(src["source_url"])],
+        ["Acquisition", admin._badge(src["acquisition_status"], "warn")],
+        ["Extraction freshness", admin._badge(src["freshness"], "warn")],
+        ["Flags", E(", ".join(src["flags"]) or "-")],
+        ["Posters with text read", E(str(src["posters_read"]))],
+        ["Article text held", "yes" if src["article_text_held"] else "no"],
+        ["Cannot be verified", "<br>".join(E(u) for u in c["unverifiable"]) or "-"],
+    ]
+    parts = []
+    for e in c["events"]:
+        t = e["time"]
+        rows = [
+            ["Event", f'<a href="/admin/events/{e["event_id"]}/sources">#{e["event_id"]}</a> '
+                      f'{E(str(e["event_name"] or ""))}'],
+            ["Candidate", (f'<a href="/admin/review/{e["candidate_id"]}">'
+                           f'{e["candidate_id"]}</a>' if e["candidate_id"]
+                           else evidence_review.UNKNOWN)],
+            ["Date", E(str(e["event_date"])) + " "
+             + admin._badge(t.get("date_state") or evidence_review.UNKNOWN,
+                            _EVIDENCE_TONE.get(t.get("date_state"), "muted"))],
+            ["Stored value", E(f'{t["stored_start"]} ~ {t["stored_end"]}')
+             + f' <span class="note">time evidence {E(t["stored_time_evidence"])}</span>'],
+            ["Evidence", admin._badge(t["state"], _EVIDENCE_TONE.get(t["state"], "muted"))
+             + " " + admin._badge(t["verdict"], "muted")],
+            ["Potential evidence", E(t["potential"] or "-")],
+            ["Evidence ownership", E(t["ownership"])],
+            ["Poster dates", E(", ".join(t["poster_dates"]) or "-")],
+            ["Poster clocks", E(", ".join(t["poster_clocks"]) or "-")],
+            ["What the evidence says", E(t["explanation"])],
+            ["Shown to readers now", "yes" if e["public_now"] else "no"],
+        ]
+        parts.append(f'<h3>Event #{e["event_id"]}</h3>'
+                     + admin._table(["Field", "Value"], rows, empty="-")
+                     + admin._table(["Existing action", "Readiness", "Why"],
+                                    _readiness_rows(e["readiness"]), empty="-"))
+    return ("<h3>Source</h3>" + admin._table(["Field", "Value"], source_rows, empty="-")
+            + "".join(parts))
+
+
+@router.get("/admin/evidence-review/{case_id}", response_class=HTMLResponse)
+def admin_evidence_case(case_id: str, request: Request,
+                        _: str = Depends(require_admin)) -> HTMLResponse:
+    with _connection() as con:
+        found = evidence_review.case(con, admin._settings(), case_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="no such evidence review case")
+    summary_rows = [
+        ["Review type", " ".join(admin._badge(t, "muted") for t in found["types"])],
+        ["Priority", admin._badge(found["priority"], _CONFLICT_TONE[found["priority"]])
+         + f' <span class="note">{E(", ".join(found["priority_reasons"]))}</span>'],
+        ["Current status", _status(found)],
+        ["Affected events", " ".join(f'<a href="/admin/events/{i}/sources">#{i}</a>'
+                                     for i in found["event_ids"]) or "-"],
+        ["Source items", " ".join(f'<a href="/admin/intake/{i}">{i}</a>'
+                                  for i in found["source_item_ids"]) or "-"],
+        ["Related candidates", " ".join(f'<a href="/admin/review/{i}">{i}</a>'
+                                        for i in found["candidate_ids"]) or "-"],
+        ["Public exposure",
+         E(f'{found["public_now"]} of {len(found["event_ids"])} shown now')],
+    ]
+    detail = (_conflict_body(found) if found["kind"] == "CROSS_SOURCE"
+              else _protected_body(found))
+    readiness = ("<h3>Decision readiness</h3>"
+                 + admin._table(["Existing action", "Readiness", "Why"],
+                                _readiness_rows(found["readiness"]), empty="-")
+                 if found.get("readiness") else "")
+    blocked = ("<h3>Blocked by safety policy</h3>"
+               + admin._table(["Action", "Readiness", "Why"],
+                              [[E(b["action"]), admin._badge(b["readiness"], "muted"),
+                                E(b["why"])] for b in found["blocked_actions"]], empty="-")
+               if found["blocked_actions"] else "")
+    body = (
+        f'<h2>Evidence case {E(found["case_id"])}</h2>'
+        + f'<p class="sub">{E(str(found["title"]))}</p>'
+        + admin._table(["", ""], summary_rows, empty="-")
+        + detail + readiness + blocked
+        + "<h3>Human review history</h3>"
+        + admin._table(["When", "Candidate", "Action", "Reviewer", "Reason"],
+                       _history_rows(found["human_history"]),
+                       empty="no human review action recorded")
+        + "<h3>Where to act</h3>" + _links(found["available_actions"])
+        + '<p class="note">' + " · ".join(E(x) for x in found["facts_kept_apart"]) + "</p>"
+        + '<p class="note">This page only reads; it records nothing.</p>'
+        + f'<p class="note"><a href="{_EVIDENCE}">&larr; Evidence Review</a></p>')
+    return HTMLResponse(admin._page("Evidence case", _EVIDENCE, body,
+                                    flash=admin._flash(request)))
+
+
+@api.get("/evidence-review")
+def api_evidence_review(_: str = Depends(require_admin)) -> JSONResponse:
+    with _connection() as con:
+        found = evidence_review.all_cases(con, admin._settings())
+    return admin._dump({"metrics": evidence_review.metrics(found),
+                        "cases": [evidence_review.summary_of(c) for c in found]})
+
+
+@api.get("/evidence-review/{case_id}")
+def api_evidence_case(case_id: str, _: str = Depends(require_admin)) -> JSONResponse:
+    with _connection() as con:
+        found = evidence_review.case(con, admin._settings(), case_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="no such evidence review case")
     return admin._dump(found)

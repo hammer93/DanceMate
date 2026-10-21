@@ -1,5 +1,116 @@
 # DanceMate Release Notes
 
+## v0.96.45 Evidence-Based Human Review & Safe Decision Workflow
+
+Product Runtime 0.96.45; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051 (no new migration). The two kinds of question
+v0.96.44 put in front of a person - a festival two sources date differently,
+and a protected source item the running engine never re-read - are now one
+queue of evidence review cases. Each case keeps two things apart: how far the
+stored evidence goes, field by field, and whether that evidence supports any
+existing action. Nothing is decided for the operator: the pages read, and
+every decision still goes through the existing audited page. Two existing
+write paths gain a guard against stale forms.
+
+### What was missing, measured
+
+Before: to act on SEOUL TANGO WEEK an operator moved between Conflicts, each
+event's sources, two intake items, two Review pages and Unresolved Venues,
+and nothing said whether a MERGE, a date EDIT or a venue link was supported.
+For K-TANGO the intake page said what could not be verified but not what the
+stored poster said about the stored time - and v0.96.44's own note on 646
+("no 14:00-18:00 on the poster") was wrong: the poster does list
+`14:00~18:00`, under its 9월 28일 heading, on a two-day list.
+
+Two write-path gaps found while auditing the existing contracts:
+
+* Review EDIT / CONFIRM / APPROVE / REJECT / DUPLICATE carried the request
+  token but nothing about what the reviewer had seen; a page left open while
+  a source revision re-read the item would record the decision against values
+  the reviewer never saw.
+* `duplicates.resolve_pair()` did not check the pair's state, so a stale
+  Duplicates tab could stack a second verdict (e.g. MERGE over a standing
+  KEEP_SEPARATE) without a revert.
+
+### Evidence review cases (`runtime/evidence_review.py`, read-only)
+
+* A case is derived, not stored: `conflict-A-B` (smaller event id first,
+  either order accepted) or `source-N`. It follows its rows through source
+  revisions and re-extraction, and a case a person has decided
+  (`human_review_actions`, or a standing human duplicate verdict on the pair)
+  reads HUMAN_DECISION_RECORDED and is not asked again.
+* Types: CROSS_SOURCE_CONFLICT, DATE_EVIDENCE_CONFLICT,
+  VENUE_EVIDENCE_CONFLICT, TIME_EVIDENCE_CONFLICT,
+  SOURCE_EVIDENCE_INSUFFICIENT, EXTRACTION_NOT_APPLIED.
+* Status: CONFLICT_UNRESOLVED, REVIEW_REQUIRED, NEEDS_MORE_EVIDENCE,
+  READY_FOR_EXISTING_REVIEW (a person can decide on the existing page - never
+  "approved"), NO_CORRECTION_RECOMMENDED, BLOCKED_BY_SAFETY_POLICY (re-fetch
+  and re-extraction of a FETCH_BLOCKED item), HUMAN_DECISION_RECORDED.
+* Per-action readiness (AVAILABLE / NOT_READY / NOT_RECOMMENDED /
+  NOT_OFFERED / NO_ACTION_NEEDED) with the reason. MERGE is never ready while
+  a date or venue conflict stands.
+* The stored start time is compared with the item's stored poster OCR:
+  STORED_TIME_MATCHES_EVIDENCE only for a one-date poster (the event's date,
+  no `DAY n` schedule) whose earliest clock is the stored start;
+  POTENTIAL_POSTER_TIME_CONFLICT when no poster clock can be the stored start
+  (24:00 is the end of a night, never a start - v0.96.40); otherwise
+  TIME_EVIDENCE_INSUFFICIENT. A potential value is only "the first clock
+  after the event's date in reading order", and its ownership stays
+  NOT_YET_VERIFIED unless the poster has one date and one programme clock.
+  A misread date can only weaken a verdict (more dates, unverifiable
+  ownership), never create a match.
+* Venue text is split into the names it lists; a name that resembles a
+  master venue by spelling is shown as a resemblance, with role UNKNOWN, and
+  never linked.
+
+### Admin
+
+`/admin/evidence-review` (nav: Evidence) lists the cases by priority
+(public now, upcoming, conflicting evidence first) and
+`/admin/evidence-review/{case_id}` shows type, priority and why, status,
+affected events / source items / candidates (each a link to its existing
+page), public exposure, the evidence, the date questions with what stored
+evidence answers (UNKNOWN when nothing does), the venue breakdown (raw text,
+resolved venue, other mentioned names, evidence source, verification
+status), canonical impact, human history, decision readiness and the
+actions blocked by policy. `GET /api/admin/evidence-review[/{case_id}]`
+returns the same. No form, no new mutation route. The Conflicts page links
+each pair and protected item to its case.
+
+Review page forms now carry a `basis` - a fingerprint of the candidate's
+values, its review state and the Event rows built from it. A post whose basis
+no longer matches is refused ("nothing was recorded"); the same form cannot
+be submitted twice. Posts without a basis (the JSON API) behave as before.
+`resolve_pair()` locks the pair and refuses one that is not OPEN; a revert
+reopens it.
+
+### Production (read-only, 2026-10-21)
+
+| Case | Status | Evidence | Readiness |
+|---|---|---|---|
+| conflict-1628795-1629292 SEOUL TANGO WEEK | CONFLICT_UNRESOLVED, HIGH | POSSIBLE_SAME_EVENT, NEEDS_MORE_EVIDENCE; DATE_CONFLICT, SOURCE_EVIDENCE_CONFLICT, VENUE_UNRESOLVED; independent evidence NONE_STORED | MERGE NOT_READY, date correction NOT_READY, venue link NOT_READY |
+| source-643 (event 1597462, candidate 2914) | REVIEW_REQUIRED, MEDIUM | stored 00:00; 00:00 only as 24:00; potential 20:00, ownership NOT_YET_VERIFIED (DAY-numbered schedule, 5 clocks) | EDIT NOT_READY, CONFIRM NOT_RECOMMENDED |
+| source-646 (event 430222, candidate 1908) | NEEDS_MORE_EVIDENCE, LOW | stored 14:00~18:00 appears, but on a 9/27 + 9/28 list; ownership not shown | EDIT NOT_READY (do not clear), CONFIRM NOT_RECOMMENDED |
+| source-647 (event 21912, candidate 1438) | NO_CORRECTION_RECOMMENDED, LOW | one-date poster, 16:00 its earliest clock | CONFIRM AVAILABLE (optional), EDIT NOT_RECOMMENDED |
+
+No case was decided; no Event, venue or verdict was changed.
+
+### Production clone
+
+Two copies of one Production dump (pg_dump + engine store backup), the
+v0.96.44 tree on one and this tree on the other: working out every case
+changed nothing (all hashed tables identical before and after), and two
+scheduler-equivalent ticks (engine-reprocess, event-normalization with the
+duplicate scan) left both copies byte-identical to each other and to the
+dump - 1605 events, 181 folds, 194 duplicate decisions, 211 pairs, 15 human
+review actions, 54 venues, 179 aliases, 255 public events.
+
+Runtime 3,783 passed / 16 skipped / 0 failed (the board's
+`scripts/run-container-tests.sh`, its own disposable DB; locally 3,782 / 11
+skipped); engine 2,043 passed / 1 skipped. 37 new tests
+(`tests/test_v09645_evidence_review.py`, Production poster OCR in
+`tests/fixture_v09645_ktango_posters.py`).
+
 ## v0.96.44 Cross-Source Event Conflict Review & Human Evidence Resolution
 
 Product Runtime 0.96.44; Information Engine 1.16 (unchanged); normalization 3
