@@ -1,5 +1,69 @@
 # DanceMate Release Notes
 
+## v0.96.49 Public UX, Mobile E2E & Release Readiness Audit
+
+Product Runtime 0.96.49; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051 (no new migration). The first release that walks
+the reader's journey end to end in a real browser - open, pick a style, a
+region, a date, read an event, go to the post, come back - over a copy of
+Production, at six viewports. What it found is fixed on the reader's pages
+only (`runtime/public.py`); no event, canonical, venue or decision changes.
+
+### What the audit found
+
+* **A long list stopped at 100.** `/events` asked search for 100 rows and
+  printed the total above them: "다가오는" on Production read 253건 and listed
+  100, "이번 주" 121 and 100, with no way to the rest. The first screen showed
+  20 of tonight's 28 the same way. `/events` now pages (`?page=`, 100 per
+  page, every filter carried, "101–200 / 253건"), and the first screen links
+  to the whole of tonight when it shows only part of it. On the Production
+  copy, all 1,312 genre × region × date cases now list exactly the events
+  the database and the API say (1,305 before - the 7 lists over 100).
+* **"← 목록" forgot the reader.** It always went to today's unfiltered list.
+  It now returns to the list page the reader came from - this site's own `/`
+  or `/events` only, path and query only, else today's list - and the day
+  view's way back keeps the genres as well as the region.
+* **A festival with no stated last day read as a one-day event.** SEOUL
+  TANGO WEEK as TangoNOW lists it showed "11/12(목)" beside Miltang's
+  11/11–11/16. Such a festival now reads "11/12(목)부터 · 종료일 미확인";
+  nothing is filled in.
+* **`?region=KR-SEOUL` marked no chip.** Search already treats a region's
+  code, name and label as one region; the chips now do too, so the filter on
+  screen is visible. An unknown value is still never mapped to another place.
+* Smaller: a source whose address cannot be served as a link is named
+  instead of linked (it could 500 the detail page); the unavailable page
+  offers "다시 시도"; week links and "← 목록" have 24px tap areas; past
+  calendar days use the muted colour instead of opacity (axe colour-contrast
+  0, was 6 per list page).
+
+### Kept as found, reported for an operator
+
+Data problems that need a person's decision were not touched: two Neoswing
+notices (a performance sign-up and a ticket pre-sale for the 10/25 party)
+listed as SWING events on their 10/22 deadline; a social whose 19:30 start
+lost to its DJ slot (20:15~22:15); two same-night duplicates still OPEN in
+the human queue (557905, 805256 - the venue is unresolved, so no automatic
+merge). See the v0.96.49 audit's issue register.
+
+### Verification
+
+* Browser E2E (`tests/e2e`, Playwright + Chromium, `requirements-e2e.txt`):
+  25 journeys, 30 cases, over a disposable database and its own server
+  process. Without Playwright the module is skipped and says so.
+* Responsive QA on the Production copy: 13 pages × 6 viewports
+  (360/390/430/768/1280/1440): horizontal overflow 0, controls off screen 0,
+  JS errors 0, CLS 0. Emulation, not a physical phone.
+* Production-equivalent copy, v0.96.48 vs v0.96.49 under identical traffic:
+  46 of 47 tables identical; `alpha_view_log` (anonymous page-view counter)
+  is the only difference.
+* Runtime 3961 passed / 12 skipped locally (45 new in
+  `tests/test_v09649_public_ux.py`; 28 of them fail on v0.96.48); the board's
+  official runner 3962 passed / 17 skipped (the E2E module skipped: no
+  Playwright in the runtime image); engine 2043 passed / 1 skipped.
+* An HTTP GET of a public page records one anonymous `alpha_view_log` row.
+  Production checks after deployment render pages in-process with that
+  counter off, and use the JSON API otherwise.
+
 ## v0.96.48 Ongoing Festival Continuity & Historical Duplicate Triage
 
 Product Runtime 0.96.48; Information Engine 1.16 (unchanged); normalization 3

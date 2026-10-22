@@ -20,7 +20,7 @@ import unicodedata
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import APIRouter, Form, HTTPException, Query
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
@@ -319,7 +319,10 @@ li.event a { padding: .55rem .8rem; }
 .cal-nav-row { display:flex; align-items:center; justify-content:space-between;
                padding:.6rem .8rem; border-bottom:1px solid var(--line);
                font-size:.8rem; }
-.cal-nav-row .cal-nav { color:var(--accent); text-decoration:none; }
+/* v0.96.49: a week link is a control of its own, so it gets a 24px-tall
+   tap area (WCAG 2.5.8) - padding only, the row looks the same. */
+.cal-nav-row .cal-nav { color:var(--accent); text-decoration:none; display:inline-block;
+                        padding:.25rem .1rem; }
 .cal-range { color:var(--muted); }
 .cal-grid { display:grid; grid-template-columns:repeat(7, 1fr); }
 .cal-day { display:flex; flex-direction:column; align-items:center; gap:.15rem;
@@ -331,7 +334,10 @@ li.event a { padding: .55rem .8rem; }
 .cal-day .cal-n { font-size:.7rem; color:var(--muted); }
 .cal-day.today .cal-d { color:var(--accent); }
 .cal-day.selected { background:var(--bg); box-shadow:inset 0 -3px 0 var(--accent); }
-.cal-day.past { opacity:.55; }
+/* v0.96.49: a past day was dimmed with opacity:.55, which took its number
+   below readable contrast (axe color-contrast). The muted text colour says
+   the same thing and stays readable. */
+.cal-day.past .cal-d { color:var(--muted); font-weight:400; }
 @media (max-width: 30rem) {
   .cal-day { padding:.45rem .05rem; }
   .cal-day .cal-d { font-size:.85rem; }
@@ -347,6 +353,12 @@ li.event a { padding: .55rem .8rem; }
 .empty-actions { margin:.75rem 0 0; display:flex; gap:.5rem; flex-wrap:wrap; padding:0; list-style:none; }
 .empty-actions a { border:1px solid var(--line); border-radius:999px; padding:.3rem .85rem;
                    text-decoration:none; font-size:.85rem; background:var(--card); color:var(--accent); }
+/* v0.96.49: the way back to a list, and the pages of a long one. */
+a.back-link { display:inline-block; padding:.25rem 0; }
+nav.pager { align-items:center; margin:1rem 0 0; }
+nav.pager .pager-at { color:var(--muted); font-size:.85rem; }
+.more { margin:.75rem 0 0; }
+.more a { color:var(--accent); display:inline-block; padding:.25rem 0; }
 @media (max-width: 30rem) {
   main { padding: 1rem .75rem 3rem; }
   h1 { font-size: 1.2rem; }
@@ -426,6 +438,35 @@ def _next_actions(*, when: str | None, region: str | None,
     if not links:
         return ""
     return '<ul class="empty-actions">' + "".join(f"<li>{link}</li>" for link in links) + "</ul>"
+
+
+# v0.96.49: how many events one /events page lists. The search API's own
+# ceiling; a longer list (a month of upcoming events is ~250) goes on to a
+# next page instead of stopping silently at 100 under a "253건" heading.
+PAGE_SIZE = events_api.MAX_LIMIT
+
+
+def _pager(query: dict[str, str], *, page: int, shown: int, total: int) -> str:
+    """이전 / 101–200 / 253건 / 다음 - only when the list is longer than a page.
+    Every link carries the reader's filters unchanged."""
+    from urllib.parse import urlencode
+
+    if total <= PAGE_SIZE and page == 1:
+        return ""
+    first = (page - 1) * PAGE_SIZE
+
+    def link(to: int, label: str, rel: str) -> str:
+        params = dict(query, **({"page": str(to)} if to > 1 else {}))
+        return f'<a href="/events?{E(urlencode(params))}" rel="{rel}">{label}</a>'
+
+    parts = []
+    if page > 1:
+        parts.append(link(page - 1, "&larr; 이전", "prev"))
+    at = f"{first + 1}–{first + shown} / {total}건" if shown else f"{total}건"
+    parts.append(f'<span class="pager-at">{at}</span>')
+    if first + shown < total:
+        parts.append(link(page + 1, "다음 &rarr;", "next"))
+    return '<nav class="pager" aria-label="목록 페이지">' + "".join(parts) + "</nav>"
 
 
 def _is_narrowed(options: list[dict[str, str]], selected: list[str]) -> bool:
@@ -773,6 +814,26 @@ def _genre_filter(action: str, when: str | None, region: str | None,
     )
 
 
+def _region_shown(con, region: str | None) -> str | None:
+    """The chip a ``?region=`` value stands for (v0.96.49).
+
+    The chips carry the master's name (서울); a link may name the same row by
+    its code (KR-SEOUL) or its label, which events_api already treats as the
+    same region. Without this no chip - not even 전체 - read as selected for
+    ?region=KR-SEOUL, though the list was filtered. A value the master does
+    not know is shown as it was written, never mapped to a nearby region.
+    """
+    if not region:
+        return None
+    try:
+        rows = events_api.region_rows(con, region)
+    except Exception:  # noqa: BLE001 - a label is not worth a 500
+        rows = []
+    if len(rows) == 1 and rows[0].get("name"):
+        return rows[0]["name"]
+    return region.strip()
+
+
 def _region_chips(action: str, when: str | None, rows: list[dict[str, Any]],
                   chosen: str | None, genre_query: dict[str, str]) -> str:
     """Where. Only places that have something, and never the country row."""
@@ -852,6 +913,7 @@ def _when_line(event: dict[str, Any]) -> str:
             last = date_type.fromisoformat(event["end_date"])
             label += f"–{last.month}/{last.day}({WEEKDAYS[last.weekday()]})"
     start, end = event.get("start_time"), event.get("end_time")
+    period = _unstated_period(event)
     if start and end:
         clock = f"{start}–{end}" + ("<sup>+1</sup>" if event.get("ends_next_day") else "")
     elif start:
@@ -872,7 +934,19 @@ def _when_line(event: dict[str, Any]) -> str:
         # Not "TBD": we simply do not know, and the post is linked so a reader
         # can check for themselves.
         clock = '<span class="unknown">시간 미확인</span>'
-    return f'<span class="when">{E(label)} {clock}</span>'
+    return f'<span class="when">{E(label)}{period} {clock}</span>'
+
+
+def _unstated_period(event: dict[str, Any]) -> str:
+    """"부터 · 종료일 미확인" for a festival whose record gave no last day.
+
+    v0.96.49: such a festival read as a one-day event ("11/12(목)") next to
+    the same week's other listing showing 11/11–11/16. The gap is said
+    plainly; no last day is ever filled in (v0.96.41's rule).
+    """
+    if (event.get("event_type") or "").upper() != "FESTIVAL" or event.get("end_date"):
+        return ""
+    return '부터 · <span class="unknown">종료일 미확인</span>'
 
 
 def _region_line(event: dict[str, Any]) -> str:
@@ -1273,8 +1347,8 @@ def _timeline_line1(event: dict[str, Any], *, now: "datetime | None" = None,
         venue_html = (f'<span class="tl-1-venue" title="{escaped}" '
                       f'aria-label="{escaped}">{escaped}</span> ·')
     type_html = _kind_html(event, kind, f"kind-why-{event.get('id')}")
-    parts = [_timeline_region(event), venue_html, E(date_label), _timeline_clock(event),
-             type_html]
+    parts = [_timeline_region(event), venue_html, E(date_label) + _unstated_period(event),
+             _timeline_clock(event), type_html]
     return (f'<div class="tl-1">' + " ".join(p for p in parts if p)
             + _timeline_badges(event, now=now) + "</div>")
 
@@ -1574,6 +1648,9 @@ def home(
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
             terms = _enabled_terms(con)
+            # v0.96.49: from here on the region is the chip's own spelling
+            # (KR-SEOUL -> 서울, same events), so its chip reads as selected.
+            region = _region_shown(con, region)
     except db.DatabaseUnavailable:
         return _unavailable_page("DanceMate")
 
@@ -1594,6 +1671,15 @@ def home(
         listing = "<ul class=\"events\">" + "".join(
             _event_item(e, terms=terms) for e in result["events"]
         ) + "</ul>"
+        if result["total"] > len(result["events"]):
+            # v0.96.49: the first screen shows the first 20 of tonight; the
+            # rest used to be reachable from nowhere on this page.
+            from urllib.parse import urlencode
+
+            params = {"when": events_api.WHEN_TODAY, **genre_query,
+                      **({"region": region} if region else {})}
+            listing += (f'<p class="more"><a href="/events?{E(urlencode(params))}">'
+                        f'오늘 행사 {result["total"]}건 모두 보기 →</a></p>')
     else:
         nearest = "".join(
             _event_item(e, terms=terms) for e in upcoming["events"])
@@ -1692,8 +1778,10 @@ def events_page(
     region: str | None = None,
     week: int = Query(0, description="week offset from this week, Section 34"),
     date: str | None = Query(None, description="a single day, YYYY-MM-DD - overrides `when`"),
+    page: int = Query(1, ge=1, le=1000, description="v0.96.49: which 100 of a long list"),
 ) -> HTMLResponse:
     asked = _split_genres(genres)
+    offset = (page - 1) * PAGE_SIZE
     # ?genre=TANGO still works; it simply means that one is ticked.
     if asked is None and genre:
         asked = _split_genres([genre])
@@ -1706,16 +1794,19 @@ def events_page(
             constraint = _genre_constraint(options, selected)
             if date is not None:
                 result = events_api.search(
-                    con, on=date, genres=constraint, region=region, limit=100)
+                    con, on=date, genres=constraint, region=region, limit=PAGE_SIZE,
+                    offset=offset)
             else:
                 result = events_api.search(
-                    con, when=when, genres=constraint, region=region, limit=100)
+                    con, when=when, genres=constraint, region=region, limit=PAGE_SIZE,
+                    offset=offset)
             facets = (_facets(con, when, constraint) if date is None
                      else _facets_for_date(con, date, constraint))
             monday, sunday = events_api.week_window(week)
             week_counts = events_api.week_counts(
                 con, start=monday, end=sunday, genres=constraint, region=region)
             terms = _enabled_terms(con)
+            region_shown = _region_shown(con, region)
     except events_api.SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except db.DatabaseUnavailable:
@@ -1730,10 +1821,17 @@ def events_page(
     )
 
     actions = _next_actions(when=when, region=region, genre_query=genre_query)
+    list_query = {**({"when": when} if date is None else {"date": date}), **genre_query,
+                  **({"region": region} if region else {}), "week": str(week)}
     if result["events"]:
         listing = "<ul class=\"events\">" + "".join(
             _event_item(e, terms=terms) for e in result["events"]
-        ) + "</ul>"
+        ) + "</ul>" + _pager(list_query, page=page, shown=len(result["events"]),
+                             total=result["total"])
+    elif page > 1 and result["total"]:
+        # Past the last page of a list that is not empty (a stale link).
+        listing = ('<p class="empty">이 페이지에는 행사가 없습니다.</p>'
+                   + _pager(list_query, page=page, shown=0, total=result["total"]))
     elif _is_narrowed(options, selected) or region:
         listing = f'<p class="empty">{EMPTY_FILTERED}</p>' + (actions if date is None else "")
     else:
@@ -1744,17 +1842,23 @@ def events_page(
     chosen_labels = [o["label"] for o in options if o["code"] in set(selected)]
     narrowed = " · ".join(
         x for x in (", ".join(chosen_labels) if _is_narrowed(options, selected) else "",
-                    region or "") if x)
+                    region_shown or "") if x)
+    # v0.96.49: back from a day keeps the genres too, not only the region.
+    from urllib.parse import urlencode
+
+    back_query = urlencode({"when": when, "week": str(week), **genre_query,
+                            **({"region": region} if region else {})})
     body = (
         f"<h1>{E(label)}</h1>"
         f'<p class="sub">{result["total"]}건'
         + (f" · {E(narrowed)}" if narrowed else "")
         + " · Asia/Seoul 기준</p>"
         + (_nav(when, region=region, genre_query=genre_query) if date is None else
-           f'<p class="sub"><a href="/events?when={E(when)}&week={week}'
-           f'{"&region=" + quote(region) if region else ""}">&larr; 목록으로</a></p>')
+           f'<p class="sub"><a class="back-link" href="/events?{E(back_query)}">'
+           "&larr; 목록으로</a></p>")
         + calendar
-        + _filter_bar("/events", when if date is None else None, facets, options, selected, region)
+        + _filter_bar("/events", when if date is None else None, facets, options, selected,
+                      region_shown)
         + listing + _footer()
     )
     return HTMLResponse(_page(f"{label} - DanceMate", body))
@@ -1779,8 +1883,31 @@ def _feedback_block(event_id: int, *, sent: str | None = None) -> str:
     return f'<div class="feedback"><span class="key">이 정보, 어떤가요?</span>{buttons}</div>'
 
 
+def _back_to_list(referer: str | None, host: str | None) -> str:
+    """Where "← 목록" goes (v0.96.49): back to the list the reader came from.
+
+    It always went to /events?when=today, so a reader who had picked
+    Salsa · 부산 · 다가오는 lost all of it by tapping it. Only this site's own
+    list pages are followed - same host, path / or /events - and only their
+    path and query are kept, so the link can never lead anywhere else.
+    """
+    from urllib.parse import urlsplit
+
+    fallback = "/events?when=today"
+    if not referer or not host:
+        return fallback
+    try:
+        parts = urlsplit(referer)
+    except ValueError:
+        return fallback
+    if parts.netloc != host or parts.path not in ("/", "/events"):
+        return fallback
+    return parts.path + (f"?{parts.query}" if parts.query else "")
+
+
 @router.get("/events/{event_id}", response_class=HTMLResponse)
-def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLResponse:
+def event_page(event_id: int, request: Request,
+               feedback: str | None = Query(None)) -> HTMLResponse:
     try:
         with _connection() as con:
             event = events_api.get_event(con, event_id)
@@ -1821,9 +1948,14 @@ def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLRespons
     # kind of evidence it is (organizer's own, promotion, directory ...), so
     # a reader can tell the original from the listing that re-posted it.
     sources = "".join(
-        f'<li class="event"><a href="/events/{event["id"]}/source?to={quote(source["url"], safe="")}" '
-        f'rel="nofollow noopener" target="_blank">'
-        f'{E(source["event_name"] or source["url"])}</a>'
+        (f'<li class="event"><a href="/events/{event["id"]}/source?to={quote(source["url"], safe="")}" '
+         f'rel="nofollow noopener" target="_blank">'
+         f'{E(source["event_name"] or source["url"])}</a>'
+         if source.get("url") else
+         # v0.96.49: a post whose address cannot be served as a public link
+         # is named, not linked - quote(None) used to make this page a 500.
+         f'<li class="event"><span class="unknown">'
+         f'{E(source.get("event_name") or "원문 링크 없음")} (원문 링크 없음)</span>')
         + (' <span class="tag">대표 출처</span>' if source.get("is_primary") else "")
         + (f' <span class="tag">{E(source["evidence_label"])}</span>'
            if source.get("evidence_label") else "")
@@ -1840,7 +1972,9 @@ def event_page(event_id: int, feedback: str | None = Query(None)) -> HTMLRespons
         "원문을 확인해 주세요.</div>" if event.get("cancelled") else ""
     )
     body = (
-        f'<p class="sub"><a href="/events?when=today">&larr; 목록</a></p>'
+        f'<p class="sub"><a class="back-link" href="'
+        f'{E(_back_to_list(request.headers.get("referer"), request.headers.get("host")))}">'
+        "&larr; 목록</a></p>"
         + cancelled
         + f"<h1>{E(event.get('name') or '')}</h1>"
         f"<dl>{details}</dl>"
@@ -2171,8 +2305,11 @@ def _unavailable_page(title: str) -> HTMLResponse:
     A reader who cannot be served needs to know that -- rendering an empty list
     would tell them there is nothing on tonight.
     """
+    # v0.96.49: the sentence says to try again; the link is how. An empty
+    # href is this same address, filters and all.
     body = (
         "<h1>DanceMate</h1>"
-        f'<p class="empty">{E(UNAVAILABLE)}</p>' + _footer()
+        f'<p class="empty" role="alert">{E(UNAVAILABLE)}</p>'
+        '<ul class="empty-actions"><li><a href="">다시 시도</a></li></ul>' + _footer()
     )
     return HTMLResponse(_page(str(title), body), status_code=503)

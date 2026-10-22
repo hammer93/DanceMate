@@ -1,0 +1,4 @@
+# v0.96.49 browser E2E (tests/e2e) only - not part of the runtime image.
+# pip install -r requirements-e2e.txt && python -m playwright install chromium
+-r requirements-dev.txt
+playwright==1.55.0
