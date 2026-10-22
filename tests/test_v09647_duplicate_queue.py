@@ -331,10 +331,16 @@ def test_a_changed_source_makes_the_pair_stale_and_the_old_preview_dead(pg, two_
     item = _item(pg, pair_id)
     assert item["status"] == duplicates.QUEUE_STALE
     assert item["primary_reason"] == duplicates.REASON_NO_CURRENT_MATCH
+    # v0.96.48: two posts naming two places that no rule pairs any more is not a
+    # merge anybody may make, so the confirm refuses it on the evidence before
+    # it reaches the token (the stale-token refusal itself: test_v09648).
+    preview = duplicates.preview_resolve(pg, pair_id, decision=duplicates.DUPLICATE,
+                                         canonical_event_id=keep, reviewer="tester")
+    assert preview["reasons"] == [duplicates.REASON_PLACE_CONFLICT]
     with pytest.raises(DC.DecisionRefused) as refused:
         duplicates.confirm_resolve(pg, pair_id, decision=duplicates.DUPLICATE,
                                    canonical_event_id=keep, token=token, reviewer="tester")
-    assert refused.value.code == DC.STALE_PREVIEW
+    assert refused.value.code == DC.DECISION_REFUSED
     assert _verdict_id(pg, case["b"]["event_id"]) is None
 
 

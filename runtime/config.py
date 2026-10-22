@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.47"
+PRODUCT_VERSION = "0.96.48"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -472,6 +472,10 @@ PRODUCT_VERSION = "0.96.47"
 #
 # v0.96.47 leaves it at 1.16 too: the Duplicates queue is derived from stored
 # pairs and events (duplicates.queue); nothing is re-extracted or re-normalized.
+#
+# v0.96.48 leaves it at 1.16 too: an ongoing festival is kept by the Miltang
+# collector's own cutoff (miltang_discovery.parse_detail), and the record it
+# hands on is the same one it always was - the engine reads nothing new.
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

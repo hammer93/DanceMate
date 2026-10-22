@@ -701,6 +701,7 @@ REASON_REGION_CONFLICT = "REGION_CONFLICT"
 REASON_FESTIVAL_PROGRAMME = "FESTIVAL_PROGRAMME"
 REASON_GROUP_CHAIN = "GROUP_CHAIN"
 REASON_KEEP_NOT_IN_PAIR = "KEEP_NOT_IN_PAIR"
+REASON_PLACE_CONFLICT = "PLACE_CONFLICT"
 # Not refusals: what the rules say about the pair's events as they read now.
 REASON_NO_CURRENT_MATCH = "NO_CURRENT_MATCH"
 REASON_RULES_WOULD_MERGE = "RULES_WOULD_MERGE"
@@ -766,6 +767,19 @@ def resolve_blockers(pair: dict[str, Any], members: dict[int, dict[str, Any]], *
             refusals.append((REASON_REGION_CONFLICT,
                              "the two posts name cities that exclude each other - a merge "
                              "across regions is never offered"))
+        # v0.96.48: a pair no rule proposes any more, whose two posts each say
+        # where they are and say different places. A valid preview token
+        # proves who asked, not that two nights are one: 23 of Production's 28
+        # STALE pairs had nothing in common but the date (1603334 / 1603338
+        # among them), after re-extraction gave each post its own venue. Where
+        # two spellings name one place, resolving the venue makes the rules
+        # pair them again, and the pair is answerable as before.
+        if (not refusals and left["event_date"] == right["event_date"]
+                and classify(left, right) is None and _place(left) and _place(right)):
+            refusals.append((REASON_PLACE_CONFLICT,
+                             "no rule pairs these events any more and their posts name "
+                             "different places - resolve the venue first if they are one "
+                             "place"))
     if not refusals and decision == DUPLICATE:
         if canonical_event_id is None:
             canonical_event_id = _canonical_of(*members.values())[0]["event_id"]
@@ -952,8 +966,9 @@ REVERT_BLOCKED_DEPENDENCY = "REVERT_BLOCKED_DEPENDENCY"
 REVERT_TOKEN_TTL_SECONDS = 2 * 3600
 
 _MEMBER_COLUMNS = (
-    "e.event_id, e.event_date, e.event_name, e.start_time, e.venue_id, e.venue_text, "
-    "e.region_id, e.identity_key, e.series_key, e.event_type, e.canonical_event_id, "
+    "e.event_id, e.event_date, e.end_date, e.event_name, e.start_time, e.venue_id, "
+    "e.venue_text, e.region_id, e.identity_key, e.series_key, e.event_type, "
+    "e.canonical_event_id, "
     "e.duplicate_decided_by, e.listing_state, e.review_state, e.provenance, "
     "e.source_item_id, e.primary_source_item_id, e.primary_source_decided_by"
 )
@@ -1460,7 +1475,12 @@ QUEUE_GUIDANCE = {
 
 
 def _member_rows(con, ids: list[int]) -> dict[int, dict[str, Any]]:
-    """`_members()` for many events, plus every canonical row they fold into."""
+    """`_members()` for many events, plus every canonical row they fold into.
+
+    Each row also carries ``period_end`` (v0.96.48): its own stated last day,
+    else the latest one among the rows folded into it - what
+    `events_api.LAST_DAY` asks before falling back to the event's own date.
+    """
     found = _members(con, ids) if ids else {}
     pending = {e["canonical_event_id"] for e in found.values()
                if e["canonical_event_id"] is not None} - set(found)
@@ -1470,7 +1490,115 @@ def _member_rows(con, ids: list[int]) -> dict[int, dict[str, Any]]:
         found.update(_members(con, sorted(pending)))
         pending = {e["canonical_event_id"] for e in found.values()
                    if e["canonical_event_id"] is not None} - set(found)
+    if found:
+        with con.cursor() as cur:
+            cur.execute("SELECT e.event_id, COALESCE(e.end_date, (SELECT max(f.end_date) "
+                        "  FROM events f WHERE f.canonical_event_id = e.event_id)) "
+                        "FROM events e WHERE e.event_id = ANY(%s)", (sorted(found),))
+            for event_id, last in cur.fetchall():
+                found[event_id]["period_end"] = last
     return found
+
+
+# When a pair's events are on (v0.96.48), from the Seoul date and nothing
+# else. A filter beside the lifecycle status, never a reason to answer: a past
+# pair is exactly as answerable as it was, and nothing closes it.
+TIME_ONGOING = "ONGOING"
+TIME_UPCOMING = "UPCOMING"
+TIME_PAST = "PAST"
+TIME_UNKNOWN = "DATE_UNKNOWN"
+TIMINGS = (TIME_ONGOING, TIME_UPCOMING, TIME_PAST, TIME_UNKNOWN)
+
+
+def event_timing(event: dict[str, Any], rows: dict[int, dict[str, Any]], today: date) -> str:
+    """One event's timing on ``today`` (a Seoul date). Pure.
+
+    Its last day is its own stated period, else its group's (a fold of the
+    same first day shares its canonical's period), else its own date - except
+    that a festival which started before today and states no end anywhere is
+    DATE_UNKNOWN: it is neither known to be on nor known to be over, and no
+    length is assumed for it.
+    """
+    first = event.get("event_date")
+    if first is None:
+        return TIME_UNKNOWN
+    if first > today:
+        return TIME_UPCOMING
+    last = event.get("period_end")
+    if last is None and event.get("canonical_event_id") is not None:
+        root = rows.get(_root_of(event["event_id"], rows))
+        if root is not None and root.get("event_date") == first:
+            last = root.get("period_end")
+    if last is None:
+        if _is_festival(event) and first < today:
+            return TIME_UNKNOWN
+        last = first
+    return TIME_ONGOING if last >= today else TIME_PAST
+
+
+def pair_timing(timings: list[str]) -> str:
+    """A pair is past only when every event of it is known to be over."""
+    for timing in (TIME_ONGOING, TIME_UPCOMING, TIME_UNKNOWN):
+        if timing in timings:
+            return timing
+    return TIME_PAST if timings else TIME_UNKNOWN
+
+
+# What the evidence says about answering "same event" (v0.96.48), apart from
+# whether the confirm would take it. A rule proposing the pair now is support;
+# nothing proposing it is not; a stated difference the merge guards refuse on
+# is a contradiction.
+EVIDENCE_SUPPORTS = "EVIDENCE_SUPPORTS"
+EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
+EVIDENCE_CONTRADICTS = "EVIDENCE_CONTRADICTS"
+_CONTRADICTIONS = {REASON_DATE_CONFLICT, REASON_REGION_CONFLICT, REASON_FESTIVAL_PROGRAMME,
+                   REASON_PLACE_CONFLICT}
+
+# Why the rules stopped pairing a STALE pair: the fields its stored basis
+# matched on that no longer agree.
+STALE_DATE_CHANGED = "DATE_CHANGED"
+STALE_VENUE_CHANGED = "VENUE_CHANGED"
+STALE_TIME_CHANGED = "TIME_CHANGED"
+STALE_SERIES_CHANGED = "SERIES_CHANGED"
+STALE_REGION_CHANGED = "REGION_CHANGED"
+STALE_EVENT_TYPE_CHANGED = "EVENT_TYPE_CHANGED"
+STALE_NOW_AUTOMATIC = "MATCH_NOW_AUTOMATIC"
+STALE_RULE_NO_LONGER_APPLIES = "MATCH_RULE_NO_LONGER_APPLIES"
+
+
+def stale_causes(pair: dict[str, Any], left: dict[str, Any], right: dict[str, Any],
+                 current: dict[str, Any] | None) -> list[str]:
+    """What moved under a STALE pair, read against its stored basis. Pure."""
+    if current is not None and current["auto"]:
+        return [STALE_NOW_AUTOMATIC]
+    matched = set(pair.get("matched") or [])
+    causes = []
+    if left["event_date"] != right["event_date"]:
+        causes.append(STALE_DATE_CHANGED)
+    if _is_festival(left) != _is_festival(right) or "event_type" in matched and (
+            (left.get("event_type") or "") != (right.get("event_type") or "")):
+        causes.append(STALE_EVENT_TYPE_CHANGED)
+    if None not in (left["region_id"], right["region_id"]) and \
+            left["region_id"] != right["region_id"]:
+        causes.append(STALE_REGION_CHANGED)
+    if matched & {"venue", "venue_text"} and (not _place(left) or _place(left) != _place(right)):
+        causes.append(STALE_VENUE_CHANGED)
+    if "start_time" in matched and (not _clock(left) or _clock(left) != _clock(right)):
+        causes.append(STALE_TIME_CHANGED)
+    if "series_key" in matched and (not left.get("series_key")
+                                    or left.get("series_key") != right.get("series_key")):
+        causes.append(STALE_SERIES_CHANGED)
+    return causes or [STALE_RULE_NO_LONGER_APPLIES]
+
+
+def queue_priority(item: dict[str, Any]) -> int:
+    """Where a pair sits in the queue: what a dancer could still see first."""
+    status, timing = item["status"], item["timing"]
+    if status == QUEUE_ACTIONABLE:
+        return {TIME_ONGOING: 0, TIME_UPCOMING: 1, TIME_UNKNOWN: 2}.get(timing, 4)
+    if status in (QUEUE_STALE, QUEUE_BLOCKED):
+        return 5 if timing == TIME_PAST else 3
+    return 6
 
 
 def _root_of(event_id: int, rows: dict[int, dict[str, Any]]) -> int:
@@ -1492,8 +1620,13 @@ def answer_options(pair: dict[str, Any]) -> list[tuple[str, int | None]]:
 
 
 def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
-                pair_index: dict[tuple[int, int], dict[str, Any]]) -> dict[str, Any]:
-    """One pair's queue status, reasons and per-answer eligibility. Pure."""
+                pair_index: dict[tuple[int, int], dict[str, Any]],
+                today: date | None = None) -> dict[str, Any]:
+    """One pair's queue status, reasons and per-answer eligibility. Pure.
+
+    ``today`` (a Seoul date) adds the pair's timing (v0.96.48); without it the
+    timing is DATE_UNKNOWN, which hides nothing.
+    """
     member_ids = sorted((pair["event_id"], pair["other_event_id"]))
     members = {i: rows[i] for i in member_ids if i in rows}
     answers = []
@@ -1536,6 +1669,16 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
                 status, primary = QUEUE_BLOCKED, (refused[0] if refused else None)
         if current is None and status == QUEUE_STALE:
             notes.append("no duplicate rule pairs these two events any more")
+    causes: list[str] = []
+    if status == QUEUE_STALE:
+        causes = stale_causes(pair, members[member_ids[0]], members[member_ids[1]], current)
+    merge_reasons = {r for a in answers if a["decision"] == DUPLICATE for r in a["reasons"]}
+    readiness = None
+    if status in (QUEUE_ACTIONABLE, QUEUE_STALE, QUEUE_BLOCKED):
+        readiness = (EVIDENCE_CONTRADICTS if merge_reasons & _CONTRADICTIONS
+                     else EVIDENCE_SUPPORTS if current is not None else EVIDENCE_INSUFFICIENT)
+    timings = {i: event_timing(m, rows, today) if today else TIME_UNKNOWN
+               for i, m in members.items()}
     reasons = sorted(set(refused) | ({primary} if primary else set()))
     if status != QUEUE_ACTIONABLE and primary is None:
         primary = reasons[0] if reasons else None
@@ -1545,6 +1688,8 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
         "resolved_by": pair.get("resolved_by"), "resolved_at": pair.get("resolved_at"),
         "created_at": pair.get("created_at"),
         "event_date": next((m["event_date"] for m in members.values()), None),
+        "timing": pair_timing(list(timings.values())), "member_timings": timings,
+        "merge_readiness": readiness, "stale_causes": causes,
         "current_rule": current["rule"] if current else None,
         "status": status, "primary_reason": primary, "reasons": reasons,
         "guidance": QUEUE_GUIDANCE[status], "notes": notes,
@@ -1556,8 +1701,15 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
     }
 
 
-def queue(con) -> list[dict[str, Any]]:
-    """Every duplicate pair, assessed (`assess_pair`), date then pair order. Reads only."""
+def queue(con, *, today: date | None = None) -> list[dict[str, Any]]:
+    """Every duplicate pair, assessed (`assess_pair`). Reads only.
+
+    v0.96.48: ordered by `queue_priority` (on now, then soon, before the
+    past), then date and pair; ``today`` defaults to today in Seoul.
+    """
+    from . import events_api  # noqa: PLC0415 - local, as events_api's import of this module
+
+    today = today or events_api.today()
     with con.cursor() as cur:
         cur.execute("SELECT pair_id, event_id, other_event_id, rule, matched, differs, state, "
                     "  resolved_by, resolved_at, created_at FROM event_duplicate_pairs "
@@ -1568,12 +1720,14 @@ def queue(con) -> list[dict[str, Any]]:
     index: dict[tuple[int, int], dict[str, Any]] = {}
     for p in pairs:
         index.setdefault(tuple(sorted((p["event_id"], p["other_event_id"]))), p)
-    assessed = [assess_pair(p, rows, index) for p in pairs]
+    assessed = [assess_pair(p, rows, index, today) for p in pairs]
     for item, pair in zip(assessed, pairs):
         item["matched"], item["differs"] = pair["matched"], pair["differs"]
         item["members"] = [rows[i] for i in (item["event_id"], item["other_event_id"])
                            if i in rows]
-    return sorted(assessed, key=lambda a: (str(a["event_date"] or ""), a["pair_id"]))
+        item["priority"] = queue_priority(item)
+    return sorted(assessed, key=lambda a: (a["priority"], str(a["event_date"] or ""),
+                                           a["pair_id"]))
 
 
 def _standing_verdicts_by_pair(con) -> tuple[dict[int, list[dict]], set[int]]:
@@ -1598,8 +1752,62 @@ def _standing_verdicts_by_pair(con) -> tuple[dict[int, list[dict]], set[int]]:
     return by_pair, unpaired
 
 
-def queue_integrity(con, assessed: list[dict[str, Any]]) -> dict[str, int]:
-    """The queue's hard gates, each a count that must be 0 (v0.96.47)."""
+def _periods(con, ids: list[int]) -> dict[int, tuple[Any, Any, bool]]:
+    """(first day, stated last day or None, is a festival) per event, read in
+    SQL apart from `event_timing` - the timing gates' second opinion. The last
+    day is the event's own, its folded rows' latest, or - for a fold of the
+    same first day - its canonical's."""
+    with con.cursor() as cur:
+        cur.execute(
+            "SELECT e.event_id, e.event_date, COALESCE(e.end_date, "
+            "  (SELECT max(f.end_date) FROM events f WHERE f.canonical_event_id = e.event_id), "
+            "  (SELECT COALESCE(c.end_date, (SELECT max(g.end_date) FROM events g "
+            "     WHERE g.canonical_event_id = c.event_id)) FROM events c "
+            "   WHERE c.event_id = e.canonical_event_id AND c.event_date = e.event_date)), "
+            "  upper(COALESCE(e.event_type, '')) = %s "
+            "FROM events e WHERE e.event_id = ANY(%s)", (FESTIVAL, ids))
+        return {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+
+
+def _timing_mismatch(item: dict[str, Any], periods: list[tuple[Any, Any, bool]],
+                     today: date) -> tuple[bool, bool, bool]:
+    """(falsely past, open-ended festival called past, wrong filter) for one pair."""
+    over = [last is not None and last < today or last is None and not festival
+            and first is not None and first < today for first, last, festival in periods]
+    on = [first is not None and first <= today and (
+        last is not None and last >= today or last is None and first == today)
+        for first, last, festival in periods]
+    soon = [first is not None and first > today for first, _, _ in periods]
+    open_ended = [festival and last is None and first is not None and first < today
+                  for first, last, festival in periods]
+    timing = item["timing"]
+    if timing == TIME_PAST:
+        return not all(over), any(open_ended), False
+    if timing == TIME_ONGOING:
+        return False, False, not any(on)
+    if timing == TIME_UPCOMING:
+        return False, False, not any(soon) or any(on)
+    if timing == TIME_UNKNOWN:
+        return False, False, any(on) or any(soon) or (bool(periods) and all(over))
+    return False, False, True
+
+
+def _unsafe_merge_ready(item: dict[str, Any]) -> bool:
+    """A pair offering "same event" against what its evidence says."""
+    offers_merge = any(x.startswith(MERGE_VERDICT) for x in item["available"])
+    if item["merge_readiness"] == EVIDENCE_CONTRADICTS and offers_merge:
+        return True
+    return (item["status"] == QUEUE_STALE and item["merge_readiness"] == EVIDENCE_SUPPORTS
+            and item["current_rule"] is None)
+
+
+def queue_integrity(con, assessed: list[dict[str, Any]], *,
+                    today: date | None = None) -> dict[str, int]:
+    """The queue's hard gates, each a count that must be 0 (v0.96.47; the
+    timing, link and readiness gates v0.96.48)."""
+    from . import events_api  # noqa: PLC0415
+
+    today = today or events_api.today()
     seen: dict[tuple[int, int], int] = {}
     with con.cursor() as cur:
         cur.execute("SELECT event_id, other_event_id FROM event_duplicate_pairs")
@@ -1623,6 +1831,16 @@ def queue_integrity(con, assessed: list[dict[str, Any]]) -> dict[str, int]:
         else:
             wrong_human += 1
     actionable = [a for a in assessed if a["status"] == QUEUE_ACTIONABLE]
+    periods = _periods(con, sorted({m["event_id"] for a in assessed for m in a["members"]}))
+    false_past = unknown_past = wrong_time = 0
+    for item in assessed:
+        wrong = _timing_mismatch(item, [periods[m["event_id"]] for m in item["members"]
+                                        if m["event_id"] in periods], today)
+        false_past, unknown_past, wrong_time = (
+            false_past + wrong[0], unknown_past + wrong[1], wrong_time + wrong[2])
+    groups = [a for a in assessed if a["status"] == QUEUE_SUPERSEDED
+              and a["roots"][0] != a["roots"][1]]
+    by_id = {a["pair_id"] for a in assessed}
     return {
         "UNCLASSIFIED_DUPLICATE_PAIR": sum(1 for a in assessed
                                            if a["status"] not in QUEUE_STATUSES),
@@ -1634,6 +1852,14 @@ def queue_integrity(con, assessed: list[dict[str, Any]]) -> dict[str, int]:
         "MISSING_PAIR_REASON": sum(1 for a in assessed
                                    if a["status"] != QUEUE_ACTIONABLE and not a["primary_reason"]),
         "INCORRECT_HUMAN_DECISION_STATE": wrong_human,
+        "FALSE_HISTORICAL_CLASSIFICATION": false_past,
+        "UNKNOWN_END_DATE_HIDDEN_AS_PAST": unknown_past,
+        "WRONG_TIME_FILTER_RESULT": wrong_time,
+        "LOST_ROOT_PAIR_LINK": sum(1 for a in groups if a["successor_pair_id"] not in by_id),
+        "SUPERSEDED_MARKED_ACTIONABLE": sum(
+            1 for a in actionable if any(m["canonical_event_id"] is not None
+                                         for m in a["members"])),
+        "UNSAFE_STALE_MERGE_READY": sum(1 for a in assessed if _unsafe_merge_ready(a)),
     }
 
 
@@ -1643,6 +1869,13 @@ def queue_counts(assessed: list[dict[str, Any]]) -> dict[str, int]:
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     counts["TOTAL"] = len(assessed)
     counts["OPEN"] = sum(1 for a in assessed if a["state"] == OPEN)
+    return counts
+
+
+def timing_counts(assessed: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {timing: 0 for timing in TIMINGS}
+    for item in assessed:
+        counts[item["timing"]] = counts.get(item["timing"], 0) + 1
     return counts
 
 # --- source evidence (v0.94.0) ----------------------------------------------

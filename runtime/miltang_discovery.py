@@ -391,6 +391,13 @@ def parse_detail(
     exactly like every other cutoff in this project. `today` defaults to
     `None` (no cutoff) so a direct caller/test not passing it keeps this
     function's existing behaviour unchanged.
+
+    v0.96.48: "already past" is the record's last day, not its first, when it
+    is a festival whose own period says so (`event_period["end"]`, the
+    v0.96.41 judgement). BUSAN TANGO FESTIVAL (2026-10-21 ~ 2026-10-29) left
+    discovery at Seoul midnight on its second day, and with it every edit the
+    organiser made while it ran. A record without a stated end keeps the
+    first-day cutoff: nothing is inferred about how long it lasts.
     """
     ld = _extract_json_ld(raw_html_text) or {}
 
@@ -409,13 +416,12 @@ def parse_detail(
     if not event_date:
         return None
 
+    parsed_date = None
     if today is not None:
         try:
             parsed_date = date.fromisoformat(str(raw_date)[:10])
         except ValueError:
             parsed_date = None
-        if parsed_date is not None and parsed_date < today:
-            return None
 
     time_segment = _dt_dd_segment(raw_html_text, "TIME")
     time_expr = format_time_range(_visible(time_segment)) if time_segment else None
@@ -490,6 +496,10 @@ def parse_detail(
             source="Miltang notice")
         if festival:
             record.update(festival)
+    if parsed_date is not None and parsed_date < today:
+        last_day = (record.get("event_period") or {}).get("end")
+        if last_day is None or date.fromisoformat(last_day) < today:
+            return None
     return record
 
 

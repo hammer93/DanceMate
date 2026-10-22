@@ -1127,6 +1127,21 @@ _QUEUE_VIEWS = (
     ("blocked", duplicates.QUEUE_BLOCKED, "Blocked"),
     ("all", None, "All"),
 )
+# v0.96.48: when the pair's events are on, a second filter beside the lifecycle
+# one (they combine). It orders and narrows the list; it never changes what a
+# pair may be answered with, and a past pair is answered exactly as before.
+_TIME_VIEWS = (
+    ("all", None, "Any time"),
+    ("ongoing", duplicates.TIME_ONGOING, "On now"),
+    ("upcoming", duplicates.TIME_UPCOMING, "Upcoming"),
+    ("past", duplicates.TIME_PAST, "Past"),
+    ("unknown", duplicates.TIME_UNKNOWN, "End unknown"),
+)
+_READINESS_LABEL = {
+    duplicates.EVIDENCE_SUPPORTS: ("a rule pairs them now", "ok"),
+    duplicates.EVIDENCE_INSUFFICIENT: ("no rule pairs them - evidence insufficient", "warn"),
+    duplicates.EVIDENCE_CONTRADICTS: ("their evidence contradicts a merge", "bad"),
+}
 _QUEUE_TONE = {
     duplicates.QUEUE_ACTIONABLE: "ok", duplicates.QUEUE_STALE: "warn",
     duplicates.QUEUE_SUPERSEDED: "muted", duplicates.QUEUE_RULES: "muted",
@@ -1141,7 +1156,12 @@ def _answer_buttons(item: dict[str, Any]) -> str:
     for answer in item["answers"]:
         if not answer["available"]:
             continue
-        if answer["decision"] == duplicates.DUPLICATE:
+        if answer["decision"] == duplicates.DUPLICATE and (
+                item.get("merge_readiness") == duplicates.EVIDENCE_INSUFFICIENT):
+            # A token can still be had; what is missing is a reason to think so.
+            buttons.append(f'<button name="action" value="keep_{answer["keep"]}">'
+                           f'Same event (no rule pairs them), keep #{answer["keep"]}</button>')
+        elif answer["decision"] == duplicates.DUPLICATE:
             buttons.append(f'<button class="primary" name="action" value="keep_{answer["keep"]}">'
                            f'Same event, keep #{answer["keep"]}</button>')
         else:
@@ -1156,7 +1176,16 @@ def _queue_status(item: dict[str, Any]) -> str:
     text = admin._badge(item["status"], _QUEUE_TONE.get(item["status"], "muted"))
     if item["primary_reason"]:
         text += f'<br><small>{E(item["primary_reason"])}</small>'
+    if item["stale_causes"]:
+        text += f'<br><small>{E(", ".join(item["stale_causes"]))}</small>'
     return text
+
+
+def _readiness(item: dict[str, Any]) -> str:
+    label = _READINESS_LABEL.get(item["merge_readiness"])
+    if label is None:
+        return "-"
+    return admin._badge(item["merge_readiness"], label[1]) + f"<br><small>{E(label[0])}</small>"
 
 
 def _queue_next(item: dict[str, Any]) -> str:
@@ -1186,24 +1215,31 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
     view = request.query_params.get("view") or "actionable"
     if view not in views:
         view = "actionable"
+    times = {key: timing for key, timing, _ in _TIME_VIEWS}
+    when = request.query_params.get("time") or "all"
+    if when not in times:
+        when = "all"
     with _connection() as con:
         assessed = duplicates.queue(con)
         summary = duplicates.metrics(con)
         verdicts = duplicates.recent_human_verdicts(con)
         conflicts = len(event_conflicts.find(con))
     counts = duplicates.queue_counts(assessed)
-    shown = [a for a in assessed if views[view] is None or a["status"] == views[view]]
+    in_view = [a for a in assessed if views[view] is None or a["status"] == views[view]]
+    in_time = [a for a in assessed if times[when] is None or a["timing"] == times[when]]
+    timings = duplicates.timing_counts(in_view)
+    shown = [a for a in in_view if times[when] is None or a["timing"] == times[when]]
     total = len(shown)
     page = pagination.resolve_page(request.query_params.get("page"), total)
     start = pagination.sql_offset(page)
 
     rows = [[
-        E(str(item["event_date"] or "-")),
+        E(str(item["event_date"] or "-")) + f'<br><small>{E(item["timing"])}</small>',
         f'<a href="{_DUPLICATES}/{item["pair_id"]}">#{item["pair_id"]}</a>',
         _member_cell(item, item["event_id"]), _member_cell(item, item["other_event_id"]),
         E(", ".join(item["matched"] or [])) + "<br><small>differs: "
         + E(", ".join(item["differs"] or [])) + "</small>",
-        _queue_status(item), _queue_next(item), _answer_buttons(item),
+        _queue_status(item), _readiness(item), _queue_next(item), _answer_buttons(item),
     ] for item in shown[start:start + pagination.PAGE_SIZE]]
 
     cards = admin._cards([
@@ -1216,12 +1252,20 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         ("Cross-source conflicts", conflicts,
          "festivals whose sources disagree on dates - see Conflicts"),
     ])
+    lifecycle = {status: sum(1 for a in in_time if a["status"] == status)
+                 for _, status, _ in _QUEUE_VIEWS if status}
     tabs = " ".join(
-        (f"<strong>{E(label)} ({counts['TOTAL'] if status is None else counts[status]})"
+        (f"<strong>{E(label)} ({len(in_time) if status is None else lifecycle[status]})"
          "</strong>" if key == view else
-         f'<a href="{_DUPLICATES}?view={key}">{E(label)} '
-         f"({counts['TOTAL'] if status is None else counts[status]})</a>")
+         f'<a href="{_DUPLICATES}?view={key}&amp;time={when}">{E(label)} '
+         f"({len(in_time) if status is None else lifecycle[status]})</a>")
         for key, status, label in _QUEUE_VIEWS)
+    chips = " ".join(
+        (f"<strong>{E(label)} ({len(in_view) if timing is None else timings[timing]})"
+         "</strong>" if key == when else
+         f'<a href="{_DUPLICATES}?view={view}&amp;time={key}">{E(label)} '
+         f"({len(in_view) if timing is None else timings[timing]})</a>")
+        for key, timing, label in _TIME_VIEWS)
 
     note = (
         '<p class="note">The rules merge only what they can settle outright: '
@@ -1234,13 +1278,18 @@ def admin_duplicates(request: Request, _: str = Depends(require_admin)) -> HTMLR
         'never compared here: <a href="/admin/conflicts">Conflicts</a> lists festivals '
         "whose sources disagree on their dates. Each pair is assessed from the events as "
         "they read now; only the answers the confirm would accept are offered, and a pair "
-        "that cannot be answered says why.</p>"
+        "that cannot be answered says why. Pairs whose events are on now or still to come "
+        "are listed first; a past pair is answerable exactly as before, and nothing here "
+        "closes one on its own. A valid preview proves who is answering, not that two posts "
+        "are one event: the Evidence column says whether anything does.</p>"
     )
-    body = ("<h2>Duplicates</h2>" + cards + note + f'<p class="tabs">{tabs}</p>'
+    body = ("<h2>Duplicates</h2>" + cards + note
+            + f'<p class="tabs">Lifecycle: {tabs}</p><p class="tabs">Time: {chips}</p>'
             + admin._table(
-                ["Date", "Pair", "Event", "Other", "Matched", "Status", "Next step", "Decide"],
+                ["Date", "Pair", "Event", "Other", "Matched", "Status", "Evidence",
+                 "Next step", "Decide"],
                 rows, empty="nothing in this view")
-            + pagination.nav(_DUPLICATES, {"view": view}, page, total)
+            + pagination.nav(_DUPLICATES, {"view": view, "time": when}, page, total)
             + _human_verdicts_block(verdicts))
     return HTMLResponse(admin._page("Duplicates", _DUPLICATES, body,
                                     flash=admin._flash(request)))
@@ -1306,6 +1355,9 @@ def admin_duplicate_pair(pair_id: int, request: Request,
         + f' &middot; 등록 규칙 {E(item["rule"])} &middot; 현재 규칙 '
         f'{E(item["current_rule"] or "-")} &middot; 등록 {E(str(item["created_at"])[:16])}</p>'
         f'<p>{_queue_status(item)} &middot; 사유 {E(", ".join(item["reasons"]) or "-")}</p>'
+        f'<p>시점 {E(item["timing"])} ('
+        + ", ".join(f"#{k} {E(v)}" for k, v in sorted(item["member_timings"].items()))
+        + f') &middot; 병합 근거 {_readiness(item)}</p>'
         f"<p>다음 단계: {_queue_next(item)}</p>"
         + "".join(f'<p class="note">{E(n)}</p>' for n in item["notes"])
         + (f'<p><a href="/admin/evidence-review/conflict-{item["event_id"]}-'
@@ -1601,21 +1653,27 @@ def api_event_metrics(_: str = Depends(require_admin)) -> JSONResponse:
 @api.get("/duplicates/queue")
 def api_duplicate_queue(request: Request, _: str = Depends(require_admin)) -> JSONResponse:
     """v0.96.47: every pair's queue status, reasons and per-answer eligibility,
-    with the queue's integrity gates. Reads only; issues no preview token."""
+    with the queue's integrity gates. Reads only; issues no preview token.
+    v0.96.48: each pair's timing, merge readiness and STALE causes; ``?time=``
+    narrows by timing as ``?status=`` does by lifecycle."""
     status = request.query_params.get("status")
     with _connection() as con:
         assessed = duplicates.queue(con)
         gates = duplicates.queue_integrity(con, assessed)
+    timing = request.query_params.get("time")
     keys = ("pair_id", "event_id", "other_event_id", "event_date", "rule", "current_rule",
             "state", "resolved_by", "status", "primary_reason", "reasons", "guidance",
-            "roots", "successor_pair_id", "successor_state", "available")
+            "roots", "successor_pair_id", "successor_state", "available", "timing",
+            "member_timings", "merge_readiness", "stale_causes", "priority")
     return admin._dump({
         "counts": duplicates.queue_counts(assessed),
+        "timing_counts": duplicates.timing_counts(assessed),
         "integrity": gates,
         "pairs": [{k: a[k] for k in keys} | {"answers": [
             {k: x[k] for k in ("action", "keep", "available", "reasons")}
             for x in a["answers"]]}
-            for a in assessed if not status or a["status"] == status],
+            for a in assessed if (not status or a["status"] == status)
+            and (not timing or a["timing"] == timing)],
     })
 
 

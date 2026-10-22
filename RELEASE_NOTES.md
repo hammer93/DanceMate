@@ -1,5 +1,108 @@
 # DanceMate Release Notes
 
+## v0.96.48 Ongoing Festival Continuity & Historical Duplicate Triage
+
+Product Runtime 0.96.48; Information Engine 1.16 (unchanged); normalization 3
+(unchanged); migration 051 (no new migration). A festival whose own period
+says it is still on is no longer dropped by the Miltang collector on its
+second day; the Duplicates queue says when each pair's events are on and
+lists the current ones first; and a STALE pair whose posts name two places
+is no longer offered "same event".
+
+### Where the ongoing festival went missing, measured
+
+`miltang_discovery.parse_detail(today=)` dropped a `/notices` record whose
+`startDate` was before today - the period the v0.96.41 judgement had read
+from the same page (`event_period`) was never asked. BUSAN TANGO FESTIVAL
+(`/notices/12`, 2026-10-21 ~ 2026-10-29) left discovery at Seoul midnight on
+its second day: Miltang's run of 2026-10-21 15:23 UTC (00:23 KST) discovered
+157 → 156, and the live page re-read on 2026-10-22 parses to a record on
+10-20/10-21 and to nothing on 10-22. Nothing downstream drops a running
+event - the engine, normalization and `events_api.LAST_DAY` all keep
+1628797 LISTED and in TODAY - so what was lost is the notice itself: it is
+`discovery_synthesized` (article refresh never re-reads it), so any edit the
+organiser made while the festival ran, and any notice first posted after its
+start, would never have been collected.
+
+* The cutoff now asks the record's **last** day when it is a festival whose
+  record states one (`event_period["end"]`, already validated: after the
+  start, at most 31 days), its first day otherwise. A record with no stated
+  end keeps the first-day cutoff; a workshop tour or seminar that states a
+  period is not a festival and recovers nothing; no date, time or place is
+  inferred. The day it vanishes is the day after its last day.
+* The record handed on is the same one as before - it does not depend on the
+  day it is read - so re-collecting a running festival is a DUPLICATE: on a
+  copy of Production fed the live notices (17 pages, fetched once), the new
+  collector hands on notice 12 again and stores NEW 0 / REVISED 0 /
+  DUPLICATE 7, writing nothing.
+* Other sources: TangoNOW's share pages apply no date cutoff; TangoCalendar's
+  start-date cutoff is left alone - it lists nights, not periods, and its
+  `endDate` is a night's closing time (an overnight milonga ending at 02:00
+  would otherwise come back the next day).
+
+### Duplicate queue timing (derived, read-only)
+
+* Every pair has a timing from the Seoul date: `ONGOING`, `UPCOMING`, `PAST`
+  or `DATE_UNKNOWN` (`duplicates.event_timing` / `pair_timing`). An event's
+  last day is its own stated period, its folded rows' latest, or for a fold
+  its group's; a festival that started before today with no stated end
+  anywhere is `DATE_UNKNOWN`, never past. A pair is `PAST` only when both of
+  its events are known to be over.
+* `/admin/duplicates` keeps its lifecycle tabs and adds a Time filter beside
+  them (`?view=...&time=ongoing|upcoming|past|unknown`); each tab's count is
+  within the other filter. The queue is ordered on-now and upcoming
+  actionable first, then needs-evidence with user impact, then past
+  actionable, then history. The API gains `timing`, `member_timings`,
+  `merge_readiness`, `stale_causes`, `priority`, `timing_counts` and `?time=`.
+* Timing never changes what a pair may be answered with, and nothing closes,
+  merges or separates a past pair.
+
+Production at 2026-10-22 11:41 KST: 216 pairs (all OPEN, 0 person verdicts) -
+ONGOING 5, UPCOMING 44, PAST 167, DATE_UNKNOWN 0; actionable 143 (5 on now,
+35 upcoming, 103 past).
+
+### STALE pairs: a token is not evidence
+
+v0.96.47 left 24 STALE pairs offering MERGE (its report said 25). Audited one
+by one: in 23 of them each post states its own place, the two places differ
+and no rule pairs them - re-extraction after the pair was parked gave each
+post its own venue (e.g. `분당 실루엣` 04:30 vs `구)엘마르` 16:00), and pair
+259376 is the protected 1603334 / 1603338. Merging those was a one-click path
+to folding two real nights into one.
+
+* New merge guard **PLACE_CONFLICT** in `resolve_blockers()` (so queue,
+  preview and confirm agree): no rule pairs the two events and both posts
+  name a place. Two spellings of one place resolve to one venue, after which
+  the rules pair them again and the pair is answerable as before. A pair a
+  rule still proposes across venues (same series, same clock) is untouched.
+* `merge_readiness` keeps security eligibility and evidence apart:
+  `EVIDENCE_SUPPORTS` (a rule pairs them now), `EVIDENCE_INSUFFICIENT` (no
+  rule, and a place is missing: still answerable through the signed preview,
+  shown as "no rule pairs them"), `EVIDENCE_CONTRADICTS` (a merge guard
+  refuses on stated facts). `stale_causes` names what moved against the
+  stored basis (`DATE_CHANGED`, `VENUE_CHANGED`, `TIME_CHANGED`,
+  `SERIES_CHANGED`, `REGION_CHANGED`, `EVENT_TYPE_CHANGED`,
+  `MATCH_NOW_AUTOMATIC`, `MATCH_RULE_NO_LONGER_APPLIES`).
+* Production's 28 STALE: 27 contradict a merge (23 place, 3 Daejeon/Seoul
+  O Nada region, 17938 date), 1 is insufficient (197629). Different events
+  stays answerable on every one that had it.
+
+### New queue gates (all 0 in Production)
+
+`FALSE_HISTORICAL_CLASSIFICATION`, `UNKNOWN_END_DATE_HIDDEN_AS_PAST`,
+`WRONG_TIME_FILTER_RESULT` (each re-read in SQL apart from the Python
+timing), `LOST_ROOT_PAIR_LINK`, `SUPERSEDED_MARKED_ACTIONABLE`,
+`UNSAFE_STALE_MERGE_READY`, beside v0.96.47's seven.
+
+### Unchanged
+
+The signed preview contract (basis, action/reviewer/pair binding, expiry,
+row locks, one transaction, audit, Revert), every stored pair and verdict,
+canonical folds, venues and the public search. On the Production copy the
+duplicate scan is identical under 0.96.47 and 0.96.48 (0 changes), reading
+the queue writes nothing, and the 648 previews match the queue's eligibility
+exactly.
+
 ## v0.96.47 Duplicate Review Queue Lifecycle & Decision Eligibility Integrity
 
 Product Runtime 0.96.47; Information Engine 1.16 (unchanged); normalization 3
