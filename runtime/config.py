@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.49"
+PRODUCT_VERSION = "0.96.50"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -479,6 +479,17 @@ PRODUCT_VERSION = "0.96.49"
 #
 # v0.96.49 leaves it at 1.16 too: it changes only the reader's pages
 # (runtime/public.py) - paging, the way back, display wording.
+#
+# v0.96.50 changes what the engine reads - a deadline is never an event date
+# (extractor.date_roles), a DJ's set yields to the night's stated opening,
+# "PM 9" is a clock - and still leaves this at 1.16, on purpose. A bump is
+# what re-reads every stored post, and over all 4,858 of them the only rows
+# that would move are 22 posts' Events, three of which (1629132, 1629133,
+# 1629136: deadlines published as nights) are waiting on a person's Review
+# decision. Re-extraction would rewrite them with no person deciding, which
+# is the one thing that decision exists to prevent. New and revised posts
+# are read with the new rules; the stored rows stay as they are until a
+# person acts or a later release bumps this and re-reads them.
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

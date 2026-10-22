@@ -1,5 +1,87 @@
 # DanceMate Release Notes
 
+## v0.96.50 Public Launch Blocker Resolution & Release Candidate
+
+Product Runtime 0.96.50; Information Engine 1.16 (unchanged on purpose, see
+below); normalization 3 (unchanged); migration 051 (no new migration).
+
+### DATA-01: a deadline is not an event date
+
+Two 네오스윙 notices for one 10/25 graduation party were published as SWING
+events on 10/20 and 10/22 - the sign-up, music-upload and pre-sale/refund
+deadlines. v0.96.49 counted two such rows; there are three (1629132, 1629133,
+1629136). The cause was not the title: the "10/22" in their names is the suffix
+`extract_schedule()` appends to each program it makes. A 안내 title sends a post
+down the schedule route, and every dated paragraph that mentioned 파티 at all
+became a program.
+
+`extractor.date_roles()` now recognises a deadline by its own grammar - closed
+by 까지/마감 ("10월 22일 신청 마감", "~10/22(목)", "23시까지" only where the
+sentence is about a deadline), introduced by 마감/기한 or a 신청기간 label, or the
+open end of "~10/22" - and no route takes one as the day something happens on:
+the schedule route keeps it as a paragraph boundary but never a program, a
+multi-program post never picks the paragraph it heads, and a single reading
+skips it (a post with only a deadline has no date at all). A range's end takes
+its start's role, so a festival period is never read as a registration window.
+
+### DATA-02 / DATA-04: whose clock it is
+
+* A DJ's set is not the night. 스윙타임빠 writes "저녁 7시30분부터 소셜이 진행
+  됩니다. DJ '가츠' PM 8:15~10:15" every week, and the DJ's range was the
+  social's hours. A range labelled as a DJ's now yields to the one opening the
+  text states in so many words (explicit half of day, 부터/시작/오픈, the event's
+  own word beside it, no later than the DJ); the end is then unknown. With no
+  such sentence the DJ's range is kept - a one-DJ milonga very often states its
+  hours that way.
+* "PM 9" is a clock: a bare hour with 오전/오후/AM/PM written in front, standing
+  alone (not a date, price, headcount, ratio or range head).
+* 아임살사's 정모 (1629615) stays 시간 미확인: its field's 오후 8시 is the class,
+  오후 9시 the social, and the text does not say which a 정모 starts at.
+
+Four existing engine tests asserted 20:15-22:15 for 스윙타임빠 posts whose own
+text opens the social at 19:30 - they pinned the DATA-02 defect, and now assert
+19:30 with no end (`test_social_dance`, `test_v0910_salsa_swing_funnel_evidence`,
+`test_v0910_swing_funnel_evidence`, `test_v0964_title_date_precision`).
+
+### Why ENGINE_VERSION stays 1.16
+
+Replayed over all 4,858 stored Production items (the runtime's own re-extract
+route, the 1.16 tree with and without this change, cached poster OCR, no
+network), the change moves exactly 22 posts: 4 네오스윙 140기/141기 notices
+(the deadline rows) and 18 time readings (17 스윙타임빠 notices, item 6644's
+"PM 9"). A version bump re-reads every stored post, which would delete the
+three DATA-01 rows with no person deciding - and they are waiting on exactly
+that decision. So new and revised posts are read with the new rules, and the
+stored rows stay until an operator acts (see the v0.96.50 audit's decision
+packet) or a later release re-reads them.
+
+### Public pages
+
+* On a calendar day (`/events?date=`), changing the style or the region kept
+  `when` and dropped the day: a reader picking 10/25 and then 스윙 landed on
+  today's list. The form and the region chips now carry the day. Found by this
+  release's mobile E2E.
+
+### Verification
+
+* Engine 2096 passed / 1 skipped (53 new in `test_v09650_date_time_roles.py`).
+* Runtime 3965 passed / 13 skipped locally (4 new in
+  `tests/test_v09650_day_filters.py`); the board's official runner
+  (`scripts/run-container-tests.sh`, image 0.96.49) 3966 passed / 18 skipped,
+  CT_EXIT=0 - the two E2E modules are skipped there (no Playwright in the image).
+* Browser E2E 37 passed / 0 failed (30 from v0.96.49, 7 new in
+  `tests/e2e/test_v09650_corrected_data.py`, built from the engine's own reading
+  of the real notices). Chromium emulation, not a physical phone.
+* Production-equivalent copies (pg_dump 2026-10-23 05:38 KST), v0.96.49 and
+  v0.96.50 each running two scheduler passes: 47 of 47 tables identical.
+* The operator's REJECT of the three DATA-01 rows, simulated with the real
+  Review contract on a disposable copy: exactly those three rows leave the
+  listing; every other event, venue and duplicate decision unchanged; a missing,
+  malformed, forged or replayed basis is refused.
+* Rollback drill on a copy: v0.96.50 -> database paused (API 503,
+  `/status/summary` Database FAIL) -> recovery -> v0.96.49 on the same
+  database: 60 filter cases answer identically.
+
 ## v0.96.49 Public UX, Mobile E2E & Release Readiness Audit
 
 Product Runtime 0.96.49; Information Engine 1.16 (unchanged); normalization 3

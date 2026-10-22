@@ -149,7 +149,9 @@ def test_the_evening_social_is_not_read_as_a_morning_one():
     social was published as 09:00-10:30. The post's own explicit PM reading
     wins instead."""
     ev = extract_single(TIMEBBA_TITLE, TIMEBBA_BODY, event_type="SOCIAL", published=P)
-    assert ev.start_time == "20:15" and ev.end_time == "22:15"
+    # v0.96.50 (DATA-02): the post opens the social at 19:30 in so many words;
+    # 20:15-22:15 is the DJ's set and was the defect this used to pin. No end is stated.
+    assert ev.start_time == "19:30" and ev.end_time is None
 
 
 # === T4. the body's own date still wins where it always did ================

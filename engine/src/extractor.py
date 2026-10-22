@@ -445,8 +445,18 @@ def _norm_date(text: str, published=None, default_year=None, own_dates=None):
     if published is None and default_year:
         published = _date(int(default_year), 7, 1)  # mid-year: no month bias
 
+    # v0.96.50: a date the post writes as a deadline is never the event's,
+    # however early it comes - see `date_roles()`. With no deadline in the
+    # text this is the same first match of the first pattern as before.
+    found = _all_date_matches(text)
+    roles = date_roles(text, found)
+    deadline_spans = [m.span() for m in found if m.start() in roles]
+
+    def is_deadline(m):  # a looser pattern can match inside one ("26년 10월")
+        return any(m.start() < e and s < m.end() for s, e in deadline_spans)
+
     for p in DATE_PATTERNS:
-        m = p.search(text)
+        m = next((m for m in p.finditer(text) if not is_deadline(m)), None)
         if not m:
             continue
         resolved, provenance = _resolve_date_match(m, published, own_dates)
@@ -527,6 +537,92 @@ def _is_a_price(text: str, m: "re.Match") -> bool:
     if m.groupdict().get("y") or not _BARE_MD.match(m.group(0)):
         return False
     return _PRICE_TAIL.match(text, m.end()) is not None
+
+
+# --- what a written date is for (v0.96.50) ----------------------------------
+#
+# A post that names a day has not said that the day is the event. 네오스윙's
+# two notices for one 10/25 graduation party (items 6153, 6155) write
+# "사전 신청 마감은 10월 22일 목요일 23시까지", "신청 기한 : 2026년 10월 20일(화)
+# 23시 59분까지" and "공연 음악 전송 : ~10/22(목)" around the one sentence that
+# dates the party itself. The schedule route reads a 안내 title's every dated
+# paragraph that mentions 파티 as a program of its own, and the party is
+# mentioned in all of them - so the deadlines were published as two 10/22
+# events and a 10/20 one.
+#
+# A deadline is recognised by its own grammar, never by its position or by the
+# title: the date is *closed* by 까지/마감 (with at most its own weekday in
+# between), or *introduced* by 마감/기한 or a 신청기간-style label, or is the
+# open end of "~10/22" with no start day in front of it. A date closed by
+# 까지 only after a clock ("10월 22일 23시까지") additionally needs the
+# sentence to be about a deadline - one of `_DEADLINE_WORDS` within
+# `_DEADLINE_REACH` either side - because "10월 25일 밤 12시까지" is the end of
+# a night and has exactly the same shape. A date that ends a written range
+# ("10/1 ~ 10/20", "11월 11일부터 11월 16일까지") takes the role of the day
+# that opens it, so a registration window stays one and a festival's own
+# period is never read as one.
+_SP = r"[ \t　]*"  # same-line space only: a date's tail never crosses a line
+_WEEKDAY_TAIL = _SP + r"(?:\(\s*[월화수목금토일]\s*\)|[월화수목금토일]요일)?" + _SP
+_CLOSED = re.compile(  # .match(text, pos); "10월 22일 신청 마감" names what closes
+    _WEEKDAY_TAIL + r"(?:(?:신청|접수|예매|예약|입금|모집|등록|판매)" + _SP + r")?"
+    r"(?:까지|마감|until)", re.I)
+_CLOSED_AFTER_CLOCK = re.compile(
+    _WEEKDAY_TAIL
+    + r"(?:(?:오전|오후|저녁|밤|낮|새벽|[ap]\.?m\.?)" + _SP + r")?"
+    + r"\d{1,2}" + _SP + r"(?::" + _SP + r"\d{2}|시(?:" + _SP + r"\d{1,2}" + _SP + r"분)?)" + _SP
+    + r"(?:까지|마감|until)",
+    re.I,
+)
+_DEADLINE_BEFORE = re.compile(
+    r"(?:마감|기한|deadline|due)" + _SP + r"(?:일|은|는)?" + _SP + r"[:：]?" + _SP + r"$", re.I)
+_WINDOW_LABEL_BEFORE = re.compile(
+    r"(?:신청|접수|예매|예약|등록|모집|판매|구매|입금)" + _SP + r"기간" + _SP + r"[:：]?" + _SP + r"$")
+# "~10/22", "작성 : ~ 10/20" - not the tilde a sentence ends on ("해주세요~").
+_TILDE_BEFORE = re.compile(r"(?:^|(?<=[\s:：(\[]))[~～]" + _SP + r"$")
+_RANGE_GAP = re.compile(_WEEKDAY_TAIL + r"(?:[~～\-–—]|부터)" + _SP)
+_DEADLINE_WORDS = re.compile(
+    r"신청|접수|예매|예약|입금|결제|송금|환불|마감|기한|모집|등록|구매|제출|전송|판매|"
+    r"얼리\s*버드|early\s*bird|deadline|registration|regist",
+    re.I,
+)
+_DEADLINE_REACH = 30
+DEADLINE = "DEADLINE"
+
+
+def date_roles(text: str, matches=None) -> dict:
+    """``{match.start(): DEADLINE}`` for every date in ``text`` written as a
+    deadline (or the start of a registration window) rather than a day
+    something happens on. A date absent from the result keeps the meaning
+    every reader has always given it."""
+    matches = _all_date_matches(text) if matches is None else matches
+    roles: dict = {}
+    previous = None
+    claimed = 0  # where the words closing the previous date end
+    for m in matches:
+        # A label in front belongs to this date only after whatever closed
+        # the previous one: in "10월 22일 신청 마감 10월 25일" the 마감 is the
+        # 22nd's, and the 25th is introduced by nothing.
+        floor = max(0, m.start() - 14, claimed,
+                    previous.end() if previous is not None else 0)
+        before = text[floor:m.start()]
+        closed = _CLOSED.match(text, m.end())
+        claimed = closed.end() if closed else m.end()
+        if previous is not None and _RANGE_GAP.fullmatch(text, previous.end(), m.start()):
+            role = roles.get(previous.start())  # a range's end is its start's
+        elif (closed
+              or _DEADLINE_BEFORE.search(before)
+              or _WINDOW_LABEL_BEFORE.search(before)
+              or _TILDE_BEFORE.search(before)):
+            role = DEADLINE
+        elif _CLOSED_AFTER_CLOCK.match(text, m.end()) and _DEADLINE_WORDS.search(
+                text, max(0, m.start() - _DEADLINE_REACH), m.end() + _DEADLINE_REACH):
+            role = DEADLINE
+        else:
+            role = None
+        if role:
+            roles[m.start()] = role
+        previous = m
+    return roles
 
 
 def own_explicit_dates(text: str) -> set:
@@ -632,7 +728,7 @@ def _boundary_before(text: str, gap_start: int, date_start: int) -> int:
     return date_start
 
 
-def _context_segments(text: str, published, own_dates=None):
+def _context_segments(text: str, published, own_dates=None, with_heads=False):
     """(context_id, start, end, date_iso) for each program the text names.
 
     One entry, `context_id=None` spanning the whole text, when there is only
@@ -649,7 +745,8 @@ def _context_segments(text: str, published, own_dates=None):
 
     distinct = {date_iso for _, date_iso in resolved}
     if len(distinct) < 2:
-        return [(None, 0, len(text), next(iter(distinct), None))]
+        whole = [(None, 0, len(text), next(iter(distinct), None))]
+        return (whole, [None]) if with_heads else whole
 
     # Collapse consecutive matches that repeat the same program's date (a
     # date mentioned twice in one program's own paragraph) into one boundary.
@@ -667,6 +764,8 @@ def _context_segments(text: str, published, own_dates=None):
     for i, (m, date_iso) in enumerate(boundaries):
         end = len(text) if i + 1 == len(boundaries) else starts[i + 1]
         segments.append((f"ctx{i + 1}", starts[i], end, date_iso))
+    if with_heads:
+        return segments, [m.start() for m, _ in boundaries]
     return segments
 
 
@@ -779,7 +878,15 @@ def extract_single(title: str, body: str, source_role="SECONDARY", name_hint=Non
     ev = EventCandidate(name=name, event_type=event_type or "MILONGA")
 
     published_date = _as_date(published)
-    segments = _context_segments(text, published_date, own_dates)
+    segments, heads = _context_segments(text, published_date, own_dates, with_heads=True)
+    if len(segments) > 1:
+        # v0.96.50: a paragraph headed by a deadline still ends the program
+        # before it - its clocks ("활동시간 : 당일 오후 3시 ~") stay out of
+        # that program's scope - but it is never the program itself. With
+        # no program left the post names no event date at all.
+        deadlines = date_roles(text)
+        segments = ([seg for seg, head in zip(segments, heads) if head not in deadlines]
+                    or [(None, 0, len(text), None)])
     (context_id, seg_start, seg_end, seg_date), ambiguous = _select_context(
         segments, text, ev.event_type, event_terms
     )
@@ -1104,6 +1211,9 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
     matches = [m for m in _all_date_matches(text) if m.start() >= title_end]
     if len(matches) < 2:
         return None
+    # v0.96.50: a deadline still ends the paragraph before it, so it stays a
+    # boundary, but it is never a program of its own.
+    deadlines = date_roles(text, matches)
     low = high = None
     if published_date is not None:
         low = published_date - timedelta(days=SCHEDULE_DAYS_BEFORE)
@@ -1121,6 +1231,8 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
     for index, match in enumerate(matches):
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        if start in deadlines:
+            continue
         seg_date, _ = _resolve_date_match(match, published_date, own_dates)
         if not seg_date:
             continue

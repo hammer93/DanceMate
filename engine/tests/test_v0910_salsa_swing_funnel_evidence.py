@@ -95,5 +95,7 @@ def test_an_announced_swing_social_with_no_venue_label_is_unaffected():
     assert classification == "SOCIAL"
     candidate = extract_single(title, body, event_type=classification, published="2026-09-14")
     assert candidate.date == "2026-09-16"
-    assert (candidate.start_time, candidate.end_time) == ("20:15", "22:15")
+    # v0.96.50 (DATA-02): the post opens the social at 19:30 in so many words;
+    # 20:15-22:15 is the DJ's set and was the defect this used to pin. No end is stated.
+    assert (candidate.start_time, candidate.end_time) == ("19:30", None)
     assert candidate.venue is None

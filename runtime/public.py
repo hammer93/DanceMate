@@ -776,7 +776,7 @@ def _genre_query(selected: list[str], options: list[dict[str, str]]) -> dict[str
 
 def _genre_filter(action: str, when: str | None, region: str | None,
                   options: list[dict[str, str]], selected: list[str], *,
-                  tab: str | None = None) -> str:
+                  tab: str | None = None, day: str | None = None) -> str:
     """Dance styles, every enabled one, always showing which are on.
 
     Real checkboxes rather than styled links: the checked state is carried by
@@ -801,6 +801,9 @@ def _genre_filter(action: str, when: str | None, region: str | None,
     hidden = '<input type="hidden" name="genres_set" value="1">'
     if when:
         hidden += f'<input type="hidden" name="when" value="{E(when)}">'
+    if day:
+        # v0.96.50: a style picked on one calendar day stays on that day.
+        hidden += f'<input type="hidden" name="date" value="{E(day)}">'
     if region:
         hidden += f'<input type="hidden" name="region" value="{E(region)}">'
     if tab:
@@ -835,7 +838,8 @@ def _region_shown(con, region: str | None) -> str | None:
 
 
 def _region_chips(action: str, when: str | None, rows: list[dict[str, Any]],
-                  chosen: str | None, genre_query: dict[str, str]) -> str:
+                  chosen: str | None, genre_query: dict[str, str], *,
+                  day: str | None = None) -> str:
     """Where. Only places that have something, and never the country row."""
     from urllib.parse import urlencode
 
@@ -846,6 +850,8 @@ def _region_chips(action: str, when: str | None, rows: list[dict[str, Any]],
         params: dict[str, str] = {}
         if when:
             params["when"] = when
+        if day:
+            params["date"] = day
         params.update(genre_query)
         if row["value"]:
             params["region"] = row["value"]
@@ -865,19 +871,19 @@ AUTO_SUBMIT = (
 
 def _filter_bar(action: str, when: str | None, facets: dict[str, list[dict[str, Any]]],
                 options: list[dict[str, str]], selected: list[str],
-                region: str | None) -> str:
+                region: str | None, *, day: str | None = None) -> str:
     """Dance style first, then where. Both above the list, both without scrolling.
 
     The style row is only here when there is more than one enabled genre to
     choose between (v0.86.8, Section 3); the region row, the counts and every
     link on the page carry on unchanged either way.
     """
-    genre_form = _genre_filter(action, when, region, options, selected)
+    genre_form = _genre_filter(action, when, region, options, selected, day=day)
     return (
         '<div class="filters">'
         + genre_form
         + _region_chips(action, when, facets["region_options"], region,
-                        _genre_query(selected, options))
+                        _genre_query(selected, options), day=day)
         + "</div>"
         + (AUTO_SUBMIT if genre_form else "")
     )
@@ -1858,7 +1864,7 @@ def events_page(
            "&larr; 목록으로</a></p>")
         + calendar
         + _filter_bar("/events", when if date is None else None, facets, options, selected,
-                      region_shown)
+                      region_shown, day=date)
         + listing + _footer()
     )
     return HTMLResponse(_page(f"{label} - DanceMate", body))

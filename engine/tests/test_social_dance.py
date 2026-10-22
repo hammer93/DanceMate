@@ -212,7 +212,9 @@ def test_a_swing_social_extracts_into_a_candidate():
         event_type="SOCIAL",
     )
     assert candidate.event_type == "SOCIAL"
-    assert (candidate.start_time, candidate.end_time) == ("20:15", "22:15")
+    # v0.96.50 (DATA-02): the post opens the social at 19:30 in so many words;
+    # 20:15-22:15 is the DJ's set and was the defect this used to pin. No end is stated.
+    assert (candidate.start_time, candidate.end_time) == ("19:30", None)
 
 
 def test_a_social_is_never_verified_on_discovery_alone():

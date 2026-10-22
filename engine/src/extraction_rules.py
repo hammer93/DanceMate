@@ -541,7 +541,82 @@ def _is_labelled_time(text: str, start: int, readings) -> bool:
 
 
 def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | None:
-    """The clock range this event runs at, normalised to 24 hours.
+    """The clock range this event runs at, normalised to 24 hours - see
+    `_chosen_range()` for which range that is.
+
+    v0.96.50: a DJ's set is not the night. 스윙타임빠 (item 6826) writes
+    "토요일 저녁 7시30분부터 소셜이 진행 됩니다. DJ '가츠' PM 8:15~10:15", and the
+    DJ's range - the only range in the sentence - was stored as the social's
+    own 20:15-22:15, forty-five minutes after the doors had opened. When the
+    range chosen is labelled as a DJ's and the same text states, in so many
+    words, when the event itself *opens* (`_stated_opening()`), that opening is
+    the start and the end is left unknown: the DJ's last record is not
+    evidence of when the night ends. With no such sentence the DJ's range is
+    kept exactly as before - a one-DJ milonga's set very often is its hours.
+    """
+    chosen = _chosen_range(text, event_type)
+    if chosen is None:
+        return None
+    reading, start = chosen
+    words = _EVENT_WORDS.get((event_type or "").upper())
+    if words and _is_a_dj_set(text or "", start):
+        opening = _stated_opening(text or "", words, reading)
+        if opening is not None:
+            return opening
+    return reading
+
+
+# A DJ's name, quoted or not, directly in front of the range it plays.
+_DJ_SET_BEFORE = re.compile(
+    r"(?:\bDJ|디제이)\s*[:：]?\s*['\"‘’“”]?[^'\"‘’“”\d\n|/~]{1,20}?['\"‘’“”]?\s*$", re.I)
+
+
+def _is_a_dj_set(text: str, start: int) -> bool:
+    return bool(_DJ_SET_BEFORE.search(text[max(0, start - 30):start]))
+
+
+def _stated_opening(text: str, words: str, dj: TimeReading) -> TimeReading | None:
+    """The one start the text says the event *opens* at, if it says one.
+
+    Every condition is the strong form of one `parse_start_time()` already
+    weighs: the clock is not one end of a range, carries an explicit meridiem
+    (a bare "7시30분" stays unread), is said to open the event ("부터", "시작",
+    "오픈"), has the event's own word beside it, and is no later than the DJ's
+    start. Two different such openings are two different nights' and decide
+    nothing.
+    """
+    ranges = _range_spans(text)
+    found = set()
+    raw = None
+    pattern = re.compile(words, re.I)
+    for match in _lone_clocks(text):
+        parts = _clock_parts(match.group("t"))
+        if parts is None or parts[0] == 24:
+            continue
+        if any(lo <= match.start("t") and match.end("t") <= hi for lo, hi in ranges):
+            continue
+        marker = (_meridiem(match.group("lead"), parts[0])
+                  or _meridiem(match.group("trail"), parts[0]))
+        if not marker:
+            continue
+        before = text[max(0, match.start() - _TIME_NEAR_BEFORE):match.start()]
+        if not (match.group("start") or _OPENS_BEFORE.search(before)):
+            continue
+        if not pattern.search(_near_window(text, match.start(), match.end())):
+            continue
+        start = _fmt(_apply(*parts, marker))
+        if start > dj.start:
+            continue
+        found.add(start)
+        raw = raw or re.sub(r"\s+", " ", match.group(0)).strip()
+    if len(found) != 1:
+        return None
+    return TimeReading(start=found.pop(), end=None, end_day_offset=0, raw=raw,
+                       meridiem_evidence=EVIDENCE_EXPLICIT, ambiguous=False)
+
+
+def _chosen_range(text: str, event_type: str | None = None):
+    """(reading, position) of the clock range this event runs at.
 
     Observed and covered::
 
@@ -585,9 +660,10 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
                 skip=lambda found, s=start, e=end: _names_another_clock(
                     text or "", found, s, e))
             if hit is not None:
-                named.append((hit[0], reading))
+                named.append((hit[0], reading, start))
         if named:
-            return min(named, key=lambda pair: pair[0])[1]
+            best = min(named, key=lambda triple: triple[0])
+            return best[1], best[2]
     # v0.96.33: nothing named the event type, but the post may have labelled
     # one of these readings as its own time. That label is the post speaking
     # about itself, and it outranks a marker found anywhere else in the body.
@@ -635,8 +711,8 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
     # event's own time.
     explicit = next((r for r in readings if r[0].meridiem_evidence == EVIDENCE_EXPLICIT), None)
     if explicit:
-        return explicit[0]
-    return readings[0][0]
+        return explicit[0], explicit[1]
+    return readings[0][0], readings[0][1]
 
 
 # v0.96.0: a start time with no end. Community notices very often write only
@@ -659,6 +735,32 @@ _NOT_A_START_AFTER = re.compile(r"^\s*(?:마감|까지|전|이전|until|by)", re
 # "소셜 오픈 오후 9시", "클럽 오픈 오후 8시". Used only to rank one qualified
 # candidate above another, never to admit a clock that nothing qualified.
 _OPENS_BEFORE = re.compile(r"(?:오픈|시작|open|start|부터)[\s:.\-]*$", re.I)
+
+# v0.96.50: a bare hour the post marks with a half of the day in front of it -
+# "일정정보 PM 9" (item 6644, a danceinfo party whose only clock this is),
+# "오후 9 소셜". `_CLOCK` reads a bare hour only with the marker *after* it
+# ("9pm"), so this one was never seen and the night read 시간 미확인. Only the
+# four markers that name a half of the day outright count - 저녁/밤 apply to
+# some hours and not others, and a bare number after them is as often a
+# count - and the number must stand alone: not a date, a price, a headcount,
+# a floor, a ratio ("탱3-발3-밀3-AM3", item 942) or the head of a range.
+_LEADING_MARKER_HOUR_RE = re.compile(
+    r"(?<![A-Za-z가-힣\d\-–—~/:])(?P<lead>[ap]\.?m\.?|오전|오후)[ \t]*(?P<t>\d{1,2})"
+    r"(?!\d)(?![ \t]*[:.,/~\-–—])(?![ \t]*(?:시|분|월|일|명|인|개|회|원|만|천|부|기|층|번|호|%|[ap]\.?m))"
+    r"(?P<trail>(?!))?[ \t]*(?P<start>부터|시작|start|from|오픈|open)?",
+    re.I,
+)
+
+
+def _lone_clocks(text: str):
+    """Every single-clock reading `parse_start_time()` weighs, by position:
+    `_SINGLE_CLOCK_RE`'s, then the marked bare hours it cannot see."""
+    found = list(_SINGLE_CLOCK_RE.finditer(text))
+    taken = [m.span("t") for m in found]
+    for m in _LEADING_MARKER_HOUR_RE.finditer(text):
+        if not any(m.start("t") < e and s < m.end("t") for s, e in taken):
+            found.append(m)
+    return sorted(found, key=lambda m: m.start())
 
 
 def _naming_distance(window: str, pattern, clock_start: int, clock_end: int):
@@ -761,7 +863,7 @@ def parse_start_time(text: str, event_type: str | None = None, *,
     # "9:00pm-12:30am 밀롱가" is already `parse_time_range()`'s to read.
     ranges = _range_spans(body)
     found = []
-    for match in _SINGLE_CLOCK_RE.finditer(body):
+    for match in _lone_clocks(body):
         parts = _clock_parts(match.group("t"))
         if parts is None:
             continue

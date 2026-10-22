@@ -37,7 +37,9 @@ def test_item_2219_is_a_real_upcoming_swing_social():
         event_type=classification, published="2026-09-14", source_role="COMMUNITY",
     )
     assert candidate.date == "2026-09-16"
-    assert (candidate.start_time, candidate.end_time) == ("20:15", "22:15")
+    # v0.96.50 (DATA-02): the post opens the social at 19:30 in so many words;
+    # 20:15-22:15 is the DJ's set and was the defect this used to pin. No end is stated.
+    assert (candidate.start_time, candidate.end_time) == ("19:30", None)
     assert candidate.venue is None
     # No dedicated Balboa/Bachata/Kizomba word anywhere in this post - no
     # genre hint should fire just because the source's own community is
