@@ -1,5 +1,143 @@
 # DanceMate Release Notes
 
+## v0.96.53 Stable Event Identity & Multi-date Extraction Hardening
+
+Product Runtime 0.96.53. Information Engine 1.16 (unchanged; see below),
+normalization 3 (unchanged), migration 051 (no new migration).
+
+### An Event keeps its id across re-extraction
+
+Events are upserted on the engine's `candidate_id`, so an Event lives exactly
+as long as its candidate. Since v0.96.0 a re-extraction re-read a post into
+its own candidate only when the post had one candidate before and one after.
+Every other post had its candidates deleted and inserted afresh.
+
+That is the whole cause of the 99 Event ids the v0.96.52 ENGINE 1.17 probe
+moved. Re-measured on the 2026-10-24 04:35 KST scheduled backup, with the
+same result:
+
+* 95 rows from 30 posts: the same programme, on the same date, under the
+  same title, re-numbered. This was a festival's five days, a club's Chuseok
+  nights, and all five KOREA SPECIAL TANGO WEEK rows.
+* 4 rows from 4 posts: the real graduation party left behind when a DATA-01
+  deadline row in the same post went (1629134, 1629137, 1628668, 1628672).
+* The probe also refolded 15 canonical folds under the new ids. One of them
+  had its direction reversed: 1629632 became a canonical.
+
+`runtime/candidate_identity.py` now pairs a post's stored candidates with
+the new ones by what each programme is, never by position:
+
+* **MATCH_EXACT:** same date, title, type, start, end and venue.
+* **MATCH_STABLE_WITH_REVISIONS:** same date, plus the same title (with the
+  time, venue or type corrected), or the same type and start (title revised).
+
+These rules hold throughout:
+
+* The engine's per-day " MM/DD" name suffix is not part of the title.
+* A key shared by more than one candidate on either side is never guessed
+  at. Those candidates are counted as AMBIGUOUS_IDENTITY (one stored, several
+  new) or CONFLICTING_IDENTITY (several stored, one new). They are then
+  retired or created exactly as before. Two stored Events are never merged.
+* A programme that moved day is a different programme.
+* The one-before/one-after shape keeps its v0.96.0 contract.
+* A post with a Review decision is still never re-read.
+* The pairing is a pure function, so order, retries and repeat passes
+  cannot move an identity. A crash mid-item rolls the engine store back.
+
+`reprocess_acquired()` re-reads each paired programme into its own candidate
+(`replace_candidate`), retires only the unpaired stored ones, and inserts
+only the unpaired new ones. It reports `identity_exact`, `identity_revised`,
+`identity_new`, `identity_removed`, `identity_ambiguous` and
+`identity_conflicting`. The scheduler's `engine-reprocess` line shows them as
+`identity kept=… new=… removed=… undecided=…`.
+
+### Two nights in one notice (DATA-06)
+
+스윙타임빠's weekend notice "(10월 24,25일) 토,일 소셜 공지" gives a Saturday
+and a Sunday social, each in its own sentence with its own clock. Every route
+read one night. The title's day list was flagged MULTI_DAY_EVENT on its first
+day, so the 10/25 Sunday social never existed, and neither did the Sundays of
+eight earlier weekends.
+
+`extract_weekday_sections()` (engine) reads that shape and nothing wider. It
+runs after the day-list route. It expands a post only when all of these hold:
+
+* The post writes down two to seven explicit dates within one week.
+* None of those dates is a deadline (`date_roles`).
+* No date is joined to another by a range. "10월 24일~25일" is a period and
+  stays one event.
+* Each day has its own section in the body, opened by its own weekday and in
+  date order.
+* Each section names the night against its own clock.
+* No section dates anything else.
+* There is no course evidence, and the single reading's day and start
+  survive.
+
+One section that fails refuses the whole post. For example, the Chuseok
+weekend whose Saturday line is "휴무" stays as it was.
+
+Each day is read from its own section only, so a Saturday DJ set never times
+the Sunday. "토, 일" or "매주 토요일과 일요일" with no dates creates nothing.
+
+A replay of all 4,908 stored items (no network, cached poster OCR) changes
+exactly nine items, all 스윙타임빠 weekend notices, each gaining its Sunday.
+
+### Engine version policy
+
+ENGINE stays 1.16. The new reading applies to newly collected posts and to
+source revisions. It does not apply to stored rows, which a version bump
+would re-read.
+
+The full ENGINE 1.17 simulation on the same backup, with this release:
+
+* Event ids moved: 0 (was 99).
+* Canonical folds changed: 0 (was 15).
+* 99 programmes re-read exactly and 9 revised in place: the Saturdays, now
+  opening at 19:30 from the social's own sentence.
+* 9 new: the Sundays.
+* 6 removed: the DATA-01 deadline rows.
+* 0 ambiguous, 0 conflicting.
+* Human review actions: 15 → 15.
+* A second pass on the result: 0 changes.
+
+The bump is still deferred. It would remove the six DATA-01 rows and correct
+1629719 (DATA-02) without the Review decisions that both wait on. Production
+data is unchanged by this release: the Sunday 10/25 social is not created,
+because 6826 is not re-read without a revision or a bump.
+
+### The test runner is not a second scheduler (OPS-05)
+
+`docker compose build` writes `com.docker.compose.service=scheduler` into
+the image. Every container run from that image inherited the label, so the
+official test runner's container was counted as a scheduler. On 2026-10-23
+ops-monitor raised `SCHEDULER_DUPLICATE` (CRITICAL) from 19:43 to 20:34.
+
+The label signal now also requires the two labels compose writes when it
+creates a service replica: `com.docker.compose.container-number` and
+`com.docker.compose.oneoff=False`. An image never carries those. The command
+signal (`python -m scheduler`) is unchanged.
+
+* Two real schedulers still alert at once.
+* None still raises SCHEDULER_MISSING.
+* Stopped containers are not counted.
+* The alert policy (5 minutes, 6-hour reminder, one RECOVERED) is unchanged.
+
+`deploy_guard.is_scheduler_container()` is the Python mirror the tests hold
+the script to.
+
+### First scheduled backup
+
+`dancemate-backup.timer` fired at 2026-10-24 04:35:27 KST, as hammer, and
+exited 0. `dancemate-backup-20261023-193528`:
+
+* `product_commit` 4a31e78, `image-label`.
+* sha256 and bytes match the manifest.
+* Modes 0711 / 0600 / 0600 / 0644; runtime access ok, `dump_private=True`.
+* Retention 16.
+
+A disposable restore matches Production: 1,709 events, 194 folds, 233 pairs,
+15 reviews, 54 venues, migration 051, 0 dangling folds, SQLite ok.
+
 ## v0.96.52 Release Candidate Hardening & Evidence-based Duplicate Review
 
 Product Runtime 0.96.52. Information Engine 1.16 (unchanged; see below),

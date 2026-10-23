@@ -354,6 +354,23 @@ creates an account, key or destination on its own.
 
   Manifests written earlier are read as before. None is rewritten.
 
+### Which containers count as the scheduler (v0.96.53)
+
+`ops-monitor` and the deploy's duplicate guard count a running container as
+a scheduler when either holds:
+
+- compose created it as a replica of the `scheduler` service: it has
+  `com.docker.compose.service=scheduler`, `com.docker.compose.container-number`
+  and `com.docker.compose.oneoff=False`;
+- its full command contains `python -m scheduler`, however it was started.
+
+The service label on its own is not enough. `docker compose build` writes it
+into the image, so a container run from that image by hand also carries it.
+`scripts/run-container-tests.sh` is one example. Until v0.96.53 such a
+container raised `SCHEDULER_DUPLICATE` (CRITICAL) for as long as it ran.
+Two real schedulers still raise it immediately, and none still raises
+`SCHEDULER_MISSING`. Stopped containers are never counted.
+
 `scripts/deploy-production.sh` is the only script that builds a new image and
 recreates containers; it runs a full preflight (compose file identity, no
 embedded PostgreSQL, real-database identity check, no duplicate scheduler),

@@ -432,12 +432,26 @@ drop_scratch_db() {
 #   - the full, untruncated command, for a scheduler started any other way.
 # runtime/deploy_guard.py's scheduler_count_report() is the same decision in
 # Python, which is what the tests hold this to.
+#
+# v0.96.53 (OPS-05): the label signal counts only containers *compose created
+# as a service replica*. `docker compose build` writes the service label into
+# the image itself (dancemate/runtime:0.96.52 carries
+# com.docker.compose.service=scheduler), so every ad-hoc `docker run` of that
+# image inherited it - the official test runner's migrate and pytest container
+# read as a second scheduler and ops-monitor raised SCHEDULER_DUPLICATE
+# (CRITICAL) for the 51 minutes it ran. The image never carries the two labels
+# compose writes when it creates a replica (container-number, oneoff=False),
+# so they are required alongside it. Nothing is lost: a second compose stack's
+# scheduler has both, and a scheduler started any other way is still found by
+# its command below.
 SCHEDULER_SERVICE_LABEL="com.docker.compose.service=scheduler"
+SCHEDULER_REPLICA_LABEL="com.docker.compose.container-number"
+SCHEDULER_NOT_ONEOFF_LABEL="com.docker.compose.oneoff=False"
 SCHEDULER_COMMAND="python -m scheduler"
 
 scheduler_container_ids() {
   {
-    docker ps -q --no-trunc --filter "label=$SCHEDULER_SERVICE_LABEL" 2>/dev/null || true
+    docker ps -q --no-trunc --filter "label=$SCHEDULER_SERVICE_LABEL"       --filter "label=$SCHEDULER_REPLICA_LABEL" --filter "label=$SCHEDULER_NOT_ONEOFF_LABEL"       2>/dev/null || true
     docker ps --no-trunc --format '{{.ID}} {{.Command}}' 2>/dev/null \
       | awk -v want="$SCHEDULER_COMMAND" 'index($0, want) { print $1 }' || true
   } | cut -c1-12 | sed '/^$/d' | sort -u

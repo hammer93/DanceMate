@@ -111,6 +111,14 @@ def engine_reprocess(settings: Settings) -> str:
         f"multi_changed={result['multi_event_changed']} "
         f"engine={result['engine_version']} remaining={result['remaining']}"
     )
+    # v0.96.53: how the multi-programme re-reads kept their ids.
+    held = result.get("identity_ambiguous", 0) + result.get("identity_conflicting", 0)
+    if result.get("identity_exact") or result.get("identity_revised")             or result.get("identity_new") or result.get("identity_removed") or held:
+        detail += (
+            f" identity kept={result['identity_exact']}+{result['identity_revised']} "
+            f"new={result['identity_new']} removed={result['identity_removed']} "
+            f"undecided={held}"
+        )
     if result.get("stalled"):
         detail += f" stalled={result['stalled']}"
     if result.get("revised_since_read"):

@@ -23,7 +23,7 @@ import sys
 from datetime import date
 from typing import Any
 
-from . import acquisition, content_store, db, image_fallback, intake
+from . import acquisition, candidate_identity, content_store, db, image_fallback, intake
 from .config import Settings
 from .engine_adapter import engine_db_path
 
@@ -569,6 +569,17 @@ def _events_of(pg, candidate_ids: list[int]) -> list[tuple[int, int]]:
         return [(int(r[0]), int(r[1])) for r in cur.fetchall()]
 
 
+# v0.96.53: how each multi-programme re-read paired its candidates, by result key.
+_IDENTITY_KEYS = {
+    "identity_exact": candidate_identity.MATCH_EXACT,
+    "identity_revised": candidate_identity.MATCH_REVISED,
+    "identity_new": candidate_identity.NEW_EVENT,
+    "identity_removed": candidate_identity.REMOVED,
+    "identity_ambiguous": candidate_identity.AMBIGUOUS,
+    "identity_conflicting": candidate_identity.CONFLICTING,
+}
+
+
 def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dict[str, Any]:
     return {
         "pending": 0, "selected": 0, "reprocessed": 0, "succeeded": 0,
@@ -584,6 +595,7 @@ def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dic
         "events_preserved": 0, "events_dropped": 0,
         "newly_dated": 0, "newly_upcoming": 0, "lost_upcoming": 0,
         "multi_event_changed": 0,
+        **dict.fromkeys(_IDENTITY_KEYS, 0),
         "engine_version": engine_version,
         "next_after_item_id": None,
         "remaining": backlog["outdated"],
@@ -670,6 +682,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         before_total = after_total = 0
         events_before = events_preserved = events_dropped = 0
         newly_dated = newly_upcoming = lost_upcoming = multi_event_changed = 0
+        identity_counts = dict.fromkeys(_IDENTITY_KEYS.values(), 0)
         failures: list[str] = []
         try:
             for item in items:
@@ -683,8 +696,11 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                                         event_terms=detection(item.get("source_id")))
                     post_id, _ = engine_db.persist_raw_post(engine_con, post)
 
+                    # v0.96.53: and what each candidate is, so a multi-programme
+                    # re-read can keep its ids (candidate_identity.match()).
                     existing = engine_con.execute(
-                        "SELECT candidate_id, event_date FROM event_candidates "
+                        "SELECT candidate_id, event_date, name, event_type, "
+                        "start_time, end_time, venue FROM event_candidates "
                         "WHERE post_id=?",
                         (post_id,),
                     ).fetchall()
@@ -843,8 +859,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                             blocked_reconciled += 1
                         continue
 
-                    # Replace this post's candidates with whatever the current
-                    # engine now makes of it -- including nothing.
+                    # Re-read this post into whatever the current engine now
+                    # makes of it -- including nothing.
                     #
                     # Guarding the delete on `events` meant a post that stopped
                     # being an event kept the candidate it used to have. A rule
@@ -854,17 +870,43 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     # real fetch (FULL/PARTIAL) - only a blocked one, handled
                     # above, is exempted.
                     #
+                    # v0.96.53: a programme the engine still reads is re-read
+                    # *into its own candidate*, as the 1->1 shape above always
+                    # was, so its Event keeps its id. Before, every candidate
+                    # of a multi-programme post was deleted and inserted afresh
+                    # - 95 of the 99 ids the v0.96.52 ENGINE 1.17 probe moved
+                    # were the same date under the same title. Pairing is by
+                    # what each programme is, never its position, and a key
+                    # two candidates share is never guessed at
+                    # (candidate_identity.match()).
+                    #
                     # Candidates a person has reviewed are never reached here;
                     # that check runs above and skips the item entirely.
-                    for candidate_id in existing_ids:
+                    identity = candidate_identity.match(
+                        ((row[0], candidate_identity.stored_fields(row)) for row in existing),
+                        [candidate_identity.extracted_fields(ev) for ev in events],
+                    )
+                    for kind, n in identity["counts"].items():
+                        identity_counts[kind] += n
+                    if identity["held"]["old"] or identity["held"]["new"]:
+                        log.warning("re-extract of source item %s: identity not decided "
+                                    "for candidates %s (%s new)", source_item_id,
+                                    sorted(identity["held"]["old"]),
+                                    len(identity["held"]["new"]))
+                    for index, candidate_id in sorted(identity["pairs"].items()):
+                        engine_db.replace_candidate(engine_con, candidate_id, events[index])
+                    for candidate_id in identity["removed"]:
                         engine_con.execute(
                             "DELETE FROM evidences WHERE candidate_id=?", (candidate_id,)
                         )
-                    engine_con.execute(
-                        "DELETE FROM event_candidates WHERE post_id=?", (post_id,)
-                    )
+                        engine_con.execute(
+                            "DELETE FROM event_candidates WHERE candidate_id=?",
+                            (candidate_id,),
+                        )
+                    if identity["new"]:
+                        engine_db.persist_events(
+                            engine_con, post_id, [events[i] for i in identity["new"]])
                     if events:
-                        engine_db.persist_events(engine_con, post_id, events)
                         used = {
                             e.inference
                             for ev in events for e in ev.evidences
@@ -873,13 +915,16 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         if used:
                             image_fallback.mark_used_as_fallback(pg, source_item_id, used)
                     after_total += len(events)
-                    # The candidate ids these Events were built from are gone,
-                    # so normalization's own orphan pass will retire the Event
+                    # The candidates no new programme claimed are gone, so
+                    # normalization's own orphan pass will retire their Event
                     # rows. Counted rather than prevented: forcing an id to
-                    # survive a genuine 1->N cardinality change is what the
+                    # survive a genuine change of programme is what the
                     # duplicate/canonical machinery exists to decide, not this
-                    # loop. The 1->1 shape above never reaches here.
-                    events_dropped += len(item_events)
+                    # loop.
+                    kept = set(identity["pairs"].values())
+                    item_kept = sum(1 for _, cid in item_events if cid in kept)
+                    events_preserved += item_kept
+                    events_dropped += len(item_events) - item_kept
                     if not events:
                         # An Event the current engine no longer stands
                         # behind, retired from input it could read -
@@ -948,6 +993,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         "newly_upcoming": newly_upcoming,
         "lost_upcoming": lost_upcoming,
         "multi_event_changed": multi_event_changed,
+        **{name: identity_counts[kind] for name, kind in _IDENTITY_KEYS.items()},
         "engine_version": engine_version,
         # Where a forced pass got to, so the next call starts after it. The
         # incremental pass ignores this: its cursor is the stamped row.

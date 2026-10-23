@@ -103,11 +103,16 @@ def test_a_two_day_title_is_read_as_its_first_day_and_flagged_as_a_span():
     assert span and "19,20" in span[0].raw_text.replace(" ", "")
 
 
-def test_the_whole_post_still_becomes_exactly_one_candidate():
+def test_the_whole_post_becomes_one_candidate_per_announced_night():
+    """v0.96.53 (DATA-06): the post *does* separate its two days - a 토요일
+    sentence and an 일요일 sentence, each with its own social and clock - so
+    it is read as both nights (tests/test_v09653_weekday_sections.py). The
+    single reading above, first day plus MULTI_DAY_EVENT, is unchanged and
+    is still what a post that does not separate them gets."""
     result = process_discovered_post(Dummy(), _post(TIMEBBA_TITLE, TIMEBBA_BODY), "COMMUNITY")
     assert result["classification"] == "SOCIAL"
-    assert len(result["events"]) == 1
-    assert result["events"][0].date == "2026-09-19"
+    assert [(e.date, e.start_time) for e in result["events"]] == [
+        ("2026-09-19", "19:30"), ("2026-09-20", "19:30")]
 
 
 @pytest.mark.parametrize("text, expected", [

@@ -2,6 +2,7 @@ from .classifier import classify_with_image_evidence
 from .extractor import (DATE_PATTERNS, FESTIVAL, extract_day_list,
                         extract_festival, extract_programmes,
                         extract_schedule, extract_single,
+                        extract_weekday_sections,
                         extract_with_image_fallback)
 from .verifier import verify
 from .database import persist_events
@@ -193,6 +194,33 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
                     and day_event.status == "VERIFIED"):
                 day_event.status = "POSSIBLE"
         return {"classification": classification, "events": day_list}
+    # v0.96.53: a post that writes its days down and gives each one its own
+    # weekday section ("토요일 저녁 7시30분부터 소셜 ... 일요일 저녁 7시30분부터
+    # 소셜") - see extract_weekday_sections(). Last, for the same two reasons
+    # as the day list: nothing that already expands changes, and the single
+    # reading is what it has to beat.
+    weekday_days = None if class_instance else extract_weekday_sections(
+        post.title, post.body, source_role=source_role,
+        event_type=classification,
+        published=getattr(post, "published_at", None),
+        current=ev,
+    )
+    if weekday_days:
+        for day_event in weekday_days:
+            if image_evidence_ref:
+                from .models import Evidence as _Evidence
+                from .extractor import IMAGE_OCR as _IMAGE_OCR
+
+                day_event.evidences.append(_Evidence(
+                    "context", "IMAGE_CLASSIFICATION_USED", image_evidence_ref,
+                    evidence_type=_IMAGE_OCR, source_role=source_role,
+                    inference=image_evidence_ref,
+                ))
+            verify(day_event, source_role=source_role)
+            if (post.acquisition_quality == "METADATA_ONLY"
+                    and day_event.status == "VERIFIED"):
+                day_event.status = "POSSIBLE"
+        return {"classification": classification, "events": weekday_days}
     if image_evidence_ref:
         from .models import Evidence
         from .extractor import IMAGE_OCR

@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.52"
+PRODUCT_VERSION = "0.96.53"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -507,6 +507,14 @@ PRODUCT_VERSION = "0.96.52"
 # of the 99 are today or later). The same run at 1.16 changes nothing. So a
 # bump would also break public links and the duplicate pair on those rows:
 # it stays at 1.16 until re-extraction keeps a multi-date post's Event ids.
+#
+# v0.96.53 makes it keep them (runtime/candidate_identity.py). The same full
+# re-extract on the 2026-10-24 04:35 KST scheduled backup (4,908 items) moves
+# no Event id and no canonical fold: 99 programmes re-read exactly, 9 revised
+# in place (스윙타임빠's Saturdays, opening at 19:30), 9 new (their Sundays,
+# DATA-06), 0 ambiguous; a second pass changes nothing. What still holds it at
+# 1.16 is what it would decide for a person: it removes the six DATA-01 rows
+# and corrects 1629719 (DATA-02) without the Review decisions those wait on.
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

@@ -566,11 +566,11 @@ def test_a_reviewed_candidate_is_skipped_but_still_leaves_the_queue(pg, unique, 
 
 
 def test_a_cardinality_change_is_measured_and_leaves_other_events_alone(pg, unique, settings):
-    """T8. A schedule post genuinely becomes N events. Forcing the original
-    id onto one of them would be a guess; the release records the change
-    instead (`multi_event_changed`, `events_dropped`) and leaves the
-    duplicate/canonical machinery to decide. What it must never do is crash,
-    or touch an Event that belongs to another post."""
+    """T8. A schedule post genuinely becomes N events. The change is recorded
+    (`multi_event_changed`); since v0.96.53 the programme the post already had
+    keeps its id because it is the same date and title, never because of its
+    position. What it must never do is crash, or touch an Event that belongs
+    to another post."""
     source_id = _source(pg, unique, key="MULTI")
     url = f"https://multi.test/{unique}/1"
     other_url = f"https://multi.test/{unique}/other"
@@ -602,7 +602,13 @@ def test_a_cardinality_change_is_measured_and_leaves_other_events_alone(pg, uniq
         after = _candidates(settings, url)
         assert len(after) >= 2, "the schedule must expand rather than crash"
         assert result["multi_event_changed"] >= 1
-        assert result["events_dropped"] >= 1
+        # v0.96.53: the 10/10 night is still that post's 10/10 night, so it is
+        # re-read into its own candidate and keeps its Event; the two new
+        # dates are new programmes (tests/test_v09653_stable_identity.py).
+        # Before, every candidate of a changed post was dropped.
+        assert result["events_dropped"] == 0
+        assert first[0]["candidate_id"] in {c["candidate_id"] for c in after}
+        assert _event_row(pg, event["event_id"])["candidate_id"] == first[0]["candidate_id"]
         assert _event_row(pg, other_event["event_id"]) is not None, (
             "re-extracting one post must never prune another post's Event")
         assert _event_row(pg, other_event["event_id"])["candidate_id"] == \

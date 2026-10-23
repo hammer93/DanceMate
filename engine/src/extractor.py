@@ -1608,6 +1608,155 @@ def extract_day_list(title: str, body: str, source_role="SECONDARY",
     return out
 
 
+# --- one post, a section per weekday (v0.96.53) --------------------------
+#
+# 스윙타임빠 announces every weekend in one post: "■ 스윙타임빠 (10월 24,25일)
+# 토,일 소셜 공지 - 토요일 저녁 7시30분부터 소셜이 진행 됩니다. DJ '가츠' PM
+# 8:15~10:15 - 일요일 저녁 7시30분부터 소셜이 진행 됩니다. 1부 DJ ...". Two
+# nights, and every route above reads one: the schedule route wants each night
+# *headed by its own date*, the day-list route wants the acquisition layer's
+# `전체일정` field, and the single reading takes the title's first day and
+# flags "10월 24,25일" as MULTI_DAY_EVENT - a festival-shaped span - so the
+# Sunday social was never a candidate (DATA-06). Nine such weekend notices are
+# stored (June to October 2026), every one missing its Sunday; on a replay of
+# the whole stored corpus they are the only items this reading changes. Their
+# 9/23,26,27 notice, whose Saturday line is "추석연휴 휴무", is refused by
+# condition 3 below and stays as it was.
+#
+# This reads exactly that shape and nothing wider:
+#
+# 1. The post writes the days down: two to seven explicit dates within one
+#    week, none of them a deadline (`date_roles()`) and none joined by a range
+#    ("10월 24일~25일" is a period - a festival's, possibly - and stays one).
+#    "토, 일" or "매주 토요일과 일요일" with no date names no day to create.
+# 2. The body gives every one of those days its own section, opened by the
+#    day's own weekday ("토요일", "일요일") and in date order - a weekday that
+#    does not match its date's calendar day is no section of it.
+# 3. Every section names this night's own word against its own clock, and
+#    dates nothing else. One section that does not is refusal of the whole
+#    post, never of that day alone: a weekend whose Sunday line says "휴무"
+#    must not become a Saturday-only notice that reads as complete.
+# 4. Each day is read from its own section only, so a Saturday DJ set never
+#    times the Sunday social, and the title's day list - which names both days
+#    - is never what dates either of them.
+# 5. Nothing the single reading already shows is traded away, as in
+#    `extract_day_list()`: its day must survive, with its start time.
+WEEKDAY_SECTION = "WEEKDAY_SECTION"
+_WEEKDAY_CHARS = "월화수목금토일"
+# "10월 24,25일", "10월 24일(토) 및 25일(일)": the second day borrows the month.
+_DAY_PAIR_RE = re.compile(
+    r"(?<!\d)(?P<m>\d{1,2})\s*월\s*(?P<d1>\d{1,2})\s*일?\s*(?:\(\s*[월화수목금토일]\s*\))?\s*"
+    r"(?:[,，·&]|및|과|와)\s*(?P<d2>\d{1,2})\s*일(?!\s*[~～\-])"
+)
+# A section ends at the post's next block marker, not only at the next day.
+_SECTION_BREAK_RE = re.compile(r"[■□▣◆◇※]")
+_WEEKDAY_SECTION_MAX_DAYS = 7
+
+
+def _announced_days(text: str, published):
+    """The explicit, non-deadline days a post writes down, or None."""
+    from datetime import date as _date
+
+    matches = _all_date_matches(text)
+    roles = date_roles(text, matches)
+    days = set()
+    previous = None
+    for m in matches:
+        if previous is not None and _RANGE_GAP.fullmatch(text, previous.end(), m.start()):
+            return None
+        previous = m
+        if roles.get(m.start()):
+            continue
+        iso, _ = _resolve_date_match(m, published)
+        if iso:
+            days.add(iso)
+    for m in _DAY_PAIR_RE.finditer(text):
+        if roles.get(m.start()):
+            continue
+        first = _yearless_date(int(m.group("m")), int(m.group("d1")), published)[0]
+        if first is None:
+            continue
+        try:
+            days.add(first.isoformat())
+            days.add(_date(first.year, int(m.group("m")), int(m.group("d2"))).isoformat())
+        except ValueError:
+            return None
+    if not 2 <= len(days) <= _WEEKDAY_SECTION_MAX_DAYS:
+        return None
+    ordered = sorted(days)
+    span = (_date.fromisoformat(ordered[-1]) - _date.fromisoformat(ordered[0])).days
+    return ordered if span < _WEEKDAY_SECTION_MAX_DAYS else None
+
+
+def extract_weekday_sections(title: str, body: str, source_role="SECONDARY",
+                             event_type=None, published=None, current=None):
+    """One candidate per announced day, each read from its own weekday section,
+    or None. See the comment block above for the five conditions."""
+    from datetime import date as _date
+
+    words = extraction_rules.DATED_PROGRAM_WORDS.get((event_type or "").upper())
+    if not words or not body:
+        return None
+    text = f"{title} {body}"
+    if classifier._COURSE_EVIDENCE_RE.search(text):
+        return None
+    days = _announced_days(text, _as_date(published))
+    if days is None:
+        return None
+    starts = []
+    for day in days:
+        weekday = _WEEKDAY_CHARS[_date.fromisoformat(day).weekday()]
+        found = re.search(rf"{weekday}요일", body)
+        if found is None:
+            return None
+        starts.append(found.start())
+    if starts != sorted(set(starts)):
+        return None
+    clean_title = re.sub(r"\s+", " ", title or "").strip()
+    out = []
+    for index, (day, start) in enumerate(zip(days, starts)):
+        end = starts[index + 1] if index + 1 < len(starts) else len(body)
+        brk = _SECTION_BREAK_RE.search(body, start + 1, end)
+        section = body[start:brk.start() if brk else end].strip(" -–—\t\n")
+        if not re.search(words, section, re.I) or not _CLOCK_CUE_RE.search(section):
+            return None
+        if any(_resolve_date_match(m, None, days)[0] not in (None, day)
+               for m in _all_date_matches(section)):
+            return None
+        context_id = f"weekday{index + 1}"
+        ev = extract_single(
+            "", f"{day} {section}", source_role=source_role,
+            name_hint=f"{clean_title} {day[5:].replace('-', '/')}",
+            event_type=event_type, published=_as_date(published), own_dates=set(days),
+        )
+        if ev.date != day:
+            return None
+        _drop_guessed_morning(ev, source_role)
+        # The section was read without its heading, so the heading's own
+        # genre words ("스윙타임빠") are added back - the genre of the post,
+        # never a value of the day.
+        hinted = {e.value for e in ev.evidences if e.field == "genre_hint"}
+        for code in sorted(classifier.detect_genre_hints(title or "", "") - hinted):
+            ev.evidences.append(Evidence(
+                "genre_hint", code, clean_title[:160],
+                source_role=source_role, inference="SECONDARY_GENRE_WORD",
+            ))
+        for evidence in ev.evidences:
+            evidence.context_id = context_id
+        ev.evidences.append(Evidence(
+            "context", WEEKDAY_SECTION, section[:160],
+            source_role=source_role, context_id=context_id,
+        ))
+        out.append(ev)
+    if current is not None:
+        kept = next((e for e in out if e.date == current.date), None)
+        if kept is None:
+            return None
+        if current.start_time is not None and kept.start_time is None:
+            return None
+    return out
+
+
 # --- image text fallback (v0.81.3) -------------------------------------
 #
 # A poster image attached to a post often carries the date/time/fee the body

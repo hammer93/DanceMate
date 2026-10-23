@@ -146,7 +146,30 @@ def expected_image_tag(repo_root: Path | None = None) -> str:
 # guard read a truncated `docker ps` command column and counted 0 with one
 # scheduler running - neither signal here reads that column.
 SCHEDULER_SERVICE_LABEL = "com.docker.compose.service=scheduler"
+# v0.96.53 (OPS-05): written by compose when it creates a replica, never by
+# `docker compose build` - which does write the service label into the image,
+# so an ad-hoc container of that image (the official test runner) carried it.
+SCHEDULER_REPLICA_LABEL = "com.docker.compose.container-number"
+SCHEDULER_NOT_ONEOFF_LABEL = "com.docker.compose.oneoff=False"
 SCHEDULER_COMMAND = "python -m scheduler"
+
+
+def is_scheduler_container(labels: dict[str, str] | None, command: str | None) -> bool:
+    """Is this *running* container a DanceMate scheduler?
+
+    The same two signals scripts/_common.sh reads: a compose-created replica
+    of the scheduler service, or the scheduler command however it was started.
+    The service label alone is not a signal - an image built by compose
+    carries it, and so does every container anyone runs from that image."""
+    labels = labels or {}
+
+    def has(spec: str) -> bool:
+        key, _, value = spec.partition("=")
+        return key in labels and (not value or labels[key] == value)
+
+    replica = all(has(spec) for spec in (SCHEDULER_SERVICE_LABEL, SCHEDULER_REPLICA_LABEL,
+                                         SCHEDULER_NOT_ONEOFF_LABEL))
+    return replica or SCHEDULER_COMMAND in (command or "")
 
 
 def scheduler_count_report(label_ids, command_ids) -> dict[str, Any]:

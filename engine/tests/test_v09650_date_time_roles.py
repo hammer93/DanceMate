@@ -241,8 +241,10 @@ def test_the_same_party_from_three_notices_reads_one_date():
 
 def test_the_socials_own_opening_outranks_its_djs_set():
     result = _run(*REAL_TIMEBAR, TIMEBAR_PUBLISHED)
-    (event,) = result["events"]
-    assert event.date == "2026-10-24"
+    # v0.96.53 (DATA-06): the post is read as the two nights it announces -
+    # tests/test_v09653_weekday_sections.py. The Saturday this test is about
+    # still opens at 19:30 with no end, from its own sentence.
+    (event,) = [e for e in result["events"] if e.date == "2026-10-24"]
     assert (event.start_time, event.end_time) == ("19:30", None)
 
 
