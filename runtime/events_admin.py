@@ -1138,10 +1138,11 @@ _TIME_VIEWS = (
     ("unknown", duplicates.TIME_UNKNOWN, "End unknown"),
 )
 _READINESS_LABEL = {
-    duplicates.EVIDENCE_SUPPORTS: ("a rule pairs them now", "ok"),
-    # v0.96.51: also a rule pairing two programmes of one room on place and
-    # date alone - a question, not support.
-    duplicates.EVIDENCE_INSUFFICIENT: ("evidence insufficient - needs more evidence", "warn"),
+    duplicates.EVIDENCE_SUPPORTS: ("their records say they are one event", "ok"),
+    # v0.96.52: no evidence against a merge is not evidence for one - the
+    # merge is not offered (MERGE: NOT_READY) until the sources say so.
+    duplicates.EVIDENCE_INSUFFICIENT: ("MERGE: NOT_READY - INSUFFICIENT_SAME_EVENT_EVIDENCE; "
+                                       "next: REVIEW_SOURCE_EVIDENCE", "warn"),
     duplicates.EVIDENCE_CONTRADICTS: ("their evidence contradicts a merge", "bad"),
 }
 _QUEUE_TONE = {
@@ -1158,12 +1159,9 @@ def _answer_buttons(item: dict[str, Any]) -> str:
     for answer in item["answers"]:
         if not answer["available"]:
             continue
-        if answer["decision"] == duplicates.DUPLICATE and (
-                item.get("merge_readiness") == duplicates.EVIDENCE_INSUFFICIENT):
-            # A token can still be had; what is missing is a reason to think so.
-            buttons.append(f'<button name="action" value="keep_{answer["keep"]}">'
-                           f'Same event (needs more evidence), keep #{answer["keep"]}</button>')
-        elif answer["decision"] == duplicates.DUPLICATE:
+        # v0.96.52: a merge is available only with positive evidence
+        # (`duplicates.merge_evidence`), so every Same event button stands on it.
+        if answer["decision"] == duplicates.DUPLICATE:
             buttons.append(f'<button class="primary" name="action" value="keep_{answer["keep"]}">'
                            f'Same event, keep #{answer["keep"]}</button>')
         else:
@@ -1363,6 +1361,13 @@ def admin_duplicate_pair(pair_id: int, request: Request,
         + (f'<p>프로그램 판단 {E(item["programme_identity"])} &middot; '
            f'{E("; ".join(item["programme_evidence"]))}</p>'
            if item.get("programme_identity") else "")
+        + (f'<p>병합 준비 {E(item["readiness"])} &middot; 근거 강도 '
+           f'{E(item["evidence_strength"])} &middot; 근거 '
+           f'{E("; ".join(item["merge_evidence"]) or "-")}'
+           + (f' &middot; 부족 {E("; ".join(item["evidence_missing"]))}'
+              if item["evidence_missing"] else "")
+           + (f' &middot; 다음 조치 {E(item["next_action"])}' if item["next_action"] else "")
+           + "</p>")
         + f"<p>다음 단계: {_queue_next(item)}</p>"
         + "".join(f'<p class="note">{E(n)}</p>' for n in item["notes"])
         + (f'<p><a href="/admin/evidence-review/conflict-{item["event_id"]}-'
@@ -1670,7 +1675,8 @@ def api_duplicate_queue(request: Request, _: str = Depends(require_admin)) -> JS
             "state", "resolved_by", "status", "primary_reason", "reasons", "guidance",
             "roots", "successor_pair_id", "successor_state", "available", "timing",
             "member_timings", "merge_readiness", "stale_causes", "priority",
-            "programme_identity", "programme_evidence")
+            "programme_identity", "programme_evidence", "readiness", "evidence_ready",
+            "evidence_strength", "merge_evidence", "evidence_missing", "next_action")
     return admin._dump({
         "counts": duplicates.queue_counts(assessed),
         "timing_counts": duplicates.timing_counts(assessed),

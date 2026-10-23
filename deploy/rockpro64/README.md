@@ -303,6 +303,57 @@ running as `hammer`, neither of them the collection scheduler:
     RECOVERED notice.
   - External delivery (mail, messenger) is **not configured**.
 
+### External alerts, off-host copy and backup provenance (v0.96.52)
+
+None of these is configured on the board. Each stays
+`PENDING_CONFIGURATION` until an operator provides what it needs. Nothing
+creates an account, key or destination on its own.
+
+- **External alerts.** Set `OPS_ALERT_WEBHOOK_URL` in `.env` to an HTTPS
+  webhook that accepts a JSON POST (Slack, Discord, Mattermost, or an
+  ntfy-style relay).
+  - The URL is a secret. It is passed to the monitor in the environment,
+    never on a command line, and never logged.
+  - Every line in `alerts.log` carries `delivery`:
+    - `NOT_CONFIGURED`: no channel is set.
+    - `DELIVERED`: the webhook accepted it.
+    - `DELIVERY_FAILED`: the send failed. The notice is kept in the monitor
+      state and retried on the next run, logged as `DELIVERY_RETRY`.
+  - The summary line also lists conditions that hold but have not yet
+    reached their threshold (`pending`).
+- **Off-host copy.** Run `scripts/offhost-backup.sh --check` to see the
+  status. It exits with 3 (PENDING_CONFIGURATION), 2 (INVALID) or 0
+  (READY).
+  - Configure it with `OFFHOST_BACKUP_DEST` (`user@host:/path` on *another*
+    host) and `OFFHOST_BACKUP_GPG_RECIPIENT`. The recipient is a public key
+    in hammer's keyring. Its private key must not be on the board, and the
+    check refuses if it is.
+  - A run encrypts every file of the newest complete backup, rsyncs it, and
+    verifies it with a checksum comparison. It then keeps
+    `OFFHOST_BACKUP_RETENTION` copies remotely and records the result in
+    `$(dirname DANCEMATE_LOG_DIR)/ops/offhost-last.json`.
+  - A local folder, `localhost` and `127.*` are refused: another folder on
+    this card is not off-host.
+  - It is not on a timer. Add one only after a destination exists, with the
+    same shape as `dancemate-backup.timer` and after it.
+  - Restore: copy the directory back and `gpg --decrypt` each `.gpg` on a
+    machine that holds the private key. Put the files in
+    `/opt/dancemate/backup/runtime/<name>/` with the modes above, then run
+    `scripts/restore.sh <name>`.
+- **Backup provenance.** Each image is labelled at build time with the
+  commit it was built from (`org.opencontainers.image.revision`). The
+  deploy refuses to start an image whose label is not the checkout's HEAD.
+  `manifest.json` records:
+  - `product_commit`: the commit of the *running* image. It is taken from
+    the image label, else from the running version's release tag, else it is
+    `UNKNOWN`. It is never the checkout's HEAD.
+  - `running_commit_source`: which of those three it came from.
+  - `candidate_commit` and `candidate_version`: the checkout, i.e. what a
+    deploy is about to start.
+  - `snapshot_time_kst`.
+
+  Manifests written earlier are read as before. None is rewritten.
+
 `scripts/deploy-production.sh` is the only script that builds a new image and
 recreates containers; it runs a full preflight (compose file identity, no
 embedded PostgreSQL, real-database identity check, no duplicate scheduler),

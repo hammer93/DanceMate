@@ -119,6 +119,10 @@ def test_backup_manifest_describes_running_snapshot_not_new_checkout(repo_root):
     assert "compose exec -T runtime cat /app/VERSION" in script
     assert "SELECT max(version) FROM schema_migrations" in script
     assert 'rev-list -n1 "v$RUNTIME_VERSION"' in script
-    assert '"product_commit": "$RUNTIME_COMMIT"' in script
+    # v0.96.52: the running commit (image label, else the running version's
+    # tag, else UNKNOWN) - never the checkout's HEAD, which is the candidate.
+    assert '"product_commit": "$RUNNING_COMMIT"' in script
+    assert '"candidate_commit": "$CANDIDATE_COMMIT"' in script
+    assert 'RUNTIME_COMMIT="$HEAD_COMMIT"' not in script
     assert '"migration_head": "$MIGRATION_HEAD"' in script
     assert '"product_runtime_version": "$RUNTIME_VERSION"' in script

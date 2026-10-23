@@ -250,7 +250,10 @@ TODAY = date(2026, 10, 22)
 
 def _ev(event_id, day=TODAY, **kw):
     row = {"event_id": event_id, "event_date": day, "end_date": None, "period_end": None,
-           "event_name": f"Night {event_id}", "start_time": "20:00", "venue_id": 7,
+           # v0.96.52: one night's name, two independent sources - the positive
+           # evidence a merge now needs (`duplicates.merge_evidence`).
+           "event_name": "Milonga Luz", "source_id": event_id,
+           "start_time": "20:00", "venue_id": 7,
            "venue_text": "Hall", "region_id": 1, "identity_key": f"k{event_id}",
            "series_key": None, "event_type": "MILONGA", "canonical_event_id": None,
            "duplicate_decided_by": None, "listing_state": "LISTED", "review_state": "PENDING",
@@ -381,12 +384,16 @@ def test_the_queue_orders_on_now_then_soon_before_the_past():
 
 # --- Part C: STALE readiness, in memory --------------------------------------------
 
-def test_stale_with_one_place_missing_is_insufficient_but_answerable():
+def test_stale_with_one_place_missing_is_insufficient_and_offers_no_merge():
+    """v0.96.48 kept the merge open on such a pair ("insufficient but
+    answerable"); v0.96.52 offers only what positive evidence supports - the
+    place is now unknown and the starts differ, so only Different events."""
     found = _assess([_ev(10), _ev(20, start_time="21:00", venue_id=None, venue_text=None)])
     assert (found["status"], found["primary_reason"]) == (duplicates.QUEUE_STALE,
                                                          duplicates.REASON_NO_CURRENT_MATCH)
     assert found["merge_readiness"] == duplicates.EVIDENCE_INSUFFICIENT
-    assert found["available"] == ["MERGE:10", "MERGE:20", "KEEP_SEPARATE"]
+    assert found["available"] == ["KEEP_SEPARATE"]
+    assert found["readiness"] == duplicates.READINESS_STALE
     assert found["stale_causes"] == [duplicates.STALE_VENUE_CHANGED]
 
 
@@ -447,12 +454,17 @@ def test_stale_after_a_type_change_refuses_the_merge():
 
 
 def test_a_rule_that_still_asks_across_venues_is_untouched():
-    """Same series, same clock, another room: the rules ask, the guard does not refuse."""
+    """Same series, same clock, another room: the rules still ask (the pair
+    stays ACTIONABLE, Different events answerable). v0.96.52: two different
+    resolved venues are no positive evidence of one night, so the merge waits
+    for the sources."""
     found = _assess([_ev(10, series_key="s1"), _ev(20, series_key="s1", venue_id=8,
                                                    venue_text="Other hall")])
     assert found["status"] == duplicates.QUEUE_ACTIONABLE
-    assert found["merge_readiness"] == duplicates.EVIDENCE_SUPPORTS
-    assert found["available"] == ["MERGE:10", "MERGE:20", "KEEP_SEPARATE"]
+    assert found["merge_readiness"] == duplicates.EVIDENCE_INSUFFICIENT
+    assert found["readiness"] == duplicates.READINESS_NEEDS_EVIDENCE
+    assert found["available"] == ["KEEP_SEPARATE"]
+    assert "two different resolved venues" in found["evidence_missing"]
 
 
 # --- Part C, the real route ---------------------------------------------------------
@@ -475,15 +487,23 @@ def test_an_insufficient_stale_pair_answers_through_the_signed_preview(pg, two_c
     with pytest.raises(DC.DecisionRefused) as refused:
         duplicates.confirm_resolve(pg, pair_id, decision=duplicates.DUPLICATE,
                                    canonical_event_id=keep, token=old, reviewer="tester")
-    assert refused.value.code == DC.STALE_PREVIEW
+    # v0.96.52: what refuses the old merge token now is the recomputed preview
+    # itself - the pair no longer carries same-event evidence.
+    assert refused.value.code == DC.DECISION_REFUSED
     assert _verdict_id(pg, case["b"]["event_id"]) is None
+    # v0.96.52: an insufficient pair offers no merge at all - the preview
+    # issues no token - and Different events is answered through the signed
+    # preview, whose basis stays mandatory.
     fresh = duplicates.preview_resolve(pg, pair_id, decision=duplicates.DUPLICATE,
                                        canonical_event_id=keep, reviewer="tester")
-    assert fresh["token"] and fresh["reasons"] == []
+    assert fresh["token"] is None
+    assert fresh["reasons"] == [duplicates.REASON_INSUFFICIENT_SAME_EVENT_EVIDENCE]
+    separate = duplicates.preview_resolve(pg, pair_id, decision=duplicates.DISTINCT,
+                                          reviewer="tester")
+    assert separate["token"] and separate["reasons"] == []
     with pytest.raises(DC.DecisionRefused) as refused:     # the basis stays mandatory
-        duplicates.confirm_resolve(pg, pair_id, decision=duplicates.DUPLICATE,
-                                   canonical_event_id=keep, token=fresh["token"],
-                                   reviewer="someone else")
+        duplicates.confirm_resolve(pg, pair_id, decision=duplicates.DISTINCT,
+                                   token=separate["token"], reviewer="someone else")
     assert refused.value.code == DC.INVALID_PREVIEW_TOKEN
 
 

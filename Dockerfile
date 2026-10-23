@@ -67,5 +67,13 @@ USER dancemate
 
 EXPOSE 8080
 
+# v0.96.52: the commit this image was built from, so a backup taken while it
+# runs can say which code wrote the data (scripts/backup.sh reads the label
+# off the running container). deploy-production.sh passes the checkout's
+# HEAD; a build without it says "unknown", never a guess. Last, so a new
+# commit does not rebuild the layers above.
+ARG DANCEMATE_COMMIT=unknown
+LABEL org.opencontainers.image.revision=$DANCEMATE_COMMIT
+
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "runtime"]

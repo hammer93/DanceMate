@@ -114,10 +114,16 @@ log "=== backup ==="
 # --- build guard: the running stack is never touched before this succeeds ----
 log ""
 log "=== build ==="
+# v0.96.52: the image carries the commit it was built from (Dockerfile LABEL),
+# so a later backup can name the code that wrote its snapshot.
+DANCEMATE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+export DANCEMATE_COMMIT
 compose build || die "image build failed - the currently running stack is untouched"
 BUILT_ID="$(docker image inspect --format '{{.Id}}' "$EXPECTED_IMAGE" 2>/dev/null || true)"
 [[ -n "$BUILT_ID" ]] || die "build guard failed: $EXPECTED_IMAGE does not exist after 'compose build' - check the image tag in $COMPOSE_FILE against .env's DANCEMATE_VERSION"
-log "built: $EXPECTED_IMAGE ($BUILT_ID)"
+BUILT_COMMIT="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$EXPECTED_IMAGE" 2>/dev/null || true)"
+[[ "$BUILT_COMMIT" == "$DANCEMATE_COMMIT" ]] || die "build guard failed: $EXPECTED_IMAGE says revision '${BUILT_COMMIT:-none}', the checkout is $DANCEMATE_COMMIT - the currently running stack is untouched"
+log "built: $EXPECTED_IMAGE ($BUILT_ID, revision $BUILT_COMMIT)"
 
 # --- controlled recreate -------------------------------------------------------
 log ""

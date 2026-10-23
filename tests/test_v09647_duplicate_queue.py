@@ -37,7 +37,10 @@ DAY = date(2026, 11, 7)
 # --- assess_pair, in memory ---------------------------------------------------------
 
 def _ev(event_id, **kw):
-    row = {"event_id": event_id, "event_date": DAY, "event_name": f"Night {event_id}",
+    # v0.96.52: one night's name from two independent sources (source_id per
+    # event) - the positive evidence a merge now needs (`merge_evidence`).
+    row = {"event_id": event_id, "event_date": DAY, "event_name": "Milonga Luz",
+           "source_id": event_id,
            "start_time": "20:00", "venue_id": 7, "venue_text": "Hall", "region_id": 1,
            "identity_key": f"k{event_id}", "series_key": None, "event_type": "MILONGA",
            "canonical_event_id": None, "duplicate_decided_by": None, "listing_state": "LISTED",

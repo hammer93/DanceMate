@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.51"
+PRODUCT_VERSION = "0.96.52"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -498,6 +498,15 @@ PRODUCT_VERSION = "0.96.51"
 # would also drop the " 10/25"-style suffix from the surviving party rows'
 # names, and whether that keeps their Event ids has not been shown - so the
 # upgrade stays deferred until those decisions are taken and that is.
+#
+# v0.96.52 showed it, on a disposable copy of Production (19:01 KST, 4,873
+# items): a full re-extract plus normalization keeps 18 Events in place (the
+# time corrections), removes exactly the six DATA-01 rows, and re-creates 99
+# Events under new ids - every Event of a multi-date post is re-keyed, the
+# four party rows and all five KOREA SPECIAL TANGO WEEK rows among them (20
+# of the 99 are today or later). The same run at 1.16 changes nothing. So a
+# bump would also break public links and the duplicate pair on those rows:
+# it stays at 1.16 until re-extraction keeps a multi-date post's Event ids.
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

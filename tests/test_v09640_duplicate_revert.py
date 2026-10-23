@@ -84,7 +84,17 @@ def _verdict_id(pg, event_id: int) -> int:
 
 @pytest.fixture
 def two_clocks(pg, store, run_normalization, unique, venue):
-    """Same night, same resolved venue, 20:00 and 21:00: the rules ask a person."""
+    """Same night, same resolved venue, 20:00 and 21:00: the rules ask a person.
+
+    v0.96.52: a merge is offered only on positive evidence, so the second post
+    comes from a second, independent source naming the same night - what
+    `duplicates.merge_evidence` accepts (one name, one venue, two sources,
+    starts within the hour). The decision-contract tests built on this pair
+    need an answerable merge; whether a merge is answerable at all is
+    tests/test_v09652_evidence_readiness.py's subject.
+    """
+    from runtime import sources
+
     day = _day(6)
     ids = [store.add(_id(unique, 10), name=f"Social A {unique}", day=day, start="20:00",
                      venue=venue["name"]),
@@ -93,6 +103,13 @@ def two_clocks(pg, store, run_normalization, unique, venue):
     run_normalization()
     duplicates.scan(pg, on=day)
     a, b = _event(pg, ids[0]), _event(pg, ids[1])
+    other = sources.create_source(pg, source_key=f"SRC-V09652-{unique}",
+                                  name=f"v0.96.52 second source {unique}", platform="WEB",
+                                  source_role="AGGREGATOR", url="https://example.test/second",
+                                  enabled=False)
+    with pg.cursor() as cur:
+        cur.execute("UPDATE source_items SET source_id = %s WHERE source_item_id = %s",
+                    (other["source_id"], b["source_item_id"]))
     pair = _pair_of(pg, a["event_id"], b["event_id"])
     assert pair["rule"] == duplicates.RULE_VENUE_TIME_DIFFERS and pair["state"] == "OPEN"
     return {"day": day, "ids": ids, "a": a, "b": b, "pair": pair}

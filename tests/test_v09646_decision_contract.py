@@ -435,8 +435,10 @@ def test_a_preview_goes_stale_when_what_it_rests_on_changes(pg, two_clocks):
                                           reviewer="tester")
 
     token = merge_preview()["token"]
-    with pg.cursor() as cur:      # the source re-extracted: the other event's start moved
-        cur.execute("UPDATE events SET start_time = '21:30' WHERE event_id = %s",
+    # The source re-extracted: the other event's start moved (within the hour,
+    # so the merge stays evidenced - v0.96.52 - and what refuses is the token).
+    with pg.cursor() as cur:
+        cur.execute("UPDATE events SET start_time = '20:30' WHERE event_id = %s",
                     (case["b"]["event_id"],))
     with pytest.raises(DC.DecisionRefused) as refused:
         duplicates.confirm_resolve(pg, pair_id, decision=duplicates.DUPLICATE,
@@ -594,7 +596,9 @@ def committed(pg):
     made = {"events": [], "pairs": [], "candidates": []}
     with db.connect(settings, autocommit=True) as con:
         with con.cursor() as cur:
-            for offset, start in ((0, "20:00"), (1, "21:00")):
+            # v0.96.52: one night's name and one stated start - the positive
+            # evidence a merge needs (`duplicates.merge_evidence`).
+            for offset, start in ((0, "20:00"), (1, "20:00")):
                 candidate = 9_460_000_000 + (clock.time_ns() % 1_000_000) * 10 + offset
                 cur.execute(
                     "INSERT INTO events (candidate_id, event_name, event_date, start_time, "

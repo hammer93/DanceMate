@@ -244,7 +244,9 @@ def test_ops_alerts_needs_only_the_standard_library():
                if isinstance(node, ast.Import) for alias in node.names}
     modules |= {node.module.split(".")[0] for node in ast.walk(tree)
                 if isinstance(node, ast.ImportFrom) and node.module}
-    assert modules <= {"__future__", "argparse", "json", "os", "sys", "datetime", "typing"}
+    # v0.96.52: urllib (standard library) posts to the optional webhook.
+    assert modules <= {"__future__", "argparse", "json", "os", "sys", "datetime", "typing",
+                       "urllib"}
 
 
 MONITOR_SH = (REPO / "scripts" / "ops-monitor.sh").read_text(encoding="utf-8")

@@ -82,7 +82,9 @@ if FREE_PCT="$(df -P "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 { gsub("%","",$5); p
 fi
 
 cd "$REPO_ROOT"
-python3 -m runtime.ops_alerts \
+# v0.96.52: an external channel, if one is configured in .env - handed over in
+# the environment only (never on the command line, never logged).
+OPS_ALERT_WEBHOOK_URL="$(env_value OPS_ALERT_WEBHOOK_URL || true)" python3 -m runtime.ops_alerts \
   --state "$STATE" --log "$ALERTS" \
   --status-file "$WORK/status.json" --sources-file "$WORK/sources.json" --db-file "$WORK/db.json" \
   --runtime-running "$RUNNING" --scheduler-count "$SCHEDULERS" "${FREE_ARGS[@]}"

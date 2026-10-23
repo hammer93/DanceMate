@@ -196,23 +196,44 @@ fi
 # --- manifest ---------------------------------------------------------------
 RUNTIME_VERSION="$(compose exec -T runtime cat /app/VERSION 2>/dev/null | tr -d '\r\n' || true)"
 MIGRATION_HEAD="$(pg_run psql -U "$PG_USER" -d "$PG_DB" -At -c 'SELECT max(version) FROM schema_migrations' 2>/dev/null | tr -d '\r\n' || true)"
-# The checkout can already be at the NEW release when deploy-production.sh
-# takes its pre-deploy backup. The running image is still the OLD release.
-# Derive the commit from the annotated release tag matching that image, not
-# from checkout HEAD or the freshly patched .env/VERSION.
-RUNTIME_COMMIT=""
-if [[ -n "$RUNTIME_VERSION" ]]; then
-  RUNTIME_COMMIT="$(git -C "$REPO_ROOT" rev-list -n1 "v$RUNTIME_VERSION" 2>/dev/null || true)"
+# v0.96.52: which commit wrote this snapshot. The checkout can already be at
+# the NEW release when deploy-production.sh takes its pre-deploy backup, and
+# the running image is still the OLD one - so the checkout's HEAD is only the
+# *candidate*. The running commit is the running container's image label
+# (set at build time by deploy-production.sh), else the release tag of the
+# running version (images built before v0.96.52 carry no label), else
+# UNKNOWN. Until v0.96.52 a same-version redeploy before its tag fell back to
+# HEAD and labelled the pre-deploy backup with the commit being deployed.
+RUNTIME_CONTAINER="$(compose ps -q runtime 2>/dev/null | head -n 1 || true)"
+IMAGE_LABEL=""
+if [[ -n "$RUNTIME_CONTAINER" ]]; then
+  IMAGE_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$RUNTIME_CONTAINER" 2>/dev/null | tr -d '\r\n' || true)"
 fi
-if [[ "$RUNTIME_VERSION" == "$(cat "$REPO_ROOT/VERSION")" ]]; then
-  HEAD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
-  [[ -n "$RUNTIME_COMMIT" ]] || RUNTIME_COMMIT="$HEAD_COMMIT"
+TAG_COMMIT=""
+[[ -n "$RUNTIME_VERSION" ]] \
+  && TAG_COMMIT="$(git -C "$REPO_ROOT" rev-list -n1 "v$RUNTIME_VERSION" 2>/dev/null || true)"
+CHECKOUT_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+RUNNING_COMMIT=UNKNOWN RUNNING_COMMIT_SOURCE=unknown CANDIDATE_COMMIT=UNKNOWN
+CANDIDATE_VERSION=UNKNOWN SNAPSHOT_TIME_KST=UNKNOWN
+if PROVENANCE="$(cd "$REPO_ROOT" && python3 -m runtime.backup_provenance \
+      --label "$IMAGE_LABEL" --running-version "$RUNTIME_VERSION" --tag-commit "$TAG_COMMIT" \
+      --head "$CHECKOUT_HEAD" --checkout-version "$(cat "$REPO_ROOT/VERSION" 2>/dev/null)" 2>/dev/null)"; then
+  while IFS='=' read -r key value; do
+    case "$key" in
+      RUNNING_COMMIT|RUNNING_COMMIT_SOURCE|CANDIDATE_COMMIT|CANDIDATE_VERSION|SNAPSHOT_TIME_KST)
+        [[ "$value" =~ ^[0-9A-Za-z.:+-]+$ ]] && printf -v "$key" '%s' "$value" ;;
+    esac
+  done <<<"$PROVENANCE"
+else
+  warn "backup provenance helper unavailable (python3) - commits recorded as UNKNOWN"
 fi
-if [[ -z "$RUNTIME_VERSION" || -z "$RUNTIME_COMMIT" || -z "$MIGRATION_HEAD" ]]; then
-  warn "backup metadata incomplete: runtime=$RUNTIME_VERSION commit=$RUNTIME_COMMIT migration=$MIGRATION_HEAD"
+if [[ -z "$RUNTIME_VERSION" || -z "$MIGRATION_HEAD" ]]; then
+  warn "backup metadata incomplete: runtime=$RUNTIME_VERSION migration=$MIGRATION_HEAD"
   warn "refusing a manifest that could mislabel the actual snapshot"
   exit 1
 fi
+[[ "$RUNNING_COMMIT" != UNKNOWN ]] \
+  || warn "the running commit cannot be established (no image label, no v$RUNTIME_VERSION tag) - recorded as UNKNOWN"
 file_size() { [[ -f "$1" ]] && stat -c '%s' "$1" || echo 0; }
 file_sha() { [[ -f "$1" ]] && sha256sum "$1" | cut -d' ' -f1 || echo ""; }
 cat > "$TARGET/manifest.json" <<JSON
@@ -220,7 +241,11 @@ cat > "$TARGET/manifest.json" <<JSON
   "name": "$NAME",
   "created_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "product_runtime_version": "$RUNTIME_VERSION",
-  "product_commit": "$RUNTIME_COMMIT",
+  "product_commit": "$RUNNING_COMMIT",
+  "running_commit_source": "$RUNNING_COMMIT_SOURCE",
+  "candidate_commit": "$CANDIDATE_COMMIT",
+  "candidate_version": "$CANDIDATE_VERSION",
+  "snapshot_time_kst": "$SNAPSHOT_TIME_KST",
   "migration_head": "$MIGRATION_HEAD",
   "postgres": {"database": "$PG_DB", "status": "$PG_STATUS", "file": "postgres.dump",
                "bytes": $(file_size "$TARGET/postgres.dump"), "sha256": "$(file_sha "$TARGET/postgres.dump")"},

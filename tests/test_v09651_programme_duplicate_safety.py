@@ -91,7 +91,12 @@ def test_a_lesson_and_a_milonga_read_out_of_one_post_are_a_persons_question():
     item = _assess(left, right)
     assert item["programme_identity"] == duplicates.IDENTITY_INSUFFICIENT
     assert item["merge_readiness"] == duplicates.EVIDENCE_INSUFFICIENT
-    assert item["available"] == ["MERGE:10", "MERGE:20", "KEEP_SEPARATE"]
+    # v0.96.52: not refused as two programmes, and not offered as one event
+    # either - nothing says they are one; the person answers Different events
+    # or the sources are reviewed first.
+    assert item["available"] == ["KEEP_SEPARATE"]
+    assert item["readiness"] == duplicates.READINESS_NEEDS_EVIDENCE
+    assert _merge_reasons(item) == {duplicates.REASON_INSUFFICIENT_SAME_EVENT_EVIDENCE}
 
 
 def test_one_milonga_posted_by_two_independent_sources_stays_mergeable():
@@ -104,25 +109,43 @@ def test_one_milonga_posted_by_two_independent_sources_stays_mergeable():
     assert item["available"] == ["MERGE:10", "MERGE:20", "KEEP_SEPARATE"]
 
 
-def test_two_sources_unrelated_names_need_more_evidence_but_are_not_refused():
+def test_two_sources_unrelated_names_need_more_evidence_and_offer_no_merge():
     """Production #510733: Tango Calendar's Milonga Hiro 19:00 and Miltang's
     Alonga 14:00 at Andante - nothing but the room and the day in common, and
-    no single source saying they are two."""
+    no single source saying they are two. v0.96.51 left the merge open
+    ("needs more evidence"); v0.96.52 does not offer what nothing supports."""
     left = _ev(10, event_name="Milonga Hiro", start_time="19:00", source_id=3)
     right = _ev(20, event_name="Alonga", start_time="14:00", source_id=5)
     item = _assess(left, right)
     assert item["programme_identity"] == duplicates.IDENTITY_INSUFFICIENT
     assert item["merge_readiness"] == duplicates.EVIDENCE_INSUFFICIENT
-    assert "MERGE:10" in item["available"]
+    assert item["readiness"] == duplicates.READINESS_NEEDS_EVIDENCE
+    assert item["available"] == ["KEEP_SEPARATE"]
+    assert item["next_action"] == duplicates.NEXT_REVIEW_SOURCE_EVIDENCE
 
 
 def test_one_directory_relisting_one_night_stays_mergeable():
-    """Production #557905: the same 평일 낮쁘락 listed twice by Miltang."""
+    """Production #557905: the same 평일 낮쁘락 listed twice by Miltang at one
+    stated start - one night's name and one clock (v0.96.52)."""
+    left = _ev(10, event_name="평일 낮쁘락", start_time="15:00", venue_id=None,
+               venue_text="Tango Pasion")
+    right = _ev(20, event_name="평일 낮쁘락", start_time="15:00", venue_id=None,
+                venue_text="Tango Pasion")
+    item = _assess(left, right, _pair(rule=duplicates.RULE_UNRESOLVED_VENUE_TIME))
+    assert item["programme_identity"] == duplicates.IDENTITY_POSSIBLY_SAME
+    assert item["readiness"] == duplicates.READINESS_MERGE_READY
+    assert "MERGE:10" in item["available"]
+
+
+def test_one_directory_listing_one_name_at_two_starts_needs_evidence():
+    """The same name from one directory at 15:00 and 16:00: possibly a
+    relisting, possibly two sessions - the source has to say which."""
     left = _ev(10, event_name="평일 낮쁘락", start_time="15:00")
     right = _ev(20, event_name="평일 낮쁘락", start_time="16:00")
     item = _assess(left, right)
     assert item["programme_identity"] == duplicates.IDENTITY_POSSIBLY_SAME
-    assert "MERGE:10" in item["available"]
+    assert item["readiness"] == duplicates.READINESS_NEEDS_EVIDENCE
+    assert item["available"] == ["KEEP_SEPARATE"]
 
 
 def test_a_community_board_is_not_a_listing_source():
@@ -133,7 +156,11 @@ def test_a_community_board_is_not_a_listing_source():
                 source_platform="DAUM_CAFE", source_role="COMMUNITY")
     assert duplicates.programme_identity(left, right)["identity"] == \
         duplicates.IDENTITY_INSUFFICIENT
-    assert "MERGE:10" in _assess(left, right)["available"]
+    item = _assess(left, right)
+    # Never refused as two programmes (a board is no listing source) - and,
+    # with nothing saying the two are one, not offered as one (v0.96.52).
+    assert duplicates.REASON_EXPLICIT_DISTINCT_PROGRAMMES not in _merge_reasons(item)
+    assert item["readiness"] == duplicates.READINESS_NEEDS_EVIDENCE
 
 
 @pytest.mark.parametrize("left_name,right_name", [

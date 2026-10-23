@@ -18,6 +18,15 @@ recovery is said once. ``/health`` is never read: it is liveness and stays
 Delivery is the alert log (JSON lines) and the journal. No external channel
 is configured, and none is assumed: ``delivery`` reports
 ``PENDING_CONFIGURATION`` until one is.
+
+v0.96.52: one external channel can be configured - a webhook (HTTPS POST of
+a JSON body, the shape Slack, Discord, Mattermost and ntfy-style relays
+accept), its URL in ``OPS_ALERT_WEBHOOK_URL`` in ``.env`` and nowhere else
+(never logged, never passed on a command line). Every notice records what
+happened to it: ``NOT_CONFIGURED`` (no channel), ``DELIVERED``, or
+``DELIVERY_FAILED`` - a failed notice stays queued in the state and is
+retried on the next run, so the log says both that something was detected
+and whether anyone outside the board was told.
 """
 
 from __future__ import annotations
@@ -48,6 +57,16 @@ JOB_FAILURE_STREAK = 3
 SOURCE_FAILURE_STREAK = 2
 
 DELIVERY_PENDING = "PENDING_CONFIGURATION"
+DELIVERY_CONFIGURED = "CONFIGURED"
+DELIVERY_INVALID = "INVALID_CONFIGURATION"
+#: What happened to one notice.
+NOT_CONFIGURED = "NOT_CONFIGURED"
+DELIVERED = "DELIVERED"
+DELIVERY_FAILED = "DELIVERY_FAILED"
+WEBHOOK_ENV = "OPS_ALERT_WEBHOOK_URL"
+#: Undelivered notices kept for the next run; older ones are dropped (and
+#: stay in the log, marked DELIVERY_FAILED).
+UNDELIVERED_LIMIT = 50
 
 
 def _component(status: dict[str, Any] | None, name: str) -> str | None:
@@ -159,9 +178,74 @@ def evaluate(facts: dict[str, Any], state: dict[str, Any], now: datetime
     return notices, {"alerts": nxt, "checked_at_kst": stamp}
 
 
+def webhook_url(environ: dict[str, str] | None = None) -> str | None:
+    """The configured webhook, if it is one this module will post to: HTTPS,
+    or plain HTTP to this machine only (a local relay, or a test)."""
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    value = ((environ if environ is not None else os.environ).get(WEBHOOK_ENV) or "").strip()
+    if not value:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme == "https" and parts.hostname:
+        return value
+    if parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1"):
+        return value
+    return None
+
+
 def delivery_status(environ: dict[str, str] | None = None) -> str:
-    """No external channel exists yet; the log and the journal are delivery."""
-    return DELIVERY_PENDING
+    """PENDING_CONFIGURATION until a channel is set; INVALID_CONFIGURATION for
+    a value this module refuses (not HTTPS); CONFIGURED otherwise."""
+    env = environ if environ is not None else os.environ
+    if not (env.get(WEBHOOK_ENV) or "").strip():
+        return DELIVERY_PENDING
+    return DELIVERY_CONFIGURED if webhook_url(env) else DELIVERY_INVALID
+
+
+def _post(url: str, body: bytes, timeout: float = 10.0) -> None:
+    import urllib.request  # noqa: PLC0415
+
+    request = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "dancemate-ops-monitor"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        if not 200 <= response.status < 300:
+            raise OSError(f"HTTP {response.status}")
+
+
+def notice_text(notice: dict[str, Any]) -> str:
+    return (f"[DanceMate {notice['kind']} {notice['severity']}] {notice['key']}: "
+            f"{notice['message']} (since {notice.get('since_kst') or '-'}, "
+            f"at {notice['at_kst']})")
+
+
+def deliver(notices: list[dict[str, Any]], url: str | None,
+            post=_post) -> list[str]:
+    """Each notice's delivery outcome, in order. Never raises."""
+    if not url:
+        return [NOT_CONFIGURED for _ in notices]
+    outcomes = []
+    for notice in notices:
+        body = json.dumps({"text": notice_text(notice), "notice": notice},
+                          ensure_ascii=False).encode("utf-8")
+        try:
+            post(url, body)
+            outcomes.append(DELIVERED)
+        except Exception:  # noqa: BLE001 - recorded, retried next run
+            outcomes.append(DELIVERY_FAILED)
+    return outcomes
+
+
+def pending_conditions(facts: dict[str, Any], state: dict[str, Any]) -> list[str]:
+    """Conditions that hold but have not yet reached their threshold."""
+    current = conditions(facts)
+    alerts = (state or {}).get("alerts") or {}
+    return sorted(f"{key} ({alerts.get(key, {}).get('consecutive', 0)}/{cond['threshold']})"
+                  for key, cond in current.items() if not alerts.get(key, {}).get("open"))
 
 
 # --- the host command ---------------------------------------------------------------
@@ -204,17 +288,34 @@ def main(argv: list[str] | None = None) -> int:
         "scheduler_count": args.scheduler_count,
         "disk_free_pct": args.disk_free_pct,
     }
-    notices, state = evaluate(facts, _load(args.state) or {}, datetime.now(timezone.utc))
+    previous = _load(args.state) or {}
+    notices, state = evaluate(facts, previous, datetime.now(timezone.utc))
+    # v0.96.52: what happened to each notice outside the board. Notices that
+    # failed last time go first; the URL itself is never written anywhere.
+    url = webhook_url()
+    retry = [n for n in (previous.get("undelivered") or []) if isinstance(n, dict)] if url else []
+    outcomes = deliver(retry + notices, url)
+    retried, fresh = outcomes[:len(retry)], outcomes[len(retry):]
+    state["undelivered"] = ([n for n, o in zip(retry + notices, outcomes)
+                             if o == DELIVERY_FAILED][-UNDELIVERED_LIMIT:])
     with open(args.log, "a", encoding="utf-8") as handle:
-        for notice in notices:
-            handle.write(json.dumps(notice, ensure_ascii=False) + "\n")
+        for notice, outcome in zip(retry, retried):
+            handle.write(json.dumps({"at_kst": state["checked_at_kst"], "kind": "DELIVERY_RETRY",
+                                     "key": notice.get("key"), "of": notice.get("at_kst"),
+                                     "delivery": outcome}, ensure_ascii=False) + "\n")
+        for notice, outcome in zip(notices, fresh):
+            handle.write(json.dumps(dict(notice, delivery=outcome), ensure_ascii=False) + "\n")
     _write_atomic(args.state, state)
-    for notice in notices:
-        print(f"{notice['kind']} {notice['severity']} {notice['key']}: {notice['message']}")
+    for notice, outcome in zip(notices, fresh):
+        print(f"{notice['kind']} {notice['severity']} {notice['key']}: {notice['message']}"
+              f" [delivery {outcome}]")
     open_alerts = sorted(k for k, v in state["alerts"].items() if v.get("open"))
+    pending = pending_conditions(facts, state)
     print(f"ops-monitor: {len(open_alerts)} open alert(s)"
           + (f" ({', '.join(open_alerts)})" if open_alerts else "")
-          + f"; external delivery {delivery_status()}")
+          + (f"; pending {', '.join(pending)}" if pending else "")
+          + f"; external delivery {delivery_status()}"
+          + (f"; {len(state['undelivered'])} undelivered" if state["undelivered"] else ""))
     current = conditions(facts)
     return 1 if any(current[k]["severity"] == CRITICAL for k in open_alerts) else 0
 

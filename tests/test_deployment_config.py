@@ -29,6 +29,7 @@ OPERATIONS_SCRIPTS = [
     "board-git.sh",
     "setup-board-operator.sh",
     "ops-monitor.sh",
+    "offhost-backup.sh",
 ]
 
 

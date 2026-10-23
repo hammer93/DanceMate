@@ -704,6 +704,8 @@ REASON_GROUP_CHAIN = "GROUP_CHAIN"
 REASON_KEEP_NOT_IN_PAIR = "KEEP_NOT_IN_PAIR"
 REASON_PLACE_CONFLICT = "PLACE_CONFLICT"
 REASON_EXPLICIT_DISTINCT_PROGRAMMES = "EXPLICIT_DISTINCT_PROGRAMMES"
+# v0.96.52: not a contradiction - nothing positively says the two are one.
+REASON_INSUFFICIENT_SAME_EVENT_EVIDENCE = "INSUFFICIENT_SAME_EVENT_EVIDENCE"
 # Not refusals: what the rules say about the pair's events as they read now.
 REASON_NO_CURRENT_MATCH = "NO_CURRENT_MATCH"
 REASON_RULES_WOULD_MERGE = "RULES_WOULD_MERGE"
@@ -773,6 +775,11 @@ def _half_day_apart(left: str, right: str) -> bool:
     return abs(minutes[0] - minutes[1]) == 12 * 60
 
 
+def _minutes_apart(left: str, right: str) -> int:
+    minutes = [int(c[:2]) * 60 + int(c[3:5]) for c in (left, right)]
+    return abs(minutes[0] - minutes[1])
+
+
 def _single_listing(event: dict[str, Any]) -> bool:
     """A post of a listing source that yielded exactly this one event."""
     return (event.get("source_item_id") is not None
@@ -815,6 +822,146 @@ def programme_identity(left: dict[str, Any], right: dict[str, Any]) -> dict[str,
     return {"identity": IDENTITY_INSUFFICIENT,
             "evidence": ["only the place and the date are shared"
                          + ("" if None not in clocks else "; a start time is not stated")]}
+
+
+# --- what positively says two events are one (v0.96.52) ----------------------------
+#
+# v0.96.51 refused a merge only on evidence *against* it, so a pair with
+# nothing against it stayed mergeable: 52 of Production's 69 pairs offering
+# "Same event" shared only the room and the date - a directory's 토이프밀롱가
+# beside another directory's 고고밀롱가, DanceInfo's weekly schedule beside one
+# of that week's parties. No evidence against a merge is not evidence for one.
+# A merge is now offered only when the events' own records say they are one
+# night; everything else stays a question for the sources, never a click.
+
+READINESS_MERGE_READY = "MERGE_READY"
+READINESS_NEEDS_EVIDENCE = "MERGE_NEEDS_EVIDENCE"
+READINESS_BLOCKED = "MERGE_BLOCKED"
+READINESS_RESOLVED = "ALREADY_RESOLVED"
+READINESS_STALE = "STALE_OR_SUPERSEDED"
+READINESS_STATES = (READINESS_MERGE_READY, READINESS_NEEDS_EVIDENCE, READINESS_BLOCKED,
+                    READINESS_RESOLVED, READINESS_STALE)
+NEXT_REVIEW_SOURCE_EVIDENCE = "REVIEW_SOURCE_EVIDENCE"
+
+STRENGTH_STRONG = "STRONG"
+STRENGTH_MODERATE = "MODERATE"
+STRENGTH_WEAK = "WEAK"
+STRENGTH_NONE = "NONE"
+
+
+def _name_tokens(name: str | None) -> set[str]:
+    """The words of a name that say which night, not what kind of night."""
+    return ({w for w in _NAME_WORD_RE.findall(_name_core(name)) if len(w) >= 2}
+            - _GENERIC_NAME_WORDS)
+
+
+def names_match(left: str | None, right: str | None) -> bool:
+    """Whether two names name one night - not merely might (v0.96.52).
+
+    Stricter than `_names_related`, which only rules a difference out: here
+    every distinctive word of the shorter name has to be in the longer one
+    (`Milonga Julie` / `Andante | Milonga Julie`, `KOREA SPECIAL TANGO WEEK
+    2026` / `... 2026 (포항)`, `오초 밀롱가` / `오초밀롱가`). One shared word is
+    not enough - `추석 피날레 소셜파티` and `추석 연휴 워크샵` share 추석 - and
+    a name of nothing but the kind of night (`밀롱가`, `Salsa Party`) or no
+    name at all names no night.
+    """
+    words_a, words_b = _name_tokens(left), _name_tokens(right)
+    if not words_a or not words_b:
+        return False
+    fewer, more = sorted((words_a, words_b), key=len)
+    if fewer <= more:
+        return True
+    compact_a = "".join(_NAME_WORD_RE.findall(_name_core(left)))
+    compact_b = "".join(_NAME_WORD_RE.findall(_name_core(right)))
+    shorter, longer = sorted((compact_a, compact_b), key=len)
+    short_words = words_a if shorter == compact_a else words_b
+    return shorter in longer and all(word in longer for word in short_words)
+
+
+def merge_evidence(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """What positively says these two events are one. Pure.
+
+    ``{"ready", "strength", "facts", "missing"}``. ``ready`` is one of:
+
+    * the rules merge them on their own (same date, resolved venue, clock);
+    * one night's name and one stated start;
+    * one night's name at one resolved venue from two independent sources,
+      their stated starts (if both are stated) at most an hour apart;
+    * two festivals of one name from two independent sources, starting the
+      same day, without two different stated last days.
+
+    A field nobody stated is never evidence: an unknown start or an
+    unresolved venue string agrees with nothing. Two stated starts that
+    differ (other than one clock read twice, 12 hours apart) and two
+    resolved venues that differ are never ready. Contradictions themselves
+    (dates, regions, festival and night, a source's own two programmes) are
+    `resolve_blockers`' refusals; this only says whether there is a reason
+    to call the two one.
+    """
+    current = classify(left, right)
+    names = names_match(left.get("event_name"), right.get("event_name"))
+    clocks = (_clock(left), _clock(right))
+    clock_same = None not in clocks and clocks[0] == clocks[1]
+    clock_differs = (None not in clocks and clocks[0] != clocks[1]
+                     and not _half_day_apart(*clocks))
+    # Two sources often give one night's doors and its first tanda: within an
+    # hour is one start for the cross-source rule only (cabeceo 17:00 / 22:00
+    # is not).
+    clock_close = clock_same or (None not in clocks and _minutes_apart(*clocks) <= 60)
+    venues = (left.get("venue_id"), right.get("venue_id"))
+    place_same = None not in venues and venues[0] == venues[1]
+    place_conflict = None not in venues and venues[0] != venues[1]
+    sources = (left.get("source_id"), right.get("source_id"))
+    independent = None not in sources and sources[0] != sources[1]
+    festivals = _is_festival(left) and _is_festival(right)
+    ends = (left.get("end_date"), right.get("end_date"))
+    end_conflict = None not in ends and ends[0] != ends[1]
+
+    facts: list[str] = []
+    if names:
+        facts.append("the names name one night")
+    if clock_same:
+        facts.append(f"same stated start {clocks[0]}")
+    if place_same:
+        facts.append("same resolved venue")
+    if independent:
+        facts.append("two independent sources")
+    if left.get("series_key") and left.get("series_key") == right.get("series_key"):
+        facts.append("same series")
+    missing: list[str] = []
+    if current is not None and current["auto"]:
+        ready, why = True, "the rules merge these on their own"
+    elif place_conflict:
+        ready, why = False, "two different resolved venues"
+    elif names and clock_same:
+        ready, why = True, "one night's name and one stated start"
+    elif festivals and names and independent and not end_conflict:
+        ready, why = True, "one festival's name from two independent sources, same first day"
+    elif names and place_same and independent and (None in clocks or clock_close):
+        ready, why = True, "one night's name at one venue from two independent sources"
+    else:
+        ready, why = False, None
+    if not ready:
+        if not names:
+            missing.append("no name that names one night")
+        if clock_differs:
+            missing.append(f"stated starts differ ({clocks[0]} / {clocks[1]})")
+        elif not clock_same and not (place_same and independent):
+            missing.append("no shared stated start" if None not in clocks
+                           else "a start time is not stated")
+        if place_conflict:
+            missing.append("two different resolved venues")
+        if end_conflict:
+            missing.append("stated last days differ")
+    if why:
+        facts.insert(0, why)
+    if ready:
+        strength = (STRENGTH_STRONG if independent or (names and clock_same and place_same)
+                    else STRENGTH_MODERATE)
+    else:
+        strength = STRENGTH_WEAK if (names or clock_same or place_same) else STRENGTH_NONE
+    return {"ready": ready, "strength": strength, "facts": facts, "missing": missing}
 
 
 def resolve_blockers(pair: dict[str, Any], members: dict[int, dict[str, Any]], *,
@@ -900,6 +1047,16 @@ def resolve_blockers(pair: dict[str, Any], members: dict[int, dict[str, Any]], *
                              "no rule pairs these events any more and their posts name "
                              "different places - resolve the venue first if they are one "
                              "place"))
+        # v0.96.52: nothing against a merge is not a reason for one. Without
+        # positive same-event evidence (`merge_evidence`) the merge is not
+        # offered and not confirmed; Different events stays a person's answer.
+        if not refusals and not merge_evidence(left, right)["ready"]:
+            refusals.append((REASON_INSUFFICIENT_SAME_EVENT_EVIDENCE,
+                             "nothing in the two records positively says they are one event "
+                             "(a name naming one night with one start, or one venue from two "
+                             "independent sources) - review the source evidence "
+                             f"({NEXT_REVIEW_SOURCE_EVIDENCE}); Different events stays "
+                             "available"))
     if not refusals and decision == DUPLICATE:
         if canonical_event_id is None:
             canonical_event_id = _canonical_of(*members.values())[0]["event_id"]
@@ -1803,16 +1960,34 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
     merge_reasons = {r for a in answers if a["decision"] == DUPLICATE for r in a["reasons"]}
     identity = (programme_identity(*(members[i] for i in member_ids))
                 if len(members) == 2 else None)
+    evidence = (merge_evidence(*(members[i] for i in member_ids))
+                if len(members) == 2 else None)
     readiness = None
     if status in (QUEUE_ACTIONABLE, QUEUE_STALE, QUEUE_BLOCKED):
-        # v0.96.51: a rule pairing two programmes of one room is support only
-        # when something about the two says they may be one night - a shared
-        # name, clock or series. Place and date alone need more evidence.
+        # v0.96.52: support is positive evidence that the two are one
+        # (`merge_evidence`) - v0.96.51 also counted a shared word or series
+        # as support, which let 추석 alone stand for one party.
         readiness = (EVIDENCE_CONTRADICTS if merge_reasons & _CONTRADICTIONS
-                     else EVIDENCE_SUPPORTS if current is not None and (
-                         current["auto"] or identity is None
-                         or identity["identity"] != IDENTITY_INSUFFICIENT)
+                     else EVIDENCE_SUPPORTS if current is not None and evidence is not None
+                     and evidence["ready"]
                      else EVIDENCE_INSUFFICIENT)
+    merge_open = any(a["available"] for a in answers if a["decision"] == DUPLICATE)
+    if status in (QUEUE_PERSON, QUEUE_RULES):
+        state_of_merge = READINESS_RESOLVED
+    elif status in (QUEUE_SUPERSEDED, QUEUE_INVALID):
+        state_of_merge = READINESS_STALE
+    elif merge_reasons & _CONTRADICTIONS:
+        # A contradiction outranks staleness: a festival and its night are
+        # never paired by a rule (so the pair is STALE), and never one event.
+        state_of_merge = READINESS_BLOCKED
+    elif status == QUEUE_STALE:
+        state_of_merge = READINESS_STALE
+    elif merge_open:
+        state_of_merge = READINESS_MERGE_READY
+    elif merge_reasons <= {REASON_INSUFFICIENT_SAME_EVENT_EVIDENCE}:
+        state_of_merge = READINESS_NEEDS_EVIDENCE
+    else:
+        state_of_merge = READINESS_BLOCKED
     timings = {i: event_timing(m, rows, today) if today else TIME_UNKNOWN
                for i, m in members.items()}
     reasons = sorted(set(refused) | ({primary} if primary else set()))
@@ -1828,6 +2003,13 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
         "merge_readiness": readiness, "stale_causes": causes,
         "programme_identity": identity["identity"] if identity else None,
         "programme_evidence": identity["evidence"] if identity else [],
+        "readiness": state_of_merge,
+        "evidence_ready": bool(evidence and evidence["ready"]),
+        "evidence_strength": evidence["strength"] if evidence else STRENGTH_NONE,
+        "merge_evidence": evidence["facts"] if evidence else [],
+        "evidence_missing": evidence["missing"] if evidence else [],
+        "next_action": (NEXT_REVIEW_SOURCE_EVIDENCE
+                        if state_of_merge == READINESS_NEEDS_EVIDENCE else None),
         "current_rule": current["rule"] if current else None,
         "status": status, "primary_reason": primary, "reasons": reasons,
         "guidance": QUEUE_GUIDANCE[status], "notes": notes,
@@ -1998,7 +2180,25 @@ def queue_integrity(con, assessed: list[dict[str, Any]], *,
             1 for a in actionable if any(m["canonical_event_id"] is not None
                                          for m in a["members"])),
         "UNSAFE_STALE_MERGE_READY": sum(1 for a in assessed if _unsafe_merge_ready(a)),
+        # v0.96.52: what a "Same event" answer may never stand on.
+        "INSUFFICIENT_EVIDENCE_MARKED_MERGE_READY": sum(
+            1 for a in assessed if (_offers_merge(a) or a["readiness"] == READINESS_MERGE_READY)
+            and not a["evidence_ready"]),
+        "EXPLICIT_DISTINCT_PROGRAMME_MERGE": sum(
+            1 for a in assessed if _offers_merge(a)
+            and a["programme_identity"] == IDENTITY_DIFFERENT_PROGRAMME),
+        "FALSE_FESTIVAL_PROGRAMME_MERGE": sum(
+            1 for a in assessed if _offers_merge(a) and len(a["members"]) == 2
+            and _is_festival(a["members"][0]) != _is_festival(a["members"][1])),
+        "FALSE_CROSS_REGION_MERGE": sum(
+            1 for a in assessed if _offers_merge(a) and len(a["members"]) == 2
+            and None not in (a["members"][0]["region_id"], a["members"][1]["region_id"])
+            and a["members"][0]["region_id"] != a["members"][1]["region_id"]),
     }
+
+
+def _offers_merge(item: dict[str, Any]) -> bool:
+    return any(x.startswith(MERGE_VERDICT) for x in item["available"])
 
 
 def queue_counts(assessed: list[dict[str, Any]]) -> dict[str, int]:

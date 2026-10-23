@@ -1,5 +1,106 @@
 # DanceMate Release Notes
 
+## v0.96.52 Release Candidate Hardening & Evidence-based Duplicate Review
+
+Product Runtime 0.96.52. Information Engine 1.16 (unchanged; see below),
+normalization 3 (unchanged), migration 051 (no new migration).
+
+### A merge needs positive evidence (DUP-03)
+
+v0.96.51 refused a merge only on evidence *against* it, so a pair with
+nothing against it stayed mergeable. On Production (2026-10-23 19:01 KST),
+62 of the 69 pairs offering "Same event" had no positive reason:
+
+* two directories' different milongas in one room on one date (52 pairs,
+  e.g. 토이프밀롱가 / 고고밀롱가);
+* DanceInfo's weekly schedule beside one of that week's parties;
+* names sharing only 추석.
+
+The rule now:
+
+* `duplicates.merge_evidence()` says what positively makes two events one.
+  It is ready only when one of these holds:
+  * the rules merge the pair themselves;
+  * one night's name (`names_match`: every distinctive word of the shorter
+    name is in the other) plus one stated start;
+  * one night's name at one resolved venue from two independent sources,
+    with starts at most an hour apart;
+  * two festivals of one name from two independent sources, on the same
+    first day, with no conflicting last day.
+* An unstated start or an unresolved venue string is never evidence.
+  Neither are two different resolved venues.
+* `resolve_blockers()` refuses the merge without evidence, with
+  `INSUFFICIENT_SAME_EVENT_EVIDENCE`. The queue, preview and confirm all use
+  it, so they agree. Different events stays a person's answer, and no
+  KEEP_SEPARATE is ever automatic.
+* Each pair reports `readiness`: MERGE_READY, MERGE_NEEDS_EVIDENCE (next
+  action REVIEW_SOURCE_EVIDENCE), MERGE_BLOCKED, ALREADY_RESOLVED or
+  STALE_OR_SUPERSEDED. It also reports `evidence_strength` (STRONG,
+  MODERATE, WEAK or NONE) and what is present and what is missing.
+* New queue gates, each 0 on Production:
+  INSUFFICIENT_EVIDENCE_MARKED_MERGE_READY, EXPLICIT_DISTINCT_PROGRAMME_MERGE,
+  FALSE_FESTIVAL_PROGRAMME_MERGE and FALSE_CROSS_REGION_MERGE.
+
+Result on the same snapshot, with statuses unchanged (152 / 28 / 38 / 8):
+
+| ACTIONABLE readiness | count |
+|---|---|
+| MERGE_READY | 7 |
+| MERGE_NEEDS_EVIDENCE | 69 |
+| MERGE_BLOCKED | 76 |
+
+* Merge offered: 69 → 7. The 7 are 715215 (KSTW), 7014, 320489, 320783,
+  557904, 557905 and 805256.
+* Tests whose fixtures had no positive evidence were given some, so the
+  security, concurrency and revert tests still exercise a real merge.
+* Tests that pinned the old "insufficient but answerable" contract now
+  assert the new one.
+
+### Backup provenance
+
+* The image carries `org.opencontainers.image.revision`. `deploy-production.sh`
+  builds with the checkout's HEAD and refuses an image whose label differs.
+* `backup.sh` records the *running* commit as `product_commit`. It comes from
+  the image label, else from the running version's tag, else it is
+  `UNKNOWN`, and it is never HEAD. The checkout is recorded only as
+  `candidate_commit` / `candidate_version`, alongside `running_commit_source`
+  and `snapshot_time_kst`.
+* `runtime/backup_provenance.py` holds the rule (stdlib only, tested).
+* Fixes v0.96.51's mislabelled pre-deploy backup, where a same-version
+  redeploy before its tag was labelled with the deployed commit.
+
+### External alerts and off-host copy: configurable, not configured
+
+* `ops_alerts` can post each notice to an HTTPS webhook
+  (`OPS_ALERT_WEBHOOK_URL`). Each notice records `delivery`:
+  NOT_CONFIGURED, DELIVERED or DELIVERY_FAILED. A failure is retried on the
+  next run, and the URL is never logged.
+* `scripts/offhost-backup.sh` encrypts the newest backup to a public key,
+  rsyncs it to another host and verifies it by checksum. A local destination
+  is refused.
+* Neither has a channel or destination on the board, so both stay
+  PENDING_CONFIGURATION.
+
+### Why ENGINE_VERSION stays 1.16
+
+* Method: a disposable copy of the 19:01 snapshot, run through the official
+  re-extract route to an empty backlog, then normalization to convergence.
+* Engine bump:
+  * 18 Events are corrected in place;
+  * exactly the six DATA-01 rows are removed;
+  * **99 Events are re-created under new ids**. Every Event of a multi-date
+    post is re-keyed, including the 10/25 party rows and all five KOREA
+    SPECIAL TANGO WEEK rows. 20 of the 99 are today or later.
+* The same run at 1.16 changes nothing.
+* The upgrade waits for the DATA-01 decisions and for re-extraction that
+  keeps a multi-date post's Event ids.
+
+### Operator decisions (none taken by this release)
+
+* DATA-01: REJECT candidates 5028, 5027, 5025, 4934, 4935 and 4937.
+* DATA-02: EDIT candidate 5228 (1629719, Sat 10/24) to start 19:30, end blank.
+* DATA-03: DUPLICATE 5026 and 4255 into 5024 (the 10/25 graduation party).
+
 ## v0.96.51 Programme-aware Duplicate Safety & Launch Operations
 
 Product Runtime 0.96.51; Information Engine 1.16 (unchanged, see below);
