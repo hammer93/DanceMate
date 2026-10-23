@@ -15,7 +15,7 @@ output contract:
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Callable
 
 from . import backup_state, db, engine_adapter, resources
 from .config import Settings
@@ -73,15 +73,31 @@ def information_component(settings: Settings) -> dict[str, Any]:
     return engine_adapter.inspect(settings)
 
 
+def _probe(name: str, measure: Callable[[Settings], dict[str, Any]],
+           settings: Settings) -> dict[str, Any]:
+    """One component's measurement; a probe that raises is that component's
+    FAIL, never the whole report's. v0.96.51 recovery: the backup probe's
+    PermissionError escaped this call and /status answered HTTP 500, so the
+    database, scheduler and information state could not be read either."""
+    try:
+        return measure(settings)
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        return {
+            "status": "FAIL",
+            "reason": "PROBE_ERROR",
+            "detail": f"the {name} probe raised {type(exc).__name__}",
+        }
+
+
 def collect(settings: Settings) -> dict[str, Any]:
     """Full status payload. Individual probes never raise out of this call."""
     return {
-        "runtime": runtime_component(settings),
-        "database": db.ping(settings),
-        "scheduler": scheduler_component(settings),
-        "information": information_component(settings),
-        "storage": resources.storage_status(settings),
-        "backup": backup_state.status(settings),
+        "runtime": _probe("runtime", runtime_component, settings),
+        "database": _probe("database", db.ping, settings),
+        "scheduler": _probe("scheduler", scheduler_component, settings),
+        "information": _probe("information", information_component, settings),
+        "storage": _probe("storage", resources.storage_status, settings),
+        "backup": _probe("backup", backup_state.status, settings),
     }
 
 

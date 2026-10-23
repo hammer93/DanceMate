@@ -130,6 +130,51 @@ Packets are in /opt/dancemate/audit/v0.96.51:
   1628667, August).
 * DATA-02: EDIT candidate 5228 (1629719, 10/24): start 19:30, end blank.
 
+### Recovery: backup access and an isolated Backup status
+
+v0.96.51 shipped in two commits. This is a disclosed exception to the
+one-commit release rule. The first commit, `feat:` 1c012c3, was pushed and
+deployed. Its deploy failed the health gate, and the release stayed
+untagged. The second commit, `fix:`, repairs only that failure. Nothing in
+1c012c3 was amended or rewritten.
+
+What failed:
+
+* The new `umask 077` made the deploy gate's backup 0700 / 0600.
+* The runtime reads the backup bind mount as uid 10001, which is "other" to
+  `hammer`. Its `Path.is_file()` on `postgres.dump` raised `PermissionError`.
+* That exception escaped `health.collect()`. `/status` and `/status/summary`
+  answered HTTP 500 for about 4 minutes, and the Database, Scheduler and
+  Information state could not be read either.
+* It was mitigated by restoring the old modes on that one backup.
+* It was reproduced in a disposable copy on the board: the original code
+  gave 500, and the fixed code gave a structured FAIL.
+
+The fix:
+
+* `scripts/backup.sh` keeps `umask 077` as the default and sets each mode
+  explicitly. The dumps stay 0600, so the runtime never reads their
+  contents. This is tighter than the 0664 of every earlier backup. The
+  backup directory is 0711 and `manifest.json` is 0644.
+* `backup.sh` writes to `.inprogress-<name>`. It reads the result back from
+  inside the runtime container, as the runtime's own user. Only then does it
+  rename it into the naming contract. A backup the runtime cannot read is a
+  failed backup (`failed-*`, exit 1, no pruning). A run killed before its
+  trap leaves `.inprogress-*`, and the next run keeps it as `failed-*`.
+* `backup_state.inspect()` returns a reason code with every non-PASS: a
+  part that is missing or empty, a manifest size mismatch, a manifest that
+  is unreadable or records a failed part, or a stale backup. It reads
+  metadata only. Every `OSError` becomes Backup FAIL
+  `BACKUP_PERMISSION_DENIED` or `BACKUP_UNREADABLE`, never an exception.
+* `/status` lists a backup being written as `in_progress`. It is never the
+  latest.
+* `health.collect()` measures each component separately. A probe that
+  raises is that component's FAIL (`PROBE_ERROR`), and the report stays
+  structured.
+* A FAIL still answers 503. check-server and the deploy health gate still
+  fail on any FAIL line, so removing the 500 cannot turn a broken backup
+  into a pass.
+
 ## v0.96.50 Public Launch Blocker Resolution & Release Candidate
 
 Product Runtime 0.96.50; Information Engine 1.16 (unchanged on purpose, see

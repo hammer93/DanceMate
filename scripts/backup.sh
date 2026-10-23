@@ -34,8 +34,23 @@ set -euo pipefail
 #     for each other instead of interleaving.
 #   * Too little free space (BACKUP_MIN_FREE_MB, default 1024) fails before
 #     anything is written.
-#   * Files are created 0600 / directories 0700 (umask 077); the manifest
-#     records each file's size and SHA-256.
+#   * The manifest records each file's size and SHA-256.
+#
+# v0.96.51 recovery (who may read a backup):
+#   The runtime container reads this directory through its bind mount as uid
+#   10001 - "other" to the backup owner - to answer /status. v0.96.51 first
+#   shipped with every backup 0700/0600 (umask 077), the runtime could not
+#   stat a part, /status answered HTTP 500 and the deploy's health gate
+#   failed. The runtime never needs a dump's *contents*, only its size and
+#   the manifest, so the modes are now set explicitly instead of left to a
+#   umask: the dumps stay 0600 (private to the backup owner - tighter than
+#   the 0664 every backup before v0.96.51 had), the backup directory is 0711
+#   (enter, not list) and manifest.json is 0644. The root stays listable
+#   (0755: names only). Before a backup is renamed into the naming contract
+#   it is read through the runtime container itself - the identity /status
+#   uses - and a backup the runtime cannot read is a failed backup.
+#   A backup is written as `.inprogress-<name>` and renamed when complete, so
+#   the backup being written is never the latest one /status looks at.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
@@ -72,9 +87,20 @@ MIN_FREE_MB="$(env_value BACKUP_MIN_FREE_MB || true)"
 MIN_FREE_MB="${MIN_FREE_MB:-1024}"
 [[ "$MIN_FREE_MB" =~ ^[0-9]+$ ]] || die "BACKUP_MIN_FREE_MB must be a number of megabytes"
 
-mkdir -p "$BACKUP_DIR"
+if [[ ! -d "$BACKUP_DIR" ]]; then
+  mkdir -p "$BACKUP_DIR"
+  chmod 0755 "$BACKUP_DIR"     # the runtime lists backup names; contents stay private
+fi
 exec 8>"$BACKUP_DIR/.backup.lock"
 flock -w 900 8 || die "another backup has held $BACKUP_DIR/.backup.lock for 15 minutes - refusing to run alongside it"
+
+# Holding the lock, any `.inprogress-*` left here is from a run that was
+# killed before its EXIT trap could run: it is not a backup, it is evidence.
+for stale in "$BACKUP_DIR"/.inprogress-dancemate-backup-*; do
+  [[ -d "$stale" ]] || continue
+  mv -- "$stale" "$BACKUP_DIR/failed-${stale##*/.inprogress-}" 2>/dev/null \
+    && warn "an interrupted backup was left behind - kept as failed-${stale##*/.inprogress-}" || true
+done
 
 FREE_MB="$(df -Pm "$BACKUP_DIR" | awk 'NR==2 { print $4 }')"
 if [[ -z "$FREE_MB" || "$FREE_MB" -lt "$MIN_FREE_MB" ]]; then
@@ -83,7 +109,8 @@ fi
 
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 NAME="dancemate-backup-$STAMP"
-TARGET="$BACKUP_DIR/$NAME"
+FINAL="$BACKUP_DIR/$NAME"
+TARGET="$BACKUP_DIR/.inprogress-$NAME"
 mkdir -p "$TARGET"
 
 # Anything that ends this script before the backup is complete and verified
@@ -208,6 +235,45 @@ if [[ "$PG_STATUS" != ok || "$ENGINE_STATUS" != ok ]]; then
   warn "retention skipped: no older backup is pruned after a failed one"
   exit 1
 fi
+
+# --- access: what /status needs, and no more --------------------------------
+chmod 0600 "$TARGET/postgres.dump" "$TARGET/engine.sqlite3"
+chmod 0644 "$TARGET/manifest.json"
+chmod 0711 "$TARGET"
+# Read it back as the runtime reads it: inside the runtime container, as its
+# own user, through its own mount. This is the check v0.96.51's first deploy
+# lacked - a /tmp run on the host cannot see what uid 10001 sees.
+ACCESS="$(compose exec -T runtime python - "${TARGET##*/}" 2>&1 <<'PY' | tr -d '\r' | tail -n 1 || true
+import json
+import os
+import sys
+from pathlib import Path
+
+backup = Path(os.environ.get("DANCEMATE_BACKUP_DIR", "/var/backups/dancemate")) / sys.argv[1]
+try:
+    for name in ("postgres.dump", "engine.sqlite3"):
+        if backup.joinpath(name).stat().st_size == 0:
+            raise SystemExit(f"empty {name}")
+    manifest = json.loads(backup.joinpath("manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("complete") is not True:
+        raise SystemExit("manifest not complete")
+except OSError as exc:
+    raise SystemExit(f"{type(exc).__name__} on {Path(exc.filename or '?').name}")
+private = not os.access(backup / "postgres.dump", os.R_OK)
+print(f"ok uid={os.getuid()} dump_private={private}")
+PY
+)"
+if [[ "$ACCESS" != ok* ]]; then
+  warn "the runtime container cannot read this backup as /status will (${ACCESS:-no answer})"
+  warn "retention skipped: a backup the runtime cannot see would make /status FAIL"
+  exit 1
+fi
+log "  runtime access: $ACCESS"
+[[ "$ACCESS" == *dump_private=True* ]] \
+  || warn "the runtime container can read postgres.dump itself - the dumps should be private to $(id -un)"
+
+mv -- "$TARGET" "$FINAL"
+TARGET="$FINAL"
 COMPLETE=1
 
 # --- retention --------------------------------------------------------------

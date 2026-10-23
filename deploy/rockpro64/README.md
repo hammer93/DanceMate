@@ -269,6 +269,28 @@ running as `hammer`, neither of them the collection scheduler:
   `failed-dancemate-backup-*`, so it is never counted, never the latest, and
   never a reason to prune. `BACKUP_MIN_FREE_MB` (default 1024) refuses to
   start on a full disk.
+- Who may read a backup (v0.96.51 recovery). The runtime container reads
+  `/opt/dancemate/backup/runtime` through its bind mount as uid 10001, which
+  is "other" to `hammer`. It needs only metadata, so `backup.sh` sets the
+  modes explicitly:
+
+  | path | mode | the runtime can |
+  |---|---|---|
+  | `backup/runtime/` | 0755 | list backup names |
+  | `dancemate-backup-*/` | 0711 | enter, not list |
+  | `postgres.dump`, `engine.sqlite3` | 0600 | stat the size, never read |
+  | `manifest.json` | 0644 | read (names, sizes, SHA-256; no secrets) |
+
+  On the host, `/opt/dancemate` and `/opt/dancemate/backup` stay 0750
+  `hammer`. Before a backup is renamed into the naming contract,
+  `backup.sh` reads it back from inside the runtime container. If the
+  runtime cannot read it, the backup is failed. A backup is written as
+  `.inprogress-<name>`, so `/status` never looks at a half-written one.
+  Backups made before v0.96.51 (0775/0664) still read as valid.
+  - If `/status` reports Backup FAIL with `reason`
+    `BACKUP_PERMISSION_DENIED`, fix the mode of that one backup (as
+    `hammer`, to the table above) or take a new backup.
+  - Never use `chmod -R`, and never make the dumps world-readable.
 - `dancemate-ops-monitor.timer`: `scripts/ops-monitor.sh` every 5 minutes. It
   checks readiness from `/status` (never `/health`, which stays 200 with the
   database down), the scheduler container count, `/health/sources`, job
