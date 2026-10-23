@@ -1139,7 +1139,9 @@ _TIME_VIEWS = (
 )
 _READINESS_LABEL = {
     duplicates.EVIDENCE_SUPPORTS: ("a rule pairs them now", "ok"),
-    duplicates.EVIDENCE_INSUFFICIENT: ("no rule pairs them - evidence insufficient", "warn"),
+    # v0.96.51: also a rule pairing two programmes of one room on place and
+    # date alone - a question, not support.
+    duplicates.EVIDENCE_INSUFFICIENT: ("evidence insufficient - needs more evidence", "warn"),
     duplicates.EVIDENCE_CONTRADICTS: ("their evidence contradicts a merge", "bad"),
 }
 _QUEUE_TONE = {
@@ -1160,7 +1162,7 @@ def _answer_buttons(item: dict[str, Any]) -> str:
                 item.get("merge_readiness") == duplicates.EVIDENCE_INSUFFICIENT):
             # A token can still be had; what is missing is a reason to think so.
             buttons.append(f'<button name="action" value="keep_{answer["keep"]}">'
-                           f'Same event (no rule pairs them), keep #{answer["keep"]}</button>')
+                           f'Same event (needs more evidence), keep #{answer["keep"]}</button>')
         elif answer["decision"] == duplicates.DUPLICATE:
             buttons.append(f'<button class="primary" name="action" value="keep_{answer["keep"]}">'
                            f'Same event, keep #{answer["keep"]}</button>')
@@ -1358,7 +1360,10 @@ def admin_duplicate_pair(pair_id: int, request: Request,
         f'<p>시점 {E(item["timing"])} ('
         + ", ".join(f"#{k} {E(v)}" for k, v in sorted(item["member_timings"].items()))
         + f') &middot; 병합 근거 {_readiness(item)}</p>'
-        f"<p>다음 단계: {_queue_next(item)}</p>"
+        + (f'<p>프로그램 판단 {E(item["programme_identity"])} &middot; '
+           f'{E("; ".join(item["programme_evidence"]))}</p>'
+           if item.get("programme_identity") else "")
+        + f"<p>다음 단계: {_queue_next(item)}</p>"
         + "".join(f'<p class="note">{E(n)}</p>' for n in item["notes"])
         + (f'<p><a href="/admin/evidence-review/conflict-{item["event_id"]}-'
            f'{item["other_event_id"]}">Evidence review case</a></p>' if evidence else ""))
@@ -1664,7 +1669,8 @@ def api_duplicate_queue(request: Request, _: str = Depends(require_admin)) -> JS
     keys = ("pair_id", "event_id", "other_event_id", "event_date", "rule", "current_rule",
             "state", "resolved_by", "status", "primary_reason", "reasons", "guidance",
             "roots", "successor_pair_id", "successor_state", "available", "timing",
-            "member_timings", "merge_readiness", "stale_causes", "priority")
+            "member_timings", "merge_readiness", "stale_causes", "priority",
+            "programme_identity", "programme_evidence")
     return admin._dump({
         "counts": duplicates.queue_counts(assessed),
         "timing_counts": duplicates.timing_counts(assessed),

@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.50"
+PRODUCT_VERSION = "0.96.51"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -490,6 +490,14 @@ PRODUCT_VERSION = "0.96.50"
 # is the one thing that decision exists to prevent. New and revised posts
 # are read with the new rules; the stored rows stay as they are until a
 # person acts or a later release bumps this and re-reads them.
+#
+# v0.96.51 does not touch the engine and leaves this at 1.16 again. The same
+# replay over all 4,865 stored items moves the same 22 posts, now known to
+# carry six deadline rows rather than three (네오스윙 140기 in August as well
+# as 141기 in October), all six waiting on a person's Review decision. A bump
+# would also drop the " 10/25"-style suffix from the surviving party rows'
+# names, and whether that keeps their Event ids has not been shown - so the
+# upgrade stays deferred until those decisions are taken and that is.
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

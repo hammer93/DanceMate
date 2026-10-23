@@ -20,6 +20,22 @@ set -euo pipefail
 #
 # Retention keeps the newest N backups (BACKUP_RETENTION, default 7).
 # Exit status is non-zero if either component of the backup failed.
+#
+# v0.96.51 (scheduled backups - deploy/rockpro64/systemd/dancemate-backup.timer):
+#   * A failed or unverified backup no longer looks like a backup. Until now a
+#     failed pg_dump still left a `postgres.dump` (empty or partial) under a
+#     `dancemate-backup-*` name, which /status counted as complete and which
+#     retention counted as one of the N kept - so failures could prune the
+#     last good backups. Now each part is verified (pg_restore --list, sqlite
+#     integrity_check, non-empty), and a backup that is not complete is
+#     renamed `failed-dancemate-backup-*`: outside the naming contract, never
+#     the latest, never counted, and retention does not run after it.
+#   * One backup at a time (flock): the timer and a deploy's backup gate wait
+#     for each other instead of interleaving.
+#   * Too little free space (BACKUP_MIN_FREE_MB, default 1024) fails before
+#     anything is written.
+#   * Files are created 0600 / directories 0700 (umask 077); the manifest
+#     records each file's size and SHA-256.
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
@@ -38,6 +54,7 @@ fi
 require_docker
 require_env_file
 require_compose_file
+umask 077
 
 BACKUP_DIR="$(env_value DANCEMATE_BACKUP_DIR || true)"
 BACKUP_DIR="${BACKUP_DIR:-$REPO_ROOT/backup}"
@@ -51,10 +68,34 @@ PG_DB="$(env_value POSTGRES_DB || echo dancemate)"
 PG_USER="$(env_value POSTGRES_USER || echo dancemate)"
 ENGINE_DB_FILENAME="dancemate_ie_poc_v0.73.sqlite3"
 
+MIN_FREE_MB="$(env_value BACKUP_MIN_FREE_MB || true)"
+MIN_FREE_MB="${MIN_FREE_MB:-1024}"
+[[ "$MIN_FREE_MB" =~ ^[0-9]+$ ]] || die "BACKUP_MIN_FREE_MB must be a number of megabytes"
+
+mkdir -p "$BACKUP_DIR"
+exec 8>"$BACKUP_DIR/.backup.lock"
+flock -w 900 8 || die "another backup has held $BACKUP_DIR/.backup.lock for 15 minutes - refusing to run alongside it"
+
+FREE_MB="$(df -Pm "$BACKUP_DIR" | awk 'NR==2 { print $4 }')"
+if [[ -z "$FREE_MB" || "$FREE_MB" -lt "$MIN_FREE_MB" ]]; then
+  die "only ${FREE_MB:-?} MB free under $BACKUP_DIR (BACKUP_MIN_FREE_MB=$MIN_FREE_MB) - no backup written, nothing pruned"
+fi
+
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 NAME="dancemate-backup-$STAMP"
 TARGET="$BACKUP_DIR/$NAME"
 mkdir -p "$TARGET"
+
+# Anything that ends this script before the backup is complete and verified
+# moves it out of the naming contract, so nothing ever counts it as a backup.
+COMPLETE=0
+mark_failed() {
+  if (( ! COMPLETE )) && [[ -d "$TARGET" ]]; then
+    mv -- "$TARGET" "$BACKUP_DIR/failed-$NAME" 2>/dev/null || true
+    warn "backup NOT complete - kept for inspection as $BACKUP_DIR/failed-$NAME (not a backup)"
+  fi
+}
+trap mark_failed EXIT
 
 log "DanceMate backup -> $TARGET"
 
@@ -64,6 +105,14 @@ if pg_run pg_dump -U "$PG_USER" -d "$PG_DB" --format=custom \
      > "$TARGET/postgres.dump" 2>"$TARGET/postgres.err"; then
   rm -f "$TARGET/postgres.err"
   PG_STATUS=ok
+  # The archive must read back: its table of contents lists every object.
+  if [[ ! -s "$TARGET/postgres.dump" ]] \
+     || ! pg_run pg_restore --list < "$TARGET/postgres.dump" > /dev/null 2>"$TARGET/postgres.err"; then
+    PG_STATUS=failed
+    warn "pg_dump wrote an archive that does not read back; see $TARGET/postgres.err"
+  else
+    rm -f "$TARGET/postgres.err"
+  fi
 else
   PG_STATUS=failed
   warn "pg_dump failed; see $TARGET/postgres.err"
@@ -98,6 +147,19 @@ PY
 then
   rm -f "$TARGET/engine.err"
   ENGINE_STATUS=ok
+  INTEGRITY="$(compose exec -T runtime python -c '
+import sqlite3, sys, tempfile
+with tempfile.NamedTemporaryFile(suffix=".sqlite3") as handle:
+    handle.write(sys.stdin.buffer.read())
+    handle.flush()
+    con = sqlite3.connect(handle.name)
+    print(con.execute("PRAGMA integrity_check").fetchone()[0])
+    con.close()
+' < "$TARGET/engine.sqlite3" 2>/dev/null | tr -d '\r' | tail -n 1 || true)"
+  if [[ ! -s "$TARGET/engine.sqlite3" || "$INTEGRITY" != "ok" ]]; then
+    ENGINE_STATUS=failed
+    warn "engine sqlite copy failed its integrity check (${INTEGRITY:-no answer})"
+  fi
 else
   ENGINE_STATUS=failed
   warn "engine sqlite backup failed; see $TARGET/engine.err"
@@ -124,6 +186,8 @@ if [[ -z "$RUNTIME_VERSION" || -z "$RUNTIME_COMMIT" || -z "$MIGRATION_HEAD" ]]; 
   warn "refusing a manifest that could mislabel the actual snapshot"
   exit 1
 fi
+file_size() { [[ -f "$1" ]] && stat -c '%s' "$1" || echo 0; }
+file_sha() { [[ -f "$1" ]] && sha256sum "$1" | cut -d' ' -f1 || echo ""; }
 cat > "$TARGET/manifest.json" <<JSON
 {
   "name": "$NAME",
@@ -131,14 +195,20 @@ cat > "$TARGET/manifest.json" <<JSON
   "product_runtime_version": "$RUNTIME_VERSION",
   "product_commit": "$RUNTIME_COMMIT",
   "migration_head": "$MIGRATION_HEAD",
-  "postgres": {"database": "$PG_DB", "status": "$PG_STATUS", "file": "postgres.dump"},
-  "engine_sqlite": {"filename": "$ENGINE_DB_FILENAME", "status": "$ENGINE_STATUS", "file": "engine.sqlite3"}
+  "postgres": {"database": "$PG_DB", "status": "$PG_STATUS", "file": "postgres.dump",
+               "bytes": $(file_size "$TARGET/postgres.dump"), "sha256": "$(file_sha "$TARGET/postgres.dump")"},
+  "engine_sqlite": {"filename": "$ENGINE_DB_FILENAME", "status": "$ENGINE_STATUS", "file": "engine.sqlite3",
+                    "bytes": $(file_size "$TARGET/engine.sqlite3"), "sha256": "$(file_sha "$TARGET/engine.sqlite3")"},
+  "complete": $([[ "$PG_STATUS" == ok && "$ENGINE_STATUS" == ok ]] && echo true || echo false)
 }
 JSON
 
 if [[ "$PG_STATUS" != ok || "$ENGINE_STATUS" != ok ]]; then
   warn "backup is INCOMPLETE: postgres=$PG_STATUS engine=$ENGINE_STATUS"
+  warn "retention skipped: no older backup is pruned after a failed one"
+  exit 1
 fi
+COMPLETE=1
 
 # --- retention --------------------------------------------------------------
 #
@@ -164,7 +234,14 @@ if (( ${#ALL[@]} > RETENTION )); then
   done
 fi
 
+# Failed attempts are evidence for a while, not forever: the newest 5 stay.
+mapfile -t FAILED < <(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'failed-dancemate-backup-*' -printf '%f\n' | sort -r)
+if (( ${#FAILED[@]} > 5 )); then
+  for old in "${FAILED[@]:5}"; do
+    rm -rf -- "${BACKUP_DIR:?}/$old" 2>/dev/null || warn "could not remove failed attempt $old"
+  done
+fi
+
 log ""
 log "backup complete: $TARGET"
 log "retained: $(find "$BACKUP_DIR" -maxdepth 1 -type d -name 'dancemate-backup-*' | wc -l) of max $RETENTION"
-[[ "$PG_STATUS" == ok && "$ENGINE_STATUS" == ok ]]

@@ -6,6 +6,7 @@ the Python health check can never disagree about what a backup looks like.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -90,6 +91,41 @@ def foreign_owned(owners: "dict[str, str]", owner: str) -> list[str]:
                   if name.startswith(BACKUP_PREFIX + "-") and who != owner)
 
 
+def incomplete_reason(path: Path) -> str | None:
+    """Why this backup is not one, or None when both parts are present and
+    non-empty and - when the backup wrote a manifest - both recorded ok there
+    (v0.96.51).
+
+    A file merely existing was the old test: a failed pg_dump still leaves a
+    `postgres.dump` behind, empty or cut short, and the manifest beside it
+    said `"status": "failed"` while /status said PASS. A manifest that cannot
+    be read is not evidence of success.
+    """
+    for name in (POSTGRES_DUMP, ENGINE_SQLITE):
+        part = path / name
+        if not part.is_file():
+            return f"is missing {name}"
+        if part.stat().st_size == 0:
+            return f"has an empty {name}"
+    manifest = path / MANIFEST
+    if not manifest.exists():
+        return None                      # older backups wrote none
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return f"has an unreadable {MANIFEST}"
+    for part, name in (("postgres", POSTGRES_DUMP), ("engine_sqlite", ENGINE_SQLITE)):
+        if str((data.get(part) or {}).get("status", "")).lower() != "ok":
+            return f"records {name} as failed in its {MANIFEST}"
+    if data.get("complete") is False:
+        return f"is recorded incomplete in its {MANIFEST}"
+    return None
+
+
+def is_complete(path: Path) -> bool:
+    return incomplete_reason(path) is None
+
+
 def status(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     entries = list_backups(settings.backup_dir)
@@ -102,13 +138,11 @@ def status(settings: Settings, *, now: datetime | None = None) -> dict[str, Any]
         }
     latest = entries[0]
     age = now - latest.created_at
-    complete = (latest.path / POSTGRES_DUMP).is_file() and (
-        latest.path / ENGINE_SQLITE
-    ).is_file()
+    problem = incomplete_reason(latest.path)
     stale = age > timedelta(hours=settings.backup_max_age_hours)
-    if not complete:
+    if problem:
         state = "FAIL"
-        detail = f"{latest.name} is missing {POSTGRES_DUMP} or {ENGINE_SQLITE}"
+        detail = f"{latest.name} {problem}"
     elif stale:
         state = "WARN"
         detail = f"latest backup is {int(age.total_seconds() // 3600)}h old"

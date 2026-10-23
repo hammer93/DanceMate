@@ -28,6 +28,7 @@ OPERATIONS_SCRIPTS = [
     "deploy-production.sh",
     "board-git.sh",
     "setup-board-operator.sh",
+    "ops-monitor.sh",
 ]
 
 

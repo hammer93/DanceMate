@@ -1,5 +1,135 @@
 # DanceMate Release Notes
 
+## v0.96.51 Programme-aware Duplicate Safety & Launch Operations
+
+Product Runtime 0.96.51; Information Engine 1.16 (unchanged, see below);
+normalization 3 (unchanged); migration 051 (no new migration).
+
+### Two programmes of one room are not offered as one event
+
+On 2026-10-23, 145 of Production's 152 answerable duplicate pairs were the
+rules' "same venue, same date, different start time" question
+(`SAME_DATE_VENUE_TIME_DIFFERS`), and the Duplicates page offered "Same
+event" on every one. Most were two listings from one directory: Miltang
+publishes 로까밀롱가 20:00 and 토이프밀롱가 14:00 at Ocho as two entries, and
+one click would have folded a milonga into a practica.
+
+`duplicates.programme_identity()` reads what the two events and their posts
+state, never a similarity score:
+
+* `SAME_VENUE_DIFFERENT_PROGRAMME`: the **same** listing source (a WEB
+  aggregator or directory: TangoNOW, Miltang, Tango Calendar, DanceInfo)
+  publishes the two as separate listings, each yielding exactly one event,
+  under names that share nothing beyond the kind of night ("밀롱가",
+  "practica", "party" …). Both starts are stated and differ, and not by
+  exactly 12 hours, because 09:00 and 21:00 may be one "9시" read twice. This
+  is the only finding that refuses a merge (`EXPLICIT_DISTINCT_PROGRAMMES`,
+  inside the shared `resolve_blockers()`), so the queue, the pair page, the
+  signed preview and the confirm all refuse it alike. "Different events"
+  stays a person's answer; nothing is answered automatically.
+* `FESTIVAL_PARENT_AND_PROGRAMME`: unchanged; still refused
+  (`FESTIVAL_PROGRAMME`).
+* `POSSIBLY_SAME_EVENT`: the names may be one night's (one contains the
+  other, or they share a real word), or the start or series is the same. The
+  merge stays available, with support.
+* `INSUFFICIENT_EVIDENCE`: only the place and the date are shared (for
+  example two sources' unrelated names). The merge stays available, but
+  `merge_readiness` is now `EVIDENCE_INSUFFICIENT` ("needs more evidence")
+  instead of support, and its button says so.
+
+One post read as several programmes (a lesson and a milonga), a community
+board's two posts, and one directory re-listing the same night are never
+refused: whether those are one event is the post's to say and a person's to
+answer.
+
+Production, read-only with the new code (2026-10-23, 226 pairs, none
+answered):
+
+| | before | after |
+|---|---|---|
+| ACTIONABLE pairs offering MERGE (all / not past) | 133 / 38 | 69 / 9 |
+| ACTIONABLE pairs whose MERGE is refused as explicit distinct programmes | 0 | 76 (64 of them offered MERGE before) |
+| STALE pairs offering MERGE | 1 | 0 |
+| ACTIONABLE readiness SUPPORTS / INSUFFICIENT / CONTRADICTS | 152 / 0 / 0 | 17 / 59 / 76 |
+
+Still offered, as possibly the same night: 715215, 639520, 639521, 557905,
+805256 among them. Queue statuses, counts and integrity gates are unchanged
+(152 / 28 / 38 / 8, all gates 0). Nineteen ACTIONABLE pairs already offered
+only "Different events" (`GROUP_CHAIN`). No pair, decision, Event or
+canonical row is written by this.
+
+### Scheduled backups that cannot pass for good ones
+
+* `scripts/backup.sh` verifies each part: `pg_restore --list` on the dump,
+  SQLite `integrity_check` on the engine copy, and both non-empty. It records
+  sizes and SHA-256 in the manifest.
+  * Before: a failed pg_dump still left an empty `postgres.dump` under a
+    `dancemate-backup-*` name. Reproduced on the board's copy: 0 bytes.
+    `/status` counted it complete because the file existed, and retention
+    counted it as one of the N kept.
+  * Now an incomplete backup is renamed `failed-dancemate-backup-*`. It is
+    outside the naming contract and never the latest, retention does not run
+    after it, and the script exits 1.
+  * One backup runs at a time (`flock`, shared with the deploy gate), with no
+    start under `BACKUP_MIN_FREE_MB` (default 1024) and a umask of 077.
+* `backup_state.incomplete_reason()`: `/status` Backup FAILs on a missing or
+  empty part, or on a manifest recording a part failed, and names which.
+* `deploy/rockpro64/systemd/dancemate-backup.timer`: daily at 04:30 KST,
+  `Persistent=true`, as `hammer`.
+
+### Operations alerts
+
+`scripts/ops-monitor.sh` is one read-only check, run every 5 minutes by
+`dancemate-ops-monitor.timer`. It is not a loop, and it never starts or
+duplicates the scheduler. It gathers:
+
+* readiness from `/status`. Never `/health`: it is liveness and stays 200
+  with the database down.
+* `/health/sources` and the scheduler container count (the deploy guard's
+  count).
+* `python -m runtime.ops_facts`: job failure streaks and the extraction and
+  normalization backlog. It runs read-only inside the runtime.
+* the data disk.
+
+`runtime.ops_alerts` (stdlib only, so it runs with the host's python3 when
+the runtime is down) applies the alert policy:
+
+* Thresholds: the runtime, the database or a missing scheduler 2 checks; a
+  duplicate scheduler, backup FAIL or disk under 10% at once; a job's last 3
+  runs; a source's 2nd consecutive failed collection. One HTTP 500 from
+  TangoNOW is not an alert.
+* De-duplication: a 6-hour cooldown per alert, one RECOVERED notice.
+* Output: JSON lines in `ops/alerts.log` and the journal.
+
+External delivery is **not configured** (`PENDING_CONFIGURATION`), and no
+channel is assumed.
+
+### Why ENGINE_VERSION stays 1.16
+
+The engine is untouched. The full-corpus replay was re-run (4,865 items: the
+v0.96.49 engine tree against today's, through the runtime's own re-extract
+route with cached OCR and no network, 32 seconds each). It moves the same 22
+items as v0.96.50 and none of the 7 collected since.
+
+Those 22 items carry **six** deadline rows, not the three v0.96.50 named. The
+140기 notices of August have the same defect as 141기 in October:
+1628671 (8/18 performance sign-up), 1628670 (8/26 practice-room review /
+subsidy) and 1628667 (8/20 pre-sale and refund). All are past but LISTED.
+
+A bump would remove all six with no person deciding. It would also rename the
+surviving party rows (the " 10/25" suffix goes), and whether they keep their
+Event ids has not been shown. The upgrade stays **deferred** until the six
+Review decisions are taken and that question is answered.
+
+### Operator decisions (none taken by this release)
+
+Packets are in /opt/dancemate/audit/v0.96.51:
+
+* DATA-01: REJECT candidates 5028 / 5027 / 5025 (Events 1629132 / 1629133 /
+  1629136, October) and 4934 / 4935 / 4937 (Events 1628671 / 1628670 /
+  1628667, August).
+* DATA-02: EDIT candidate 5228 (1629719, 10/24): start 19:30, end blank.
+
 ## v0.96.50 Public Launch Blocker Resolution & Release Candidate
 
 Product Runtime 0.96.50; Information Engine 1.16 (unchanged on purpose, see

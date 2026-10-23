@@ -1,0 +1,14 @@
+# DanceMate operations monitor (v0.96.51): one read-only check per run.
+# Never starts, stops or duplicates the collection scheduler.
+[Unit]
+Description=DanceMate operations check (readiness, scheduler, sources, backup, disk)
+After=docker.service
+
+[Service]
+Type=oneshot
+User=hammer
+Group=hammer
+WorkingDirectory=/opt/dancemate/app/DanceMate
+ExecStart=/opt/dancemate/app/DanceMate/scripts/ops-monitor.sh
+SuccessExitStatus=1
+TimeoutStartSec=3min

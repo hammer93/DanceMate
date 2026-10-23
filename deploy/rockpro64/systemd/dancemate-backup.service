@@ -1,0 +1,18 @@
+# DanceMate scheduled backup (v0.96.51). Installed by root from
+# deploy/rockpro64/systemd/; runs scripts/backup.sh as the repository owner.
+# The deploy backup gate and this service share one lock (flock in backup.sh)
+# and one retention window (BACKUP_RETENTION in .env).
+[Unit]
+Description=DanceMate scheduled backup (PostgreSQL + engine SQLite)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=hammer
+Group=hammer
+WorkingDirectory=/opt/dancemate/app/DanceMate
+ExecStart=/opt/dancemate/app/DanceMate/scripts/backup.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

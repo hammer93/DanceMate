@@ -1,0 +1,13 @@
+# Daily at 04:30 KST (the board runs in Asia/Seoul), the quietest hour of
+# collection; a run missed while the board was off happens at next boot.
+[Unit]
+Description=Daily DanceMate backup
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=10min
+Persistent=true
+Unit=dancemate-backup.service
+
+[Install]
+WantedBy=timers.target

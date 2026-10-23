@@ -52,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from datetime import date
 from typing import Any
@@ -702,9 +703,118 @@ REASON_FESTIVAL_PROGRAMME = "FESTIVAL_PROGRAMME"
 REASON_GROUP_CHAIN = "GROUP_CHAIN"
 REASON_KEEP_NOT_IN_PAIR = "KEEP_NOT_IN_PAIR"
 REASON_PLACE_CONFLICT = "PLACE_CONFLICT"
+REASON_EXPLICIT_DISTINCT_PROGRAMMES = "EXPLICIT_DISTINCT_PROGRAMMES"
 # Not refusals: what the rules say about the pair's events as they read now.
 REASON_NO_CURRENT_MATCH = "NO_CURRENT_MATCH"
 REASON_RULES_WOULD_MERGE = "RULES_WOULD_MERGE"
+
+
+# --- which programme each event is (v0.96.51) --------------------------------------
+#
+# One venue on one date often runs several things: a 14:00 practica, a 19:00
+# milonga, a 23:30 late night - each its own listing with its own name. The
+# rules pair them (same place, different clock) as a question, and until
+# v0.96.51 the Duplicates page offered "Same event" on every such question:
+# 145 of Production's 152 answerable pairs were exactly this, most of them
+# two separate listings of one directory. The model below reads only what the
+# events and their posts state, never a similarity score, and only one
+# finding blocks a merge: the *same* listing source publishing the two as its
+# own separate single-event listings, under unrelated names, at two stated
+# starts. Everything else stays a person's question, marked for what it is.
+
+IDENTITY_FESTIVAL_PROGRAMME = "FESTIVAL_PARENT_AND_PROGRAMME"
+IDENTITY_DIFFERENT_PROGRAMME = "SAME_VENUE_DIFFERENT_PROGRAMME"
+IDENTITY_POSSIBLY_SAME = "POSSIBLY_SAME_EVENT"
+IDENTITY_INSUFFICIENT = "INSUFFICIENT_EVIDENCE"
+
+#: Sources whose every item is one listing of a calendar or directory: two
+#: items of one of them are two entries the source itself keeps apart. A
+#: community board is not one - two members may post one party twice.
+_LISTING_PLATFORMS = frozenset({"WEB"})
+_LISTING_ROLES = frozenset({"AGGREGATOR", "DIRECTORY"})
+
+#: Words that name a kind of night, not which night. Two names sharing only
+#: these share nothing.
+_GENERIC_NAME_WORDS = frozenset({
+    "milonga", "밀롱가", "practica", "practika", "쁘락", "쁘락티카", "쁘락띠까", "프락티카",
+    "tango", "탱고", "땅고", "party", "파티", "social", "소셜", "salsa", "살사", "bachata",
+    "바차타", "kizomba", "키좀바", "swing", "스윙", "latin", "라틴", "dance", "댄스", "night",
+    "나이트", "the", "and", "with", "club", "클럽", "정모", "day", "데이",
+})
+_SCHEDULE_SUFFIX_RE = re.compile(r"\b\d{1,2}/\d{1,2}\b")
+_NAME_WORD_RE = re.compile(r"[0-9a-z가-힣]+")
+
+
+def _name_core(name: str | None) -> str:
+    """The part of an event name that says which night it is."""
+    text = (name or "").lower()
+    text = text.rsplit(" | ", 1)[-1]          # TangoNOW: "<venue> | <night>"
+    return _SCHEDULE_SUFFIX_RE.sub(" ", text)  # a schedule program's " 10/22"
+
+
+def _names_related(left: str | None, right: str | None) -> bool:
+    """Whether two names could be one night's: one contains the other, or
+    they share a word that is not just the kind of night. Unknown is related -
+    an empty name is no evidence of a different programme."""
+    a, b = _name_core(left), _name_core(right)
+    compact_a = "".join(_NAME_WORD_RE.findall(a))
+    compact_b = "".join(_NAME_WORD_RE.findall(b))
+    if not compact_a or not compact_b or compact_a in compact_b or compact_b in compact_a:
+        return True
+    words_a = {w for w in _NAME_WORD_RE.findall(a) if len(w) >= 2} - _GENERIC_NAME_WORDS
+    words_b = {w for w in _NAME_WORD_RE.findall(b) if len(w) >= 2} - _GENERIC_NAME_WORDS
+    return bool(words_a & words_b)
+
+
+def _half_day_apart(left: str, right: str) -> bool:
+    """09:00 and 21:00 may be one clock read twice - "9시" with and without its
+    오후 - so they are not two stated starts."""
+    minutes = [int(c[:2]) * 60 + int(c[3:5]) for c in (left, right)]
+    return abs(minutes[0] - minutes[1]) == 12 * 60
+
+
+def _single_listing(event: dict[str, Any]) -> bool:
+    """A post of a listing source that yielded exactly this one event."""
+    return (event.get("source_item_id") is not None
+            and event.get("source_platform") in _LISTING_PLATFORMS
+            and event.get("source_role") in _LISTING_ROLES
+            and int(event.get("item_event_count") or 0) == 1)
+
+
+def programme_identity(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """What the two events' own records say about being one night. Pure.
+
+    ``{"identity": ..., "evidence": [...]}``. An analysis, never a verdict:
+    only ``SAME_VENUE_DIFFERENT_PROGRAMME`` changes what may be answered (the
+    merge is refused); a person still gives every answer.
+    """
+    if _is_festival(left) != _is_festival(right):
+        return {"identity": IDENTITY_FESTIVAL_PROGRAMME,
+                "evidence": ["one is a festival, the other a night"]}
+    clocks = (_clock(left), _clock(right))
+    related = _names_related(left.get("event_name"), right.get("event_name"))
+    if (_single_listing(left) and _single_listing(right)
+            and left.get("source_id") == right.get("source_id")
+            and left["source_item_id"] != right["source_item_id"]
+            and None not in clocks and clocks[0] != clocks[1]
+            and not _half_day_apart(*clocks) and not related):
+        return {"identity": IDENTITY_DIFFERENT_PROGRAMME,
+                "evidence": ["one listing source, two of its own listings "
+                             f"(items {left['source_item_id']} / {right['source_item_id']})",
+                             "names share nothing beyond the kind of night",
+                             f"stated starts {clocks[0]} / {clocks[1]}"]}
+    evidence = []
+    if related:
+        evidence.append("names may be one night's")
+    if None not in clocks and clocks[0] == clocks[1]:
+        evidence.append(f"same stated start {clocks[0]}")
+    if left.get("series_key") and left.get("series_key") == right.get("series_key"):
+        evidence.append("same series")
+    if evidence:
+        return {"identity": IDENTITY_POSSIBLY_SAME, "evidence": evidence}
+    return {"identity": IDENTITY_INSUFFICIENT,
+            "evidence": ["only the place and the date are shared"
+                         + ("" if None not in clocks else "; a start time is not stated")]}
 
 
 def resolve_blockers(pair: dict[str, Any], members: dict[int, dict[str, Any]], *,
@@ -767,6 +877,16 @@ def resolve_blockers(pair: dict[str, Any], members: dict[int, dict[str, Any]], *
             refusals.append((REASON_REGION_CONFLICT,
                              "the two posts name cities that exclude each other - a merge "
                              "across regions is never offered"))
+        # v0.96.51: one listing source states these as two programmes - two
+        # of its own single-event listings, unrelated names, two stated
+        # starts. What pairs them is the place and the date; what the source
+        # itself publishes apart is not made one event by a click.
+        if not refusals and programme_identity(left, right)["identity"] == \
+                IDENTITY_DIFFERENT_PROGRAMME:
+            refusals.append((REASON_EXPLICIT_DISTINCT_PROGRAMMES,
+                             "the same listing source publishes these as two separate "
+                             "programmes (own listings, different names, different start "
+                             "times) - a merge is never offered; Different events is"))
         # v0.96.48: a pair no rule proposes any more, whose two posts each say
         # where they are and say different places. A valid preview token
         # proves who asked, not that two nights are one: 23 of Production's 28
@@ -1109,8 +1229,16 @@ def _members(con, ids: list[int], *, lock: bool = False) -> dict[int, dict[str, 
         cur.execute(
             "SELECT " + _MEMBER_COLUMNS + ", "
             "  (SELECT count(*) FROM events d WHERE d.canonical_event_id = e.event_id) "
-            "    AS folded_count "
-            "FROM events e WHERE e.event_id = ANY(%s) ORDER BY e.event_id"
+            "    AS folded_count, "
+            # v0.96.51: where the post came from, for `programme_identity`.
+            "  si.source_id AS source_id, src.platform AS source_platform, "
+            "  src.source_role AS source_role, "
+            "  (SELECT count(*) FROM events x WHERE x.source_item_id = e.source_item_id) "
+            "    AS item_event_count "
+            "FROM events e "
+            "LEFT JOIN source_items si ON si.source_item_id = e.source_item_id "
+            "LEFT JOIN sources src ON src.source_id = si.source_id "
+            "WHERE e.event_id = ANY(%s) ORDER BY e.event_id"
             + (" FOR UPDATE OF e" if lock else ""), (ids,))
         return {r["event_id"]: r for r in _rows(cur)}
 
@@ -1552,7 +1680,7 @@ EVIDENCE_SUPPORTS = "EVIDENCE_SUPPORTS"
 EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
 EVIDENCE_CONTRADICTS = "EVIDENCE_CONTRADICTS"
 _CONTRADICTIONS = {REASON_DATE_CONFLICT, REASON_REGION_CONFLICT, REASON_FESTIVAL_PROGRAMME,
-                   REASON_PLACE_CONFLICT}
+                   REASON_PLACE_CONFLICT, REASON_EXPLICIT_DISTINCT_PROGRAMMES}
 
 # Why the rules stopped pairing a STALE pair: the fields its stored basis
 # matched on that no longer agree.
@@ -1673,10 +1801,18 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
     if status == QUEUE_STALE:
         causes = stale_causes(pair, members[member_ids[0]], members[member_ids[1]], current)
     merge_reasons = {r for a in answers if a["decision"] == DUPLICATE for r in a["reasons"]}
+    identity = (programme_identity(*(members[i] for i in member_ids))
+                if len(members) == 2 else None)
     readiness = None
     if status in (QUEUE_ACTIONABLE, QUEUE_STALE, QUEUE_BLOCKED):
+        # v0.96.51: a rule pairing two programmes of one room is support only
+        # when something about the two says they may be one night - a shared
+        # name, clock or series. Place and date alone need more evidence.
         readiness = (EVIDENCE_CONTRADICTS if merge_reasons & _CONTRADICTIONS
-                     else EVIDENCE_SUPPORTS if current is not None else EVIDENCE_INSUFFICIENT)
+                     else EVIDENCE_SUPPORTS if current is not None and (
+                         current["auto"] or identity is None
+                         or identity["identity"] != IDENTITY_INSUFFICIENT)
+                     else EVIDENCE_INSUFFICIENT)
     timings = {i: event_timing(m, rows, today) if today else TIME_UNKNOWN
                for i, m in members.items()}
     reasons = sorted(set(refused) | ({primary} if primary else set()))
@@ -1690,6 +1826,8 @@ def assess_pair(pair: dict[str, Any], rows: dict[int, dict[str, Any]],
         "event_date": next((m["event_date"] for m in members.values()), None),
         "timing": pair_timing(list(timings.values())), "member_timings": timings,
         "merge_readiness": readiness, "stale_causes": causes,
+        "programme_identity": identity["identity"] if identity else None,
+        "programme_evidence": identity["evidence"] if identity else [],
         "current_rule": current["rule"] if current else None,
         "status": status, "primary_reason": primary, "reasons": reasons,
         "guidance": QUEUE_GUIDANCE[status], "notes": notes,

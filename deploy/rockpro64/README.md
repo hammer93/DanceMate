@@ -250,6 +250,36 @@ directly" further down for why this rule exists.
 | restore                      | `scripts/restore.sh <name> --yes`                    |
 | ownership check/fix          | `scripts/fix-ownership.sh` (dry run; `--yes` to apply) |
 | logs                         | `docker compose --project-directory . -f deploy/rockpro64/docker-compose.external-postgres.yml -p dancemate logs -f runtime scheduler` |
+| ops check (one, read-only)   | `scripts/ops-monitor.sh` (`--status` prints open alerts and the last notices) |
+
+### Scheduled backup and operations check (v0.96.51)
+
+Two systemd timers, installed by root from `deploy/rockpro64/systemd/`, both
+running as `hammer`, neither of them the collection scheduler:
+
+    sudo cp deploy/rockpro64/systemd/dancemate-*.service \
+            deploy/rockpro64/systemd/dancemate-*.timer /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now dancemate-backup.timer dancemate-ops-monitor.timer
+
+- `dancemate-backup.timer`: `scripts/backup.sh` daily at 04:30 KST (catch-up
+  at boot if missed). It shares the deploy backup gate's lock and retention
+  (`BACKUP_RETENTION`). Each part is verified (`pg_restore --list`, SQLite
+  `integrity_check`). A backup that is not complete is renamed
+  `failed-dancemate-backup-*`, so it is never counted, never the latest, and
+  never a reason to prune. `BACKUP_MIN_FREE_MB` (default 1024) refuses to
+  start on a full disk.
+- `dancemate-ops-monitor.timer`: `scripts/ops-monitor.sh` every 5 minutes. It
+  checks readiness from `/status` (never `/health`, which stays 200 with the
+  database down), the scheduler container count, `/health/sources`, job
+  failure streaks, extraction backlog, backup state and the data disk.
+  Notices are appended to `$(dirname DANCEMATE_LOG_DIR)/ops/alerts.log` and
+  written to the journal (`journalctl -u dancemate-ops-monitor`).
+  - Each condition has a threshold. A single failed collection of an outside
+    site is not an alert.
+  - Each alert is repeated at most every 6 hours, and is cleared with one
+    RECOVERED notice.
+  - External delivery (mail, messenger) is **not configured**.
 
 `scripts/deploy-production.sh` is the only script that builds a new image and
 recreates containers; it runs a full preflight (compose file identity, no
