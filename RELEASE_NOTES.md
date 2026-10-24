@@ -1,5 +1,89 @@
 # DanceMate Release Notes
 
+## v0.96.54 Review-aware Re-extraction & Holiday Programme Safety
+
+Product Runtime 0.96.54. Information Engine 1.16 (unchanged; see below),
+normalization 3 (unchanged), migration 051 (no new migration).
+
+### DATA-02 was resolved by a person
+
+The operator EDITed candidate 5228 at 2026-10-24 09:51:17 KST: start 19:30,
+end blank (review action 1200, state EDITED). The official normalization pass
+of 09:56:07 applied it to Event 1629719. The id, LISTED state and fold (none)
+are unchanged, and there is no second decision. This release performed no
+Review action.
+
+### Re-reading a reviewed post (behind a gate)
+
+Review state lives on the candidate. `candidate_review_state` corrections are
+overlaid at normalization. Re-extraction, however, protects the whole post:
+one reviewed candidate and the post is never read again. Since the EDIT, that
+includes 6826, whose Sunday 10/25 social can therefore never be read.
+
+* **Duplicate decisions are never retired.** A person's duplicate decision
+  (MERGE, KEEP_SEPARATE, REVERT) is recorded on Events. A revision still
+  re-reads such a candidate in place (v0.96.42: the verdict and the id
+  survive), but the candidate is no longer retired when the reading stops
+  pairing with it (`duplicate_decision_kept`). Production has none, so nothing
+  changes today.
+* **`REVIEW_AWARE_REEXTRACT=1`** (default off; an operator decision) makes
+  `_review_aware_apply()` read a reviewed post when a revision or engine bump
+  selects it:
+  * A reviewed candidate is never re-read, retired or renumbered.
+  * An unreviewed candidate the reading pairs with is re-read in place. An
+    unpaired one is kept.
+  * A new programme is created only when every stored candidate paired and its
+    day is not one a person rejected or marked duplicate in the post.
+    Otherwise it is PENDING_EVIDENCE.
+  * An undecided identity writes nothing.
+  * FETCH_BLOCKED items never take this path.
+  * New counters `review_*` report each of these outcomes.
+
+### Days a post says are off (EXT-01)
+
+The real cases in the stored corpus:
+
+* **Item 3713:** 스윙타임빠 "(9월 23,26,27일) 수,토,일 ... 토요일 추석연휴 휴무"
+  had one candidate with no date. It is now the Wednesday and Sunday socials,
+  with the Saturday recorded as CLOSED_DAY.
+* **Item 5767:** "26년10월9일(금) 수라댄 금요정모 휴무" was stored and listed as an
+  event (1613277). It now reads as no event. The stored row waits for a
+  person (DATA-07).
+
+What changed:
+
+* Weekday sections: a section that says its day is off is excluded, never
+  refused whole. A lesson's "휴강" and a refund policy's "취소하시면" close
+  nothing. A post closing every day it names has no event. Day lists may have
+  any number of days.
+* Schedule posts: a dated segment that says its night is off and gives no
+  hours is not a programme.
+* Single reading: a post with no clock whose closing sentence names the day
+  it would be read as has no event. "(일요일은 쉽니다)" beside a Saturday
+  social does not count.
+
+Nothing is inferred from 추석, 연휴 or 공휴일. A replay of all 4,910 stored items
+changes exactly items 3713 and 5767.
+
+### ENGINE 1.17: deferred
+
+On the 2026-10-24 09:57 KST snapshot, at 1.17:
+
+| Path | Removed | Added | Id churn | Folds changed | Human records |
+|---|---|---|---|---|---|
+| v0.96.53 code | 6 (DATA-01) | 8 (Sundays) | 0 | 0 | identical |
+| this release, gate off | 7 (+1613277) | 10 (+3713's Wed/Sun) | 0 | 0 | identical |
+| this release, gate on | 7 | 11 (+6826's Sunday 10/25) | 0 | 0 | identical |
+
+With the gate on, 8 reviewed posts were read and all 8 reviewed candidates
+were kept untouched. Two new readings were held as PENDING_EVIDENCE: items
+2295 and 2297, where a CONFIRMED class date and the engine's date differ. A
+second pass changes nothing.
+
+The bump would still remove seven rows no person decided on, so it stays at
+1.16. At ENGINE 1.16 the release changes no stored row (47/47 tables
+identical).
+
 ## v0.96.53 Stable Event Identity & Multi-date Extraction Hardening
 
 Product Runtime 0.96.53. Information Engine 1.16 (unchanged; see below),

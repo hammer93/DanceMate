@@ -1239,6 +1239,10 @@ def extract_schedule(title: str, body: str, source_role="SECONDARY", event_type=
         own = text[start:end]
         if not re.search(words, own, re.I):
             continue
+        if closes_its_day(own):
+            # v0.96.54 (EXT-01): "10/31(토) 밀롱가 휴무합니다" names the night
+            # only to say it is off.
+            continue
         if low is not None and not (low <= _date.fromisoformat(seg_date) <= high):
             continue  # a program outside the announcement window is not read
         has_clock = bool(_CLOCK_CUE_RE.search(own))
@@ -1619,9 +1623,15 @@ def extract_day_list(title: str, body: str, source_role="SECONDARY",
 # flags "10월 24,25일" as MULTI_DAY_EVENT - a festival-shaped span - so the
 # Sunday social was never a candidate (DATA-06). Nine such weekend notices are
 # stored (June to October 2026), every one missing its Sunday; on a replay of
-# the whole stored corpus they are the only items this reading changes. Their
-# 9/23,26,27 notice, whose Saturday line is "추석연휴 휴무", is refused by
-# condition 3 below and stays as it was.
+# the whole stored corpus they are the only items this reading changes.
+#
+# v0.96.54 (EXT-01): their 9/23,26,27 notice - "수요일 저녁 7시30분부터 소셜 ...
+# - 토요일 추석연휴 휴무 - 일요일 저녁 7시30분부터 소셜" - names three days and
+# closes one. It was refused whole, which left the post's single reading: one
+# candidate with no date at all, so neither the Wednesday nor the Sunday social
+# existed. A day the post *says* is closed is now excluded by its own words
+# (condition 3b) and the others are read; nothing about closure is inferred
+# from a holiday's name, and a day list now has any number of days.
 #
 # This reads exactly that shape and nothing wider:
 #
@@ -1634,20 +1644,44 @@ def extract_day_list(title: str, body: str, source_role="SECONDARY",
 #    does not match its date's calendar day is no section of it.
 # 3. Every section names this night's own word against its own clock, and
 #    dates nothing else. One section that does not is refusal of the whole
-#    post, never of that day alone: a weekend whose Sunday line says "휴무"
-#    must not become a Saturday-only notice that reads as complete.
+#    post, never of that day alone - with one exception:
+# 3b. A section that says its day is closed ("휴무", "쉽니다", "운영하지
+#    않습니다", "취소") and gives no clock is that day's closure: the day is
+#    excluded, recorded on every night the post keeps (CLOSED_DAY), and is
+#    never an event. A section that clocks its night is closed only when the
+#    closure follows the night it names ("토요일 소셜 저녁 8시 취소"). A
+#    closure beside a lesson ("강습 휴강") closes the lesson, not the night, and
+#    a refund policy's "취소하시면" closes nothing. A post that closes every
+#    day it names announces no night: no candidate at all, rather than the
+#    single reading's first day.
 # 4. Each day is read from its own section only, so a Saturday DJ set never
 #    times the Sunday social, and the title's day list - which names both days
 #    - is never what dates either of them.
 # 5. Nothing the single reading already shows is traded away, as in
-#    `extract_day_list()`: its day must survive, with its start time.
+#    `extract_day_list()`: its day must survive, with its start time - unless
+#    the post closed that very day (3b), or the single reading has no day.
 WEEKDAY_SECTION = "WEEKDAY_SECTION"
 _WEEKDAY_CHARS = "월화수목금토일"
-# "10월 24,25일", "10월 24일(토) 및 25일(일)": the second day borrows the month.
+# "10월 24,25일", "10월 24일(토) 및 25일(일)", "9월 23,26,27일": the later
+# days borrow the month.
+_DAY_LIST_TAIL = r"\s*일?\s*(?:\(\s*[월화수목금토일]\s*\))?"
 _DAY_PAIR_RE = re.compile(
-    r"(?<!\d)(?P<m>\d{1,2})\s*월\s*(?P<d1>\d{1,2})\s*일?\s*(?:\(\s*[월화수목금토일]\s*\))?\s*"
-    r"(?:[,，·&]|및|과|와)\s*(?P<d2>\d{1,2})\s*일(?!\s*[~～\-])"
+    r"(?<!\d)(?P<m>\d{1,2})\s*월\s*(?P<d1>\d{1,2})" + _DAY_LIST_TAIL
+    + r"(?P<rest>(?:\s*(?:[,，·&]|및|과|와)\s*\d{1,2}" + _DAY_LIST_TAIL + r")+)"
+    r"(?<=[일)])(?!\s*[~～\-])"
 )
+# What a post writes to say a day has nothing on (3b), and the lesson words a
+# closure may belong to instead of the night.
+# "취소" only as a statement that something is off - never a refund policy's
+# "취소하시면 100% 환불" or "취소·환불 불가".
+_CLOSURE_RE = re.compile(
+    r"휴무|휴업|휴강|쉽니다|쉬어\s*갑니다|쉼(?![가-힣])|쉬는\s*날|운영하지\s*않|"
+    r"진행하지\s*않|열지\s*않|"
+    r"취소(?!\s*(?:하시|하면|시\b|및|[·./,]|환불|불가|가능|수수료|규정|정책))|"
+    r"\bclosed\b|\bcancell?ed\b", re.I)
+_LESSON_BEFORE_RE = re.compile(
+    r"(?:강습|레슨|수업|클래스|특강|워크샵|워크숍|class|lesson)\S*\s*$", re.I)
+CLOSED_DAY = "CLOSED_DAY"
 # A section ends at the post's next block marker, not only at the next day.
 _SECTION_BREAK_RE = re.compile(r"[■□▣◆◇※]")
 _WEEKDAY_SECTION_MAX_DAYS = 7
@@ -1678,7 +1712,8 @@ def _announced_days(text: str, published):
             continue
         try:
             days.add(first.isoformat())
-            days.add(_date(first.year, int(m.group("m")), int(m.group("d2"))).isoformat())
+            for later in re.findall(r"\d{1,2}", m.group("rest")):
+                days.add(_date(first.year, int(m.group("m")), int(later)).isoformat())
         except ValueError:
             return None
     if not 2 <= len(days) <= _WEEKDAY_SECTION_MAX_DAYS:
@@ -1714,10 +1749,15 @@ def extract_weekday_sections(title: str, body: str, source_role="SECONDARY",
         return None
     clean_title = re.sub(r"\s+", " ", title or "").strip()
     out = []
+    closed = []
     for index, (day, start) in enumerate(zip(days, starts)):
         end = starts[index + 1] if index + 1 < len(starts) else len(body)
         brk = _SECTION_BREAK_RE.search(body, start + 1, end)
         section = body[start:brk.start() if brk else end].strip(" -–—\t\n")
+        closure = _night_closure(section, words)
+        if closure:
+            closed.append((day, section[:160]))
+            continue
         if not re.search(words, section, re.I) or not _CLOCK_CUE_RE.search(section):
             return None
         if any(_resolve_date_match(m, None, days)[0] not in (None, day)
@@ -1748,13 +1788,99 @@ def extract_weekday_sections(title: str, body: str, source_role="SECONDARY",
             source_role=source_role, context_id=context_id,
         ))
         out.append(ev)
-    if current is not None:
+    if not out:
+        # Every day the post names, it closes: it announces no night at all,
+        # and the single reading must not publish its first day anyway.
+        return []
+    for ev in out:
+        context_id = next((e.context_id for e in ev.evidences if e.context_id), None)
+        for day, raw in closed:
+            ev.evidences.append(Evidence(
+                "context", CLOSED_DAY, raw, source_role=source_role,
+                inference=day, context_id=context_id,
+            ))
+    closed_days = {day for day, _ in closed}
+    if current is not None and current.date is not None and current.date not in closed_days:
         kept = next((e for e in out if e.date == current.date), None)
         if kept is None:
             return None
         if current.start_time is not None and kept.start_time is None:
             return None
     return out
+
+
+def closes_its_day(scope: str) -> bool:
+    """A dated scope that says its night is off and gives no hours for it.
+
+    Narrower than `_night_closure()` on purpose: outside a post's own weekday
+    sections a clock anywhere in the scope keeps it a programme, so a party's
+    "월요일 휴무니까 이번 일요일은 ..." (item 5553) is never read as closed."""
+    if _CLOCK_CUE_RE.search(scope):
+        return False
+    return any(not _LESSON_BEFORE_RE.search(scope[max(0, m.start() - 12):m.start()])
+               for m in _CLOSURE_RE.finditer(scope))
+
+
+def closure_notice_for(title: str, body: str, day) -> bool:
+    """Is this post, read as one event on ``day``, a notice that ``day`` is off?
+
+    Only with no clock anywhere in the post, and only when the day named
+    closest before a closure word, in its own sentence, is that very day - by a
+    written date that resolves to it, or by its weekday. "10월 31일 토요일
+    밀롱가는 휴무입니다" and "이번 주 토요일 밀롱가 쉽니다" are; "10월 24일 토요
+    소셜 진행합니다 (일요일은 쉽니다)" is not - the 일요일 is what is off.
+    """
+    from datetime import date as _date
+
+    if not day:
+        return False
+    text = f"{title} {body}"
+    if _CLOCK_CUE_RE.search(text):
+        return False
+    for sentence in re.split(r"[.!?。\n]+", text):
+        for m in _CLOSURE_RE.finditer(sentence):
+            if _LESSON_BEFORE_RE.search(sentence[max(0, m.start() - 12):m.start()]):
+                continue
+            named = _days_named_before(sentence[:m.start()], day)
+            if named and named[-1]:
+                return True
+    return False
+
+
+def _days_named_before(text: str, day: str) -> list[bool]:
+    """For every day ``text`` names, in order: is it ``day``?
+
+    A weekday written right after a date belongs to that date - in "10월 31일
+    토요일" the 토요일 is the 31st's and must not also stand for every other
+    Saturday - while a weekday on its own ("이번 주 토요일", "(일요일은 쉽니다)")
+    names its own day."""
+    from datetime import date as _date
+
+    weekday = _WEEKDAY_CHARS[_date.fromisoformat(day).weekday()]
+    dates = _all_date_matches(text)
+    found = [(m.start(), _resolve_date_match(m, None, {day})[0] == day) for m in dates]
+    for m in re.finditer(r"([월화수목금토일])요일|\(\s*([월화수목금토일])\s*\)", text):
+        if any(0 <= m.start() - d.end() <= 6 for d in dates):
+            continue
+        found.append((m.start(), (m.group(1) or m.group(2)) == weekday))
+    return [hit for _, hit in sorted(found)]
+
+
+def _night_closure(section: str, words: str) -> bool:
+    """Does this section close its day - not merely a lesson within it?
+
+    A section with no clock that says it is closed is closed. One that clocks
+    a night is closed only when the closure follows the night it names
+    ("토요일 소셜 저녁 8시 취소"); a closure written before the night, or
+    beside a lesson, says nothing about that night."""
+    clocked = _CLOCK_CUE_RE.search(section)
+    night = re.search(words, section, re.I)
+    for m in _CLOSURE_RE.finditer(section):
+        if _LESSON_BEFORE_RE.search(section[max(0, m.start() - 12):m.start()]):
+            continue
+        if not clocked or (night and night.start() < m.start()):
+            return True
+    return False
 
 
 # --- image text fallback (v0.81.3) -------------------------------------

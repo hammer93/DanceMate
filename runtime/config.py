@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.53"
+PRODUCT_VERSION = "0.96.54"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -515,6 +515,12 @@ PRODUCT_VERSION = "0.96.53"
 # DATA-06), 0 ambiguous; a second pass changes nothing. What still holds it at
 # 1.16 is what it would decide for a person: it removes the six DATA-01 rows
 # and corrects 1629719 (DATA-02) without the Review decisions those wait on.
+#
+# v0.96.54, on the 2026-10-24 09:57 KST snapshot (DATA-02 EDITED at 09:51 by the
+# operator, so 6826 is now a reviewed post): ids moved 0, folds changed 0,
+# Human records byte-identical; 1629719 stays 19:30 / no end / EDITED. A bump
+# would still remove seven unreviewed rows no person decided: the six DATA-01
+# deadlines and 1613277, a "금요정모 휴무" notice stored as an event (DATA-07).
 DEFAULT_ENGINE_VERSION = "1.16"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -576,6 +582,13 @@ class Settings:
     backup_retention: int
     backup_max_age_hours: int
 
+    # v0.96.54: re-read a post that holds a reviewed candidate, keeping every
+    # reviewed candidate exactly as it is and adding only programmes the post
+    # newly states (engine_ingest._review_aware_apply). Off unless the
+    # operator sets REVIEW_AWARE_REEXTRACT=1: until then a reviewed post is
+    # skipped whole, as it always was.
+    review_aware_reextract: bool = False
+
     @property
     def dsn(self) -> str:
         return (
@@ -623,6 +636,8 @@ def load_settings() -> Settings:
         storage_critical_percent=_env_int("STORAGE_CRITICAL_PERCENT", 95),
         backup_retention=_env_int("BACKUP_RETENTION", 7),
         backup_max_age_hours=_env_int("BACKUP_MAX_AGE_HOURS", 48),
+        review_aware_reextract=_env("REVIEW_AWARE_REEXTRACT", "0").strip().lower()
+        in ("1", "true", "yes", "on"),
     )
 
 

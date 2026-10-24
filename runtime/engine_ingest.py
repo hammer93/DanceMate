@@ -580,6 +580,75 @@ _IDENTITY_KEYS = {
 }
 
 
+# v0.96.54: what a review-aware re-read did with a reviewed post's programmes.
+REVIEW_AWARE_KEYS = (
+    "review_locked_kept",        # EXISTING_HUMAN_LOCKED: untouched
+    "review_rejected_kept",      # ...of which REJECTED / DUPLICATE
+    "review_unreviewed_reread",  # EXISTING_UNREVIEWED: re-read in place
+    "review_unpaired_kept",      # stored, no new reading: kept, never retired here
+    "review_new_created",        # GENUINE_NEW_PROGRAMME created
+    "review_new_pending",        # new reading refused: PENDING_EVIDENCE
+    "review_held",               # AMBIGUOUS / CONFLICTING: nothing written
+)
+_REFUSED_STATES = ("REJECTED", "DUPLICATE")
+
+
+def _review_aware_apply(engine_db, engine_con, post_id, existing, events, identity,
+                        reviewed, review_states) -> dict[str, Any]:
+    """Re-read a post that holds a reviewed candidate without touching a
+    person's decision (v0.96.54, behind REVIEW_AWARE_REEXTRACT).
+
+    * A reviewed candidate (any Review action) is never re-read, retired or
+      renumbered, paired or not. Its corrections live on `candidate_review_state` and are
+      laid over it at normalization, so it publishes what the person decided.
+    * An unreviewed candidate the new reading pairs with is re-read in place,
+      as on any other post. One it does not pair with is kept: retiring a
+      programme from a post a person has worked on is not this pass's call.
+    * A new reading is a new programme only when it paired with nothing and
+      every stored candidate of the post paired with a reading. It is refused
+      (PENDING_EVIDENCE) otherwise, and when it falls on a day a person
+      rejected or marked duplicate in this post, or names no day - a rejected
+      deadline must not come back under a new title.
+    * Any undecided identity (AMBIGUOUS / CONFLICTING) holds the whole post:
+      nothing is written.
+    """
+    counts = dict.fromkeys(REVIEW_AWARE_KEYS, 0)
+    if identity["held"]["old"] or identity["held"]["new"]:
+        counts["review_held"] = 1
+        return {"counts": counts, "created": [], "held": True}
+    locked = {row[0] for row in existing if row[0] in reviewed}
+    refused_days = {str(row[1])[:10] for row in existing
+                    if row[0] in locked and review_states.get(row[0]) in _REFUSED_STATES}
+    paired = set(identity["pairs"].values())
+    for cid in locked:
+        counts["review_locked_kept"] += 1
+        if review_states.get(cid) in _REFUSED_STATES:
+            counts["review_rejected_kept"] += 1
+    for index, cid in sorted(identity["pairs"].items()):
+        if cid not in locked:
+            engine_db.replace_candidate(engine_con, cid, events[index])
+            counts["review_unreviewed_reread"] += 1
+    counts["review_unpaired_kept"] = sum(1 for row in existing
+                                         if row[0] not in locked and row[0] not in paired)
+    # A new reading is only *additional* when every stored programme is
+    # accounted for. If one is left over - a person CONFIRMED a class on 10/01
+    # and this engine reads it as 09/20 - the new reading may be that very
+    # programme on another day, and creating it would publish a second copy
+    # beside the decision (items 2295 and 2297 on the 2026-10-24 snapshot).
+    accounted = all(row[0] in paired for row in existing)
+    created = []
+    for index in identity["new"]:
+        day = candidate_identity.extracted_fields(events[index])["date"]
+        if not accounted or day is None or day in refused_days:
+            counts["review_new_pending"] += 1
+        else:
+            created.append(index)
+    if created:
+        engine_db.persist_events(engine_con, post_id, [events[i] for i in created])
+    counts["review_new_created"] = len(created)
+    return {"counts": counts, "created": created, "held": False}
+
+
 def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dict[str, Any]:
     return {
         "pending": 0, "selected": 0, "reprocessed": 0, "succeeded": 0,
@@ -596,6 +665,8 @@ def _empty_reprocess_result(engine_version: str, backlog: dict[str, int]) -> dic
         "newly_dated": 0, "newly_upcoming": 0, "lost_upcoming": 0,
         "multi_event_changed": 0,
         **dict.fromkeys(_IDENTITY_KEYS, 0),
+        **dict.fromkeys(REVIEW_AWARE_KEYS, 0),
+        "duplicate_decision_kept": 0,
         "engine_version": engine_version,
         "next_after_item_id": None,
         "remaining": backlog["outdated"],
@@ -666,6 +737,21 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         with pg.cursor() as cur:
             cur.execute("SELECT DISTINCT candidate_id FROM human_review_actions")
             reviewed = {row[0] for row in cur.fetchall()}
+            # v0.96.54: a person's duplicate answer (MERGE, KEEP_SEPARATE,
+            # REVERT) is recorded on the Events, not the candidates. It is a
+            # decision about which Event is which, not about the Event's
+            # values, so a revision still re-reads such a candidate in place
+            # (v0.96.42's contract: the verdict and the id survive, the new
+            # title is read). What it must never do is retire one: an Event a
+            # person answered about is kept even when the reading no longer
+            # pairs with it.
+            cur.execute(
+                "SELECT DISTINCT e.candidate_id FROM event_duplicate_decisions d "
+                "JOIN events e ON e.event_id IN (d.event_id, d.canonical_event_id) "
+                "WHERE d.decided_by = 'HUMAN' AND e.candidate_id IS NOT NULL")
+            decided = {row[0] for row in cur.fetchall()}
+            cur.execute("SELECT candidate_id, review_state FROM candidate_review_state")
+            review_states = {row[0]: row[1] for row in cur.fetchall()}
 
         # v0.96.9: one query for the whole batch, never one per item.
         best_fetched = content_store.best_fetched_text_length(
@@ -683,6 +769,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         events_before = events_preserved = events_dropped = 0
         newly_dated = newly_upcoming = lost_upcoming = multi_event_changed = 0
         identity_counts = dict.fromkeys(_IDENTITY_KEYS.values(), 0)
+        review_counts = dict.fromkeys(REVIEW_AWARE_KEYS, 0)
+        decision_kept = 0
         failures: list[str] = []
         try:
             for item in items:
@@ -705,7 +793,15 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         (post_id,),
                     ).fetchall()
                     existing_ids = [row[0] for row in existing]
-                    if any(cid in reviewed for cid in existing_ids):
+                    # v0.96.54: with REVIEW_AWARE_REEXTRACT on, a reviewed post
+                    # is read rather than skipped - every reviewed candidate
+                    # stays exactly as it is, and only programmes the post newly
+                    # states are added (_review_aware_apply). Never for a
+                    # blocked item: its input is not this pass's to trust.
+                    review_aware = bool(
+                        settings.review_aware_reextract and not blocked
+                        and any(cid in reviewed for cid in existing_ids))
+                    if any(cid in reviewed for cid in existing_ids) and not review_aware:
                         # Stamped, not just skipped: an unstamped skip would
                         # be re-selected first on every following tick and
                         # the rows behind it would never be reached.
@@ -838,7 +934,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     # when the Daum body arrives with the venue and time the
                     # snippet lacked (Section 16: better information makes
                     # the Event more accurate, never a different Event).
-                    if len(existing_ids) == 1 and len(events) == 1 \
+                    if len(existing_ids) == 1 and len(events) == 1 and not review_aware \
                             and hasattr(engine_db, "replace_candidate"):
                         engine_db.replace_candidate(engine_con, existing_ids[0], events[0])
                         used = {
@@ -888,6 +984,31 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     )
                     for kind, n in identity["counts"].items():
                         identity_counts[kind] += n
+                    if review_aware:
+                        outcome = _review_aware_apply(
+                            engine_db, engine_con, post_id, existing, events, identity,
+                            reviewed, review_states)
+                        for key, n in outcome["counts"].items():
+                            review_counts[key] += n
+                        if outcome["created"]:
+                            used = {
+                                e.inference
+                                for i in outcome["created"] for e in events[i].evidences
+                                if e.evidence_type == "IMAGE_OCR" and e.inference
+                            }
+                            if used:
+                                image_fallback.mark_used_as_fallback(pg, source_item_id, used)
+                        kept = set(existing_ids)
+                        events_preserved += sum(1 for _, cid in item_events if cid in kept)
+                        after_total += len(existing_ids) + len(outcome["created"])
+                        engine_con.commit()
+                        content_store.mark_reprocessed(
+                            pg, source_item_id, engine_version=engine_version,
+                            input_signature=signature,
+                            outcome=(content_store.OUTCOME_KEPT_HUMAN_REVIEWED
+                                     if outcome["held"] else content_store.OUTCOME_EXTRACTED))
+                        reprocessed += 1
+                        continue
                     if identity["held"]["old"] or identity["held"]["new"]:
                         log.warning("re-extract of source item %s: identity not decided "
                                     "for candidates %s (%s new)", source_item_id,
@@ -895,7 +1016,9 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                                     len(identity["held"]["new"]))
                     for index, candidate_id in sorted(identity["pairs"].items()):
                         engine_db.replace_candidate(engine_con, candidate_id, events[index])
-                    for candidate_id in identity["removed"]:
+                    retired = [cid for cid in identity["removed"] if cid not in decided]
+                    decision_kept += len(identity["removed"]) - len(retired)
+                    for candidate_id in retired:
                         engine_con.execute(
                             "DELETE FROM evidences WHERE candidate_id=?", (candidate_id,)
                         )
@@ -921,7 +1044,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                     # survive a genuine change of programme is what the
                     # duplicate/canonical machinery exists to decide, not this
                     # loop.
-                    kept = set(identity["pairs"].values())
+                    kept = set(identity["pairs"].values()) | (set(existing_ids) - set(retired))
                     item_kept = sum(1 for _, cid in item_events if cid in kept)
                     events_preserved += item_kept
                     events_dropped += len(item_events) - item_kept
@@ -930,7 +1053,7 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
                         # behind, retired from input it could read -
                         # v0.96.9's whole reason for existing, and the
                         # number a rollout of it is watched on.
-                        stale_event_removed += len(item_events)
+                        stale_event_removed += len(item_events) - item_kept
                     engine_con.commit()
                     content_store.mark_reprocessed(
                         pg, source_item_id, engine_version=engine_version,
@@ -994,6 +1117,8 @@ def reprocess_acquired(settings: Settings, *, limit: int = 25,
         "lost_upcoming": lost_upcoming,
         "multi_event_changed": multi_event_changed,
         **{name: identity_counts[kind] for name, kind in _IDENTITY_KEYS.items()},
+        **review_counts,
+        "duplicate_decision_kept": decision_kept,
         "engine_version": engine_version,
         # Where a forced pass got to, so the next call starts after it. The
         # incremental pass ignores this: its cursor is the stamped row.

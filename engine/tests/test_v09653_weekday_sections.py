@@ -92,11 +92,17 @@ def test_each_night_is_named_as_the_schedule_route_names_its_programmes():
                      "■ 스윙타임빠 (10월 24,25일) 토,일 소셜 공지 10/25"]
 
 
-def test_a_weekend_whose_saturday_is_closed_is_left_as_it_was():
-    """Condition 3: one section that is not a night refuses the whole post."""
+def test_a_weekend_whose_saturday_is_closed_keeps_its_other_nights():
+    """v0.96.54 (EXT-01, condition 3b): the closed Saturday is excluded by its
+    own words, and the Wednesday and Sunday are read - before, the whole post
+    was refused and its single reading had no date at all
+    (tests/test_v09654_holiday_exceptions.py)."""
     title, body = REAL_TIMEBAR_CHUSEOK
-    assert _sections(title, body, published=CHUSEOK_PUBLISHED) is None
-    assert len(_run(title, body, CHUSEOK_PUBLISHED)["events"]) == 1
+    events = _sections(title, body, published=CHUSEOK_PUBLISHED)
+    assert [(e.date, e.start_time) for e in events] == [("2026-09-23", "19:30"),
+                                                        ("2026-09-27", "19:30")]
+    assert [e.date for e in _run(title, body, CHUSEOK_PUBLISHED)["events"]] == [
+        "2026-09-23", "2026-09-27"]
 
 
 def test_a_single_day_notice_is_untouched():

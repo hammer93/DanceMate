@@ -1,5 +1,5 @@
 from .classifier import classify_with_image_evidence
-from .extractor import (DATE_PATTERNS, FESTIVAL, extract_day_list,
+from .extractor import (DATE_PATTERNS, FESTIVAL, closure_notice_for, extract_day_list,
                         extract_festival, extract_programmes,
                         extract_schedule, extract_single,
                         extract_weekday_sections,
@@ -205,7 +205,9 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
         published=getattr(post, "published_at", None),
         current=ev,
     )
-    if weekday_days:
+    # An empty list is the post closing every day it names (v0.96.54, EXT-01):
+    # no night, so the single reading's first day is not published either.
+    if weekday_days is not None:
         for day_event in weekday_days:
             if image_evidence_ref:
                 from .models import Evidence as _Evidence
@@ -221,6 +223,11 @@ def process_discovered_post(con, post, source_role="SECONDARY", image_texts=None
                     and day_event.status == "VERIFIED"):
                 day_event.status = "POSSIBLE"
         return {"classification": classification, "events": weekday_days}
+    # v0.96.54 (EXT-01): a post with no hours whose closing sentence names the
+    # one day it would be read as - "10월 31일 토요일 밀롱가는 휴무입니다",
+    # "이번 주 토요일 밀롱가 쉽니다" - announces that day is off, not a night.
+    if closure_notice_for(post.title, post.body, ev.date):
+        return {"classification": classification, "events": []}
     if image_evidence_ref:
         from .models import Evidence
         from .extractor import IMAGE_OCR

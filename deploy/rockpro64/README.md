@@ -354,6 +354,35 @@ creates an account, key or destination on its own.
 
   Manifests written earlier are read as before. None is rewritten.
 
+### Re-reading a reviewed post (v0.96.54)
+
+A post holding any reviewed candidate (any Review action) is skipped whole by
+re-extraction. That protects the decision, and it also freezes the rest of
+the post.
+
+A candidate whose Event a person answered a duplicate question about (MERGE,
+KEEP_SEPARATE, REVERT) is still re-read in place by a revision: the verdict
+and the id survive. It is never retired. The `engine-reprocess` result counts
+these as `duplicate_decision_kept`.
+
+`REVIEW_AWARE_REEXTRACT=1` in `.env` (then `scripts/deploy-production.sh` to
+recreate) lets such a post be read when a source revision or an engine bump
+selects it:
+
+- A reviewed candidate is never re-read, retired or renumbered. Its
+  correction is applied at normalization, as now.
+- An unreviewed candidate the reading pairs with is re-read in place. One it
+  does not pair with is kept.
+- A new programme is created only when every stored candidate paired and its
+  day is not one a person rejected or marked duplicate in that post.
+  Otherwise it is counted as `review_new_pending` and nothing is written.
+- An undecided identity writes nothing (`review_held`).
+- FETCH_BLOCKED items are never read this way.
+
+The setting re-reads nothing on its own. It is off by default, and turning it
+on is an operator decision. The `engine-reprocess` result reports the
+`review_*` counters.
+
 ### Which containers count as the scheduler (v0.96.53)
 
 `ops-monitor` and the deploy's duplicate guard count a running container as
