@@ -85,6 +85,11 @@ if [[ -n "$CONFIGURED_VERSION" && "$CONFIGURED_VERSION" != "$EXPECTED_VERSION" ]
   die "version mismatch: VERSION file says '$EXPECTED_VERSION' but .env's DANCEMATE_VERSION='$CONFIGURED_VERSION' - update .env before deploying, so the image this script builds is the image .env says should be running"
 fi
 log "target version: $EXPECTED_VERSION -> $EXPECTED_IMAGE"
+# v0.96.55: an engine bump and review-aware re-extraction are operator
+# decisions taken in .env; say which ones this deploy will run with.
+CONFIGURED_ENGINE="$(env_value ENGINE_VERSION || true)"
+CONFIGURED_REVIEW_AWARE="$(env_value REVIEW_AWARE_REEXTRACT || true)"
+log "engine: ENGINE_VERSION=${CONFIGURED_ENGINE:-<code default>}, REVIEW_AWARE_REEXTRACT=${CONFIGURED_REVIEW_AWARE:-<unset: off>}"
 
 PREVIOUS_CONTAINER="$(compose ps -q runtime 2>/dev/null | head -n1 || true)"
 PREVIOUS_IMAGE=""

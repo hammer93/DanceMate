@@ -383,6 +383,19 @@ The setting re-reads nothing on its own. It is off by default, and turning it
 on is an operator decision. The `engine-reprocess` result reports the
 `review_*` counters.
 
+### Activating an engine bump and the review-aware gate (v0.96.55)
+
+Both are operator decisions, taken separately, in `.env`:
+
+1. Set `ENGINE_VERSION=<new>` and, if authorized, `REVIEW_AWARE_REEXTRACT=1`
+   in the same edit, before the deploy. A bump re-reads every stored post,
+   and a reviewed post is read with the gate only if the gate is already on
+   when the bump reaches it.
+2. `scripts/deploy-production.sh --check` logs both values. Then deploy.
+3. Check `GET /api/admin/events/reextract-backlog`: `engine_version` and
+   `review_aware_reextract` are what the running process uses. `outdated`
+   falls by about 25 every 5 minutes.
+
 ### Which containers count as the scheduler (v0.96.53)
 
 `ops-monitor` and the deploy's duplicate guard count a running container as

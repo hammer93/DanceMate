@@ -1,5 +1,78 @@
 # DanceMate Release Notes
 
+## v0.96.55 Human Review Closure & Engine 1.17 Activation
+
+Product Runtime 0.96.55. Information Engine 1.17 (from 1.16), normalization 3
+(unchanged), migration 051 (no new migration).
+
+### The seven rows a bump would have decided were decided by a person
+
+The operator REJECTed all seven rows that held ENGINE 1.17 back: the six
+DATA-01 deadline notices (candidates 5028, 5025, 4934, 4935, 4937, and 5027)
+and DATA-07's "금요정모 휴무" notice (3919). Review actions 1201-1209, all
+reviewer `dancemate`, 2026-10-24 KST:
+
+* 5028 was submitted twice (1201, 1202; the second with a fresh basis). This
+  has no effect on the data.
+* 5027 was CONFIRMed by mistake (1203), and the operator re-reviewed it as
+  REJECT at 20:52 (1209). Both actions remain in its history.
+
+Normalization applied each decision on its next tick. The seven Events
+(1629132, 1629133, 1629136, 1628671, 1628670, 1628667, 1613277) are
+HIDDEN/REJECTED. Their rows are kept and none is folded. The four genuine
+party Events (1628668, 1628672, 1629134, 1629137) stay LISTED. This release
+performed no Review action.
+
+### ENGINE 1.17 and review-aware re-extraction, authorized separately
+
+The operator authorized `ENGINE_VERSION=1.17` and `REVIEW_AWARE_REEXTRACT=1`
+as two separate decisions. The gate stays off by default in code; Production
+sets it in `.env`, before the deploy that bumps the engine.
+
+The full corpus was re-extracted on a disposable copy of Production
+(2026-10-25 07:06:49 KST snapshot: 1,734 Events, 4,950 source items, 2,403
+candidates, 25 Review actions, 196 folds), with this release's tree:
+
+| Path | Events removed | Added | Changed | Candidates | Folds changed | Human records |
+|---|---|---|---|---|---|---|
+| 1.17, gate off | 0 | 10 | 16 | 2,403 -> 2,412 | 0 | identical |
+| 1.17, gate on (Production) | 0 | 11 | 20 | 2,403 -> 2,413 | 0 | identical |
+| 1.16 control | 0 | 0 | 0 | 2,403 | 0 | identical |
+
+* **No existing Event id disappears.** Every Event of the snapshot is still
+  there under its id. The one retired candidate (2951, item 3713's old
+  dateless reading) never had an Event.
+* **Added (gate on):**
+  * The Sundays of 스윙타임빠's weekend notices (DATA-06): 8 past Sundays, plus
+    3713's Wednesday and Sunday.
+  * 6826's Sunday 2026-10-25 social: 19:30, no end, PENDING, LISTED. Only the
+    gate reaches this post, because its Saturday was EDITED by a person.
+* **Changed:** 16 time corrections, including the Saturdays now opening at
+  19:30. With the gate on, the four party Events also lose the " 08/23" or
+  " 10/25" date suffix from their names; their ids are kept.
+* **Kept:**
+  * With the gate on, 15 reviewed candidates were kept untouched. The seven
+    rejected rows were kept HIDDEN/REJECTED (`review_rejected_kept` 7).
+  * Two new readings were held as PENDING_EVIDENCE (items 2295/2297).
+  * 1629719 is still 19:30 / no end / EDITED.
+  * 643/646/647 stay FETCH_BLOCKED.
+  * The protected folds are unchanged.
+* **A second pass changes nothing.**
+
+### Visible activation state
+
+* `GET /api/admin/events/reextract-backlog` now reports
+  `review_aware_reextract`: the setting the running process reads, not what
+  `.env` says.
+* `scripts/deploy-production.sh` logs the `ENGINE_VERSION` and
+  `REVIEW_AWARE_REEXTRACT` it deploys with.
+
+### Convergence
+
+`engine-reprocess` re-reads 25 items per 300 s tick in `fetched_at` order, so
+the bump takes about 16 hours. 6826 was fetched recently and comes near the
+end, so its Sunday 10/25 social will likely appear only after that night.
+
 ## v0.96.54 Review-aware Re-extraction & Holiday Programme Safety
 
 Product Runtime 0.96.54. Information Engine 1.16 (unchanged; see below),

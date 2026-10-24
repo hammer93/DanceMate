@@ -1738,8 +1738,11 @@ def api_reextract_backlog(_: str = Depends(require_admin)) -> JSONResponse:
 
     settings = admin._settings()
     with _connection() as con:
-        return admin._dump(
-            content_store.reprocess_backlog(con, settings.engine_version))
+        backlog = content_store.reprocess_backlog(con, settings.engine_version)
+    # v0.96.55: whether the running process reads reviewed posts, so a rollout
+    # is checked against the setting it actually runs with, not the .env file.
+    backlog["review_aware_reextract"] = settings.review_aware_reextract
+    return admin._dump(backlog)
 
 
 @api.get("/events/normalization-backlog")

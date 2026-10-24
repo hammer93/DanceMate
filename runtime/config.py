@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.54"
+PRODUCT_VERSION = "0.96.55"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -521,7 +521,15 @@ PRODUCT_VERSION = "0.96.54"
 # Human records byte-identical; 1629719 stays 19:30 / no end / EDITED. A bump
 # would still remove seven unreviewed rows no person decided: the six DATA-01
 # deadlines and 1613277, a "금요정모 휴무" notice stored as an event (DATA-07).
-DEFAULT_ENGINE_VERSION = "1.16"
+#
+# v0.96.55 bumps it, 1.16 -> 1.17, on the operator's explicit authorization.
+# The operator REJECTed all seven rows (review actions 1201-1209, 5027's
+# mistaken CONFIRM re-reviewed as REJECT), so nothing is left for the bump to
+# decide for a person. On the 2026-10-25 KST snapshot it removes no Event,
+# moves no id or fold, keeps every Human record byte-identical and keeps the
+# seven rejected rows HIDDEN; with REVIEW_AWARE_REEXTRACT on (authorized
+# separately) it also creates 6826's Sunday 10/25 social.
+DEFAULT_ENGINE_VERSION = "1.17"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
