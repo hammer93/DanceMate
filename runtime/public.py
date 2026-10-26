@@ -920,6 +920,8 @@ def _when_line(event: dict[str, Any]) -> str:
             label += f"–{last.month}/{last.day}({WEEKDAYS[last.weekday()]})"
     start, end = event.get("start_time"), event.get("end_time")
     period = _unstated_period(event)
+    if _meridiem_unstated(event):
+        return f'<span class="when">{E(label)}{period} {_unstated_clock(event, "–")}</span>'
     if start and end:
         clock = f"{start}–{end}" + ("<sup>+1</sup>" if event.get("ends_next_day") else "")
     elif start:
@@ -930,17 +932,53 @@ def _when_line(event: dict[str, Any]) -> str:
         # itself is shown, plainly, rather than silently dropped (a bare
         # "21:00" reads as if that were the whole answer).
         clock = f'{start}–<span class="unknown">미정</span>'
-    # v0.86.4 (Section 4-6): a bare, am/pm-ambiguous clock (5시30 is very
-    # likely half past five in the evening, but the post does not say so)
-    # used to append its own "시간 미확인" tag right next to the real value
-    # it was flagging - self-contradictory the moment a reader is shown a
-    # time and told in the same breath that it is unknown. The reading
-    # stands, unflagged here; the original is a click away regardless.
+    # v0.86.4 (Section 4-6): a bare, am/pm-ambiguous clock used to append its
+    # own "시간 미확인" tag right next to the real value it was flagging -
+    # self-contradictory the moment a reader is shown a time and told in the
+    # same breath that it is unknown. v0.96.56 keeps that rule and shows such
+    # a clock as the post wrote it instead - see `_unstated_clock()`.
     if not start:
         # Not "TBD": we simply do not know, and the post is linked so a reader
         # can check for themselves.
         clock = '<span class="unknown">시간 미확인</span>'
     return f'<span class="when">{E(label)}{period} {clock}</span>'
+
+
+def _meridiem_unstated(event: dict[str, Any]) -> bool:
+    """Whether this event's clock is one the post never placed in the day.
+
+    v0.96.56. events_api says so (``time_confirmed`` False) for a bare 1..12
+    o'clock with no 오전/오후, AM/PM or 24-hour form anywhere in its reading:
+    the engine stores the hour as written, so "7:00~8:00" sits in the
+    database as 07:00-08:00. Shown as "07:00~08:00" that read as a confirmed
+    morning - the launch audit found eight upcoming evening events listed at
+    5 to 9 a.m., among them the only upcoming swing social.
+    """
+    start = event.get("start_time")
+    return (event.get("time_confirmed") is False and bool(start)
+            and 1 <= int(start[:2]) <= 12)
+
+
+def _as_written(clock: str) -> str:
+    """"07:30" -> "7:30": the hour as a post writes it, without the leading
+    zero that makes a bare clock read as a 24-hour morning."""
+    hour, minute = clock.split(":")[:2]
+    return f"{int(hour)}:{minute}"
+
+
+def _unstated_clock(event: dict[str, Any], dash: str) -> str:
+    """A clock whose half of the day the post did not state, said as such.
+
+    Not "시간 미확인": the hour is known, and saying it is unknown beside it
+    is the contradiction v0.86.4 removed. What is unknown is only 오전 or
+    오후, so that is what the label says, and neither half is picked for the
+    reader - not by DanceMate, not by a leading zero. No +1 either: which day
+    the end falls on follows from the half of the day nobody stated.
+    """
+    start, end = event.get("start_time"), event.get("end_time")
+    tail = _as_written(end) if end else '<span class="unknown">미정</span>'
+    return (f"{_as_written(start)}{dash}{tail}"
+            ' <span class="unknown">오전·오후 미표기</span>')
 
 
 def _unstated_period(event: dict[str, Any]) -> str:
@@ -1015,6 +1053,9 @@ def _in_progress(event: dict[str, Any], *, now: "datetime | None" = None) -> boo
     day = event.get("date")
     start, end = event.get("start_time"), event.get("end_time")
     if not day or not start or not end:
+        return False
+    # v0.96.56: nor when the post never said which half of the day it meant.
+    if _meridiem_unstated(event):
         return False
     moment = now or datetime_type.now(events_api.SEOUL)
     event_date = date_type.fromisoformat(day)
@@ -1192,6 +1233,8 @@ def _timeline_clock(event: dict[str, Any]) -> str:
     start = event.get("start_time")
     if not start:
         return '<span class="unknown">시간 미확인</span>'
+    if _meridiem_unstated(event):
+        return _unstated_clock(event, "~")
     end = event.get("end_time")
     if not end:
         clock = f'{start}~<span class="unknown">미정</span>'

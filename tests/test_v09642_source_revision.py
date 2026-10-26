@@ -261,7 +261,7 @@ def test_the_engine_version_is_not_bumped_by_this_release():
     from runtime.config import DEFAULT_ENGINE_VERSION
     from runtime.normalization import NORMALIZATION_VERSION
 
-    assert DEFAULT_ENGINE_VERSION == "1.17"  # v0.96.55: authorized bump
+    assert DEFAULT_ENGINE_VERSION == "1.18"  # v0.96.56: time-role bump
     assert NORMALIZATION_VERSION == "3"
 
 

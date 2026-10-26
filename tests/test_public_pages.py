@@ -357,17 +357,22 @@ def test_a_daum_source_shows_its_own_real_name_not_the_platform_brand(pg, unique
     assert found[0]["source_link"]["label"] != "Daum Cafe"
 
 
-def test_a_time_the_post_did_not_qualify_is_shown_unflagged():
+def test_a_time_the_post_did_not_qualify_is_shown_as_written():
     """'5시30' is very likely half past five in the evening. The post does not
     say so and the engine refused to guess - but showing a real value and
     then telling the reader in the same breath it is unknown is exactly the
-    self-contradiction v0.86.4 (Section 4-6) removed. The value stands,
-    unflagged; the ambiguity, if it matters, is a job for the "?" indicator
-    elsewhere, never a second caveat glued onto the clock itself."""
+    self-contradiction v0.86.4 (Section 4-6) removed, and that still holds.
+
+    v0.96.56 changes the rest of it. Shown as "05:30", unflagged, the value
+    read as a confirmed morning - the public launch audit found eight upcoming
+    evening events listed that way. The clock is now shown as the post wrote
+    it and the one thing it left unsaid is named: 오전·오후 미표기. See
+    tests/test_v09656_time_display.py."""
     rendered = public._when_line({"date": "2026-09-12", "start_time": "05:30",
                                   "end_time": "09:30", "ends_next_day": False,
                                   "time_confirmed": False})
-    assert "05:30" in rendered
+    assert "5:30" in rendered and "05:30" not in rendered
+    assert "오전·오후 미표기" in rendered
     assert "시간 미확인" not in rendered
 
 

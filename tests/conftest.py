@@ -75,6 +75,10 @@ MANAGED_KEYS = tuple(BASE_ENV) + (
     "DANCEMATE_DATA_DIR",
     "DANCEMATE_LOG_DIR",
     "DANCEMATE_BACKUP_DIR",
+    # v0.96.56: Production's .env turned the review-aware gate on (v0.96.55),
+    # and the official runner passes that .env to the container - so five
+    # gate-off tests ran with it on. A test that wants the gate sets it itself.
+    "REVIEW_AWARE_REEXTRACT",
 )
 
 

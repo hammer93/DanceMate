@@ -1,5 +1,130 @@
 # DanceMate Release Notes
 
+## v0.96.56 Public Event Time Integrity & Engine 1.18
+
+Product Runtime 0.96.56. Information Engine 1.18 (from 1.17), normalization 3
+(unchanged), migration 051 (no new migration). `REVIEW_AWARE_REEXTRACT` stays
+an `.env` decision (Production: on).
+
+### P1-1: eight upcoming events listed in the morning
+
+The public launch audit (2026-10-26) found 8 of 228 upcoming public events
+shown as starting between 05:00 and 09:30. The posts say evening, or say
+nothing. There were three causes, and each is fixed where it lives.
+
+**TIME-02: an end read as a start (engine).** PHU QUOC's festival listing
+(item 6807, Events 1629705-1629709) states no start, only "Social Parties until
+05:00 AM". `parse_start_time()` refused a clock *followed* by 까지/until, but
+not one *preceded* by until/till/~. Such a clock is now an end, and no start is
+read or derived from it. The five nights now show 시간 미확인.
+
+**TIME-03: a timetable slot read as the night (engine).** 스위티스윙's DDP notice
+(item 6377, Event 1620084, the only upcoming swing social) states
+"■ 일시 : 2026.11.4.수.7:00-10:00PM" and then a timetable. The "DJ 소셜"
+closing one row sat nearest the next row's "8:00 ~ 8:40 - Live set 1", so a
+40-minute set with no meridiem became the social, at 08:00.
+`_enclosing_labelled_range()` now prefers the post's own labelled hours
+(일시/시간) over a slot strictly inside them. A slot that runs outside the
+label keeps its place (엘마르's poster labels its workshop, not its social).
+The same hours stated twice keep their marked reading. 1620084 is now
+19:00-22:00, EXPLICIT.
+
+The same contract settles the brief's mixed case
+"19:00 Social starts / DJ 20:15–22:15 / Until 02:00 AM" at 19:00 with no end:
+* a 24-hour clock counts as placed for the stated-opening rule;
+* "Social starts" / "소셜 시작" after a clock counts as an opening;
+* an unnamed "DJ 20:15–22:15" is a DJ's set.
+
+None of these three changes any stored post.
+
+**TIME-01: a bare clock shown as a morning (public pages).**
+* A post that writes "7:00~8:00" with no 오전/오후 is stored as 07:00-08:00
+  with `time_evidence=ABSENT`, and the API has always said
+  `time_confirmed: false`.
+* Since v0.86.4 the HTML showed it as "07:00~08:00" with nothing beside it,
+  so it read as a confirmed morning.
+* v0.86.4's reason still holds: "시간 미확인" beside a value that is shown
+  contradicts itself.
+* Such a clock is now shown as the post wrote it, with the one thing it
+  left unsaid named: "7:00~8:00 오전·오후 미표기", on both the list and the
+  detail page.
+* It never carries a +1, and it is never "진행 중".
+* A placed clock (EXPLICIT, UNAMBIGUOUS, PROPAGATED, HUMAN) is shown exactly
+  as before.
+* No AM/PM is inferred from the event type or from the body.
+
+**Real mornings are not flagged (engine).** A range whose other end is
+written in 24 hours ("11:00~14:00") is read in 24 hours. Its evidence stays
+ABSENT, but it is no longer ambiguous, so it reaches the API as UNAMBIGUOUS
+(`time_confirmed: true`). Miltang's Sunday practicas (1629770, 1629772, and
+1614453, the protected 11:00 practica) keep 11:00 and are not flagged.
+v0.96.19's guard against admitting a guessed morning still sees the old
+reading, so no range is newly admitted.
+
+The v0.86.4 test that pinned "05:30" unflagged now expects "5:30" with
+오전·오후 미표기. Its "never 시간 미확인 beside a value" assertion is kept.
+
+### ENGINE 1.18 on a disposable copy of Production
+
+The 2026-10-26 04:33 KST scheduled backup was restored into a disposable
+PostgreSQL with no network: 1,778 Events, 5,022 items, 2,451 candidates, 25
+Review actions, 203 folds. The official `reprocess_acquired` and normalization
+route was then run until both backlogs were empty, with
+`REVIEW_AWARE_REEXTRACT=1`:
+
+| Path | Removed | Added | Changed | Ids moved | Folds | Human / venue records |
+|---|---|---|---|---|---|---|
+| v0.96.55 code at 1.18 (control) | 0 | 0 | 0 | 0 | 0 | identical |
+| this release at 1.18 | 0 | 0 | 18 | 0 | 0 | identical |
+
+* **Values changed on 6 Events:** 1620084 (08:00-08:40 to 19:00-22:00) and
+  1629705-1629709 (05:00 to no start). Their identity keys follow their
+  start; their ids, folds, venues, genres and listing do not change.
+* **Evidence only, on 12 Events:** the 11:00 practicas and classes, ABSENT
+  to UNAMBIGUOUS.
+* **Kept:**
+  * Reviewed candidates were kept: 15 locked, and the 7 REJECTed rows stay
+    HIDDEN/REJECTED.
+  * 1629719 stays 19:30 / no end / EDITED.
+  * 1631240 stays 19:30.
+  * 2295/2297 stay PENDING_EVIDENCE.
+  * 643/646/647 stay FETCH_BLOCKED.
+  * SEOUL TANGO WEEK has no decision.
+* **A second pass changes nothing.**
+* **Only four tables differ from the control:** events, candidates'
+  normalization stamps, extraction stamps, and unresolved-venue `last_seen_at`.
+
+Upcoming (2026-10-26):
+* Confirmed starts before noon: 5 to 2, both real 11:00 practicas.
+* Clocks shown 오전·오후 미표기: 2 (1629819 "1교시 7:00~8:00", 1629732
+  "소셜 9시 30분부터"). Both posts write no half of the day in their bodies.
+
+### Test isolation: the review-aware gate
+
+The official board runner passes the deployment's `.env` to its container.
+Since v0.96.55, Production's `.env` sets `REVIEW_AWARE_REEXTRACT=1`, and
+`tests/conftest.py` did not strip that key. So five gate-off tests (v0.96.3,
+.42, .43, .53, .54) ran with the gate on and failed on the board only. The
+key is now one of the variables the suite removes; a test that wants the gate
+sets it itself. Locally, with `REVIEW_AWARE_REEXTRACT=1` in the shell, the
+same five fail without the change and pass with it.
+
+### Tests
+
+* **New tests:**
+  * engine `test_v09656_time_roles.py`: 32, on real-source fixtures;
+  * runtime `test_v09656_time_display.py`: 20;
+  * browser `tests/e2e/test_v09656_time_display.py`: E2E-33 to E2E-37.
+* **They catch the defect:** on the v0.96.55 tree, 10 of the engine tests
+  and 5 of the display tests fail.
+* **Final code:**
+  * runtime 4234 passed / 33 skipped (local; the skips are Windows-only:
+    POSIX bash, Pillow);
+  * engine 2176 passed / 1 skipped;
+  * browser E2E 42 passed;
+  * official board runner (`scripts/run-container-tests.sh` on image 0.96.55)
+    4255 passed / 21 skipped, CT_EXIT 0.
+
 ## v0.96.55 Human Review Closure & Engine 1.17 Activation
 
 Product Runtime 0.96.55. Information Engine 1.17 (from 1.16), normalization 3

@@ -29,7 +29,7 @@ x-runtime-image: &runtime-image
     args:
       # v0.96.52: recorded as the image's revision label (see Dockerfile).
       DANCEMATE_COMMIT: ${DANCEMATE_COMMIT:-unknown}
-  image: dancemate/runtime:${DANCEMATE_VERSION:-0.96.55}
+  image: dancemate/runtime:${DANCEMATE_VERSION:-0.96.56}
   restart: unless-stopped
   env_file: [.env]
   networks: [dancemate-net]

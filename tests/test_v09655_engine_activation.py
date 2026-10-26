@@ -25,7 +25,8 @@ ADMIN = ("dancemate", "test-admin-password")
 
 
 def test_the_engine_is_bumped_and_normalization_is_not():
-    assert config.DEFAULT_ENGINE_VERSION == "1.17"
+    # v0.96.56 bumps it again (1.18, time roles); normalization still 3.
+    assert config.DEFAULT_ENGINE_VERSION == "1.18"
     assert NORMALIZATION_VERSION == "3"
 
 

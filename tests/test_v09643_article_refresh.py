@@ -236,7 +236,7 @@ def test_a_settled_article_used_to_be_unreachable_by_the_acquisition_queue(art):
 
 
 def test_the_versions_do_not_move():
-    assert config.DEFAULT_ENGINE_VERSION == "1.17"  # v0.96.55: authorized bump
+    assert config.DEFAULT_ENGINE_VERSION == "1.18"  # v0.96.56: time-role bump
     assert normalization.NORMALIZATION_VERSION == "3"
 
 

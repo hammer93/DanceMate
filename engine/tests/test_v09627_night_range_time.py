@@ -260,12 +260,28 @@ def test_a_daytime_range_is_never_moved_into_the_evening(text, expected):
 ])
 def test_an_unmoved_reading_keeps_the_evidence_it_had(text):
     """Reading backwards from an unambiguous end lands on the hour as written
-    for every daytime range in the corpus, and there nothing was learned: the
-    reading stays ABSENT and ambiguous, so v0.96.19's guard against admitting a
-    guessed morning keeps its meaning."""
+    for every daytime range in the corpus, and there no marker was learned: the
+    reading stays ABSENT, and v0.96.19's guard against admitting a guessed
+    morning keeps its meaning (it still sees the morning reading).
+
+    v0.96.56 changes one thing, and only where the end is written in 24 hours:
+    such a range is no longer *ambiguous* - "11:00~14:00" has one reading - so
+    the public pages do not flag a real Sunday practica as 오전·오후 미표기.
+    "9:00~12:00" never reaches this branch (12 has two readings) and stays
+    ambiguous. Replayed over the whole corpus this admits no range that was
+    refused before; see engine/tests/test_v09656_time_roles.py."""
     r = extraction_rules.parse_time_range(text)
     assert r.meridiem_evidence == extraction_rules.EVIDENCE_ABSENT
-    assert r.ambiguous is True
+    end_has_one_reading = int(r.end[:2]) == 0 or int(r.end[:2]) > 12
+    assert r.ambiguous is (not end_has_one_reading)
+
+
+def test_a_vetoed_morning_range_in_24_hours_is_still_refused():
+    """v0.96.19's guard, after v0.96.56: a range only admitted by weighing a
+    class word against the event's own, with a bare morning start, still never
+    becomes the night - even when its end is written in 24 hours."""
+    text = "워크샵 2만원 (파티포함) 9:00~13:00"
+    assert extraction_rules.parse_time_range(text, "PARTY") is None
 
 
 # --- what earlier releases settled -------------------------------------------

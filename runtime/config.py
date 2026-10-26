@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.55"
+PRODUCT_VERSION = "0.96.56"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -529,7 +529,15 @@ PRODUCT_VERSION = "0.96.55"
 # moves no id or fold, keeps every Human record byte-identical and keeps the
 # seven rejected rows HIDDEN; with REVIEW_AWARE_REEXTRACT on (authorized
 # separately) it also creates 6826's Sunday 10/25 social.
-DEFAULT_ENGINE_VERSION = "1.17"
+#
+# v0.96.56 bumps it, 1.17 -> 1.18: what a clock *is for* (P1-1 of the public
+# launch audit). An end ("until 05:00 AM") is never a start, a labelled
+# whole-event range outranks a timetable slot inside it, and a range whose end
+# is written in 24 hours is not ambiguous. On the 2026-10-26 04:33 KST backup
+# (5,022 items) the values of exactly two posts change - 6377 (08:00-08:40 ->
+# 19:00-22:00) and 6807 (five 05:00 starts -> no start) - and twelve 11:00
+# practicas lose a doubt they never had (ABSENT -> UNAMBIGUOUS).
+DEFAULT_ENGINE_VERSION = "1.18"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

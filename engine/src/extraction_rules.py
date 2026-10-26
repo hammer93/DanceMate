@@ -567,8 +567,18 @@ def parse_time_range(text: str, event_type: str | None = None) -> TimeReading | 
 
 
 # A DJ's name, quoted or not, directly in front of the range it plays.
+# v0.96.56: or no name at all - "DJ 20:15–22:15" is the set as surely.
 _DJ_SET_BEFORE = re.compile(
-    r"(?:\bDJ|디제이)\s*[:：]?\s*['\"‘’“”]?[^'\"‘’“”\d\n|/~]{1,20}?['\"‘’“”]?\s*$", re.I)
+    r"(?:\bDJ|디제이)\s*[:：]?\s*['\"‘’“”]?[^'\"‘’“”\d\n|/~]{0,20}?['\"‘’“”]?\s*$", re.I)
+
+
+# v0.96.56: the opening said after the clock, of the event itself - "19:00
+# Social starts", "19:00 소셜 시작". One short word may name the event between
+# them; "7:30 오픈강습" is a class opening, not the night, so 오픈/시작 must end
+# the word it is in.
+_OPENS_AFTER = re.compile(
+    r"[^\S\n]*(?:[^\s\d]{1,10}[^\S\n]+)?(?:starts?|opens?)\b|"
+    r"[^\S\n]*(?:[^\s\d]{1,10}[^\S\n]*)?(?:시작|오픈)(?![가-힣])", re.I)
 
 
 def _is_a_dj_set(text: str, start: int) -> bool:
@@ -580,13 +590,13 @@ def _stated_opening(text: str, words: str, dj: TimeReading) -> TimeReading | Non
 
     Every condition is the strong form of one `parse_start_time()` already
     weighs: the clock is not one end of a range, carries an explicit meridiem
-    (a bare "7시30분" stays unread), is said to open the event ("부터", "시작",
-    "오픈"), has the event's own word beside it, and is no later than the DJ's
-    start. Two different such openings are two different nights' and decide
-    nothing.
+    or is written in 24 hours (a bare "7시30분" stays unread), is said to open
+    the event ("부터", "시작", "오픈" - v0.96.56: also "소셜 시작" after it),
+    has the event's own word beside it, and is no later than the DJ's start.
+    Two different such openings are two different nights' and decide nothing.
     """
     ranges = _range_spans(text)
-    found = set()
+    found = {}
     raw = None
     pattern = re.compile(words, re.I)
     for match in _lone_clocks(text):
@@ -597,22 +607,66 @@ def _stated_opening(text: str, words: str, dj: TimeReading) -> TimeReading | Non
             continue
         marker = (_meridiem(match.group("lead"), parts[0])
                   or _meridiem(match.group("trail"), parts[0]))
-        if not marker:
+        # v0.96.56: "19:00" places itself in the day as surely as "PM 7" does.
+        if not marker and not 13 <= parts[0] <= 23:
             continue
         before = text[max(0, match.start() - _TIME_NEAR_BEFORE):match.start()]
-        if not (match.group("start") or _OPENS_BEFORE.search(before)):
+        if not (match.group("start") or _OPENS_BEFORE.search(before)
+                or _OPENS_AFTER.match(text, match.end())):
             continue
         if not pattern.search(_near_window(text, match.start(), match.end())):
             continue
-        start = _fmt(_apply(*parts, marker))
+        start = _fmt(_apply(*parts, marker) if marker else _literal(*parts))
         if start > dj.start:
             continue
-        found.add(start)
+        found.setdefault(start, EVIDENCE_EXPLICIT if marker else EVIDENCE_ABSENT)
         raw = raw or re.sub(r"\s+", " ", match.group(0)).strip()
     if len(found) != 1:
         return None
-    return TimeReading(start=found.pop(), end=None, end_day_offset=0, raw=raw,
-                       meridiem_evidence=EVIDENCE_EXPLICIT, ambiguous=False)
+    ((start, evidence),) = found.items()
+    return TimeReading(start=start, end=None, end_day_offset=0, raw=raw,
+                       meridiem_evidence=evidence, ambiguous=False)
+
+
+def _span_minutes(reading: TimeReading, shift: int = 0) -> tuple[int, int]:
+    start = int(reading.start[:2]) * 60 + int(reading.start[3:]) + shift
+    end = int(reading.end[:2]) * 60 + int(reading.end[3:]) + 1440 * reading.end_day_offset + shift
+    return start, end
+
+
+def _enclosing_labelled_range(text: str, readings, slot: TimeReading, slot_start: int):
+    """(reading, position) of the labelled whole-event range this slot sits in.
+
+    v0.96.56. A timetable lists the parts of one night, and the event's own word
+    can sit beside any part of it. 스위티스윙's DDP notice (item 6377) states
+    "■ 일시 : 2026.11.4.수.7:00-10:00PM" and then a timetable - ".7:40 ~ 8:00 -
+    스윙 댄스 공연 & DJ 소셜 .8:00 ~ 8:40 - Live set 1" - where the 소셜 closing
+    one row sits nearest the next row's clock. That 40-minute set was stored as
+    the whole social, at 08:00 in the morning, because the timetable writes no
+    meridiem; the post's own labelled hours were never weighed against it.
+
+    The labelled range wins only when it is the post stating its own hours
+    (`_is_labelled_time()`), is not itself ambiguous, and the chosen slot fits
+    strictly inside it under some reading of the slot's clock - so the slot is
+    a part of that night rather than another programme. A slot that runs
+    outside the labelled hours keeps its place: then the label may be a
+    different programme's (엘마르's poster labels its workshop, not its social).
+    """
+    if slot.end is None:
+        return None
+    shifts = (0, 720) if slot.ambiguous else (0,)
+    for reading, start, _end in readings:
+        if start == slot_start or reading.end is None or reading.ambiguous:
+            continue
+        if not _is_labelled_time(text, start, readings):
+            continue
+        low, high = _span_minutes(reading)
+        # The same hours stated twice are one fact, and the slot's own reading
+        # of them stands; only a slot strictly inside the night yields to it.
+        if any(low <= s and e <= high and (s, e) != (low, high)
+               for s, e in (_span_minutes(slot, shift) for shift in shifts)):
+            return reading, start
+    return None
 
 
 def _chosen_range(text: str, event_type: str | None = None):
@@ -663,6 +717,9 @@ def _chosen_range(text: str, event_type: str | None = None):
                 named.append((hit[0], reading, start))
         if named:
             best = min(named, key=lambda triple: triple[0])
+            whole = _enclosing_labelled_range(text or "", readings, best[1], best[2])
+            if whole is not None:
+                return whole
             return best[1], best[2]
     # v0.96.33: nothing named the event type, but the post may have labelled
     # one of these readings as its own time. That label is the post speaking
@@ -728,6 +785,13 @@ _SINGLE_CLOCK_RE = re.compile(
     re.I,
 )
 _NOT_A_START_AFTER = re.compile(r"^\s*(?:마감|까지|전|이전|until|by)", re.I)
+# v0.96.56: the same boundary written in front of the clock. PHU QUOC's
+# festival listing (item 6807) states no start for any of its five days, only
+# "Social Parties until 05:00 AM", and that 05:00 was stored as each night's
+# start - an hour the parties end at, not one anybody opens at. A clock the
+# text says something runs *until* is an end, and an end alone says nothing
+# about when the night begins, so no start is read from it at all.
+_ENDS_BEFORE = re.compile(r"(?:\buntil|\btill|~|∼)[\s:：]*$", re.I)
 
 # v0.96.18: a word right before the clock saying the event opens then. The
 # suffix form ("9시부터", "9:00 START") is already the `start` group of
@@ -882,6 +946,8 @@ def parse_start_time(text: str, event_type: str | None = None, *,
         after = body[match.end():match.end() + 6]
         if _NOT_A_START_AFTER.match(after):
             continue
+        if _ENDS_BEFORE.search(body[max(0, match.start() - 8):match.start()]):
+            continue
         if _is_approximate(body, match.end("t")):
             continue
         marker = (_meridiem(match.group("lead"), parts[0])
@@ -979,6 +1045,7 @@ def _readings(text: str, words: str | None = None):
         if vetoed and _range_belongs_to_other_programme(text, match, words):
             continue
         mark1, mark2 = _range_markers(match)
+        guessed_morning = None
 
         if mark1 and mark2:
             start_abs = _apply(*first, mark1)
@@ -1010,11 +1077,19 @@ def _readings(text: str, words: str | None = None):
             end_abs = _literal(*second)
             start_abs = _resolve_other(end_abs or 1440, *first, "start")
             if start_abs == _literal(*first):
-                # Reading backwards landed on the hour as written, so nothing
-                # was learned and nothing is claimed: this stays the unmarked
-                # reading it has always been, including for v0.96.19's guard
-                # against admitting a guessed morning.
-                evidence, ambiguous = EVIDENCE_ABSENT, 1 <= first[0] <= 12
+                # Reading backwards landed on the hour as written, so no marker
+                # was learned and none is claimed: the evidence stays ABSENT,
+                # and v0.96.19's guard below still sees the morning reading.
+                #
+                # v0.96.56: but the range itself is no longer ambiguous. Its
+                # end is written in a notation that has one reading, so its
+                # start is written in the same one: Miltang's "시간:
+                # 11:00~14:00" (items 6919, 6921, Sunday practicas that say
+                # "일요일 오전을 보람차게") is eleven in the morning, and the
+                # public pages now flag an ambiguous clock - this one must not
+                # be flagged for a doubt the post does not leave.
+                evidence, ambiguous = EVIDENCE_ABSENT, False
+                guessed_morning = 1 <= first[0] <= 12
             else:
                 evidence, ambiguous = EVIDENCE_PROPAGATED, False
         else:
@@ -1036,7 +1111,9 @@ def _readings(text: str, words: str | None = None):
         # worse than telling them nothing, which is what that post says today.
         # The same trade v0.96.18 made for a guessed morning start. A range the
         # absolute veto never objected to is untouched by this.
-        if vetoed and ambiguous and start_abs < 12 * 60:
+        if guessed_morning is None:
+            guessed_morning = ambiguous
+        if vetoed and guessed_morning and start_abs < 12 * 60:
             continue
         yield (
             TimeReading(
