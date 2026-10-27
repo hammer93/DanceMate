@@ -64,6 +64,10 @@ def main() -> int:
         port=settings.port,
         log_level="info",
         access_log=False,  # microSD write minimization
+        # v0.96.57: the peer address stays the TCP peer. Which proxy may name
+        # the reader is runtime.feedback_guard's decision, made from
+        # DANCEMATE_TRUSTED_PROXIES - not uvicorn's 127.0.0.1 default.
+        proxy_headers=False,
     )
     return 0
 

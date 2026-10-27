@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import admin, admin_csrf, admin_pages, events_admin, health, master_admin, public
+from . import admin, admin_csrf, admin_pages, events_admin, feedback_guard, health, master_admin, public
 from . import directory_admin  # v0.88.0: Communities and Notices
 from . import discovery_admin  # v0.89.0: Community Discovery
 from .config import Settings, load_settings, runtime_version
@@ -58,6 +58,21 @@ _ADMIN_ROUTERS = (
 )
 for _router in _ADMIN_ROUTERS:
     app.include_router(_router, dependencies=[Depends(admin_csrf.protect)])
+
+# v0.96.57: the one public write - POST /events/{id}/feedback - is rate- and
+# size-limited before its route reads the body (runtime.feedback_guard).
+# Which reverse proxy may name the reader is read once, from the settings.
+_trusted_proxies: tuple | None = None
+
+
+def _trusted() -> tuple:
+    global _trusted_proxies
+    if _trusted_proxies is None:
+        _trusted_proxies = feedback_guard.parse_trusted(settings().trusted_proxies)
+    return _trusted_proxies
+
+
+app.add_middleware(feedback_guard.FeedbackGuard, trusted=_trusted)
 
 # The alpha user surface: / , /events , /events/{id} and /api/events. Mounted
 # last so it can never shadow an operator route.

@@ -79,6 +79,8 @@ MANAGED_KEYS = tuple(BASE_ENV) + (
     # and the official runner passes that .env to the container - so five
     # gate-off tests ran with it on. A test that wants the gate sets it itself.
     "REVIEW_AWARE_REEXTRACT",
+    # v0.96.57: which proxy may name the reader is the test's own choice.
+    "DANCEMATE_TRUSTED_PROXIES",
 )
 
 

@@ -14,7 +14,7 @@ from pathlib import Path
 # version: the Information Engine is versioned by its own extraction
 # behaviour. v0.74 is the first version DanceMate modified (time, venue and
 # fee reading); the untouched import is tagged engine-v0.73-baseline.
-PRODUCT_VERSION = "0.96.56"
+PRODUCT_VERSION = "0.96.57"
 # v0.96.38: the release's VERSION file is the source of truth. The deploy
 # script refuses an `.env` whose DANCEMATE_VERSION differs from it, and the
 # container reports that value (`runtime_version()`) on /health, /version and
@@ -605,6 +605,12 @@ class Settings:
     # skipped whole, as it always was.
     review_aware_reextract: bool = False
 
+    # v0.96.57: reverse proxies whose X-Forwarded-For names the reader, for
+    # the public feedback limiter (runtime.feedback_guard). Comma-separated
+    # addresses or networks; empty - the default - trusts no header at all,
+    # and every limit is charged to the TCP peer.
+    trusted_proxies: str = ""
+
     @property
     def dsn(self) -> str:
         return (
@@ -654,6 +660,7 @@ def load_settings() -> Settings:
         backup_max_age_hours=_env_int("BACKUP_MAX_AGE_HOURS", 48),
         review_aware_reextract=_env("REVIEW_AWARE_REEXTRACT", "0").strip().lower()
         in ("1", "true", "yes", "on"),
+        trusted_proxies=_env("DANCEMATE_TRUSTED_PROXIES", ""),
     )
 
 
@@ -674,4 +681,10 @@ def validate(settings: Settings) -> list[str]:
         problems.append("STORAGE_WARN_PERCENT/STORAGE_CRITICAL_PERCENT are inconsistent")
     if settings.backup_retention < 1:
         problems.append("BACKUP_RETENTION must be at least 1")
+    try:
+        from .feedback_guard import parse_trusted
+
+        parse_trusted(settings.trusted_proxies)
+    except ValueError:
+        problems.append("DANCEMATE_TRUSTED_PROXIES is not a list of addresses/networks")
     return problems

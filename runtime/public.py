@@ -24,7 +24,7 @@ from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from . import (
-    alpha_metrics, db, events_api, feedback, master_data, timeline_settings,
+    alpha_metrics, db, events_api, feedback, feedback_guard, master_data, timeline_settings,
     venue_resolution,
 )
 from .config import Settings
@@ -2056,21 +2056,37 @@ def event_source(event_id: int, to: str) -> RedirectResponse:
 
 
 @router.post("/events/{event_id}/feedback")
-def submit_feedback(event_id: int, kind: str = Form(...)) -> RedirectResponse:
+def submit_feedback(event_id: int, request: Request,
+                    kind: str = Form(...)) -> RedirectResponse:
     """Record one feedback row and bounce straight back to the event page
     (Section 56: never mutates the event - the redirect target is the same
-    detail page, now carrying ?feedback= so it can thank the reader)."""
+    detail page, now carrying ?feedback= so it can thank the reader).
+
+    v0.96.57: rate and size are limited before this runs (feedback_guard).
+    The same reader sending the same kind for the same event again within
+    ten minutes is thanked again but adds no row - a double tap, a reload
+    of the POST, or a script, the queue needs it once."""
+    normalized = (kind or "").strip().upper()
+    if normalized not in feedback.KINDS:
+        raise HTTPException(status_code=400, detail="unknown feedback kind")
+    client = getattr(request.state, "feedback_client", None)
+    limiter = feedback_guard.LIMITER
+    marked = False
     try:
         with _connection() as con:
             if events_api.get_event(con, event_id) is None:
                 raise HTTPException(status_code=404, detail="no such event")
-            feedback.record(con, event_id=event_id, kind=kind)
-    except db.DatabaseUnavailable:
-        raise HTTPException(status_code=503, detail=UNAVAILABLE) from None
-    except feedback.UnknownKind:
-        raise HTTPException(status_code=400, detail="unknown feedback kind") from None
+            if client is None or not limiter.seen_recently(client, event_id, normalized):
+                marked = client is not None
+                feedback.record(con, event_id=event_id, kind=normalized)
+    except Exception as exc:
+        if marked:  # nothing was written, so a retry must be able to write it
+            limiter.forget(client, event_id, normalized)
+        if isinstance(exc, db.DatabaseUnavailable):
+            raise HTTPException(status_code=503, detail=UNAVAILABLE) from None
+        raise
     return RedirectResponse(
-        f"/events/{event_id}?feedback={quote(kind)}", status_code=303)
+        f"/events/{event_id}?feedback={quote(normalized)}", status_code=303)
 
 
 # --- directory tabs (v0.88.0) -------------------------------------------------

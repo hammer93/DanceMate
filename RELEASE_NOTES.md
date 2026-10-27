@@ -1,5 +1,79 @@
 # DanceMate Release Notes
 
+## v0.96.57 Public Access Security Hardening
+
+Product Runtime 0.96.57. Information Engine 1.18 (unchanged), normalization 3
+(unchanged), migration 051 (no new migration). No extraction or
+normalization code changed, so nothing is re-extracted.
+
+### The one public write had no limits
+
+`POST /events/{id}/feedback` is the only thing an anonymous reader can make
+the runtime write. Until now:
+* every request wrote a row - 30 POSTs in a row wrote 30 rows (measured on a
+  disposable copy of Production with the 0.96.56 image);
+* there was no body limit - a 64 KB body was read and accepted;
+* the same reader tapping the same button twice wrote two rows.
+
+It now passes through `runtime/feedback_guard.py`, plain ASGI middleware that
+runs before the route reads a byte of the body:
+* **Rate:** per client 10 per 60 s and 120 per hour, and 300 per hour for all
+  clients together (the backstop against a client that rotates addresses).
+  Over a limit the answer is `429` with `Retry-After` in seconds and a short
+  Korean page; it names no address. A refused attempt is not counted, so
+  waiting out `Retry-After` is enough. An unknown event id or a malformed id
+  counts like any other attempt, so ids cannot be enumerated quickly.
+* **Size:** a body over 1 KB is `413`, by its declared length or, for a
+  chunked or mis-declared body, by reading no further than 1 byte past it.
+  The form itself is 15 bytes.
+* **Repetition:** the same client sending the same kind for the same event
+  within 10 minutes is thanked again but adds no row.
+* **Concurrency:** check-and-record is one step under one lock. 30 parallel
+  requests from one client admit exactly 10.
+
+The limits are generous on purpose: readers behind one NAT (a studio's Wi-Fi)
+share a client. Production has had 0 feedback rows so far, so the values are
+set from expected use, not measured traffic.
+
+### Who the client is
+
+The TCP peer, and nothing a client wrote:
+* uvicorn's own proxy-header rewriting is now off (`proxy_headers=False`);
+* `X-Real-IP` and `Forwarded` are never read;
+* `X-Forwarded-For` is read only when the peer is a proxy listed in the new
+  `DANCEMATE_TRUSTED_PROXIES` (empty by default), and then only its
+  right-most entry, the one that proxy appended.
+
+Production leaves it empty: the runtime is reached directly on the LAN. When
+the proposed Caddy is put in front of it, the setting names Caddy's address.
+
+### State and privacy
+
+The limiter lives in process memory. The runtime is one uvicorn process with
+no workers, so there is one set of counters. Memory is bounded: at most 4096
+clients, least-recently-seen first out, and each client's history is capped
+at the long window's size. A restart empties it.
+
+The client is kept as an HMAC of its address under a key drawn at process
+start and never stored. Nothing is written to the database, to disk or to a
+log, so backups are unaffected.
+
+### Tests
+
+`tests/test_v09657_feedback_guard.py` covers:
+* normal feedback and the three buttons;
+* identical repetition, and a retry after a failed write;
+* the short, long and global windows, 429 and Retry-After, and window expiry;
+* unknown and non-numeric ids, and routes the guard must leave alone;
+* forged X-Forwarded-For, X-Real-IP and Forwarded;
+* trusted and untrusted proxies, different clients, and shared NAT;
+* declared, chunked and lying body sizes;
+* parallel bursts (threads and HTTP), bounded state, restart, and that the
+  key is not the address.
+
+Browser E2E-38..40: a reader is thanked and one row is written, a burst is
+told to wait, and a large body is refused.
+
 ## v0.96.56 Public Event Time Integrity & Engine 1.18
 
 Product Runtime 0.96.56. Information Engine 1.18 (from 1.17), normalization 3
